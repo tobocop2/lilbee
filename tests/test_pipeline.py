@@ -175,6 +175,29 @@ class TestStoreOperations:
         results = search(vec, top_k=5)
         assert all(r["source"] != "remove_me.txt" for r in results)
 
+    def test_delete_by_source_with_single_quote(self):
+        from lilbee.store import add_chunks, delete_by_source, search
+
+        vec = [0.1] * 768
+        add_chunks(
+            [
+                {
+                    "source": "it's_a_file.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Content with quote.",
+                    "chunk_index": 0,
+                    "vector": vec,
+                }
+            ]
+        )
+        delete_by_source("it's_a_file.txt")
+        results = search(vec, top_k=5)
+        assert all(r["source"] != "it's_a_file.txt" for r in results)
+
     def test_delete_by_source_no_table(self):
         from lilbee.store import delete_by_source
 
@@ -192,6 +215,27 @@ class TestStoreOperations:
         # Should not raise
         _safe_delete(mock_table, "bad predicate")
 
+    def test_add_chunks_wrong_dimension_raises(self):
+        from lilbee.store import add_chunks
+
+        wrong_dim_vec = [0.1] * 100  # Wrong dimension
+        with pytest.raises(ValueError, match="Vector dimension mismatch"):
+            add_chunks(
+                [
+                    {
+                        "source": "test.pdf",
+                        "content_type": "pdf",
+                        "page_start": 1,
+                        "page_end": 1,
+                        "line_start": 0,
+                        "line_end": 0,
+                        "chunk": "test",
+                        "chunk_index": 0,
+                        "vector": wrong_dim_vec,
+                    }
+                ]
+            )
+
 
 class TestSourceTracking:
     def test_upsert_and_retrieve(self):
@@ -206,6 +250,19 @@ class TestSourceTracking:
         upsert_source("to_delete.pdf", "xyz", 5)
         delete_source("to_delete.pdf")
         assert not any(s["filename"] == "to_delete.pdf" for s in get_sources())
+
+    def test_upsert_source_with_single_quote(self):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("it's_a_file.pdf", "abc123", 10)
+        sources = get_sources()
+        assert any(s["filename"] == "it's_a_file.pdf" for s in sources)
+        # Update should work too (tests the delete predicate in upsert)
+        upsert_source("it's_a_file.pdf", "def456", 20)
+        sources = get_sources()
+        matching = [s for s in sources if s["filename"] == "it's_a_file.pdf"]
+        assert len(matching) == 1
+        assert matching[0]["chunk_count"] == 20
 
     def test_drop_all_clears_everything(self):
         from lilbee.store import drop_all, get_sources, upsert_source

@@ -67,10 +67,22 @@ def _safe_delete(table: lancedb.table.Table, predicate: str) -> None:
         log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
 
 
+def _escape_sql_string(value: str) -> str:
+    """Escape single quotes for SQL predicates."""
+    return value.replace("'", "''")
+
+
 def add_chunks(records: list[dict]) -> int:
     """Add chunk records to the store. Returns count added."""
     if not records:
         return 0
+    for rec in records:
+        vec = rec.get("vector", [])
+        if len(vec) != EMBEDDING_DIM:
+            raise ValueError(
+                f"Vector dimension mismatch: expected {EMBEDDING_DIM}, got {len(vec)} "
+                f"(source={rec.get('source', '?')})"
+            )
     db = _get_db()
     table = _ensure_table(db, CHUNKS_TABLE, _CHUNKS_SCHEMA)
     table.add(records)
@@ -90,7 +102,7 @@ def delete_by_source(source: str) -> None:
     """Delete all chunks from a given source file."""
     table = _open_table(CHUNKS_TABLE)
     if table is not None:
-        _safe_delete(table, f"source = '{source}'")
+        _safe_delete(table, f"source = '{_escape_sql_string(source)}'")
 
 
 def get_sources() -> list[dict]:
@@ -106,7 +118,7 @@ def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
     """Add or update a source file tracking record."""
     db = _get_db()
     table = _ensure_table(db, SOURCES_TABLE, _SOURCES_SCHEMA)
-    _safe_delete(table, f"filename = '{filename}'")
+    _safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
     table.add(
         [
             {
@@ -123,7 +135,7 @@ def delete_source(filename: str) -> None:
     """Remove a source file tracking record."""
     table = _open_table(SOURCES_TABLE)
     if table is not None:
-        _safe_delete(table, f"filename = '{filename}'")
+        _safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
 
 
 def drop_all() -> None:
