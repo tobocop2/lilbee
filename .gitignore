@@ -11,3 +11,6 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+*.pdf
+*.html
+*.txt

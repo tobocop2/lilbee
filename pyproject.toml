@@ -16,7 +16,7 @@ dependencies = [
     "tree-sitter-java",
     "tree-sitter-c",
     "tree-sitter-cpp",
-    "typer[all]",
+    "typer",
     "tiktoken",
     "pymupdf-layout>=1.27.1",
 ]

@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test check clean
+.PHONY: lint format format-check typecheck test check clean install
 
 lint:
 	uv run ruff check src/ tests/
@@ -16,6 +16,9 @@ test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
+
+install:
+	uv tool install . --force
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage
