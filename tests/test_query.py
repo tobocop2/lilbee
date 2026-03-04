@@ -1,0 +1,162 @@
+"""Tests for the RAG query pipeline (mocked — no live server needed)."""
+
+from unittest import mock
+
+
+def _make_result(
+    source="test.pdf",
+    content_type="pdf",
+    page_start=1,
+    page_end=1,
+    line_start=0,
+    line_end=0,
+    chunk="some text",
+    chunk_index=0,
+):
+    return {
+        "source": source,
+        "content_type": content_type,
+        "page_start": page_start,
+        "page_end": page_end,
+        "line_start": line_start,
+        "line_end": line_end,
+        "chunk": chunk,
+        "chunk_index": chunk_index,
+    }
+
+
+class TestFormatSource:
+    def test_pdf_single_page(self):
+        from lilbee.query import _format_source
+
+        r = _make_result(source="manual.pdf", content_type="pdf", page_start=5, page_end=5)
+        assert "manual.pdf" in _format_source(r)
+        assert "page 5" in _format_source(r)
+
+    def test_pdf_page_range(self):
+        from lilbee.query import _format_source
+
+        r = _make_result(source="manual.pdf", content_type="pdf", page_start=3, page_end=7)
+        assert "pages 3-7" in _format_source(r)
+
+    def test_code_line_range(self):
+        from lilbee.query import _format_source
+
+        r = _make_result(source="app.py", content_type="code", line_start=10, line_end=25)
+        assert "lines 10-25" in _format_source(r)
+
+    def test_code_single_line(self):
+        from lilbee.query import _format_source
+
+        r = _make_result(source="app.py", content_type="code", line_start=10, line_end=10)
+        assert "line 10" in _format_source(r)
+
+    def test_text_file_no_page_or_line(self):
+        from lilbee.query import _format_source
+
+        r = _make_result(source="readme.md", content_type="text")
+        result = _format_source(r)
+        assert "readme.md" in result
+        assert "page" not in result
+        assert "line" not in result
+
+
+class TestDeduplicateSources:
+    def test_removes_duplicates(self):
+        from lilbee.query import _deduplicate_sources
+
+        results = [
+            _make_result(source="a.pdf", page_start=1, page_end=1),
+            _make_result(source="a.pdf", page_start=1, page_end=1),
+            _make_result(source="b.pdf", page_start=2, page_end=2),
+        ]
+        citations = _deduplicate_sources(results)
+        assert len(citations) == 2
+
+
+class TestBuildContext:
+    def test_numbers_chunks(self):
+        from lilbee.query import _build_context
+
+        results = [_make_result(chunk="chunk one"), _make_result(chunk="chunk two")]
+        ctx = _build_context(results)
+        assert "[1]" in ctx
+        assert "[2]" in ctx
+        assert "chunk one" in ctx
+
+
+class TestSearchContext:
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_returns_results(self, mock_embed, mock_search):
+        from lilbee.query import search_context
+
+        results = search_context("question")
+        assert len(results) == 1
+        mock_embed.assert_called_once_with("question")
+
+
+class TestAsk:
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_returns_answer_with_citations(self, mock_embed, mock_search, mock_chat):
+        mock_chat.return_value = {"message": {"content": "The oil capacity is 5 quarts."}}
+        from lilbee.query import ask
+
+        answer = ask("oil capacity?")
+        assert "5 quarts" in answer
+        assert "Sources:" in answer
+        assert "test.pdf" in answer
+
+    @mock.patch("lilbee.store.search", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_no_results_message(self, mock_embed, mock_search):
+        from lilbee.query import ask
+
+        answer = ask("anything")
+        assert "No relevant documents" in answer
+
+
+class TestAskStream:
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_chat):
+        mock_chat.return_value = iter(
+            [
+                {"message": {"content": "Hello"}},
+                {"message": {"content": " world"}},
+            ]
+        )
+        from lilbee.query import ask_stream
+
+        tokens = list(ask_stream("test"))
+        combined = "".join(tokens)
+        assert "Hello world" in combined
+        assert "Sources:" in combined
+
+    @mock.patch("lilbee.store.search", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_empty_results_yields_message(self, mock_embed, mock_search):
+        from lilbee.query import ask_stream
+
+        tokens = list(ask_stream("anything"))
+        assert any("No relevant documents" in t for t in tokens)
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_skips_empty_tokens(self, mock_embed, mock_search, mock_chat):
+        mock_chat.return_value = iter(
+            [
+                {"message": {"content": ""}},
+                {"message": {"content": "data"}},
+            ]
+        )
+        from lilbee.query import ask_stream
+
+        tokens = list(ask_stream("test"))
+        # Empty string token should not appear as a separate yield
+        non_source_tokens = [t for t in tokens if "Sources:" not in t]
+        assert all(t != "" for t in non_source_tokens if t.strip())

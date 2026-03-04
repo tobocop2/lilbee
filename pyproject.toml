@@ -1,0 +1,76 @@
+[project]
+name = "lilbee"
+version = "0.1.0"
+description = "Local RAG knowledge base — ask questions about your documents"
+requires-python = ">=3.11"
+dependencies = [
+    "ollama",
+    "lancedb",
+    "pymupdf4llm",
+    "tree-sitter>=0.23",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+    "tree-sitter-java",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "typer[all]",
+    "tiktoken",
+]
+
+[project.scripts]
+lilbee = "lilbee.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lilbee"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest",
+    "pytest-cov",
+    "reportlab",
+    "ruff>=0.15.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["lilbee"]
+omit = ["src/lilbee/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
