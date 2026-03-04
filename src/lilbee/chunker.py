@@ -1,10 +1,13 @@
 """Token-based recursive text chunking for PDFs, markdown, HTML, plain text."""
 
+import logging
 from dataclasses import dataclass
 
 import tiktoken
 
 from lilbee.config import CHUNK_OVERLAP, CHUNK_SIZE
+
+log = logging.getLogger(__name__)
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
@@ -156,8 +159,9 @@ def chunk_pages(pages: list[dict]) -> list[PageChunk]:
     search_from = 0
 
     for idx, chunk in enumerate(raw_chunks):
-        pos = full_text.find(chunk[:100], search_from)
+        pos = full_text.find(chunk[:200], search_from)
         if pos == -1:
+            log.debug("Chunk position fallback at index %d, search_from=%d", idx, search_from)
             pos = search_from
 
         ps, pe = _pages_for_range(pos, pos + len(chunk), boundaries)

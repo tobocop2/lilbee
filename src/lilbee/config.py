@@ -54,6 +54,9 @@ EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 768)
 CHUNK_SIZE = _env_int("CHUNK_SIZE", 512)
 CHUNK_OVERLAP = _env_int("CHUNK_OVERLAP", 100)
 
+# Embedding limits
+MAX_EMBED_CHARS = _env_int("MAX_EMBED_CHARS", 2000)
+
 # Retrieval
 TOP_K = _env_int("TOP_K", 10)
 

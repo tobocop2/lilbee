@@ -87,6 +87,7 @@ lilbee ask "Explain this code" --model llama3
 |---------|-------------|
 | `lilbee ask "question"` | One-shot question with auto-sync |
 | `lilbee chat` | Interactive chat loop |
+| `lilbee add <paths>` | Copy files/dirs into knowledge base and ingest |
 | `lilbee sync` | Manually trigger document sync |
 | `lilbee rebuild` | Nuke DB and re-ingest everything |
 | `lilbee status` | Show indexed documents, paths, and models |
@@ -105,6 +106,7 @@ All settings are configurable via environment variables:
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding vector dimensions |
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
+| `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 
 ## How it works
@@ -125,6 +127,15 @@ documents/          LanceDB             Ollama
 - **Text chunking**: Token-based recursive splitting (512 tokens, 100 overlap) on paragraph/sentence/word boundaries.
 - **Code chunking**: Tree-sitter AST parsing extracts functions and classes as natural chunks. Supports Python, JavaScript, TypeScript, Go, Rust, Java, C, C++.
 - **PDF extraction**: `pymupdf4llm` converts PDFs to markdown with page tracking.
+
+## Limitations
+
+lilbee is designed for **local-only** RAG with small models. Keep these constraints in mind:
+
+- **Answer quality depends on the model** — small local models (7B–13B parameters) may miss nuances or misinterpret complex questions that larger cloud models handle easily
+- **Context window constraints** — very large documents produce many chunks; the model only sees the top-K most relevant ones, so some detail may be lost
+- **No cloud API support by design** — everything stays on your machine, which means no access to frontier models
+- **Embedding model token limits** — the default embedding model (nomic-embed-text) has a ~2000 character effective limit per chunk; longer chunks are truncated (configurable via `LILBEE_MAX_EMBED_CHARS`)
 
 ## Data location
 

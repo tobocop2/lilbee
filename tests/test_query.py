@@ -117,6 +117,23 @@ class TestAsk:
         answer = ask("anything")
         assert "No relevant documents" in answer
 
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_with_history(self, mock_embed, mock_search, mock_chat):
+        mock_chat.return_value = {"message": {"content": "answer"}}
+        from lilbee.query import ask
+
+        history = [
+            {"role": "user", "content": "prev q"},
+            {"role": "assistant", "content": "prev a"},
+        ]
+        ask("new q", history=history)
+        messages = mock_chat.call_args[1]["messages"]
+        # System + 2 history + user = 4
+        assert len(messages) == 4
+        assert messages[1]["content"] == "prev q"
+
 
 class TestAskStream:
     @mock.patch("ollama.chat")
@@ -147,6 +164,25 @@ class TestAskStream:
     @mock.patch("ollama.chat")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_stream_with_history(self, mock_embed, mock_search, mock_chat):
+        mock_chat.return_value = iter([{"message": {"content": "response"}}])
+        from lilbee.query import ask_stream
+
+        history = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+        list(ask_stream("new question", history=history))
+        call_args = mock_chat.call_args
+        messages = call_args[1]["messages"]
+        # System + 2 history + user = 4 messages
+        assert len(messages) == 4
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "previous question"
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_skips_empty_tokens(self, mock_embed, mock_search, mock_chat):
         mock_chat.return_value = iter(
             [
@@ -160,3 +196,21 @@ class TestAskStream:
         # Empty string token should not appear as a separate yield
         non_source_tokens = [t for t in tokens if "Sources:" not in t]
         assert all(t != "" for t in non_source_tokens if t.strip())
+
+
+class TestAskStreamError:
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_stream_handles_disconnect(self, mock_embed, mock_search, mock_chat):
+        def failing_stream():
+            yield {"message": {"content": "partial"}}
+            raise ConnectionError("lost connection")
+
+        mock_chat.return_value = failing_stream()
+        from lilbee.query import ask_stream
+
+        tokens = list(ask_stream("test"))
+        combined = "".join(tokens)
+        assert "partial" in combined
+        assert "Connection lost" in combined

@@ -101,6 +101,19 @@ class TestEnvVarOverrides:
             assert cfg.TOP_K == 10
 
 
+class TestMaxEmbedChars:
+    def test_max_embed_chars_default(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = _reload_config()
+            assert cfg.MAX_EMBED_CHARS == 2000
+
+    def test_max_embed_chars_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_MAX_EMBED_CHARS": "3000"}):
+            cfg = _reload_config()
+            assert cfg.MAX_EMBED_CHARS == 3000
+
+
 class TestDefaults:
     def test_default_values(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
@@ -111,6 +124,7 @@ class TestDefaults:
             assert cfg.EMBEDDING_DIM == 768
             assert cfg.CHUNK_SIZE == 512
             assert cfg.CHUNK_OVERLAP == 100
+            assert cfg.MAX_EMBED_CHARS == 2000
             assert cfg.TOP_K == 10
             assert cfg.CHUNKS_TABLE == "chunks"
             assert cfg.SOURCES_TABLE == "_sources"

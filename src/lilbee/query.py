@@ -64,7 +64,7 @@ def search_context(question: str, top_k: int = TOP_K) -> list[dict]:
     return store.search(query_vec, top_k=top_k)
 
 
-def ask(question: str, top_k: int = TOP_K) -> str:
+def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
     """One-shot question: returns full answer with source citations."""
     results = search_context(question, top_k=top_k)
     if not results:
@@ -73,12 +73,14 @@ def ask(question: str, top_k: int = TOP_K) -> str:
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
+    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
     response = ollama.chat(
         model=CHAT_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
     )
 
     answer = response["message"]["content"]
@@ -86,7 +88,9 @@ def ask(question: str, top_k: int = TOP_K) -> str:
     return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
 
-def ask_stream(question: str, top_k: int = TOP_K) -> Generator[str, None, None]:
+def ask_stream(
+    question: str, top_k: int = TOP_K, history: list[dict] | None = None
+) -> Generator[str, None, None]:
     """Streaming question: yields answer tokens, then source citations."""
     results = search_context(question, top_k=top_k)
     if not results:
@@ -96,19 +100,24 @@ def ask_stream(question: str, top_k: int = TOP_K) -> Generator[str, None, None]:
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
+    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
     stream = ollama.chat(
         model=CHAT_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
         stream=True,
     )
 
-    for chunk in stream:
-        token = chunk["message"]["content"]
-        if token:
-            yield token
+    try:
+        for chunk in stream:
+            token = chunk["message"]["content"]
+            if token:
+                yield token
+    except (ConnectionError, OSError) as exc:
+        yield f"\n\n[Connection lost: {exc}]"
 
     citations = _deduplicate_sources(results)
     yield "\n\nSources:\n" + "\n".join(citations)
