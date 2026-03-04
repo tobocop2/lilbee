@@ -18,6 +18,7 @@ dependencies = [
     "tree-sitter-cpp",
     "typer[all]",
     "tiktoken",
+    "pymupdf-layout>=1.27.1",
 ]
 
 [project.scripts]
