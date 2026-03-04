@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 
 class TestTruncate:
     def test_short_text_unchanged(self):
@@ -27,16 +29,16 @@ class TestTruncate:
 class TestEmbed:
     @mock.patch("ollama.embed")
     def test_returns_vector(self, mock_ollama):
-        mock_ollama.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
+        mock_ollama.return_value = {"embeddings": [[0.1] * 768]}
         from lilbee.embedder import embed
 
         vec = embed("test")
-        assert vec == [0.1, 0.2, 0.3]
+        assert vec == [0.1] * 768
         mock_ollama.assert_called_once()
 
     @mock.patch("ollama.embed")
     def test_passes_correct_model(self, mock_ollama):
-        mock_ollama.return_value = {"embeddings": [[0.0]]}
+        mock_ollama.return_value = {"embeddings": [[0.0] * 768]}
         from lilbee.embedder import embed
 
         embed("hello")
@@ -47,7 +49,7 @@ class TestEmbed:
     def test_truncates_long_input(self, mock_ollama):
         from lilbee.embedder import _MAX_EMBED_CHARS, embed
 
-        mock_ollama.return_value = {"embeddings": [[0.0]]}
+        mock_ollama.return_value = {"embeddings": [[0.0] * 768]}
         long_text = "a" * (_MAX_EMBED_CHARS + 1000)
         embed(long_text)
         actual_input = mock_ollama.call_args[1]["input"]
@@ -57,7 +59,7 @@ class TestEmbed:
 class TestEmbedBatch:
     @mock.patch("ollama.embed")
     def test_returns_multiple_vectors(self, mock_ollama):
-        mock_ollama.return_value = {"embeddings": [[0.1], [0.2]]}
+        mock_ollama.return_value = {"embeddings": [[0.1] * 768, [0.2] * 768]}
         from lilbee.embedder import embed_batch
 
         result = embed_batch(["a", "b"])
@@ -71,7 +73,7 @@ class TestEmbedBatch:
 
     @mock.patch("ollama.embed")
     def test_passes_list_as_input(self, mock_ollama):
-        mock_ollama.return_value = {"embeddings": [[0.0], [0.0]]}
+        mock_ollama.return_value = {"embeddings": [[0.0] * 768, [0.0] * 768]}
         from lilbee.embedder import embed_batch
 
         embed_batch(["hello", "world"])
@@ -88,8 +90,8 @@ class TestEmbedBatch:
         n_to_fill = _MAX_BATCH_CHARS // chunk_size + 1
         texts = ["x" * chunk_size for _ in range(n_to_fill + 1)]
         mock_ollama.side_effect = [
-            {"embeddings": [[float(i)] for i in range(n_to_fill)]},
-            {"embeddings": [[float(n_to_fill)]]},
+            {"embeddings": [[0.1] * 768 for _ in range(n_to_fill)]},
+            {"embeddings": [[0.1] * 768]},
         ]
         result = embed_batch(texts)
         assert len(result) == n_to_fill + 1
@@ -99,7 +101,7 @@ class TestEmbedBatch:
     def test_truncates_long_texts_in_batch(self, mock_ollama):
         from lilbee.embedder import _MAX_EMBED_CHARS, embed_batch
 
-        mock_ollama.return_value = {"embeddings": [[0.0], [0.0]]}
+        mock_ollama.return_value = {"embeddings": [[0.0] * 768, [0.0] * 768]}
         texts = ["short", "x" * (_MAX_EMBED_CHARS + 500)]
         embed_batch(texts)
         # Both fit in one batch after truncation (total < _MAX_BATCH_CHARS)
@@ -107,3 +109,80 @@ class TestEmbedBatch:
         call_input = mock_ollama.call_args[1]["input"]
         assert call_input[0] == "short"
         assert len(call_input[1]) == _MAX_EMBED_CHARS
+
+
+class TestValidateVector:
+    def test_valid_vector_passes(self):
+        from lilbee.embedder import _validate_vector
+
+        _validate_vector([0.1] * 768)  # Should not raise
+
+    @mock.patch("ollama.embed")
+    def test_embed_wrong_dim_raises(self, mock_ollama):
+        mock_ollama.return_value = {"embeddings": [[0.1, 0.2]]}  # Wrong dim
+        from lilbee.embedder import embed
+
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            embed("test")
+
+    @mock.patch("ollama.embed")
+    def test_embed_nan_raises(self, mock_ollama):
+        import math
+
+        mock_ollama.return_value = {"embeddings": [[math.nan] + [0.1] * 767]}
+        from lilbee.embedder import embed
+
+        with pytest.raises(ValueError, match="invalid value"):
+            embed("test")
+
+    @mock.patch("ollama.embed")
+    def test_embed_batch_wrong_dim_raises(self, mock_ollama):
+        mock_ollama.return_value = {"embeddings": [[0.1, 0.2]]}  # Wrong dim
+        from lilbee.embedder import embed_batch
+
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            embed_batch(["test"])
+
+    @mock.patch("ollama.embed")
+    def test_embed_inf_raises(self, mock_ollama):
+        import math
+
+        mock_ollama.return_value = {"embeddings": [[math.inf] + [0.1] * 767]}
+        from lilbee.embedder import embed
+
+        with pytest.raises(ValueError, match="invalid value"):
+            embed("test")
+
+
+class TestRetry:
+    @mock.patch("time.sleep")  # Don't actually sleep
+    @mock.patch("ollama.embed")
+    def test_retry_on_connection_error(self, mock_ollama, mock_sleep):
+        mock_ollama.side_effect = [
+            ConnectionError("refused"),
+            {"embeddings": [[0.1] * 768]},
+        ]
+        from lilbee.embedder import embed
+
+        vec = embed("test")
+        assert len(vec) == 768
+        assert mock_ollama.call_count == 2
+
+    @mock.patch("time.sleep")
+    @mock.patch("ollama.embed")
+    def test_retry_exhaustion_raises(self, mock_ollama, mock_sleep):
+        mock_ollama.side_effect = ConnectionError("refused")
+        from lilbee.embedder import embed
+
+        with pytest.raises(ConnectionError):
+            embed("test")
+        assert mock_ollama.call_count == 3
+
+    @mock.patch("ollama.embed")
+    def test_no_retry_on_value_error(self, mock_ollama):
+        mock_ollama.side_effect = ValueError("bad input")
+        from lilbee.embedder import embed
+
+        with pytest.raises(ValueError):
+            embed("test")
+        assert mock_ollama.call_count == 1

@@ -46,7 +46,7 @@ class TestSync:
         from lilbee.ingest import sync
 
         result = sync()
-        assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0}
+        assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0, "failed": []}
 
     def test_ingest_text_file(self, _eb, _e, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
@@ -149,11 +149,13 @@ class TestSync:
         assert "test.pdf" in sync()["added"]
 
     def test_nonexistent_documents_dir(self, _eb, _e, isolated_env, tmp_path):
-        cfg.DOCUMENTS_DIR = tmp_path / "nonexistent"
+        nonexistent = tmp_path / "nonexistent"
+        cfg.DOCUMENTS_DIR = nonexistent
         from lilbee.ingest import sync
 
         result = sync()
-        assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0}
+        assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0, "failed": []}
+        assert nonexistent.exists()  # Directory was auto-created
 
     def test_ingest_error_logged_not_raised(self, _eb, _e, isolated_env):
         """A file that fails ingestion is logged but doesn't crash sync."""
@@ -173,9 +175,35 @@ class TestSync:
 
         with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
             result = sync()
-        # good.txt was added, bad.txt was attempted but failed
+        # good.txt was added, bad.txt failed
         assert "good.txt" in result["added"]
-        assert "bad.txt" in result["added"]
+        assert "bad.txt" not in result["added"]
+        assert "bad.txt" in result["failed"]
+
+    def test_ingest_error_on_update_tracked_as_failed(self, _eb, _e, isolated_env):
+        """A file that fails re-ingestion on update goes to failed, not updated."""
+        from unittest.mock import patch
+
+        f = isolated_env / "flaky.txt"
+        f.write_text("Version 1")
+
+        from lilbee.ingest import sync
+
+        sync()  # First ingest succeeds
+
+        f.write_text("Version 2 — will fail")
+
+        orig_ingest = __import__("lilbee.ingest", fromlist=["_ingest_file"])._ingest_file
+
+        def _failing_ingest(path, name, content_type):
+            if "flaky" in name:
+                raise RuntimeError("simulated failure on update")
+            return orig_ingest(path, name, content_type)
+
+        with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
+            result = sync()
+        assert "flaky.txt" not in result["updated"]
+        assert "flaky.txt" in result["failed"]
 
 
 class TestIngestHelpers:
@@ -220,6 +248,14 @@ class TestIngestHelpers:
         ):
             result = _ingest_pdf(f, "empty.pdf")
             assert result == []
+
+
+class TestDiscoverFiles:
+    def test_nonexistent_dir_returns_empty(self, isolated_env, tmp_path):
+        cfg.DOCUMENTS_DIR = tmp_path / "does_not_exist"
+        from lilbee.ingest import _discover_files
+
+        assert _discover_files() == {}
 
 
 class TestClassifyFile:

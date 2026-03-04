@@ -1,5 +1,6 @@
 """CLI entry point for lilbee."""
 
+import shutil
 from pathlib import Path
 
 import typer
@@ -42,18 +43,30 @@ _model_option = typer.Option(
     help="Override chat model (default: $LILBEE_CHAT_MODEL or 'mistral')",
 )
 
+_paths_argument = typer.Argument(
+    ...,
+    exists=True,
+    help="Files or directories to add to the knowledge base.",
+)
+
 
 def _auto_sync() -> None:
     """Run document sync before queries."""
     from lilbee.ingest import sync
 
     result = sync()
-    total = len(result["added"]) + len(result["updated"]) + len(result["removed"])
+    total = (
+        len(result["added"])
+        + len(result["updated"])
+        + len(result["removed"])
+        + len(result.get("failed", []))
+    )
     if total:
         console.print(
             f"[dim]Synced: {len(result['added'])} added, "
             f"{len(result['updated'])} updated, "
-            f"{len(result['removed'])} removed[/dim]"
+            f"{len(result['removed'])} removed, "
+            f"{len(result.get('failed', []))} failed[/dim]"
         )
 
 
@@ -68,6 +81,9 @@ def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
     console.print(f"Updated: {len(result['updated'])}")
     console.print(f"Removed: {len(result['removed'])}")
     console.print(f"Unchanged: {result['unchanged']}")
+    console.print(f"Failed: {len(result['failed'])}")
+    for f in result.get("failed", []):
+        console.print(f"  [red]{f}[/red]")
 
 
 @app.command()
@@ -78,6 +94,35 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
 
     result = sync(force_rebuild=True)
     console.print(f"Rebuilt: {len(result['added'])} documents ingested")
+
+
+@app.command()
+def add(
+    paths: list[Path] = _paths_argument,
+    data_dir: Path | None = _data_dir_option,
+) -> None:
+    """Copy files into the knowledge base and ingest them."""
+    _apply_overrides(data_dir=data_dir)
+    import lilbee.config as cfg
+    from lilbee.ingest import sync
+
+    cfg.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    for p in paths:
+        dest = cfg.DOCUMENTS_DIR / p.name
+        if p.is_dir():
+            shutil.copytree(p, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy2(p, dest)
+        copied.append(p.name)
+
+    console.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
+
+    result = sync()
+    console.print(f"Added: {len(result['added'])}")
+    console.print(f"Updated: {len(result['updated'])}")
+    console.print(f"Unchanged: {result['unchanged']}")
 
 
 @app.command()
@@ -107,6 +152,7 @@ def chat(
     from lilbee.query import ask_stream
 
     console.print("[bold]lilbee chat[/bold] — type 'quit' to exit\n")
+    history: list[dict] = []
     while True:
         try:
             question = console.input("[bold green]> [/bold green]")
@@ -116,9 +162,13 @@ def chat(
             break
         if not question.strip():
             continue
-        for token in ask_stream(question):
+        response_parts: list[str] = []
+        for token in ask_stream(question, history=history):
             console.print(token, end="")
+            response_parts.append(token)
         console.print("\n")
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": "".join(response_parts)})
 
 
 @app.command()

@@ -41,9 +41,11 @@ def _discover_files() -> dict[str, Path]:
     if not cfg.DOCUMENTS_DIR.exists():
         return {}
     files: dict[str, Path] = {}
-    for path in cfg.DOCUMENTS_DIR.rglob("*"):
-        if path.is_file() and not path.name.startswith("."):
-            files[_relative_name(path)] = path
+    supported = _TEXT_EXTENSIONS | _CODE_EXTENSIONS | frozenset({".pdf"})
+    for ext in supported:
+        for path in cfg.DOCUMENTS_DIR.rglob(f"*{ext}"):
+            if path.is_file() and not path.name.startswith("."):
+                files[_relative_name(path)] = path
     return files
 
 
@@ -156,10 +158,12 @@ def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
 def sync(force_rebuild: bool = False) -> dict:
     """Sync documents/ with the vector store.
 
-    Returns summary dict: {"added": [...], "updated": [...], "removed": [...], "unchanged": int}
+    Returns summary dict with keys: added, updated, removed, unchanged, failed.
     """
     if force_rebuild:
         store.drop_all()
+
+    cfg.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
     disk_files = _discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in store.get_sources()}
@@ -168,6 +172,7 @@ def sync(force_rebuild: bool = False) -> dict:
     updated: list[str] = []
     removed: list[str] = []
     unchanged = 0
+    failed: list[str] = []
 
     # Find files to remove (in DB but not on disk)
     for name in existing_sources:
@@ -181,9 +186,7 @@ def sync(force_rebuild: bool = False) -> dict:
 
     for name, path in sorted(disk_files.items()):
         content_type = _classify_file(path)
-        if content_type is None:
-            log.debug("Skipping unsupported file: %s", name)
-            continue
+        assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
 
         current_hash = _file_hash(path)
         old_hash = existing_sources.get(name)
@@ -228,7 +231,21 @@ def sync(force_rebuild: bool = False) -> dict:
                         store.upsert_source(name, _file_hash(path), chunk_count)
                     except Exception:
                         log.exception("Failed to ingest %s", name)
+                        if name in added:
+                            added.remove(name)
+                        if name in updated:
+                            updated.remove(name)
+                        failed.append(name)
+                        progress.update(task, description=f"Failed {name}")
+                        progress.advance(task)
+                        continue
                     progress.update(task, description=f"Ingested {name}")
                     progress.advance(task)
 
-    return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
+    return {
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "unchanged": unchanged,
+        "failed": failed,
+    }
