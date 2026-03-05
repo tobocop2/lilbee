@@ -21,6 +21,18 @@ _TEXT_EXTENSIONS = frozenset({".md", ".txt", ".html", ".rst"})
 # File extensions routed to the code chunker
 _CODE_EXTENSIONS = supported_extensions()
 
+# Office document extensions
+_OFFICE_EXTENSIONS: dict[str, str] = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx"}
+
+# eBook extensions
+_EBOOK_EXTENSIONS = frozenset({".epub"})
+
+# Image extensions (OCR via Tesseract)
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"})
+
+# Data file extensions
+_DATA_EXTENSIONS = frozenset({".csv", ".tsv"})
+
 
 def _file_hash(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
@@ -41,7 +53,15 @@ def _discover_files() -> dict[str, Path]:
     if not cfg.DOCUMENTS_DIR.exists():
         return {}
     files: dict[str, Path] = {}
-    supported = _TEXT_EXTENSIONS | _CODE_EXTENSIONS | frozenset({".pdf"})
+    supported = (
+        _TEXT_EXTENSIONS
+        | _CODE_EXTENSIONS
+        | frozenset({".pdf"})
+        | frozenset(_OFFICE_EXTENSIONS)
+        | _EBOOK_EXTENSIONS
+        | _IMAGE_EXTENSIONS
+        | _DATA_EXTENSIONS
+    )
     for ext in supported:
         for path in cfg.DOCUMENTS_DIR.rglob(f"*{ext}"):
             if path.is_file() and not path.name.startswith("."):
@@ -58,6 +78,14 @@ def _classify_file(path: Path) -> str | None:
         return "text"
     if ext in _CODE_EXTENSIONS:
         return "code"
+    if ext in _OFFICE_EXTENSIONS:
+        return _OFFICE_EXTENSIONS[ext]
+    if ext in _EBOOK_EXTENSIONS:
+        return "epub"
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _DATA_EXTENSIONS:
+        return "data"
     return None
 
 
@@ -141,10 +169,215 @@ def _ingest_code(path: Path, source_name: str) -> list[dict]:
     ]
 
 
+def _ingest_docx(path: Path, source_name: str) -> list[dict]:
+    """Extract text from DOCX, chunk, embed, and return store-ready records."""
+    from docx import Document
+
+    doc = Document(str(path))
+    parts: list[str] = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            parts.append(para.text)
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                parts.append("\t".join(cells))
+    text = "\n\n".join(parts)
+    chunks = chunk_text(text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "docx",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
+def _ingest_xlsx(path: Path, source_name: str) -> list[dict]:
+    """Extract text from XLSX, chunk, embed, and return store-ready records."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(path), read_only=True, data_only=True)
+    parts: list[str] = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        sheet_lines = [f"# Sheet: {sheet_name}"]
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) if c is not None else "" for c in row]
+            if any(cells):
+                sheet_lines.append("\t".join(cells))
+        if len(sheet_lines) > 1:
+            parts.append("\n".join(sheet_lines))
+    wb.close()
+    text = "\n\n".join(parts)
+    chunks = chunk_text(text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "xlsx",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
+def _ingest_pptx(path: Path, source_name: str) -> list[dict]:
+    """Extract text from PPTX, chunk, embed, and return store-ready records."""
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    parts: list[str] = []
+    for slide_num, slide in enumerate(prs.slides, 1):
+        slide_texts = [f"# Slide {slide_num}"]
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                text = shape.text_frame.text.strip()
+                if text:
+                    slide_texts.append(text)
+        if len(slide_texts) > 1:
+            parts.append("\n".join(slide_texts))
+    text = "\n\n".join(parts)
+    chunks = chunk_text(text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "pptx",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
+def _ingest_epub(path: Path, source_name: str) -> list[dict]:
+    """Extract text from EPUB, chunk, embed, and return store-ready records."""
+    import ebooklib
+    from bs4 import BeautifulSoup
+    from ebooklib import epub
+
+    book = epub.read_epub(str(path))
+    parts: list[str] = []
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        html = item.get_content().decode("utf-8", errors="replace")
+        text = BeautifulSoup(html, "html.parser").get_text(separator="\n").strip()
+        if text:
+            parts.append(text)
+    full_text = "\n\n".join(parts)
+    chunks = chunk_text(full_text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "epub",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
+def _ingest_image(path: Path, source_name: str) -> list[dict]:
+    """OCR an image, chunk, embed, and return store-ready records."""
+    import pytesseract
+    from PIL import Image
+
+    text = pytesseract.image_to_string(Image.open(path)).strip()
+    if not text:
+        return []
+    chunks = chunk_text(text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "image",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
+def _ingest_data(path: Path, source_name: str) -> list[dict]:
+    """Read CSV/TSV, chunk, embed, and return store-ready records."""
+    import csv
+
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        reader = csv.reader(f, delimiter=delimiter)
+        lines = ["\t".join(row) for row in reader if any(cell.strip() for cell in row)]
+    text = "\n".join(lines)
+    chunks = chunk_text(text)
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        {
+            "source": source_name,
+            "content_type": "data",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": chunk,
+            "chunk_index": idx,
+            "vector": vec,
+        }
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
+
 _INGEST_DISPATCH = {
     "pdf": _ingest_pdf,
     "text": _ingest_text,
     "code": _ingest_code,
+    "docx": _ingest_docx,
+    "xlsx": _ingest_xlsx,
+    "pptx": _ingest_pptx,
+    "epub": _ingest_epub,
+    "image": _ingest_image,
+    "data": _ingest_data,
 }
 
 

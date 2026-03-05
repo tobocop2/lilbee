@@ -108,7 +108,7 @@ class TestSync:
         assert result["added"] == []
 
     def test_unsupported_extension_skipped(self, _eb, _e, isolated_env):
-        (isolated_env / "data.xlsx").write_bytes(b"binary data")
+        (isolated_env / "data.zip").write_bytes(b"binary data")
         from lilbee.ingest import sync
 
         assert sync()["added"] == []
@@ -324,8 +324,8 @@ class TestClassifyFile:
     def test_unsupported(self):
         from lilbee.ingest import _classify_file
 
-        assert _classify_file(Path("f.xlsx")) is None
         assert _classify_file(Path("f.zip")) is None
+        assert _classify_file(Path("f.exe")) is None
 
 
 class TestFileHash:
@@ -347,3 +347,301 @@ class TestFileHash:
         f1.write_text("hello")
         f2.write_text("world")
         assert _file_hash(f1) != _file_hash(f2)
+
+
+class TestClassifyNewFormats:
+    def test_office_formats(self):
+        from lilbee.ingest import _classify_file
+
+        assert _classify_file(Path("doc.docx")) == "docx"
+        assert _classify_file(Path("sheet.xlsx")) == "xlsx"
+        assert _classify_file(Path("slides.pptx")) == "pptx"
+
+    def test_epub(self):
+        from lilbee.ingest import _classify_file
+
+        assert _classify_file(Path("book.epub")) == "epub"
+
+    def test_image_formats(self):
+        from lilbee.ingest import _classify_file
+
+        assert _classify_file(Path("photo.png")) == "image"
+        assert _classify_file(Path("photo.jpg")) == "image"
+        assert _classify_file(Path("photo.jpeg")) == "image"
+        assert _classify_file(Path("scan.tiff")) == "image"
+        assert _classify_file(Path("scan.tif")) == "image"
+        assert _classify_file(Path("img.bmp")) == "image"
+        assert _classify_file(Path("img.webp")) == "image"
+
+    def test_data_formats(self):
+        from lilbee.ingest import _classify_file
+
+        assert _classify_file(Path("data.csv")) == "data"
+        assert _classify_file(Path("data.tsv")) == "data"
+
+
+class TestDiscoverNewFormats:
+    def test_new_extensions_discovered(self, isolated_env):
+        from lilbee.ingest import _discover_files
+
+        for ext in [".docx", ".xlsx", ".pptx", ".epub", ".png", ".csv", ".tsv"]:
+            (isolated_env / f"test{ext}").write_bytes(b"dummy")
+
+        found = _discover_files()
+        for ext in [".docx", ".xlsx", ".pptx", ".epub", ".png", ".csv", ".tsv"]:
+            assert f"test{ext}" in found
+
+
+class TestIngestDocx:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_docx(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_docx
+
+        mock_doc = MagicMock()
+        mock_para = MagicMock()
+        mock_para.text = "Hello from a DOCX document with enough text to form a chunk."
+        mock_doc.paragraphs = [mock_para]
+        mock_doc.tables = []
+
+        f = isolated_env / "test.docx"
+        f.write_bytes(b"fake")
+        with patch("docx.Document", return_value=mock_doc):
+            result = _ingest_docx(f, "test.docx")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "docx"
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_docx_with_tables(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_docx
+
+        mock_doc = MagicMock()
+        mock_doc.paragraphs = []
+
+        mock_cell1 = MagicMock()
+        mock_cell1.text = "Header A"
+        mock_cell2 = MagicMock()
+        mock_cell2.text = "Header B"
+        mock_row = MagicMock()
+        mock_row.cells = [mock_cell1, mock_cell2]
+        mock_table = MagicMock()
+        mock_table.rows = [mock_row]
+        mock_doc.tables = [mock_table]
+
+        f = isolated_env / "table.docx"
+        f.write_bytes(b"fake")
+        with patch("docx.Document", return_value=mock_doc):
+            result = _ingest_docx(f, "table.docx")
+        assert len(result) >= 1
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_docx_empty(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_docx
+
+        mock_doc = MagicMock()
+        mock_doc.paragraphs = []
+        mock_doc.tables = []
+
+        f = isolated_env / "empty.docx"
+        f.write_bytes(b"fake")
+        with patch("docx.Document", return_value=mock_doc):
+            result = _ingest_docx(f, "empty.docx")
+        assert result == []
+
+
+class TestIngestXlsx:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_xlsx(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_xlsx
+
+        mock_ws = MagicMock()
+        mock_ws.iter_rows.return_value = [("Name", "Age"), ("Alice", 30)]
+        mock_wb = MagicMock()
+        mock_wb.sheetnames = ["Sheet1"]
+        mock_wb.__getitem__ = lambda self, key: mock_ws
+
+        f = isolated_env / "test.xlsx"
+        f.write_bytes(b"fake")
+        with patch("openpyxl.load_workbook", return_value=mock_wb):
+            result = _ingest_xlsx(f, "test.xlsx")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "xlsx"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_xlsx_empty(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_xlsx
+
+        mock_ws = MagicMock()
+        mock_ws.iter_rows.return_value = []
+        mock_wb = MagicMock()
+        mock_wb.sheetnames = ["Sheet1"]
+        mock_wb.__getitem__ = lambda self, key: mock_ws
+
+        f = isolated_env / "empty.xlsx"
+        f.write_bytes(b"fake")
+        with patch("openpyxl.load_workbook", return_value=mock_wb):
+            result = _ingest_xlsx(f, "empty.xlsx")
+        assert result == []
+
+
+class TestIngestPptx:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_pptx(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, PropertyMock, patch
+
+        from lilbee.ingest import _ingest_pptx
+
+        mock_shape = MagicMock()
+        mock_shape.has_text_frame = True
+        mock_shape.text_frame.text = "Slide title with enough content for chunking."
+        mock_slide = MagicMock()
+        mock_slide.shapes = [mock_shape]
+        mock_prs = MagicMock()
+        type(mock_prs).slides = PropertyMock(return_value=[mock_slide])
+
+        f = isolated_env / "test.pptx"
+        f.write_bytes(b"fake")
+        with patch("pptx.Presentation", return_value=mock_prs):
+            result = _ingest_pptx(f, "test.pptx")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "pptx"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_pptx_empty(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, PropertyMock, patch
+
+        from lilbee.ingest import _ingest_pptx
+
+        mock_prs = MagicMock()
+        type(mock_prs).slides = PropertyMock(return_value=[])
+
+        f = isolated_env / "empty.pptx"
+        f.write_bytes(b"fake")
+        with patch("pptx.Presentation", return_value=mock_prs):
+            result = _ingest_pptx(f, "empty.pptx")
+        assert result == []
+
+
+class TestIngestEpub:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_epub(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_epub
+
+        mock_item = MagicMock()
+        mock_item.get_content.return_value = b"<p>Chapter content with text.</p>"
+        mock_book = MagicMock()
+        mock_book.get_items_of_type.return_value = [mock_item]
+
+        f = isolated_env / "test.epub"
+        f.write_bytes(b"fake")
+        with patch("ebooklib.epub.read_epub", return_value=mock_book):
+            result = _ingest_epub(f, "test.epub")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "epub"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_epub_empty(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_epub
+
+        mock_book = MagicMock()
+        mock_book.get_items_of_type.return_value = []
+
+        f = isolated_env / "empty.epub"
+        f.write_bytes(b"fake")
+        with patch("ebooklib.epub.read_epub", return_value=mock_book):
+            result = _ingest_epub(f, "empty.epub")
+        assert result == []
+
+
+class TestIngestImage:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_image(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_image
+
+        f = isolated_env / "test.png"
+        f.write_bytes(b"fake")
+        with (
+            patch("PIL.Image.open", return_value=MagicMock()),
+            patch("pytesseract.image_to_string", return_value="OCR text from image."),
+        ):
+            result = _ingest_image(f, "test.png")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "image"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_image_text_but_empty_chunks(self, _eb, isolated_env):
+        """OCR returns text but chunk_text produces nothing (e.g., only whitespace tokens)."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_image
+
+        f = isolated_env / "tiny.png"
+        f.write_bytes(b"fake")
+        with (
+            patch("PIL.Image.open", return_value=MagicMock()),
+            patch("pytesseract.image_to_string", return_value="x"),
+            patch("lilbee.ingest.chunk_text", return_value=[]),
+        ):
+            result = _ingest_image(f, "tiny.png")
+        assert result == []
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_image_no_text(self, _eb, isolated_env):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.ingest import _ingest_image
+
+        f = isolated_env / "blank.png"
+        f.write_bytes(b"fake")
+        with (
+            patch("PIL.Image.open", return_value=MagicMock()),
+            patch("pytesseract.image_to_string", return_value="   "),
+        ):
+            result = _ingest_image(f, "blank.png")
+        assert result == []
+
+
+class TestIngestCsvTsv:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_csv(self, _eb, isolated_env):
+        from lilbee.ingest import _ingest_data
+
+        f = isolated_env / "test.csv"
+        f.write_text("name,age\nAlice,30\nBob,25\n")
+        result = _ingest_data(f, "test.csv")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "data"
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    def test_ingest_tsv(self, _eb, isolated_env):
+        from lilbee.ingest import _ingest_data
+
+        f = isolated_env / "test.tsv"
+        f.write_text("name\tage\nAlice\t30\nBob\t25\n")
+        result = _ingest_data(f, "test.tsv")
+        assert len(result) >= 1
+        assert result[0]["content_type"] == "data"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    def test_ingest_csv_empty(self, _eb, isolated_env):
+        from lilbee.ingest import _ingest_data
+
+        f = isolated_env / "empty.csv"
+        f.write_text("")
+        result = _ingest_data(f, "empty.csv")
+        assert result == []
