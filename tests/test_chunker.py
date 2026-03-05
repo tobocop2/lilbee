@@ -116,6 +116,37 @@ class TestChunkPagesEdge:
             assert result[0].page_start >= 1
 
 
+class TestPagesForRange:
+    def test_no_overlap_falls_back_to_first_page(self):
+        """When char range doesn't overlap any boundary, return first page."""
+        from lilbee.chunker import _pages_for_range
+
+        boundaries = [(0, 100, 1), (100, 200, 2)]
+        # Range entirely outside all boundaries
+        ps, pe = _pages_for_range(300, 400, boundaries)
+        assert ps == 1
+        assert pe == 1
+
+
+class TestChunkPagesTracking:
+    def test_chunks_from_later_pages_have_correct_page_start(self):
+        """Chunks from page 200 should not have page_start=1."""
+        from lilbee.chunker import chunk_pages
+
+        header = "##### **Maintenance and Specifications**\n\n"
+        pages = [
+            {"page": 1, "text": header + "Introduction content " * 50},
+            {"page": 2, "text": header + "Chapter two content " * 50},
+            {"page": 100, "text": header + "Unique page 100 content " * 50},
+            {"page": 200, "text": header + "Unique page 200 content " * 50},
+        ]
+        chunks = chunk_pages(pages)
+        page_200_chunks = [c for c in chunks if "page 200 content" in c.chunk]
+        assert page_200_chunks, "Should have chunks from page 200"
+        for c in page_200_chunks:
+            assert c.page_start >= 200, f"Expected page_start >= 200, got {c.page_start}"
+
+
 class TestSegmentsEmpty:
     def test_segments_returns_empty(self):
         """Cover the `not segments` early return in chunk_text (line 97)."""

@@ -130,12 +130,15 @@ def _pages_for_range(
     boundaries: list[tuple[int, int, int]],
 ) -> tuple[int, int]:
     """Determine which pages a character range spans."""
-    page_start = boundaries[0][2]
-    page_end = page_start
+    page_start: int | None = None
+    page_end: int | None = None
     for bstart, bend, pnum in boundaries:
         if bstart < char_end and bend > char_start:
-            page_start = min(page_start, pnum)
-            page_end = max(page_end, pnum)
+            page_start = min(page_start, pnum) if page_start is not None else pnum
+            page_end = max(page_end, pnum) if page_end is not None else pnum
+    # Fallback to first page if no boundary overlaps (shouldn't happen)
+    if page_start is None or page_end is None:
+        return boundaries[0][2], boundaries[0][2]
     return page_start, page_end
 
 
@@ -164,13 +167,23 @@ def chunk_pages(pages: list[dict]) -> list[PageChunk]:
     search_from = 0
 
     for idx, chunk in enumerate(raw_chunks):
-        pos = full_text.find(chunk[:_CHUNK_POSITION_PREFIX_LEN], search_from)
+        # Use middle of chunk for position lookup — avoids matching
+        # repeated headers/overlap at the start of chunks
+        mid = len(chunk) // 2
+        prefix_start = max(0, mid - _CHUNK_POSITION_PREFIX_LEN // 2)
+        needle = chunk[prefix_start : prefix_start + _CHUNK_POSITION_PREFIX_LEN]
+        pos = full_text.find(needle, search_from)
         if pos == -1:
             log.debug("Chunk position fallback at index %d, search_from=%d", idx, search_from)
             pos = search_from
+            needle_end = pos + len(chunk)
+        else:
+            needle_end = pos + _CHUNK_POSITION_PREFIX_LEN
 
-        ps, pe = _pages_for_range(pos, pos + len(chunk), boundaries)
+        # Use the needle's range (middle of chunk) for page attribution —
+        # overlap text at chunk boundaries may belong to adjacent pages
+        ps, pe = _pages_for_range(pos, needle_end, boundaries)
         results.append(PageChunk(chunk=chunk, page_start=ps, page_end=pe, chunk_index=idx))
-        search_from = max(search_from, pos + 1)
+        search_from = max(search_from, pos + len(chunk) // 2)
 
     return results
