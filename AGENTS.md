@@ -102,6 +102,46 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - `floop list` — list all learned behaviors
 - `floop prompt` — generate prompt section from active behaviors
 
+## Agent Integration (JSON API)
+
+lilbee has a local knowledge base you can query. Use it for domain-specific questions about the user's documents. All commands accept `--json` (before the subcommand) for structured output.
+
+### Two modes
+
+- **`search`** — raw chunk retrieval (no LLM needed). Use when you have your own LLM and just need relevant document chunks.
+- **`ask`** — full local RAG via Ollama. Use for fully-local workflows when Ollama is running.
+
+### Commands
+
+```bash
+# Search for relevant chunks (no Ollama needed)
+lilbee --json search "query" --top-k 5
+# Returns: {"command": "search", "query": "...", "results": [...]}
+
+# Ask a question with local RAG (requires Ollama)
+lilbee --json ask "question"
+# Returns: {"command": "ask", "question": "...", "answer": "...", "sources": [...]}
+
+# Check what's indexed
+lilbee --json status
+# Returns: {"command": "status", "config": {...}, "sources": [...], "total_chunks": N}
+
+# Trigger document sync
+lilbee --json sync
+# Returns: {"command": "sync", "added": [...], "updated": [...], "removed": [...], ...}
+```
+
+### JSON output format
+
+Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`. Results include `distance` scores (lower = more relevant). Vectors are stripped from output.
+
+### Recommendations
+
+- Prefer `search` if you have your own LLM — it's faster and doesn't need Ollama
+- Use `ask` for fully-local workflows where no data should leave the machine
+- Run `status` first to check if documents are indexed
+- Run `sync` after adding documents to update the index
+
 ## Key Files
 - `config.py` — All settings (env-var configurable)
 - `ingest.py` — Document sync engine (hash-based change detection)
@@ -110,4 +150,4 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - `chunker.py` — Text chunking (token-based recursive)
 - `code_chunker.py` — Code chunking (tree-sitter AST)
 - `embedder.py` — Ollama embedding wrapper
-- `cli.py` — Typer CLI with --model and --data-dir flags
+- `cli.py` — Typer CLI with --model, --data-dir, and --json flags

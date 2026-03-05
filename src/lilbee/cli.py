@@ -1,6 +1,8 @@
 """CLI entry point for lilbee."""
 
+import json
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -10,6 +12,21 @@ from rich.table import Table
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
+
+_json_mode: bool = False
+
+
+def _json_output(data: dict) -> None:
+    """Print a JSON object to stdout."""
+    print(json.dumps(data))
+
+
+def _clean_result(result: dict) -> dict:
+    """Strip vector field and rename _distance for JSON output."""
+    cleaned = {k: v for k, v in result.items() if k != "vector"}
+    if "_distance" in cleaned:
+        cleaned["distance"] = cleaned.pop("_distance")
+    return cleaned
 
 
 def _apply_overrides(
@@ -44,6 +61,13 @@ _model_option = typer.Option(
     help="Override chat model (default: $LILBEE_CHAT_MODEL or 'mistral')",
 )
 
+_json_option = typer.Option(
+    False,
+    "--json",
+    "-j",
+    help="Emit structured JSON output (for agent/script consumption).",
+)
+
 _paths_argument = typer.Argument(
     ...,
     exists=True,
@@ -56,19 +80,46 @@ _paths_argument = typer.Argument(
 # ---------------------------------------------------------------------------
 
 
-def _render_status(con: Console) -> None:
-    """Print status info (documents, paths, chunk counts)."""
+def _gather_status() -> dict:
+    """Collect status data as a plain dict (shared by human + JSON output)."""
     from lilbee.config import CHAT_MODEL, DATA_DIR, DOCUMENTS_DIR, EMBEDDING_MODEL
     from lilbee.store import get_sources
 
-    con.print(f"[bold]Documents:[/bold]  {DOCUMENTS_DIR}")
-    con.print(f"[bold]Database:[/bold]   {DATA_DIR}")
-    con.print(f"[bold]Chat model:[/bold] {CHAT_MODEL}")
-    con.print(f"[bold]Embeddings:[/bold] {EMBEDDING_MODEL}")
+    sources = get_sources()
+    sorted_sources = sorted(sources, key=lambda x: x["filename"])
+    total_chunks = sum(s["chunk_count"] for s in sources)
+    return {
+        "command": "status",
+        "config": {
+            "documents_dir": str(DOCUMENTS_DIR),
+            "data_dir": str(DATA_DIR),
+            "chat_model": CHAT_MODEL,
+            "embedding_model": EMBEDDING_MODEL,
+        },
+        "sources": [
+            {
+                "filename": s["filename"],
+                "file_hash": s["file_hash"][:12],
+                "chunk_count": s["chunk_count"],
+                "ingested_at": s["ingested_at"][:19],
+            }
+            for s in sorted_sources
+        ],
+        "total_chunks": total_chunks,
+    }
+
+
+def _render_status(con: Console) -> None:
+    """Print status info (documents, paths, chunk counts)."""
+    data = _gather_status()
+    cfg = data["config"]
+    con.print(f"[bold]Documents:[/bold]  {cfg['documents_dir']}")
+    con.print(f"[bold]Database:[/bold]   {cfg['data_dir']}")
+    con.print(f"[bold]Chat model:[/bold] {cfg['chat_model']}")
+    con.print(f"[bold]Embeddings:[/bold] {cfg['embedding_model']}")
     con.print()
 
-    sources = get_sources()
-    if not sources:
+    if not data["sources"]:
         con.print(
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
         )
@@ -80,27 +131,26 @@ def _render_status(con: Console) -> None:
     table.add_column("Chunks", justify="right")
     table.add_column("Ingested", style="dim")
 
-    total_chunks = 0
-    for s in sorted(sources, key=lambda x: x["filename"]):
+    for s in data["sources"]:
         table.add_row(
             s["filename"],
-            s["file_hash"][:12],
+            s["file_hash"],
             str(s["chunk_count"]),
-            s["ingested_at"][:19],
+            s["ingested_at"],
         )
-        total_chunks += s["chunk_count"]
 
     con.print(table)
-    con.print(f"\n[bold]{len(sources)}[/bold] documents, [bold]{total_chunks}[/bold] chunks")
+    con.print(
+        f"\n[bold]{len(data['sources'])}[/bold] documents, "
+        f"[bold]{data['total_chunks']}[/bold] chunks"
+    )
 
 
-def _add_paths(paths: list[Path], con: Console) -> None:
-    """Copy *paths* into the knowledge base and sync."""
+def _copy_paths(paths: list[Path]) -> list[str]:
+    """Copy *paths* into the documents directory. Returns list of copied names."""
     import lilbee.config as cfg
-    from lilbee.ingest import sync
 
     cfg.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-
     copied: list[str] = []
     for p in paths:
         dest = cfg.DOCUMENTS_DIR / p.name
@@ -109,7 +159,15 @@ def _add_paths(paths: list[Path], con: Console) -> None:
         else:
             shutil.copy2(p, dest)
         copied.append(p.name)
+    return copied
 
+
+def _add_paths(paths: list[Path], con: Console) -> None:
+    """Copy *paths* into the knowledge base and sync (human output)."""
+    import lilbee.config as cfg
+    from lilbee.ingest import sync
+
+    copied = _copy_paths(paths)
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
 
     result = sync()
@@ -251,8 +309,6 @@ def _make_completer():  # type: ignore[no-untyped-def]
 
 def _chat_loop(con: Console) -> None:
     """Interactive REPL with slash-command support."""
-    import sys
-
     con.print("[bold]lilbee chat[/bold] — type /help for commands\n")
     history: list[dict] = []
 
@@ -294,10 +350,16 @@ def _default(
     ctx: typer.Context,
     data_dir: Path | None = _data_dir_option,
     model: str | None = _model_option,
+    json_output: bool = _json_option,
 ) -> None:
     """Start interactive chat when no command is given."""
+    global _json_mode
+    _json_mode = json_output
     if ctx.invoked_subcommand is None:
         _apply_overrides(data_dir=data_dir, model=model)
+        if _json_mode:
+            _json_output({"error": "Interactive chat requires a terminal, not --json"})
+            raise SystemExit(1)
         _auto_sync()
         _chat_loop(console)
 
@@ -322,13 +384,70 @@ def _auto_sync() -> None:
         )
 
 
+_CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Search query"),
+    top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
+    data_dir: Path | None = _data_dir_option,
+) -> None:
+    """Search the knowledge base for relevant chunks."""
+    _apply_overrides(data_dir=data_dir)
+    from lilbee.config import TOP_K
+    from lilbee.query import search_context
+
+    results = search_context(query, top_k=top_k or TOP_K)
+    cleaned = [_clean_result(r) for r in results]
+
+    if _json_mode:
+        _json_output({"command": "search", "query": query, "results": cleaned})
+        return
+
+    if not cleaned:
+        console.print("No results found.")
+        return
+
+    table = Table(title="Search Results")
+    table.add_column("Source", style="cyan")
+    table.add_column("Chunk", max_width=80)
+    table.add_column("Distance", justify="right", style="dim")
+
+    for r in cleaned:
+        preview = r.get("chunk", "")[:_CHUNK_PREVIEW_LEN]
+        if len(r.get("chunk", "")) > _CHUNK_PREVIEW_LEN:
+            preview += "..."
+        table.add_row(
+            r.get("source", ""),
+            preview,
+            f"{r.get('distance', 0):.4f}",
+        )
+    console.print(table)
+
+
+def _sync_result_to_json(result: dict) -> dict:
+    """Convert a sync result dict to the JSON output envelope."""
+    return {
+        "command": "sync",
+        "added": result["added"],
+        "updated": result["updated"],
+        "removed": result["removed"],
+        "unchanged": result["unchanged"],
+        "failed": result["failed"],
+    }
+
+
 @app.command(name="sync")
 def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
     """Manually trigger document sync."""
     _apply_overrides(data_dir=data_dir)
     from lilbee.ingest import sync
 
-    result = sync()
+    result = sync(quiet=_json_mode)
+    if _json_mode:
+        _json_output(_sync_result_to_json(result))
+        return
     console.print(f"Added: {len(result['added'])}")
     console.print(f"Updated: {len(result['updated'])}")
     console.print(f"Removed: {len(result['removed'])}")
@@ -344,7 +463,10 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
     _apply_overrides(data_dir=data_dir)
     from lilbee.ingest import sync
 
-    result = sync(force_rebuild=True)
+    result = sync(force_rebuild=True, quiet=_json_mode)
+    if _json_mode:
+        _json_output({"command": "rebuild", "ingested": len(result["added"])})
+        return
     console.print(f"Rebuilt: {len(result['added'])} documents ingested")
 
 
@@ -355,6 +477,13 @@ def add(
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
     _apply_overrides(data_dir=data_dir)
+    if _json_mode:
+        from lilbee.ingest import sync
+
+        copied = _copy_paths(paths)
+        result = sync(quiet=True)
+        _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
+        return
     _add_paths(paths, console)
 
 
@@ -367,6 +496,21 @@ def ask(
     """Ask a one-shot question (auto-syncs first)."""
     _apply_overrides(data_dir=data_dir, model=model)
     _auto_sync()
+
+    if _json_mode:
+        from lilbee.query import ask_raw
+
+        result = ask_raw(question)
+        _json_output(
+            {
+                "command": "ask",
+                "question": question,
+                "answer": result.answer,
+                "sources": [_clean_result(s) for s in result.sources],
+            }
+        )
+        return
+
     from lilbee.query import ask_stream
 
     for token in ask_stream(question):
@@ -389,4 +533,7 @@ def chat(
 def status(data_dir: Path | None = _data_dir_option) -> None:
     """Show indexed documents, paths, and chunk counts."""
     _apply_overrides(data_dir=data_dir)
+    if _json_mode:
+        _json_output(_gather_status())
+        return
     _render_status(console)

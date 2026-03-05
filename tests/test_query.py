@@ -138,6 +138,41 @@ class TestSearchContext:
         mock_embed.assert_called_once_with("question")
 
 
+class TestAskRaw:
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_returns_structured_result(self, _embed, _search, mock_chat):
+        mock_chat.return_value = {"message": {"content": "5 quarts."}}
+        from lilbee.query import ask_raw
+
+        result = ask_raw("oil capacity?")
+        assert result.answer == "5 quarts."
+        assert len(result.sources) == 1
+        assert result.sources[0]["source"] == "test.pdf"
+
+    @mock.patch("lilbee.store.search", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_no_results(self, _embed, _search):
+        from lilbee.query import ask_raw
+
+        result = ask_raw("anything")
+        assert "No relevant documents" in result.answer
+        assert result.sources == []
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_raw_with_history(self, _embed, _search, mock_chat):
+        mock_chat.return_value = {"message": {"content": "answer"}}
+        from lilbee.query import ask_raw
+
+        history = [{"role": "user", "content": "prev"}]
+        ask_raw("new q", history=history)
+        messages = mock_chat.call_args[1]["messages"]
+        assert len(messages) == 3  # system + history + user
+
+
 class TestAsk:
     @mock.patch("ollama.chat")
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])

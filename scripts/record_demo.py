@@ -7,7 +7,6 @@ prompt_toolkit renders correctly, records via asciinema, converts to GIF with ag
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -29,7 +28,7 @@ GIF_FILE = "demo.gif"
 # Questions to ask in the demo
 QUESTIONS = [
     "What size engine does my Crown Victoria have?",
-    "What is the part number for the headlight bulbs for the crown vic?",
+    "What is the headlight part number for this car?",
 ]
 
 # Shell prompt pattern (matches typical bash/zsh prompts)
@@ -137,55 +136,6 @@ def record_demo(cast_file: str = CAST_FILE) -> None:
     child.expect(pexpect.EOF, timeout=15)
 
     print(f"Recording saved to {cast_file}")
-    _trim_cast_file(cast_file)
-
-
-# ---------------------------------------------------------------------------
-# Post-processing
-# ---------------------------------------------------------------------------
-
-
-END_PAUSE = 5.0  # seconds to hold last frame before GIF loops
-
-
-def _trim_cast_file(cast_file: str) -> None:
-    """Trim setup frames (PS1 export, clear) and add an end pause."""
-    with open(cast_file) as f:
-        lines = f.readlines()
-
-    header = lines[0]
-    events = lines[1:]
-
-    # Find the last clear-screen escape sequence (marks end of setup)
-    trim_idx = 0
-    for i, line in enumerate(events):
-        data = json.loads(line)
-        if "\x1b[H\x1b[2J" in data[1] or "\x1b[H\x1b[J" in data[1]:
-            trim_idx = i + 1
-
-    kept = events[trim_idx:]
-    if not kept:
-        print("Warning: no events after trimming, skipping post-processing")
-        return
-
-    # Retime so first visible event starts at t=0
-    t0 = json.loads(kept[0])[0]
-    retimed = []
-    for line in kept:
-        data = json.loads(line)
-        data[0] = round(data[0] - t0, 6)
-        retimed.append(json.dumps(data))
-
-    # Add pause at end so last answer is visible before GIF loops
-    last_t = json.loads(retimed[-1])[0]
-    retimed.append(json.dumps([round(last_t + END_PAUSE, 6), "o", ""]))
-
-    with open(cast_file, "w") as f:
-        f.write(header)
-        for line in retimed:
-            f.write(line + "\n")
-
-    print(f"Trimmed {trim_idx} setup frames, {len(retimed)} events remain")
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +156,6 @@ def convert_to_gif(cast_file: str = CAST_FILE, gif_file: str = GIF_FILE) -> None
             "2",
             "--idle-time-limit",
             "2",
-            "--last-frame-duration",
-            "5",
             cast_file,
             gif_file,
         ],

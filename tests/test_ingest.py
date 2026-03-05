@@ -55,6 +55,13 @@ class TestSync:
         result = sync()
         assert "test.txt" in result["added"]
 
+    def test_quiet_mode_suppresses_progress(self, _eb, _e, isolated_env):
+        (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
+        from lilbee.ingest import sync
+
+        result = sync(quiet=True)
+        assert "quiet.txt" in result["added"]
+
     def test_ingest_markdown_file(self, _eb, _e, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.ingest import sync
@@ -204,6 +211,41 @@ class TestSync:
             result = sync()
         assert "flaky.txt" not in result["updated"]
         assert "flaky.txt" in result["failed"]
+
+    def test_ingest_error_in_quiet_mode(self, _eb, _e, isolated_env):
+        """Quiet-mode error handling works the same as non-quiet."""
+        from unittest.mock import patch
+
+        (isolated_env / "bad.txt").write_text("Will fail in quiet mode.")
+        from lilbee.ingest import sync
+
+        with patch("lilbee.ingest._ingest_file", side_effect=RuntimeError("boom")):
+            result = sync(quiet=True)
+        assert "bad.txt" in result["failed"]
+        assert "bad.txt" not in result["added"]
+
+    def test_ingest_error_on_update_quiet_mode(self, _eb, _e, isolated_env):
+        """Quiet-mode update failure tracks in failed list."""
+        from unittest.mock import patch
+
+        f = isolated_env / "qflaky.txt"
+        f.write_text("Version 1")
+        from lilbee.ingest import sync
+
+        sync()  # First ingest succeeds
+        f.write_text("Version 2 — fail quietly")
+
+        orig = __import__("lilbee.ingest", fromlist=["_ingest_file"])._ingest_file
+
+        def _fail(path, name, ct):
+            if "qflaky" in name:
+                raise RuntimeError("quiet fail")
+            return orig(path, name, ct)
+
+        with patch("lilbee.ingest._ingest_file", side_effect=_fail):
+            result = sync(quiet=True)
+        assert "qflaky.txt" in result["failed"]
+        assert "qflaky.txt" not in result["updated"]
 
 
 class TestIngestHelpers:

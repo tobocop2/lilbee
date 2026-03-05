@@ -1,11 +1,12 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import json
 from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.cli import _make_completer, _QuitChat, app, console
+from lilbee.cli import _clean_result, _make_completer, _QuitChat, app, console
 
 runner = CliRunner()
 
@@ -577,3 +578,229 @@ class TestPromptSessionBranch:
             _chat_loop(mock_con)
             # Verify it fell back to con.input (not PromptSession)
             mock_con.input.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# JSON output infrastructure tests (Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanResult:
+    def test_strips_vector(self):
+        result = _clean_result({"source": "a.pdf", "vector": [0.1, 0.2], "chunk": "hi"})
+        assert "vector" not in result
+        assert result["source"] == "a.pdf"
+
+    def test_renames_distance(self):
+        result = _clean_result({"_distance": 0.42, "chunk": "hi"})
+        assert "distance" in result
+        assert "_distance" not in result
+        assert result["distance"] == 0.42
+
+    def test_passthrough_other_fields(self):
+        result = _clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
+        assert result == {"source": "a.pdf", "chunk": "hi", "page_start": 1}
+
+
+class TestJsonFlag:
+    def test_json_no_subcommand_returns_error(self):
+        result = runner.invoke(app, ["--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "terminal" in data["error"].lower()
+
+    def test_short_j_flag_works(self):
+        result = runner.invoke(app, ["-j"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Search command tests (Task 2)
+# ---------------------------------------------------------------------------
+
+_MOCK_SEARCH_RESULTS = [
+    {
+        "source": "manual.pdf",
+        "content_type": "pdf",
+        "page_start": 5,
+        "page_end": 5,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": "The engine oil capacity is 5 quarts.",
+        "chunk_index": 0,
+        "_distance": 0.25,
+        "vector": [0.1] * 768,
+    },
+]
+
+
+class TestSearch:
+    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    def test_search_json_with_results(self, _search):
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "search"
+        assert data["query"] == "engine oil"
+        assert len(data["results"]) == 1
+        assert "vector" not in data["results"][0]
+        assert "distance" in data["results"][0]
+
+    @mock.patch("lilbee.query.search_context", return_value=[])
+    def test_search_json_empty_results(self, _search):
+        result = runner.invoke(app, ["--json", "search", "nothing"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["results"] == []
+
+    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    def test_search_human_output(self, _search):
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0
+        assert "manual.pdf" in result.output
+
+    @mock.patch(
+        "lilbee.query.search_context",
+        return_value=[{**_MOCK_SEARCH_RESULTS[0], "chunk": "x" * 100}],
+    )
+    def test_search_human_truncates_long_chunks(self, _search):
+        result = runner.invoke(app, ["search", "test"])
+        assert result.exit_code == 0
+        # Chunk is truncated (100 chars doesn't all appear, Rich truncates with …)
+        assert result.output.count("x") < 100
+
+    @mock.patch("lilbee.query.search_context", return_value=[])
+    def test_search_human_no_results(self, _search):
+        result = runner.invoke(app, ["search", "nothing"])
+        assert result.exit_code == 0
+        assert "No results found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# JSON status tests (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestStatusJson:
+    def test_status_json_empty(self):
+        result = runner.invoke(app, ["--json", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "status"
+        assert "config" in data
+        assert data["sources"] == []
+        assert data["total_chunks"] == 0
+
+    def test_status_json_with_sources(self, isolated_env):
+        from lilbee.store import upsert_source
+
+        upsert_source("test.pdf", "abc123hash", 10)
+        result = runner.invoke(app, ["--json", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert len(data["sources"]) == 1
+        assert data["sources"][0]["filename"] == "test.pdf"
+        assert data["total_chunks"] == 10
+        assert "documents_dir" in data["config"]
+
+
+# ---------------------------------------------------------------------------
+# JSON sync/rebuild/add tests (Task 4)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_sync_json_empty(self, _e, _eb):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "sync"
+        assert data["added"] == []
+        assert data["unchanged"] == 0
+
+    @mock.patch(
+        "lilbee.ingest.sync",
+        return_value={
+            "added": ["new.txt"],
+            "updated": [],
+            "removed": ["old.txt"],
+            "unchanged": 2,
+            "failed": [],
+        },
+    )
+    def test_sync_json_with_changes(self, _sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["added"] == ["new.txt"]
+        assert data["removed"] == ["old.txt"]
+        assert data["unchanged"] == 2
+
+
+class TestRebuildJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_rebuild_json(self, _e, _eb):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "rebuild"
+        assert "ingested" in data
+
+
+class TestAddJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_json(self, _e, _eb, isolated_env, tmp_path):
+        src = tmp_path / "source" / "manual.txt"
+        src.parent.mkdir()
+        src.write_text("Engine oil capacity is 5 quarts.")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "add"
+        assert "manual.txt" in data["copied"]
+        assert "sync" in data
+
+
+# ---------------------------------------------------------------------------
+# JSON ask tests (Task 5)
+# ---------------------------------------------------------------------------
+
+
+class TestAskJson:
+    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_json(self, _sync, mock_ask_raw):
+        from lilbee.query import AskResult
+
+        mock_ask_raw.return_value = AskResult(
+            answer="5 quarts",
+            sources=[{"source": "manual.pdf", "_distance": 0.3, "vector": [0.1], "chunk": "oil"}],
+        )
+        result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "ask"
+        assert data["question"] == "oil capacity?"
+        assert data["answer"] == "5 quarts"
+        assert len(data["sources"]) == 1
+        assert "vector" not in data["sources"][0]
+        assert "distance" in data["sources"][0]
+
+    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_json_no_results(self, _sync, mock_ask_raw):
+        from lilbee.query import AskResult
+
+        mock_ask_raw.return_value = AskResult(answer="No relevant documents found.", sources=[])
+        result = runner.invoke(app, ["--json", "ask", "anything"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["sources"] == []
+        assert "No relevant" in data["answer"]

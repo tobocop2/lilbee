@@ -155,10 +155,11 @@ def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     return store.add_chunks(records)
 
 
-def sync(force_rebuild: bool = False) -> dict:
+def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
     """Sync documents/ with the vector store.
 
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
+    When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     """
     if force_rebuild:
         store.drop_all()
@@ -205,42 +206,9 @@ def sync(force_rebuild: bool = False) -> dict:
             files_to_process.append((name, path, content_type))
             added.append(name)
 
-    # Ingest with progress bar
+    # Ingest files (with optional progress bar)
     if files_to_process:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Ingesting documents...", total=len(files_to_process))
-
-            def _process_file(name: str, path: Path, content_type: str) -> tuple[str, int]:
-                chunk_count = _ingest_file(path, name, content_type)
-                return name, chunk_count
-
-            workers = min(os.cpu_count() or 4, len(files_to_process))
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(_process_file, name, path, ct): (name, path)
-                    for name, path, ct in files_to_process
-                }
-                for future in as_completed(futures):
-                    name, path = futures[future]
-                    try:
-                        _, chunk_count = future.result()
-                        store.upsert_source(name, _file_hash(path), chunk_count)
-                    except Exception:
-                        log.exception("Failed to ingest %s", name)
-                        if name in added:
-                            added.remove(name)
-                        if name in updated:
-                            updated.remove(name)
-                        failed.append(name)
-                        progress.update(task, description=f"Failed {name}")
-                        progress.advance(task)
-                        continue
-                    progress.update(task, description=f"Ingested {name}")
-                    progress.advance(task)
+        _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
 
     return {
         "added": added,
@@ -249,3 +217,83 @@ def sync(force_rebuild: bool = False) -> dict:
         "unchanged": unchanged,
         "failed": failed,
     }
+
+
+def _ingest_batch(
+    files_to_process: list[tuple[str, Path, str]],
+    added: list[str],
+    updated: list[str],
+    failed: list[str],
+    *,
+    quiet: bool = False,
+) -> None:
+    """Ingest a batch of files, optionally showing a Rich progress bar."""
+
+    def _process_file(name: str, path: Path, content_type: str) -> tuple[str, int]:
+        chunk_count = _ingest_file(path, name, content_type)
+        return name, chunk_count
+
+    workers = min(os.cpu_count() or 4, len(files_to_process))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_process_file, name, path, ct): (name, path)
+            for name, path, ct in files_to_process
+        }
+
+        if quiet:
+            _collect_results(futures, added, updated, failed)
+        else:
+            _collect_results_with_progress(futures, added, updated, failed)
+
+
+def _collect_results(
+    futures: dict,
+    added: list[str],
+    updated: list[str],
+    failed: list[str],
+) -> None:
+    """Collect futures results without progress display."""
+    for future in as_completed(futures):
+        name, path = futures[future]
+        try:
+            _, chunk_count = future.result()
+            store.upsert_source(name, _file_hash(path), chunk_count)
+        except Exception:
+            log.exception("Failed to ingest %s", name)
+            if name in added:
+                added.remove(name)
+            if name in updated:
+                updated.remove(name)
+            failed.append(name)
+
+
+def _collect_results_with_progress(
+    futures: dict,
+    added: list[str],
+    updated: list[str],
+    failed: list[str],
+) -> None:
+    """Collect futures results with Rich progress bar."""
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Ingesting documents...", total=len(futures))
+        for future in as_completed(futures):
+            name, path = futures[future]
+            try:
+                _, chunk_count = future.result()
+                store.upsert_source(name, _file_hash(path), chunk_count)
+            except Exception:
+                log.exception("Failed to ingest %s", name)
+                if name in added:
+                    added.remove(name)
+                if name in updated:
+                    updated.remove(name)
+                failed.append(name)
+                progress.update(task, description=f"Failed {name}")
+                progress.advance(task)
+                continue
+            progress.update(task, description=f"Ingested {name}")
+            progress.advance(task)

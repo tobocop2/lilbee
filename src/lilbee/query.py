@@ -1,6 +1,7 @@
 """RAG query pipeline — embed question, search, generate answer with citations."""
 
 from collections.abc import Generator
+from dataclasses import dataclass
 
 import ollama
 
@@ -71,11 +72,22 @@ def search_context(question: str, top_k: int = TOP_K) -> list[dict]:
     return store.search(query_vec, top_k=top_k)
 
 
-def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
-    """One-shot question: returns full answer with source citations."""
+@dataclass
+class AskResult:
+    """Structured result from ask_raw — answer text + raw search results."""
+
+    answer: str
+    sources: list[dict]
+
+
+def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> AskResult:
+    """One-shot question returning structured answer + raw sources."""
     results = search_context(question, top_k=top_k)
     if not results:
-        return "No relevant documents found. Try ingesting some documents first."
+        return AskResult(
+            answer="No relevant documents found. Try ingesting some documents first.",
+            sources=[],
+        )
 
     results = _sort_by_relevance(results)
     context = _build_context(results)
@@ -86,14 +98,17 @@ def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) ->
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    response = ollama.chat(
-        model=CHAT_MODEL,
-        messages=messages,
-    )
+    response = ollama.chat(model=CHAT_MODEL, messages=messages)
+    return AskResult(answer=response["message"]["content"], sources=results)
 
-    answer = response["message"]["content"]
-    citations = _deduplicate_sources(results)
-    return f"{answer}\n\nSources:\n" + "\n".join(citations)
+
+def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
+    """One-shot question: returns full answer with source citations."""
+    result = ask_raw(question, top_k=top_k, history=history)
+    if not result.sources:
+        return result.answer
+    citations = _deduplicate_sources(result.sources)
+    return f"{result.answer}\n\nSources:\n" + "\n".join(citations)
 
 
 def ask_stream(

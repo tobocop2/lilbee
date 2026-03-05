@@ -11,17 +11,17 @@
   <img src="demo.gif" alt="lilbee demo" width="800">
 </p>
 
-A terminal tool that gives local LLMs long-term memory over your documents. Drop in PDFs, source code, markdown, or HTML — ask questions and get answers with source citations, entirely from the command line.
+A local RAG knowledge base for humans and coding agents. Drop in PDFs, source code, markdown, or HTML — query from the terminal or let your AI coding agent search your documents via structured JSON output. Everything runs on your machine via [Ollama](https://ollama.com) — no cloud APIs, no API keys, no data leaves your computer.
 
-lilbee augments local models with retrieval-augmented generation (RAG), so a small model running on your laptop can answer detailed questions about thousands of pages it was never trained on. Everything runs on your machine via [Ollama](https://ollama.com) — no cloud APIs, no API keys, no data leaves your computer.
+**For humans:** Ask questions in the terminal, get answers with source citations from a local LLM.
+
+**For coding agents:** Use `lilbee --json search` as a local document retrieval backend — no LLM needed. Any AI coding agent can search your knowledge base and use its own LLM to reason over the results.
 
 ## What it does
 
-Most document Q&A tools require a browser, an account, or sending your files to a third party. lilbee is for people who want to ask questions about a pile of documents without leaving the terminal.
-
 1. **Drop documents** into a folder — PDFs, `.md`, `.txt`, `.html`, `.rst`, or source code (`.py`, `.js`, `.go`, `.rs`, etc.)
 2. **lilbee auto-ingests** them: extracts text, chunks it intelligently (token-based for text, AST-aware for code via tree-sitter), embeds with a local model, and stores vectors in LanceDB
-3. **Ask questions** — lilbee retrieves the most relevant chunks, feeds them to a local LLM, and streams an answer with page/line citations back to the source
+3. **Query it** — ask questions from the terminal, or let coding agents search via `--json` output
 
 ```
 $ lilbee ask "What is the recommended oil change interval?"
@@ -31,6 +31,11 @@ The recommended oil change interval is every 7,500 miles using
 
 Sources:
   → vehicle_manual.pdf, pages 42-43
+```
+
+```bash
+$ lilbee --json search "oil change interval"
+{"command": "search", "query": "oil change interval", "results": [{"source": "vehicle_manual.pdf", "chunk": "...", "distance": 0.23, ...}]}
 ```
 
 ## Install
@@ -86,6 +91,7 @@ lilbee ask "Explain this code" --model llama3
 | Command | Description |
 |---------|-------------|
 | `lilbee ask "question"` | One-shot question with auto-sync |
+| `lilbee search "query"` | Search for relevant chunks (no LLM needed) |
 | `lilbee chat` | Interactive chat loop |
 | `lilbee add <paths>` | Copy files/dirs into knowledge base and ingest |
 | `lilbee sync` | Manually trigger document sync |
@@ -93,6 +99,23 @@ lilbee ask "Explain this code" --model llama3
 | `lilbee status` | Show indexed documents, paths, and models |
 
 All commands accept `--data-dir PATH` to override the data location and `--model NAME` to override the chat model.
+
+### JSON output for agents
+
+Add `--json` (or `-j`) before any subcommand to get structured JSON output. This lets coding agents use lilbee as a RAG backend:
+
+```bash
+# Search documents without needing Ollama
+lilbee --json search "engine specs" --top-k 5
+
+# Full RAG answer via local Ollama
+lilbee --json ask "What is the oil capacity?"
+
+# Check index status
+lilbee --json status
+```
+
+Each command returns a single JSON object to stdout. See [AGENTS.md](AGENTS.md) for the full JSON API reference.
 
 ## Configuration
 
