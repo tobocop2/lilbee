@@ -231,7 +231,7 @@ class TestAutoSync:
 
 
 class TestChat:
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"]))
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
     def test_chat_quit(self, _sync, _stream):
         result = runner.invoke(app, ["chat"], input="question\n/quit\n")

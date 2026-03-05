@@ -126,8 +126,18 @@ def _stream_response(
     """Stream an LLM answer and append the exchange to *history*."""
     from lilbee.query import ask_stream
 
+    stream = ask_stream(question, history=history)
     response_parts: list[str] = []
-    for token in ask_stream(question, history=history):
+
+    # Show a spinner while waiting for the first token from the LLM.
+    with con.status("Thinking..."):
+        first_token = next(stream, None)
+
+    if first_token is not None:
+        con.print(first_token, end="")
+        response_parts.append(first_token)
+
+    for token in stream:
         con.print(token, end="")
         response_parts.append(token)
     con.print("\n")
