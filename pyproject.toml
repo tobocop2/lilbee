@@ -1,7 +1,7 @@
 [project]
 name = "lilbee"
 version = "0.1.0"
-description = "Local RAG knowledge base — ask questions about your documents"
+description = "Local RAG for the terminal. Drop files in a folder, ask questions, get answers. JSON API for coding agents."
 requires-python = ">=3.11"
 dependencies = [
     "ollama",

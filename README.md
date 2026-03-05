@@ -1,17 +1,17 @@
 # lilbee
 
-> NOTE: this is an early experimental project
+> NOTE: this is an early experimental project and things are likely unstable
 
 [![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Local document intelligence for your terminal. Drop files in a folder, ask questions, get answers. Coding agents can search the same knowledge base via JSON.
+> Local RAG for the terminal. `pip install`, point at a folder, ask questions. Agents get JSON.
 
 ## What it does
 
-lilbee is a simple way to interact with your documents from the terminal or from coding agents. Everything runs on your machine — no cloud APIs, no API keys, no data leaves your computer.
+lilbee is a local RAG tool that runs entirely on your machine. No Docker, no external databases, no cloud APIs — just Python and Ollama. You add documents, it chunks and embeds them into LanceDB, and you query from the terminal or via JSON for coding agents.
 
 **For humans:** Drop files into a folder and ask questions. lilbee extracts text, chunks it, embeds it, and stores vectors locally. When you ask a question, it finds the most relevant chunks and passes them to a local LLM via [Ollama](https://ollama.com) to get an answer with source citations.
 
