@@ -74,11 +74,14 @@ uv run lilbee ask "question"
 # Default location varies by platform (see Data Location below)
 lilbee status  # Shows the documents path
 
-# Ask a question (auto-ingests new documents)
+# Interactive chat (default — just run lilbee)
+lilbee
+
+# Ask a one-shot question (auto-ingests new documents)
 lilbee ask "How do I change the oil?"
 
-# Interactive chat
-lilbee chat
+# Search without using the LLM (fast, returns raw chunks)
+lilbee search "oil change interval"
 
 # Use a different LLM
 lilbee ask "Explain this code" --model llama3
@@ -90,9 +93,10 @@ lilbee ask "Explain this code" --model llama3
 
 | Command | Description |
 |---------|-------------|
+| `lilbee` | Interactive chat (default, no subcommand needed) |
 | `lilbee ask "question"` | One-shot question with auto-sync |
 | `lilbee search "query"` | Search for relevant chunks (no LLM needed) |
-| `lilbee chat` | Interactive chat loop |
+| `lilbee chat` | Interactive chat loop (same as bare `lilbee`) |
 | `lilbee add <paths>` | Copy files/dirs into knowledge base and ingest |
 | `lilbee sync` | Manually trigger document sync |
 | `lilbee rebuild` | Nuke DB and re-ingest everything |
