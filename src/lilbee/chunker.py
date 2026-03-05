@@ -11,6 +11,11 @@ log = logging.getLogger(__name__)
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
+# Max characters used to locate a chunk's position in the source text.
+# Longer prefixes are more accurate but slower; 200 chars is well above
+# the typical paragraph-boundary overlap.
+_CHUNK_POSITION_PREFIX_LEN = 200
+
 # Separators tried in order from coarsest to finest
 _SEPARATORS = ("\n\n", ". ", " ")
 
@@ -101,20 +106,20 @@ def chunk_text(
         return []
 
     chunks: list[str] = []
-    current: list[str] = []
-    current_tokens = 0
+    pending_segments: list[str] = []
+    pending_tokens = 0
 
     for seg in segments:
         seg_t = _token_len(seg)
-        if current_tokens + seg_t > chunk_size and current:
-            chunks.append("\n\n".join(current))
-            current = _tail_overlap(current, chunk_overlap)
-            current_tokens = sum(_token_len(s) for s in current)
-        current.append(seg)
-        current_tokens += seg_t
+        if pending_tokens + seg_t > chunk_size and pending_segments:
+            chunks.append("\n\n".join(pending_segments))
+            pending_segments = _tail_overlap(pending_segments, chunk_overlap)
+            pending_tokens = sum(_token_len(s) for s in pending_segments)
+        pending_segments.append(seg)
+        pending_tokens += seg_t
 
-    if current:
-        chunks.append("\n\n".join(current))
+    if pending_segments:
+        chunks.append("\n\n".join(pending_segments))
 
     return chunks
 
@@ -159,7 +164,7 @@ def chunk_pages(pages: list[dict]) -> list[PageChunk]:
     search_from = 0
 
     for idx, chunk in enumerate(raw_chunks):
-        pos = full_text.find(chunk[:200], search_from)
+        pos = full_text.find(chunk[:_CHUNK_POSITION_PREFIX_LEN], search_from)
         if pos == -1:
             log.debug("Chunk position fallback at index %d, search_from=%d", idx, search_from)
             pos = search_from

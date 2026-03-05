@@ -3,7 +3,13 @@
 import tempfile
 from pathlib import Path
 
-from lilbee.chunker import chunk_pages, chunk_text
+from lilbee.chunker import _CHUNK_POSITION_PREFIX_LEN, chunk_pages, chunk_text
+
+
+class TestChunkPositionPrefixLen:
+    def test_constant_exists_and_is_positive(self):
+        assert isinstance(_CHUNK_POSITION_PREFIX_LEN, int)
+        assert _CHUNK_POSITION_PREFIX_LEN > 0
 
 
 class TestChunkText:

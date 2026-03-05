@@ -19,6 +19,7 @@ dependencies = [
     "typer",
     "tiktoken",
     "pymupdf-layout>=1.27.1",
+    "prompt-toolkit>=3.0",
 ]
 
 [project.scripts]

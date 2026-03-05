@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test check clean install
+.PHONY: lint format format-check typecheck test check clean install demo
 
 lint:
 	uv run ruff check src/ tests/
@@ -19,6 +19,9 @@ check: lint format-check typecheck test  ## Run all checks (same as CI)
 
 install:
 	uv tool install . --force
+
+demo: demo.tape  ## Record demo GIF from demo.tape
+	vhs demo.tape
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage

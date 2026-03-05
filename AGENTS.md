@@ -1,7 +1,7 @@
 # lilbee — Development Guide
 
 ## Project
-Local RAG knowledge base. Python 3.11+, Ollama for LLM/embeddings, LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`).
+Local RAG knowledge base. Python 3.11+, Ollama for LLM/embeddings, LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
 ## Task Tracking (beads)
 ```bash
@@ -51,19 +51,30 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 
 ## Code Quality Rules
 
-### Testing
+### Test-Driven Development
 - **100% test coverage required** — enforced by `pytest-cov` with `fail_under = 100`
+- Write tests BEFORE or alongside implementation, not after
 - Every public function MUST have at least one test
 - Mock all external dependencies (Ollama, filesystem I/O where needed) — tests must run without a live server
 - Use `pytest.mark.skipif` only for integration tests that genuinely require live services
 - Use `tmp_path` fixtures for filesystem tests — never write to real paths
+- Test edge cases and error paths, not just the happy path
+- Tests are documentation — name them descriptively (`test_add_nonexistent_fails`, not `test_add_3`)
+
+### DRY & Modularity
+- **Don't Repeat Yourself** — extract shared logic into helpers when duplicated
+- Single Responsibility — each function does one thing well
+- Small functions — max ~20 lines, max 2 levels of nesting
+- Low cyclomatic complexity — extract helpers when branches exceed 3
+- Compose small functions rather than writing monolithic ones
+- If you need to copy-paste code, refactor into a shared function instead
 
 ### Code Style
 - No LangChain — raw Ollama SDK
 - Type hints on all public functions
-- Small functions — max ~20 lines, max 2 levels of nesting
-- Low cyclomatic complexity — extract helpers when branches exceed 3
 - Dataclasses for structured return types (not raw dicts)
+- Named constants for magic numbers — with descriptive comments
+- Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`
 - No hardcoded values — all configurable through `config.py` with env var overrides
 - Imports: stdlib first, then third-party, then local — no star imports
@@ -71,11 +82,25 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - Linting: `ruff check` + `ruff format` (line length 100)
 - Type checking: `mypy` with strict settings
 
+### YAGNI & Simplicity
+- Don't add features, abstractions, or config that isn't needed yet
+- Three similar lines are better than a premature abstraction
+- Only validate at system boundaries (user input, external APIs) — trust internal code
+- No backwards-compatibility shims — if something is unused, delete it
+
 ### Git & Workflow
-- Every change tracked as a beads task
+- Every change tracked as a beads task (`bd create` → `bd close`)
 - Run `make check` before closing any task — it mirrors CI exactly
 - Tests, lint, and type checks must pass before closing a task
 - CI runs on every push and PR
+
+### Behavior Learning (floop)
+- `floop` captures corrections and learned behaviors across sessions
+- Hooks run automatically via `~/.claude/settings.json` (session-start, dynamic-context, detect-correction)
+- `floop active` — show behaviors active in current context
+- `floop learn` — manually capture a correction/behavior
+- `floop list` — list all learned behaviors
+- `floop prompt` — generate prompt section from active behaviors
 
 ## Key Files
 - `config.py` — All settings (env-var configurable)

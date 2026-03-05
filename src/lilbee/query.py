@@ -8,10 +8,10 @@ from lilbee import embedder, store
 from lilbee.config import CHAT_MODEL, TOP_K
 
 _SYSTEM_PROMPT = (
-    "You are a helpful technical assistant. Answer questions based ONLY on "
-    "the provided context.\n"
-    "If the context doesn't contain enough information to answer, say so.\n"
-    "Be specific and cite facts from the context. Do not make up information."
+    "You are a helpful technical assistant. Answer questions using "
+    "the provided context. Be specific — prefer exact numbers, part numbers, "
+    "and measurements over vague references. Cite facts directly from the context. "
+    "Do not make up information."
 )
 
 _CONTEXT_TEMPLATE = """Context:
@@ -38,7 +38,7 @@ def _format_source(result: dict) -> str:
     return f"  → {source}"
 
 
-def _deduplicate_sources(results: list[dict]) -> list[str]:
+def _deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[str]:
     """Merge results from same source into deduplicated citation lines."""
     seen: set[str] = set()
     citations: list[str] = []
@@ -47,7 +47,14 @@ def _deduplicate_sources(results: list[dict]) -> list[str]:
         if line not in seen:
             seen.add(line)
             citations.append(line)
+            if len(citations) >= max_citations:
+                break
     return citations
+
+
+def _sort_by_relevance(results: list[dict]) -> list[dict]:
+    """Sort search results by distance (lower = more relevant)."""
+    return sorted(results, key=lambda r: r.get("_distance", float("inf")))
 
 
 def _build_context(results: list[dict]) -> str:
@@ -70,6 +77,7 @@ def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) ->
     if not results:
         return "No relevant documents found. Try ingesting some documents first."
 
+    results = _sort_by_relevance(results)
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
@@ -97,6 +105,7 @@ def ask_stream(
         yield "No relevant documents found. Try ingesting some documents first."
         return
 
+    results = _sort_by_relevance(results)
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 

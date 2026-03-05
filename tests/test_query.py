@@ -12,6 +12,7 @@ def _make_result(
     line_end=0,
     chunk="some text",
     chunk_index=0,
+    _distance=0.5,
 ):
     return {
         "source": source,
@@ -22,6 +23,7 @@ def _make_result(
         "line_end": line_end,
         "chunk": chunk,
         "chunk_index": chunk_index,
+        "_distance": _distance,
     }
 
 
@@ -72,6 +74,46 @@ class TestDeduplicateSources:
         ]
         citations = _deduplicate_sources(results)
         assert len(citations) == 2
+
+    def test_caps_at_max_citations(self):
+        from lilbee.query import _deduplicate_sources
+
+        results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
+        citations = _deduplicate_sources(results, max_citations=5)
+        assert len(citations) == 5
+
+    def test_custom_max_citations(self):
+        from lilbee.query import _deduplicate_sources
+
+        results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
+        citations = _deduplicate_sources(results, max_citations=3)
+        assert len(citations) == 3
+
+
+class TestSortByRelevance:
+    def test_sorts_by_distance(self):
+        from lilbee.query import _sort_by_relevance
+
+        results = [
+            _make_result(source="far.pdf", _distance=0.9),
+            _make_result(source="close.pdf", _distance=0.1),
+            _make_result(source="mid.pdf", _distance=0.5),
+        ]
+        sorted_results = _sort_by_relevance(results)
+        assert sorted_results[0]["source"] == "close.pdf"
+        assert sorted_results[1]["source"] == "mid.pdf"
+        assert sorted_results[2]["source"] == "far.pdf"
+
+    def test_missing_distance_sorts_last(self):
+        from lilbee.query import _sort_by_relevance
+
+        results = [
+            {"source": "no_dist.pdf", "chunk": "text"},
+            _make_result(source="has_dist.pdf", _distance=0.3),
+        ]
+        sorted_results = _sort_by_relevance(results)
+        assert sorted_results[0]["source"] == "has_dist.pdf"
+        assert sorted_results[1]["source"] == "no_dist.pdf"
 
 
 class TestBuildContext:
