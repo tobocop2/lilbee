@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Record lilbee demo GIF using asciinema + pexpect + agg.
 
-Drives a real ``lilbee chat`` session through pexpect so that prompt_toolkit
-renders correctly, records via asciinema, then converts to GIF with agg.
+Drives a real ``lilbee`` interactive session through pexpect so that
+prompt_toolkit renders correctly, records via asciinema, converts to GIF with agg.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import pexpect
 COLS = 120
 ROWS = 36
 TYPING_DELAY = 0.03  # seconds between keystrokes (visual effect)
-SLASH_CMD_PAUSE = 2.0  # pause after slash commands (prompt_toolkit hides output from pexpect)
+SLASH_CMD_PAUSE = 2.0  # pause after slash commands
 POST_ANSWER_PAUSE = 1.0  # pause after each LLM answer
 CAST_FILE = "demo.cast"
 GIF_FILE = "demo.gif"
@@ -28,7 +29,7 @@ GIF_FILE = "demo.gif"
 # Questions to ask in the demo
 QUESTIONS = [
     "What size engine does my Crown Victoria have?",
-    "What is the part number for my headlamps?",
+    "What is the part number for the headlight bulbs for the crown vic?",
 ]
 
 # Shell prompt pattern (matches typical bash/zsh prompts)
@@ -96,34 +97,20 @@ def record_demo(cast_file: str = CAST_FILE) -> None:
     _wait_for_shell(child)
     time.sleep(0.3)
 
-    # Clean prompt — hide the long worktree path
-    child.sendline("export PS1='$ '")
+    # Clean prompt and suppress Rich CPR warning
+    child.sendline("export PS1='$ ' COLUMNS=120")
     _wait_for_shell(child)
     child.sendline("clear")
     time.sleep(0.5)
     _drain_buffer(child)
 
-    # --- lilbee status ---
-    _type_slowly(child, "lilbee status")
-    _wait_for_shell(child, timeout=20)
-    time.sleep(1.0)
-
-    # --- lilbee chat ---
-    _type_slowly(child, "lilbee chat")
-
-    # Wait for the chat to start. The banner text is rendered by Rich
-    # with ANSI codes, and prompt_toolkit takes over for the `> ` prompt.
-    # Match "lilbee chat" from the banner, which is the bolded title.
+    # --- Enter interactive mode (default command) ---
+    _type_slowly(child, "lilbee")
     child.expect(r"lilbee chat", timeout=30)
-    # Drain remaining banner output and wait for prompt_toolkit to draw
     time.sleep(1.5)
     _drain_buffer(child)
 
     # --- /help ---
-    # prompt_toolkit renders slash-command output via cursor manipulation
-    # that pexpect can't see, so we use time-based waits for these.
-    # Send slash commands all at once to avoid prompt_toolkit's
-    # tab-completion interfering with character-by-character typing.
     child.sendline("/help")
     time.sleep(SLASH_CMD_PAUSE)
 
@@ -132,32 +119,73 @@ def record_demo(cast_file: str = CAST_FILE) -> None:
     time.sleep(SLASH_CMD_PAUSE)
 
     # --- Questions ---
-    # LLM answers end with a "Sources:" line printed by rich, which
-    # pexpect CAN detect even through prompt_toolkit's rendering.
-    # After matching "Sources:", we drain remaining source-list output
-    # and wait for prompt_toolkit to redraw the prompt.
     for question in QUESTIONS:
         _type_slowly(child, question)
         child.expect(r"Sources:", timeout=120)
-        # Drain remaining source details + prompt redraw
         time.sleep(POST_ANSWER_PAUSE)
         _drain_buffer(child)
 
     # --- Exit ---
-    # Send /quit all at once (not character-by-character) to avoid
-    # prompt_toolkit's tab-completion interfering with the slash prefix.
     child.sendline("/quit")
-    time.sleep(2.0)
+    time.sleep(1.0)
     _drain_buffer(child)
 
-    # Exit the asciinema shell.  Send exit + Ctrl-D for robustness,
-    # and give the shell time to process.
+    # Exit the asciinema shell
     child.sendline("exit")
-    time.sleep(1.0)
+    time.sleep(0.5)
     child.sendeof()
     child.expect(pexpect.EOF, timeout=15)
 
     print(f"Recording saved to {cast_file}")
+    _trim_cast_file(cast_file)
+
+
+# ---------------------------------------------------------------------------
+# Post-processing
+# ---------------------------------------------------------------------------
+
+
+END_PAUSE = 5.0  # seconds to hold last frame before GIF loops
+
+
+def _trim_cast_file(cast_file: str) -> None:
+    """Trim setup frames (PS1 export, clear) and add an end pause."""
+    with open(cast_file) as f:
+        lines = f.readlines()
+
+    header = lines[0]
+    events = lines[1:]
+
+    # Find the last clear-screen escape sequence (marks end of setup)
+    trim_idx = 0
+    for i, line in enumerate(events):
+        data = json.loads(line)
+        if "\x1b[H\x1b[2J" in data[1] or "\x1b[H\x1b[J" in data[1]:
+            trim_idx = i + 1
+
+    kept = events[trim_idx:]
+    if not kept:
+        print("Warning: no events after trimming, skipping post-processing")
+        return
+
+    # Retime so first visible event starts at t=0
+    t0 = json.loads(kept[0])[0]
+    retimed = []
+    for line in kept:
+        data = json.loads(line)
+        data[0] = round(data[0] - t0, 6)
+        retimed.append(json.dumps(data))
+
+    # Add pause at end so last answer is visible before GIF loops
+    last_t = json.loads(retimed[-1])[0]
+    retimed.append(json.dumps([round(last_t + END_PAUSE, 6), "o", ""]))
+
+    with open(cast_file, "w") as f:
+        f.write(header)
+        for line in retimed:
+            f.write(line + "\n")
+
+    print(f"Trimmed {trim_idx} setup frames, {len(retimed)} events remain")
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +202,12 @@ def convert_to_gif(cast_file: str = CAST_FILE, gif_file: str = GIF_FILE) -> None
             "monokai",
             "--font-size",
             "14",
+            "--speed",
+            "2",
             "--idle-time-limit",
-            "3",
+            "2",
+            "--last-frame-duration",
+            "5",
             cast_file,
             gif_file,
         ],
