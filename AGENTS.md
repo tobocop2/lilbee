@@ -66,6 +66,7 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - Single Responsibility — each function does one thing well
 - Small functions — max ~20 lines, max 2 levels of nesting
 - Low cyclomatic complexity — extract helpers when branches exceed 3
+- **Use maps for classification/dispatch** — if-chains that map values to categories belong in a dict, not repeated `if`/`elif` blocks
 - Compose small functions rather than writing monolithic ones
 - If you need to copy-paste code, refactor into a shared function instead
 
