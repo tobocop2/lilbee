@@ -107,7 +107,7 @@ lilbee can serve as a local retrieval backend for AI coding agents. Two integrat
 
 ### MCP server
 
-For agents that support [MCP](https://modelcontextprotocol.io) (Claude Code, Cursor, etc.), lilbee ships a built-in MCP server:
+For agents that support [MCP](https://modelcontextprotocol.io), lilbee ships a built-in MCP server:
 
 ```json
 {
@@ -120,7 +120,7 @@ For agents that support [MCP](https://modelcontextprotocol.io) (Claude Code, Cur
 }
 ```
 
-Add this to your MCP client's config (e.g. `.claude/settings.json`) and the following tools become available:
+Add this to your MCP client's config and the following tools become available:
 
 | Tool | Description | Requires Ollama |
 |------|-------------|-----------------|

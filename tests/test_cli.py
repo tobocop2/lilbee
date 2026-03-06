@@ -393,6 +393,7 @@ class TestDispatchSlash:
         assert "/add" in output
         assert "/model" in output
         assert "/version" in output
+        assert "/reset" in output
         assert "/help" in output
         assert "/quit" in output
 
@@ -618,6 +619,7 @@ class TestLilbeeCompleter:
         assert "/add" in results
         assert "/model" in results
         assert "/version" in results
+        assert "/reset" in results
         assert "/help" in results
         assert "/quit" in results
 
@@ -1017,6 +1019,141 @@ class TestChunks:
         assert data["source"] == "test.txt"
         assert len(data["chunks"]) == 1
         assert "vector" not in data["chunks"][0]
+
+
+class TestReset:
+    """Test reset command."""
+
+    def test_reset_deletes_everything(self, isolated_env):
+        """With --yes, both dirs are cleared."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.DATA_DIR / "db_file").write_text("data")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.DATA_DIR.iterdir()) == []
+
+    def test_reset_without_yes_prompts(self, isolated_env):
+        """Without --yes, prompts and aborts on 'n'."""
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["reset"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        # File should still exist
+        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
+
+    def test_reset_without_yes_confirms(self, isolated_env):
+        """Without --yes, confirming with 'y' deletes everything."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["reset"], input="y\n")
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    def test_reset_json_output(self, isolated_env):
+        """JSON mode returns structured output."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["--json", "reset", "--yes"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "reset"
+        assert data["deleted_docs"] == 1
+
+    def test_reset_json_without_yes_errors(self):
+        """JSON mode without --yes returns error."""
+        result = runner.invoke(app, ["--json", "reset"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+    def test_reset_empty_dirs(self, isolated_env):
+        """Reset on already-empty dirs doesn't crash."""
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert "0 document(s)" in result.output
+
+    def test_reset_with_subdirectories(self, isolated_env):
+        """Reset removes subdirectories too."""
+        import lilbee.config as cfg
+
+        sub = cfg.DOCUMENTS_DIR / "subdir"
+        sub.mkdir()
+        (sub / "nested.txt").write_text("nested content")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    def test_reset_data_dir_with_subdirectories(self, isolated_env):
+        """Reset removes subdirectories in data dir too."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sub = cfg.DATA_DIR / "lancedb"
+        sub.mkdir()
+        (sub / "table.lance").write_text("lance data")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert list(cfg.DATA_DIR.iterdir()) == []
+
+
+class TestSlashReset:
+    """Test /reset inside the chat loop."""
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_confirms(self, _sync, isolated_env):
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["chat"], input="/reset\nyes\n/quit\n")
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_eof_aborts(self, _sync):
+        """EOF during /reset confirmation aborts gracefully."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_reset
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch.object(con, "input", side_effect=EOFError):
+            _handle_slash_reset("", con)
+        assert "Aborted" in buf.getvalue()
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_aborts(self, _sync, isolated_env):
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["chat"], input="/reset\nno\n/quit\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
 
 
 class TestVersion:

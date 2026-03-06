@@ -274,12 +274,32 @@ def _handle_slash_version(args: str, con: Console) -> None:
     con.print(f"lilbee [bold]{_get_version()}[/bold]")
 
 
+def _handle_slash_reset(args: str, con: Console) -> None:
+    con.print(
+        "[bold red]This will delete ALL documents and data.[/bold red]\nType 'yes' to confirm:"
+    )
+    try:
+        answer = con.input("[bold red]> [/bold red]")
+    except (EOFError, KeyboardInterrupt):
+        con.print("Aborted.")
+        return
+    if answer.strip().lower() != "yes":
+        con.print("Aborted.")
+        return
+    result = _perform_reset()
+    con.print(
+        f"Reset complete: {result['deleted_docs']} document(s), "
+        f"{result['deleted_data']} data item(s) deleted."
+    )
+
+
 def _handle_slash_help(args: str, con: Console) -> None:
     con.print("[bold]Slash commands:[/bold]")
     con.print("  /status  — show indexed documents and config")
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
     con.print("  /model [name]  — show or switch chat model")
     con.print("  /version — show lilbee version")
+    con.print("  /reset   — delete all documents and data")
     con.print("  /help    — show this help")
     con.print("  /quit    — exit chat")
 
@@ -289,6 +309,7 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "add": _handle_slash_add,
     "model": _handle_slash_model,
     "version": _handle_slash_version,
+    "reset": _handle_slash_reset,
     "help": _handle_slash_help,
     "quit": _handle_slash_quit,
 }
@@ -700,6 +721,76 @@ def status(data_dir: Path | None = _data_dir_option) -> None:
         _json_output(_gather_status())
         return
     _render_status(console)
+
+
+_yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
+
+
+def _perform_reset() -> dict:
+    """Delete all documents and data. Returns summary of what was deleted."""
+    import lilbee.config as cfg
+
+    deleted_docs = 0
+    deleted_data = 0
+
+    if cfg.DOCUMENTS_DIR.exists():
+        for item in list(cfg.DOCUMENTS_DIR.iterdir()):
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            deleted_docs += 1
+
+    if cfg.DATA_DIR.exists():
+        for item in list(cfg.DATA_DIR.iterdir()):
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            deleted_data += 1
+
+    return {
+        "command": "reset",
+        "deleted_docs": deleted_docs,
+        "deleted_data": deleted_data,
+        "documents_dir": str(cfg.DOCUMENTS_DIR),
+        "data_dir": str(cfg.DATA_DIR),
+    }
+
+
+@app.command()
+def reset(
+    data_dir: Path | None = _data_dir_option,
+    yes: bool = _yes_option,
+) -> None:
+    """Delete all documents and data (full factory reset)."""
+    _apply_overrides(data_dir=data_dir)
+    import lilbee.config as cfg
+
+    if not yes:
+        if _json_mode:
+            _json_output({"error": "Use --yes to confirm reset in JSON mode"})
+            raise SystemExit(1)
+        console.print(
+            f"[bold red]This will delete ALL documents and data.[/bold red]\n"
+            f"  Documents: {cfg.DOCUMENTS_DIR}\n"
+            f"  Data:      {cfg.DATA_DIR}"
+        )
+        confirmed = typer.confirm("Are you sure?", default=False)
+        if not confirmed:
+            console.print("Aborted.")
+            raise SystemExit(0)
+
+    result = _perform_reset()
+
+    if _json_mode:
+        _json_output(result)
+        return
+
+    console.print(
+        f"Reset complete: {result['deleted_docs']} document(s), "
+        f"{result['deleted_data']} data item(s) deleted."
+    )
 
 
 @app.command(name="mcp")

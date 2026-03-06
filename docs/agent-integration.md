@@ -8,7 +8,7 @@ lilbee ships an MCP server that agents can call directly as tools — no shell n
 
 ### Setup
 
-Add to your MCP client configuration (e.g. Claude Code `.claude/settings.json`, Cursor, etc.):
+Add to your MCP client's MCP server configuration:
 
 ```json
 {

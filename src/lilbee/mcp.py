@@ -66,6 +66,17 @@ def lilbee_sync() -> dict:
     }
 
 
+@mcp.tool()
+def lilbee_reset() -> dict:
+    """Delete all documents and data (full factory reset).
+
+    WARNING: This permanently removes all indexed documents and vector data.
+    """
+    from lilbee.cli import _perform_reset
+
+    return _perform_reset()
+
+
 def _clean(result: dict) -> dict:
     """Strip vector field and rename _distance for output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}

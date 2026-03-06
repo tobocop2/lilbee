@@ -127,6 +127,30 @@ class TestLilbeeSync:
         assert "test.txt" in result["added"]
 
 
+class TestLilbeeReset:
+    def test_reset_clears_everything(self):
+        from lilbee.mcp import lilbee_reset
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.DATA_DIR / "db_file").write_text("data")
+
+        result = lilbee_reset()
+        assert result["command"] == "reset"
+        assert result["deleted_docs"] == 1
+        assert result["deleted_data"] == 1
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.DATA_DIR.iterdir()) == []
+
+    def test_reset_empty_dirs(self):
+        from lilbee.mcp import lilbee_reset
+
+        result = lilbee_reset()
+        assert result["command"] == "reset"
+        assert result["deleted_docs"] == 0
+        assert result["deleted_data"] == 0
+
+
 class TestMain:
     @mock.patch("lilbee.mcp.mcp")
     def test_main_calls_run(self, mock_mcp):
