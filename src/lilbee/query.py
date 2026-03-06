@@ -1,18 +1,12 @@
 """RAG query pipeline — embed question, search, generate answer with citations."""
 
 from collections.abc import Generator
+from dataclasses import dataclass
 
 import ollama
 
 from lilbee import embedder, store
-from lilbee.config import CHAT_MODEL, TOP_K
-
-_SYSTEM_PROMPT = (
-    "You are a helpful technical assistant. Answer questions using "
-    "the provided context. Be specific — prefer exact numbers, part numbers, "
-    "and measurements over vague references. Cite facts directly from the context. "
-    "Do not make up information."
-)
+from lilbee.config import CHAT_MODEL, SYSTEM_PROMPT, TOP_K
 
 _CONTEXT_TEMPLATE = """Context:
 {context}
@@ -71,29 +65,43 @@ def search_context(question: str, top_k: int = TOP_K) -> list[dict]:
     return store.search(query_vec, top_k=top_k)
 
 
-def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
-    """One-shot question: returns full answer with source citations."""
+@dataclass
+class AskResult:
+    """Structured result from ask_raw — answer text + raw search results."""
+
+    answer: str
+    sources: list[dict]
+
+
+def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> AskResult:
+    """One-shot question returning structured answer + raw sources."""
     results = search_context(question, top_k=top_k)
     if not results:
-        return "No relevant documents found. Try ingesting some documents first."
+        return AskResult(
+            answer="No relevant documents found. Try ingesting some documents first.",
+            sources=[],
+        )
 
     results = _sort_by_relevance(results)
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    response = ollama.chat(
-        model=CHAT_MODEL,
-        messages=messages,
-    )
+    response = ollama.chat(model=CHAT_MODEL, messages=messages)
+    return AskResult(answer=response["message"]["content"], sources=results)
 
-    answer = response["message"]["content"]
-    citations = _deduplicate_sources(results)
-    return f"{answer}\n\nSources:\n" + "\n".join(citations)
+
+def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
+    """One-shot question: returns full answer with source citations."""
+    result = ask_raw(question, top_k=top_k, history=history)
+    if not result.sources:
+        return result.answer
+    citations = _deduplicate_sources(result.sources)
+    return f"{result.answer}\n\nSources:\n" + "\n".join(citations)
 
 
 def ask_stream(
@@ -109,7 +117,7 @@ def ask_stream(
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})

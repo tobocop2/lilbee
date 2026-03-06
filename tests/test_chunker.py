@@ -228,45 +228,19 @@ class Greeter:
         finally:
             path.unlink()
 
-    def test_load_language_failure(self):
-        """Cover _load_language returning None on bad module (exception path)."""
-        from lilbee.code_chunker import _load_language
-
-        result = _load_language("nonexistent_module_xyz", "fake")
-        assert result is None
-
-    def test_load_language_no_function(self):
-        """Cover _load_language returning None when module has no language function."""
-        from unittest.mock import MagicMock, patch
-
-        from lilbee.code_chunker import _load_language
-
-        mock_mod = MagicMock(spec=[])  # Module with no attributes
-        with patch("importlib.import_module", return_value=mock_mod):
-            result = _load_language("fake_module", "fake")
-            assert result is None
-
     def test_get_parser_returns_none_for_bad_language(self):
-        """Cover _get_parser returning None when _load_language fails."""
-        from lilbee.code_chunker import _get_parser, _parsers
+        """Cover _get_parser returning None for unknown language."""
+        from lilbee.code_chunker import _get_parser
 
-        # Use a key not in cache
-        cache_key = "totally_fake_lang_xyz"
-        _parsers.pop(cache_key, None)
-        result = _get_parser("nonexistent_module", cache_key)
+        result = _get_parser("totally_fake_lang_xyz")
         assert result is None
 
-    def test_parser_cache_hit(self):
-        """Second call for same language uses cache."""
-        from lilbee.code_chunker import _get_parser, _parsers
+    def test_get_parser_returns_parser_for_valid_language(self):
+        """Verify _get_parser returns a working parser."""
+        from lilbee.code_chunker import _get_parser
 
-        # First call populates cache
-        p1 = _get_parser("tree_sitter_python", "python")
-        assert p1 is not None
-        assert "python" in _parsers
-        # Second call hits cache
-        p2 = _get_parser("tree_sitter_python", "python")
-        assert p2 is p1
+        parser = _get_parser("python")
+        assert parser is not None
 
     def test_no_parser_falls_back(self):
         """When parser is None (bad language), falls back to token chunking."""
@@ -283,6 +257,39 @@ class Greeter:
             with patch("lilbee.code_chunker._get_parser", return_value=None):
                 chunks = chunk_code(path)
                 assert len(chunks) >= 1
+        finally:
+            path.unlink()
+
+    def test_ruby_ast_chunking(self):
+        """New language (Ruby) uses AST chunking via tree-sitter-language-pack."""
+        from lilbee.code_chunker import chunk_code
+
+        code = """
+class Greeter
+  def initialize(name)
+    @name = name
+  end
+
+  def greet
+    "Hello, #{@name}!"
+  end
+end
+
+def standalone_function
+  puts "hi"
+end
+"""
+        with tempfile.NamedTemporaryFile(suffix=".rb", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            chunks = chunk_code(path)
+            assert len(chunks) >= 2
+            texts = " ".join(c.chunk for c in chunks)
+            assert "Greeter" in texts
+            assert "standalone_function" in texts
         finally:
             path.unlink()
 
