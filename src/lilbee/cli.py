@@ -16,6 +16,13 @@ console = Console()
 _json_mode: bool = False
 
 
+def _get_version() -> str:
+    """Return the installed lilbee version."""
+    from importlib.metadata import version
+
+    return version("lilbee")
+
+
 def _json_output(data: dict) -> None:
     """Print a JSON object to stdout."""
     print(json.dumps(data))
@@ -246,10 +253,27 @@ def _handle_slash_quit(args: str, con: Console) -> None:
     raise _QuitChat
 
 
+def _handle_slash_model(args: str, con: Console) -> None:
+    import lilbee.config as cfg
+
+    name = args.strip()
+    if not name:
+        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}")
+        return
+    cfg.CHAT_MODEL = name
+    con.print(f"Switched to model [bold]{name}[/bold]")
+
+
+def _handle_slash_version(args: str, con: Console) -> None:
+    con.print(f"lilbee [bold]{_get_version()}[/bold]")
+
+
 def _handle_slash_help(args: str, con: Console) -> None:
     con.print("[bold]Slash commands:[/bold]")
     con.print("  /status  — show indexed documents and config")
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
+    con.print("  /model [name]  — show or switch chat model")
+    con.print("  /version — show lilbee version")
     con.print("  /help    — show this help")
     con.print("  /quit    — exit chat")
 
@@ -257,6 +281,8 @@ def _handle_slash_help(args: str, con: Console) -> None:
 _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "status": _handle_slash_status,
     "add": _handle_slash_add,
+    "model": _handle_slash_model,
+    "version": _handle_slash_version,
     "help": _handle_slash_help,
     "quit": _handle_slash_quit,
 }
@@ -284,6 +310,17 @@ def _dispatch_slash(raw_input: str, con: Console) -> bool:
 
 
 _ADD_PREFIX = "/add "
+_MODEL_PREFIX = "/model "
+
+
+def _list_ollama_models() -> list[str]:
+    """Return installed Ollama model names, or empty list if unavailable."""
+    try:
+        import ollama
+
+        return [m.model for m in ollama.list().models if m.model]
+    except Exception:
+        return []
 
 
 def _make_completer():  # type: ignore[no-untyped-def]
@@ -298,6 +335,11 @@ def _make_completer():  # type: ignore[no-untyped-def]
                 sub_text = text[len(_ADD_PREFIX) :]
                 sub_doc = Document(sub_text, len(sub_text))
                 yield from PathCompleter(expanduser=True).get_completions(sub_doc, complete_event)
+            elif text.startswith(_MODEL_PREFIX):
+                prefix = text[len(_MODEL_PREFIX) :]
+                for name in _list_ollama_models():
+                    if name.startswith(prefix):
+                        yield Completion(name, start_position=-len(prefix))
             elif text.startswith("/"):
                 prefix = text[1:]
                 for cmd in _SLASH_COMMANDS:
@@ -527,6 +569,16 @@ def chat(
     _apply_overrides(data_dir=data_dir, model=model)
     _auto_sync()
     _chat_loop(console)
+
+
+@app.command()
+def version() -> None:
+    """Show the lilbee version."""
+    ver = _get_version()
+    if _json_mode:
+        _json_output({"command": "version", "version": ver})
+        return
+    console.print(f"lilbee {ver}")
 
 
 @app.command()

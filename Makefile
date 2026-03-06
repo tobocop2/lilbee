@@ -18,7 +18,7 @@ test:
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
 install:
-	uv tool install . --force
+	uv tool install . --force --reinstall
 
 demo:  ## Record demo GIF via asciinema + pexpect + agg
 	uv run python scripts/record_demo.py

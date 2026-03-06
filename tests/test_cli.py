@@ -6,7 +6,15 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.cli import _clean_result, _make_completer, _QuitChat, app, console
+from lilbee.cli import (
+    _clean_result,
+    _get_version,
+    _list_ollama_models,
+    _make_completer,
+    _QuitChat,
+    app,
+    console,
+)
 
 runner = CliRunner()
 
@@ -359,6 +367,8 @@ class TestDispatchSlash:
         output = buf.getvalue()
         assert "/status" in output
         assert "/add" in output
+        assert "/model" in output
+        assert "/version" in output
         assert "/help" in output
         assert "/quit" in output
 
@@ -467,6 +477,77 @@ class TestSlashAdd:
             assert result.exit_code == 0
 
 
+class TestSlashModel:
+    """Test /model slash command."""
+
+    def test_model_shows_current(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_model
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        _handle_slash_model("", con)
+        assert "Current model:" in buf.getvalue()
+
+    def test_model_switches(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        import lilbee.config as cfg
+        from lilbee.cli import _handle_slash_model
+
+        original = cfg.CHAT_MODEL
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            _handle_slash_model("llama3", con)
+            assert cfg.CHAT_MODEL == "llama3"
+            assert "Switched to model" in buf.getvalue()
+        finally:
+            cfg.CHAT_MODEL = original
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_model_in_chat_loop(self, _sync):
+        import lilbee.config as cfg
+
+        original = cfg.CHAT_MODEL
+        try:
+            result = runner.invoke(app, ["chat"], input="/model\n/model phi3\n/quit\n")
+            assert result.exit_code == 0
+            assert "Current model:" in result.output
+            assert "Switched to model" in result.output
+        finally:
+            cfg.CHAT_MODEL = original
+
+
+class TestSlashVersion:
+    """Test /version slash command."""
+
+    def test_version_shows_version(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_version
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        _handle_slash_version("", con)
+        output = buf.getvalue()
+        assert "lilbee" in output
+        assert _get_version() in output
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_version_in_chat_loop(self, _sync):
+        result = runner.invoke(app, ["chat"], input="/version\n/quit\n")
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+
+
 class TestSlashUnknown:
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
     def test_unknown_slash_command(self, _sync):
@@ -511,6 +592,8 @@ class TestLilbeeCompleter:
         results = self._complete("/")
         assert "/status" in results
         assert "/add" in results
+        assert "/model" in results
+        assert "/version" in results
         assert "/help" in results
         assert "/quit" in results
 
@@ -522,9 +605,48 @@ class TestLilbeeCompleter:
         results = self._complete("/add /")
         assert len(results) > 0
 
+    @mock.patch(
+        "lilbee.cli._list_ollama_models",
+        return_value=["llama3:latest", "mistral:latest", "phi3:latest"],
+    )
+    def test_model_prefix_completes(self, _models):
+        results = self._complete("/model ")
+        assert "llama3:latest" in results
+        assert "mistral:latest" in results
+        assert "phi3:latest" in results
+
+    @mock.patch(
+        "lilbee.cli._list_ollama_models",
+        return_value=["llama3:latest", "mistral:latest"],
+    )
+    def test_model_prefix_filters(self, _models):
+        results = self._complete("/model ll")
+        assert results == ["llama3:latest"]
+
+    @mock.patch("lilbee.cli._list_ollama_models", return_value=[])
+    def test_model_prefix_no_models(self, _models):
+        results = self._complete("/model ")
+        assert results == []
+
     def test_plain_text_no_completions(self):
         results = self._complete("hello")
         assert results == []
+
+
+class TestListOllamaModels:
+    """Test _list_ollama_models helper."""
+
+    def test_returns_model_names(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with mock.patch("ollama.list", return_value=mock_response):
+            assert _list_ollama_models() == ["llama3:latest"]
+
+    def test_returns_empty_on_error(self):
+        with mock.patch("ollama.list", side_effect=Exception("not running")):
+            assert _list_ollama_models() == []
 
 
 class TestQuitChat:
@@ -682,6 +804,28 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 # JSON status tests (Task 3)
 # ---------------------------------------------------------------------------
+
+
+class TestVersion:
+    def test_version_human(self):
+        result = runner.invoke(app, ["version"])
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+        assert _get_version() in result.output
+
+    def test_version_json(self):
+        result = runner.invoke(app, ["--json", "version"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "version"
+        assert data["version"] == _get_version()
+
+
+class TestGetVersion:
+    def test_returns_string(self):
+        ver = _get_version()
+        assert isinstance(ver, str)
+        assert len(ver) > 0
 
 
 class TestStatusJson:
