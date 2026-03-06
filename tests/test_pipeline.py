@@ -152,6 +152,34 @@ class TestStoreOperations:
 
         assert search([0.1] * 768) == []
 
+    def test_search_filters_by_max_distance(self):
+        from lilbee.store import add_chunks, search
+
+        vec = [0.1] * 768
+        # Use a very different query vector to produce high distance
+        far_vec = [-0.1] * 768
+        add_chunks(
+            [
+                {
+                    "source": "test.pdf",
+                    "content_type": "pdf",
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Relevant content.",
+                    "chunk_index": 0,
+                    "vector": vec,
+                }
+            ]
+        )
+        # Tight threshold filters out distant matches
+        assert search(far_vec, max_distance=0.001) == []
+        # Disabled filtering (0) returns everything
+        assert len(search(far_vec, max_distance=0)) == 1
+        # Generous threshold returns the match
+        assert len(search(far_vec, max_distance=100.0)) == 1
+
     def test_delete_by_source(self):
         from lilbee.store import add_chunks, delete_by_source, search
 

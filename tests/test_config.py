@@ -114,6 +114,19 @@ class TestMaxEmbedChars:
             assert cfg.MAX_EMBED_CHARS == 3000
 
 
+class TestMaxDistance:
+    def test_max_distance_default(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = _reload_config()
+            assert cfg.MAX_DISTANCE == 1.5
+
+    def test_max_distance_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_MAX_DISTANCE": "1.5"}):
+            cfg = _reload_config()
+            assert cfg.MAX_DISTANCE == 1.5
+
+
 class TestSystemPrompt:
     def test_default_system_prompt(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
@@ -140,8 +153,68 @@ class TestDefaults:
             assert cfg.CHUNK_OVERLAP == 100
             assert cfg.MAX_EMBED_CHARS == 2000
             assert cfg.TOP_K == 10
+            assert cfg.MAX_DISTANCE == 1.5
             assert cfg.CHUNKS_TABLE == "chunks"
             assert cfg.SOURCES_TABLE == "_sources"
+
+
+class TestIgnoreDirs:
+    def test_default_ignore_dirs_contains_expected(self):
+        from lilbee.config import _DEFAULT_IGNORE_DIRS
+
+        for name in ["node_modules", "__pycache__", "venv", "build", "dist"]:
+            assert name in _DEFAULT_IGNORE_DIRS
+
+    def test_lilbee_ignore_env_adds_custom_entries(self):
+        with mock.patch.dict(os.environ, {"LILBEE_IGNORE": "output,generated"}):
+            cfg = _reload_config()
+            assert "output" in cfg.IGNORE_DIRS
+            assert "generated" in cfg.IGNORE_DIRS
+            # Defaults still present
+            assert "node_modules" in cfg.IGNORE_DIRS
+
+    def test_lilbee_ignore_empty_string(self):
+        with mock.patch.dict(os.environ, {"LILBEE_IGNORE": ""}):
+            cfg = _reload_config()
+            assert cfg.IGNORE_DIRS == cfg._DEFAULT_IGNORE_DIRS
+
+    def test_lilbee_ignore_strips_whitespace(self):
+        with mock.patch.dict(os.environ, {"LILBEE_IGNORE": " foo , bar "}):
+            cfg = _reload_config()
+            assert "foo" in cfg.IGNORE_DIRS
+            assert "bar" in cfg.IGNORE_DIRS
+
+    def test_is_ignored_dir_hidden(self):
+        from lilbee.config import is_ignored_dir
+
+        assert is_ignored_dir(".git")
+        assert is_ignored_dir(".venv")
+        assert is_ignored_dir(".cache")
+
+    def test_is_ignored_dir_known_junk(self):
+        from lilbee.config import is_ignored_dir
+
+        assert is_ignored_dir("node_modules")
+        assert is_ignored_dir("__pycache__")
+        assert is_ignored_dir("venv")
+
+    def test_is_ignored_dir_egg_info(self):
+        from lilbee.config import is_ignored_dir
+
+        assert is_ignored_dir("mypackage.egg-info")
+
+    def test_is_ignored_dir_normal_dir(self):
+        from lilbee.config import is_ignored_dir
+
+        assert not is_ignored_dir("src")
+        assert not is_ignored_dir("docs")
+        assert not is_ignored_dir("tests")
+
+    def test_is_ignored_dir_custom_via_env(self):
+        with mock.patch.dict(os.environ, {"LILBEE_IGNORE": "custom_output"}):
+            cfg = _reload_config()
+            assert cfg.is_ignored_dir("custom_output")
+            assert not cfg.is_ignored_dir("src")
 
 
 class TestHelpers:

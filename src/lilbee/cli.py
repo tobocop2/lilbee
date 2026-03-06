@@ -168,7 +168,16 @@ def _copy_paths(paths: list[Path], *, force: bool = False) -> list[str]:
             )
             continue
         if p.is_dir():
-            shutil.copytree(p, dest, dirs_exist_ok=True)
+            from lilbee.config import is_ignored_dir
+
+            def _ignore_dirs(directory: str, contents: list[str]) -> set[str]:
+                return {
+                    name
+                    for name in contents
+                    if (Path(directory) / name).is_dir() and is_ignored_dir(name)
+                }
+
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_ignore_dirs)
         else:
             shutil.copy2(p, dest)
         copied.append(p.name)

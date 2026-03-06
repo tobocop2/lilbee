@@ -62,9 +62,13 @@ def _discover_files() -> dict[str, Path]:
         | _IMAGE_EXTENSIONS
         | _DATA_EXTENSIONS
     )
-    for ext in supported:
-        for path in cfg.DOCUMENTS_DIR.rglob(f"*{ext}"):
-            if path.is_file() and not path.name.startswith("."):
+    for root, dirs, filenames in os.walk(cfg.DOCUMENTS_DIR, topdown=True):
+        dirs[:] = [d for d in dirs if not cfg.is_ignored_dir(d)]
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+            path = Path(root) / fname
+            if path.suffix.lower() in supported:
                 files[_relative_name(path)] = path
     return files
 

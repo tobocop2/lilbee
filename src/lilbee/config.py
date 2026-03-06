@@ -59,6 +59,7 @@ MAX_EMBED_CHARS = _env_int("MAX_EMBED_CHARS", 2000)
 
 # Retrieval
 TOP_K = _env_int("TOP_K", 10)
+MAX_DISTANCE = float(_env("MAX_DISTANCE", "1.5"))
 
 # System prompt for RAG answers
 SYSTEM_PROMPT = _env(
@@ -68,6 +69,33 @@ SYSTEM_PROMPT = _env(
     "and measurements over vague references. Cite facts directly from the context. "
     "Do not make up information.",
 )
+
+# Directory ignore patterns for file discovery and copy
+_DEFAULT_IGNORE_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        "venv",
+        "build",
+        "dist",
+        "target",
+        "vendor",
+        "_build",
+        "coverage",
+        "htmlcov",
+    }
+)
+
+_extra = _env("IGNORE", "")
+IGNORE_DIRS = _DEFAULT_IGNORE_DIRS | frozenset(
+    name.strip() for name in _extra.split(",") if name.strip()
+)
+
+
+def is_ignored_dir(name: str) -> bool:
+    """Return True if a directory name should be skipped during traversal."""
+    return name.startswith(".") or name in IGNORE_DIRS or name.endswith(".egg-info")
+
 
 # LanceDB table names
 CHUNKS_TABLE = "chunks"

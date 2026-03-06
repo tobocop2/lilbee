@@ -300,6 +300,69 @@ class TestDiscoverFiles:
 
         assert _discover_files() == {}
 
+    def test_skips_hidden_directories(self, isolated_env):
+        from lilbee.ingest import _discover_files
+
+        hidden = isolated_env / ".git"
+        hidden.mkdir()
+        (hidden / "config.txt").write_text("git config")
+        (isolated_env / "visible.txt").write_text("visible")
+
+        found = _discover_files()
+        assert "visible.txt" in found
+        assert not any(".git" in name for name in found)
+
+    def test_skips_node_modules(self, isolated_env):
+        from lilbee.ingest import _discover_files
+
+        nm = isolated_env / "node_modules"
+        nm.mkdir()
+        (nm / "pkg.txt").write_text("npm package")
+        (isolated_env / "app.txt").write_text("app code")
+
+        found = _discover_files()
+        assert "app.txt" in found
+        assert not any("node_modules" in name for name in found)
+
+    def test_skips_pycache(self, isolated_env):
+        from lilbee.ingest import _discover_files
+
+        pc = isolated_env / "__pycache__"
+        pc.mkdir()
+        (pc / "mod.py").write_text("cached")
+        (isolated_env / "main.py").write_text("def main(): pass")
+
+        found = _discover_files()
+        assert "main.py" in found
+        assert not any("__pycache__" in name for name in found)
+
+    def test_skips_custom_ignore_via_env(self, isolated_env):
+        from unittest import mock as _mock
+
+        custom = isolated_env / "generated"
+        custom.mkdir()
+        (custom / "output.txt").write_text("generated output")
+        (isolated_env / "source.txt").write_text("real source")
+
+        with _mock.patch.dict("os.environ", {"LILBEE_IGNORE": "generated"}):
+            import importlib
+
+            import lilbee.config
+
+            # Save and restore DOCUMENTS_DIR since reload resets it
+            saved_docs = cfg.DOCUMENTS_DIR
+            importlib.reload(lilbee.config)
+            cfg.DOCUMENTS_DIR = saved_docs
+            cfg.IGNORE_DIRS = lilbee.config.IGNORE_DIRS
+            cfg.is_ignored_dir = lilbee.config.is_ignored_dir
+
+            from lilbee.ingest import _discover_files
+
+            found = _discover_files()
+
+        assert "source.txt" in found
+        assert not any("generated" in name for name in found)
+
 
 class TestClassifyFile:
     def test_pdf(self):

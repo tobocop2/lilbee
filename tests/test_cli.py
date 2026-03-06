@@ -211,6 +211,33 @@ class TestAdd:
         assert "already exists" in result.output
 
 
+class TestAddIgnoresDirs:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_directory_skips_git_and_node_modules(self, _e, _eb, isolated_env, tmp_path):
+        """Adding a directory filters out .git/ and node_modules/."""
+        import lilbee.config as cfg
+
+        src_dir = tmp_path / "source" / "project"
+        src_dir.mkdir(parents=True)
+        (src_dir / "readme.txt").write_text("Real content")
+        (src_dir / ".git").mkdir()
+        (src_dir / ".git" / "config").write_text("git stuff")
+        (src_dir / "node_modules").mkdir()
+        (src_dir / "node_modules" / "pkg.txt").write_text("npm junk")
+        (src_dir / "__pycache__").mkdir()
+        (src_dir / "__pycache__" / "mod.pyc").write_bytes(b"\x00")
+
+        result = runner.invoke(app, ["add", str(src_dir)])
+        assert result.exit_code == 0
+
+        dest = cfg.DOCUMENTS_DIR / "project"
+        assert (dest / "readme.txt").exists()
+        assert not (dest / ".git").exists()
+        assert not (dest / "node_modules").exists()
+        assert not (dest / "__pycache__").exists()
+
+
 class TestAsk:
     @mock.patch("lilbee.query.ask_stream")
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)

@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 import lancedb
 import pyarrow as pa
 
-from lilbee.config import CHUNKS_TABLE, EMBEDDING_DIM, LANCEDB_DIR, SOURCES_TABLE, TOP_K
+from lilbee.config import (
+    CHUNKS_TABLE,
+    EMBEDDING_DIM,
+    LANCEDB_DIR,
+    MAX_DISTANCE,
+    SOURCES_TABLE,
+    TOP_K,
+)
 
 log = logging.getLogger(__name__)
 
@@ -92,13 +99,23 @@ def add_chunks(records: list[dict]) -> int:
     return len(records)
 
 
-def search(query_vector: list[float], top_k: int = TOP_K) -> list[dict]:
-    """Search for similar chunks by vector similarity."""
+def search(
+    query_vector: list[float],
+    top_k: int = TOP_K,
+    max_distance: float = MAX_DISTANCE,
+) -> list[dict]:
+    """Search for similar chunks by vector similarity.
+
+    Results with distance > max_distance are filtered out.
+    Pass max_distance=0 to disable filtering.
+    """
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    result: list[dict] = table.search(query_vector).limit(top_k).to_list()
-    return result
+    results: list[dict] = table.search(query_vector).limit(top_k).to_list()
+    if max_distance > 0:
+        results = [r for r in results if r.get("_distance", float("inf")) <= max_distance]
+    return results
 
 
 def get_chunks_by_source(source: str) -> list[dict]:
