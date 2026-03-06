@@ -98,6 +98,16 @@ def search(query_vector: list[float], top_k: int = TOP_K) -> list[dict]:
     return result
 
 
+def get_chunks_by_source(source: str) -> list[dict]:
+    """Return all chunks for a given source file."""
+    table = _open_table(CHUNKS_TABLE)
+    if table is None:
+        return []
+    escaped = _escape_sql_string(source)
+    rows: list[dict] = table.search().where(f"source = '{escaped}'").to_list()
+    return rows
+
+
 def delete_by_source(source: str) -> None:
     """Delete all chunks from a given source file."""
     table = _open_table(CHUNKS_TABLE)

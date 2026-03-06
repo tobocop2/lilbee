@@ -50,10 +50,11 @@ def _fake_embed(text):
 # ---------------------------------------------------------------------------
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncDocx:
-    def test_docx_paragraphs(self, _eb, _e, isolated_env):
+    def test_docx_paragraphs(self, _eb, _e, _vm, isolated_env):
         from docx import Document
 
         doc = Document()
@@ -66,7 +67,7 @@ class TestSyncDocx:
         result = sync()
         assert "sample.docx" in result["added"]
 
-    def test_docx_with_table(self, _eb, _e, isolated_env):
+    def test_docx_with_table(self, _eb, _e, _vm, isolated_env):
         from docx import Document
 
         doc = Document()
@@ -83,10 +84,11 @@ class TestSyncDocx:
         assert "table.docx" in result["added"]
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncXlsx:
-    def test_xlsx_with_data(self, _eb, _e, isolated_env):
+    def test_xlsx_with_data(self, _eb, _e, _vm, isolated_env):
         from openpyxl import Workbook
 
         wb = Workbook()
@@ -108,10 +110,11 @@ class TestSyncXlsx:
         assert "data.xlsx" in result["added"]
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncPptx:
-    def test_pptx_with_slides(self, _eb, _e, isolated_env):
+    def test_pptx_with_slides(self, _eb, _e, _vm, isolated_env):
         from pptx import Presentation
         from pptx.util import Inches
 
@@ -139,10 +142,11 @@ class TestSyncPptx:
 # ---------------------------------------------------------------------------
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncEpub:
-    def test_epub_with_chapter(self, _eb, _e, isolated_env):
+    def test_epub_with_chapter(self, _eb, _e, _vm, isolated_env):
         from ebooklib import epub
 
         book = epub.EpubBook()
@@ -178,10 +182,11 @@ class TestSyncEpub:
 # ---------------------------------------------------------------------------
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncImage:
-    def test_image_with_ocr(self, _eb, _e, isolated_env):
+    def test_image_with_ocr(self, _eb, _e, _vm, isolated_env):
         from PIL import Image
 
         img = Image.new("RGB", (200, 100), color="white")
@@ -245,11 +250,12 @@ _CODE_FIXTURES: dict[str, tuple[str, str]] = {
 }
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncCode:
     @pytest.mark.parametrize("filename,fixture", list(_CODE_FIXTURES.items()))
-    def test_code_file_syncs(self, _eb, _e, isolated_env, filename, fixture):
+    def test_code_file_syncs(self, _eb, _e, _vm, isolated_env, filename, fixture):
         _ext, content = fixture
         (isolated_env / filename).write_text(content)
 
@@ -264,10 +270,11 @@ class TestSyncCode:
 # ---------------------------------------------------------------------------
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncCsvTsv:
-    def test_csv_with_unicode(self, _eb, _e, isolated_env):
+    def test_csv_with_unicode(self, _eb, _e, _vm, isolated_env):
         csv_content = "name,city,note\nRene,Montreal,cafe au lait\nJose,Madrid,hola\n"
         (isolated_env / "people.csv").write_text(csv_content)
 
@@ -276,7 +283,7 @@ class TestSyncCsvTsv:
         result = sync()
         assert "people.csv" in result["added"]
 
-    def test_tsv_multiline(self, _eb, _e, isolated_env):
+    def test_tsv_multiline(self, _eb, _e, _vm, isolated_env):
         tsv_content = "id\tproduct\tprice\n1\tWidget\t9.99\n2\tGadget\t19.99\n3\tDoohickey\t4.50\n"
         (isolated_env / "products.tsv").write_text(tsv_content)
 

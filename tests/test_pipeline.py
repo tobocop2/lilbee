@@ -237,6 +237,70 @@ class TestStoreOperations:
             )
 
 
+class TestGetChunksBySource:
+    def test_returns_chunks_for_source(self):
+        from lilbee.store import add_chunks, get_chunks_by_source
+
+        vec = [0.1] * 768
+        add_chunks(
+            [
+                {
+                    "source": "doc.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Hello world",
+                    "chunk_index": 0,
+                    "vector": vec,
+                },
+            ]
+        )
+        chunks = get_chunks_by_source("doc.txt")
+        assert len(chunks) == 1
+        assert chunks[0]["chunk"] == "Hello world"
+
+    def test_empty_store_returns_empty(self):
+        from lilbee.store import get_chunks_by_source
+
+        assert get_chunks_by_source("nope.txt") == []
+
+    def test_filters_by_source(self):
+        from lilbee.store import add_chunks, get_chunks_by_source
+
+        vec = [0.1] * 768
+        add_chunks(
+            [
+                {
+                    "source": "a.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "From A",
+                    "chunk_index": 0,
+                    "vector": vec,
+                },
+                {
+                    "source": "b.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "From B",
+                    "chunk_index": 0,
+                    "vector": vec,
+                },
+            ]
+        )
+        chunks = get_chunks_by_source("a.txt")
+        assert len(chunks) == 1
+        assert chunks[0]["source"] == "a.txt"
+
+
 class TestSourceTracking:
     def test_upsert_and_retrieve(self):
         from lilbee.store import get_sources, upsert_source

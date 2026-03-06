@@ -441,6 +441,7 @@ def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
 
     # Ingest files (with optional progress bar)
     if files_to_process:
+        embedder.validate_model()
         _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
 
     return {

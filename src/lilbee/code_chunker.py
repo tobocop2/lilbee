@@ -1,6 +1,5 @@
 """Tree-sitter based code chunking — splits source files on function/class boundaries."""
 
-import importlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,17 +10,172 @@ from lilbee.chunker import chunk_text
 
 log = logging.getLogger(__name__)
 
-# Extension → (tree-sitter language package module, language name)
-_EXT_TO_LANG: dict[str, tuple[str, str]] = {
-    ".py": ("tree_sitter_python", "python"),
-    ".js": ("tree_sitter_javascript", "javascript"),
-    ".ts": ("tree_sitter_typescript", "typescript"),
-    ".go": ("tree_sitter_go", "go"),
-    ".rs": ("tree_sitter_rust", "rust"),
-    ".java": ("tree_sitter_java", "java"),
-    ".c": ("tree_sitter_c", "c"),
-    ".cpp": ("tree_sitter_cpp", "cpp"),
-    ".h": ("tree_sitter_c", "c"),
+# Extension → tree-sitter language name
+# Languages without _DEFINITION_TYPES entries fall back to token-based chunking.
+_EXT_TO_LANG: dict[str, str] = {
+    # Systems / compiled
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".hxx": "cpp",
+    ".cs": "csharp",
+    ".d": "d",
+    ".go": "go",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".m": "objc",
+    ".rs": "rust",
+    ".scala": "scala",
+    ".swift": "swift",
+    ".zig": "zig",
+    ".v": "v",
+    ".odin": "odin",
+    ".hare": "hare",
+    ".nim": "nim",
+    ".ada": "ada",
+    ".adb": "ada",
+    ".ads": "ada",
+    ".f90": "fortran",
+    ".f95": "fortran",
+    ".f03": "fortran",
+    ".f": "fortran",
+    ".pas": "pascal",
+    ".cobol": "cobol",
+    ".cob": "cobol",
+    ".cbl": "cobol",
+    ".vhdl": "vhdl",
+    ".vhd": "vhdl",
+    ".sv": "verilog",
+    ".svh": "verilog",
+    ".verilog": "verilog",
+    # Scripting / dynamic
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".rb": "ruby",
+    ".php": "php",
+    ".lua": "lua",
+    ".luau": "luau",
+    ".pl": "perl",
+    ".pm": "perl",
+    ".r": "r",
+    ".R": "r",
+    ".jl": "julia",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".erl": "erlang",
+    ".hrl": "erlang",
+    ".clj": "clojure",
+    ".cljs": "clojure",
+    ".cljc": "clojure",
+    ".ml": "ocaml",
+    ".mli": "ocaml_interface",
+    ".hs": "haskell",
+    ".fs": "fsharp",
+    ".fsi": "fsharp_signature",
+    ".fsx": "fsharp",
+    ".elm": "elm",
+    ".purs": "purescript",
+    ".rkt": "racket",
+    ".scm": "scheme",
+    ".el": "elisp",
+    ".lisp": "commonlisp",
+    ".cl": "commonlisp",
+    ".fnl": "fennel",
+    ".janet": "janet",
+    ".dart": "dart",
+    ".gd": "gdscript",
+    ".groovy": "groovy",
+    ".tcl": "tcl",
+    ".fish": "fish",
+    ".ps1": "powershell",
+    ".psm1": "powershell",
+    ".psd1": "powershell",
+    ".matlab": "matlab",
+    ".pony": "pony",
+    ".hack": "hack",
+    ".hx": "haxe",
+    ".squirrel": "squirrel",
+    ".nut": "squirrel",
+    ".nix": "nix",
+    ".star": "starlark",
+    ".bzl": "starlark",
+    ".smali": "smali",
+    # Shell
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    # Web / markup
+    ".css": "css",
+    ".scss": "scss",
+    ".vue": "vue",
+    ".svelte": "svelte",
+    ".astro": "astro",
+    ".twig": "twig",
+    # Functional / blockchain / smart contracts
+    ".sol": "solidity",
+    ".cairo": "cairo",
+    ".fc": "func",
+    ".clar": "clarity",
+    ".rego": "rego",
+    # Data / config
+    ".json": "json",
+    ".jsonnet": "jsonnet",
+    ".libsonnet": "jsonnet",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".properties": "properties",
+    ".ron": "ron",
+    ".kdl": "kdl",
+    ".hcl": "hcl",
+    ".tf": "terraform",
+    ".tfvars": "terraform",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".proto": "proto",
+    ".thrift": "thrift",
+    ".capnp": "capnp",
+    ".smithy": "smithy",
+    ".prisma": "prisma",
+    ".beancount": "beancount",
+    ".sql": "sql",
+    ".sparql": "sparql",
+    # Build / CI
+    ".cmake": "cmake",
+    ".ninja": "ninja",
+    ".meson": "meson",
+    ".gn": "gn",
+    ".pp": "puppet",
+    ".tex": "latex",
+    ".bib": "bibtex",
+    ".typst": "typst",
+    # HDL / embedded
+    ".cuda": "cuda",
+    ".cu": "cuda",
+    ".glsl": "glsl",
+    ".hlsl": "hlsl",
+    ".wgsl": "wgsl",
+    ".ispc": "ispc",
+    ".s": "asm",
+    ".asm": "asm",
+    ".ll": "llvm",
+    ".lds": "linkerscript",
+    ".wat": "wat",
+    ".wast": "wast",
+    # Docker / infra
+    ".dockerfile": "dockerfile",
+    ".bicep": "bicep",
 }
 
 # AST node types that represent extractable definitions, per language
@@ -82,12 +236,44 @@ _DEFINITION_TYPES: dict[str, frozenset[str]] = {
             "struct_specifier",
         }
     ),
+    "ruby": frozenset({"method", "class", "module", "singleton_method"}),
+    "php": frozenset({"function_definition", "class_declaration", "method_declaration"}),
+    "csharp": frozenset({"method_declaration", "class_declaration", "interface_declaration"}),
+    "bash": frozenset({"function_definition"}),
+    "kotlin": frozenset({"function_declaration", "class_declaration", "object_declaration"}),
+    "swift": frozenset({"function_declaration", "class_declaration", "protocol_declaration"}),
+    "scala": frozenset(
+        {"function_definition", "class_definition", "object_definition", "trait_definition"}
+    ),
+    "lua": frozenset({"function_declaration", "function_definition_statement"}),
+    "elixir": frozenset({"call"}),
+    "haskell": frozenset({"function", "type_alias", "newtype", "adt"}),
+    "dart": frozenset({"function_signature", "class_definition", "method_signature"}),
+    "ocaml": frozenset({"let_binding", "type_definition", "module_binding"}),
+    "erlang": frozenset({"function_clause"}),
+    "clojure": frozenset({"list_lit"}),
+    "elm": frozenset({"function_declaration_left", "type_alias_declaration", "type_declaration"}),
+    "julia": frozenset({"function_definition", "struct_definition", "module_definition"}),
+    "r": frozenset({"function_definition"}),
+    "perl": frozenset({"function_definition"}),
+    "groovy": frozenset({"function_definition", "class_definition", "method_declaration"}),
+    "fortran": frozenset({"function", "subroutine", "module"}),
+    "pascal": frozenset({"function_declaration", "procedure_declaration"}),
+    "d": frozenset({"function_declaration", "class_declaration", "struct_declaration"}),
+    "nim": frozenset({"proc_declaration", "func_declaration", "type_section"}),
+    "zig": frozenset({"function_declaration"}),
+    "v": frozenset({"function_declaration", "struct_declaration"}),
+    "odin": frozenset({"procedure_declaration"}),
+    "solidity": frozenset({"function_definition", "contract_declaration"}),
+    "terraform": frozenset({"block"}),
+    "sql": frozenset({"create_function_statement", "create_table_statement"}),
+    "objc": frozenset({"function_definition", "class_interface", "class_implementation"}),
+    "cuda": frozenset({"function_definition", "struct_specifier"}),
+    "fsharp": frozenset({"function_or_value_defn", "type_definition", "module_defn"}),
 }
 
 # Container nodes whose children may also be definitions
 _CONTAINERS = frozenset({"class_body", "block", "declaration_list", "impl_body"})
-
-_parsers: dict[str, tree_sitter.Parser] = {}
 
 
 @dataclass
@@ -100,32 +286,15 @@ class CodeChunk:
     chunk_index: int
 
 
-def _load_language(module_name: str, lang_name: str) -> tree_sitter.Language | None:
-    """Load a tree-sitter language from its package module."""
+def _get_parser(lang_name: str) -> tree_sitter.Parser | None:
+    """Get a tree-sitter parser for the given language."""
     try:
-        mod = importlib.import_module(module_name)
-        # tree-sitter-typescript exposes typescript() and tsx()
-        fn = getattr(mod, "language_typescript", None) or getattr(mod, "language", None)
-        if fn is None:
-            return None
-        return tree_sitter.Language(fn())
+        from tree_sitter_language_pack import get_parser
+
+        return get_parser(lang_name)  # type: ignore[arg-type]
     except Exception:
-        log.debug("Failed to load tree-sitter language: %s", module_name)
+        log.debug("Failed to load tree-sitter language: %s", lang_name)
         return None
-
-
-def _get_parser(module_name: str, lang_name: str) -> tree_sitter.Parser | None:
-    """Get or create a cached tree-sitter parser."""
-    if lang_name in _parsers:
-        return _parsers[lang_name]
-
-    language = _load_language(module_name, lang_name)
-    if language is None:
-        return None
-
-    parser = tree_sitter.Parser(language)
-    _parsers[lang_name] = parser
-    return parser
 
 
 def _node_span(node: tree_sitter.Node, source: bytes) -> dict:
@@ -189,12 +358,11 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     source = file_path.read_bytes()
     source_text = source.decode("utf-8", errors="replace")
 
-    lang_info = _EXT_TO_LANG.get(file_path.suffix.lower())
-    if not lang_info:
+    lang_name = _EXT_TO_LANG.get(file_path.suffix.lower())
+    if not lang_name:
         return _fallback_chunks(source_text)
 
-    module_name, lang_name = lang_info
-    parser = _get_parser(module_name, lang_name)
+    parser = _get_parser(lang_name)
     def_types = _DEFINITION_TYPES.get(lang_name, frozenset())
     if not parser or not def_types:
         return _fallback_chunks(source_text)

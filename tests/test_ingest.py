@@ -39,48 +39,49 @@ def _fake_embed(text):
     return [0.1] * 768
 
 
+@mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSync:
-    def test_empty_documents_dir(self, _eb, _e, isolated_env):
+    def test_empty_documents_dir(self, _eb, _e, _vm, isolated_env):
         from lilbee.ingest import sync
 
         result = sync()
         assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0, "failed": []}
 
-    def test_ingest_text_file(self, _eb, _e, isolated_env):
+    def test_ingest_text_file(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
         from lilbee.ingest import sync
 
         result = sync()
         assert "test.txt" in result["added"]
 
-    def test_quiet_mode_suppresses_progress(self, _eb, _e, isolated_env):
+    def test_quiet_mode_suppresses_progress(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.ingest import sync
 
         result = sync(quiet=True)
         assert "quiet.txt" in result["added"]
 
-    def test_ingest_markdown_file(self, _eb, _e, isolated_env):
+    def test_ingest_markdown_file(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.ingest import sync
 
         assert "readme.md" in sync()["added"]
 
-    def test_ingest_html_file(self, _eb, _e, isolated_env):
+    def test_ingest_html_file(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "page.html").write_text("<p>Content</p>")
         from lilbee.ingest import sync
 
         assert "page.html" in sync()["added"]
 
-    def test_ingest_rst_file(self, _eb, _e, isolated_env):
+    def test_ingest_rst_file(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "doc.rst").write_text("Title\n=====\n\nContent.")
         from lilbee.ingest import sync
 
         assert "doc.rst" in sync()["added"]
 
-    def test_modified_file_reingested(self, _eb, _e, isolated_env):
+    def test_modified_file_reingested(self, _eb, _e, _vm, isolated_env):
         f = isolated_env / "changing.txt"
         f.write_text("Version 1")
         from lilbee.ingest import sync
@@ -89,7 +90,7 @@ class TestSync:
         f.write_text("Version 2 — different content now")
         assert "changing.txt" in sync()["updated"]
 
-    def test_deleted_file_removed(self, _eb, _e, isolated_env):
+    def test_deleted_file_removed(self, _eb, _e, _vm, isolated_env):
         f = isolated_env / "temp.txt"
         f.write_text("Temporary")
         from lilbee.ingest import sync
@@ -98,7 +99,7 @@ class TestSync:
         f.unlink()
         assert "temp.txt" in sync()["removed"]
 
-    def test_unchanged_file_skipped(self, _eb, _e, isolated_env):
+    def test_unchanged_file_skipped(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "stable.txt").write_text("I stay the same")
         from lilbee.ingest import sync
 
@@ -107,19 +108,19 @@ class TestSync:
         assert result["unchanged"] == 1
         assert result["added"] == []
 
-    def test_unsupported_extension_skipped(self, _eb, _e, isolated_env):
+    def test_unsupported_extension_skipped(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "data.zip").write_bytes(b"binary data")
         from lilbee.ingest import sync
 
         assert sync()["added"] == []
 
-    def test_hidden_files_skipped(self, _eb, _e, isolated_env):
+    def test_hidden_files_skipped(self, _eb, _e, _vm, isolated_env):
         (isolated_env / ".hidden").write_text("secret")
         from lilbee.ingest import sync
 
         assert sync()["added"] == []
 
-    def test_subdirectory_files_ingested(self, _eb, _e, isolated_env):
+    def test_subdirectory_files_ingested(self, _eb, _e, _vm, isolated_env):
         sub = isolated_env / "subdir"
         sub.mkdir()
         (sub / "nested.txt").write_text("Nested content")
@@ -127,13 +128,13 @@ class TestSync:
 
         assert any("nested.txt" in f for f in sync()["added"])
 
-    def test_code_file_ingested(self, _eb, _e, isolated_env):
+    def test_code_file_ingested(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "example.py").write_text("def hello():\n    print('hi')\n")
         from lilbee.ingest import sync
 
         assert "example.py" in sync()["added"]
 
-    def test_force_rebuild_clears_and_reingests(self, _eb, _e, isolated_env):
+    def test_force_rebuild_clears_and_reingests(self, _eb, _e, _vm, isolated_env):
         (isolated_env / "keep.txt").write_text("I survive rebuilds")
         from lilbee.ingest import sync
 
@@ -141,7 +142,7 @@ class TestSync:
         result = sync(force_rebuild=True)
         assert "keep.txt" in result["added"]
 
-    def test_ingest_pdf(self, _eb, _e, isolated_env):
+    def test_ingest_pdf(self, _eb, _e, _vm, isolated_env):
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
 
@@ -155,7 +156,7 @@ class TestSync:
 
         assert "test.pdf" in sync()["added"]
 
-    def test_nonexistent_documents_dir(self, _eb, _e, isolated_env, tmp_path):
+    def test_nonexistent_documents_dir(self, _eb, _e, _vm, isolated_env, tmp_path):
         nonexistent = tmp_path / "nonexistent"
         cfg.DOCUMENTS_DIR = nonexistent
         from lilbee.ingest import sync
@@ -164,7 +165,7 @@ class TestSync:
         assert result == {"added": [], "updated": [], "removed": [], "unchanged": 0, "failed": []}
         assert nonexistent.exists()  # Directory was auto-created
 
-    def test_ingest_error_logged_not_raised(self, _eb, _e, isolated_env):
+    def test_ingest_error_logged_not_raised(self, _eb, _e, _vm, isolated_env):
         """A file that fails ingestion is logged but doesn't crash sync."""
         from unittest.mock import patch
 
@@ -187,7 +188,7 @@ class TestSync:
         assert "bad.txt" not in result["added"]
         assert "bad.txt" in result["failed"]
 
-    def test_ingest_error_on_update_tracked_as_failed(self, _eb, _e, isolated_env):
+    def test_ingest_error_on_update_tracked_as_failed(self, _eb, _e, _vm, isolated_env):
         """A file that fails re-ingestion on update goes to failed, not updated."""
         from unittest.mock import patch
 
@@ -212,7 +213,7 @@ class TestSync:
         assert "flaky.txt" not in result["updated"]
         assert "flaky.txt" in result["failed"]
 
-    def test_ingest_error_in_quiet_mode(self, _eb, _e, isolated_env):
+    def test_ingest_error_in_quiet_mode(self, _eb, _e, _vm, isolated_env):
         """Quiet-mode error handling works the same as non-quiet."""
         from unittest.mock import patch
 
@@ -224,7 +225,7 @@ class TestSync:
         assert "bad.txt" in result["failed"]
         assert "bad.txt" not in result["added"]
 
-    def test_ingest_error_on_update_quiet_mode(self, _eb, _e, isolated_env):
+    def test_ingest_error_on_update_quiet_mode(self, _eb, _e, _vm, isolated_env):
         """Quiet-mode update failure tracks in failed list."""
         from unittest.mock import patch
 

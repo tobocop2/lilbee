@@ -6,14 +6,7 @@ from dataclasses import dataclass
 import ollama
 
 from lilbee import embedder, store
-from lilbee.config import CHAT_MODEL, TOP_K
-
-_SYSTEM_PROMPT = (
-    "You are a helpful technical assistant. Answer questions using "
-    "the provided context. Be specific — prefer exact numbers, part numbers, "
-    "and measurements over vague references. Cite facts directly from the context. "
-    "Do not make up information."
-)
+from lilbee.config import CHAT_MODEL, SYSTEM_PROMPT, TOP_K
 
 _CONTEXT_TEMPLATE = """Context:
 {context}
@@ -93,7 +86,7 @@ def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
@@ -124,7 +117,7 @@ def ask_stream(
     context = _build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})

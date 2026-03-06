@@ -153,7 +153,7 @@ def _render_status(con: Console) -> None:
     )
 
 
-def _copy_paths(paths: list[Path]) -> list[str]:
+def _copy_paths(paths: list[Path], *, force: bool = False) -> list[str]:
     """Copy *paths* into the documents directory. Returns list of copied names."""
     import lilbee.config as cfg
 
@@ -161,6 +161,12 @@ def _copy_paths(paths: list[Path]) -> list[str]:
     copied: list[str] = []
     for p in paths:
         dest = cfg.DOCUMENTS_DIR / p.name
+        if dest.exists() and not force:
+            console.print(
+                f"[yellow]Warning:[/yellow] {p.name} already exists in knowledge base "
+                f"(use --force to overwrite)"
+            )
+            continue
         if p.is_dir():
             shutil.copytree(p, dest, dirs_exist_ok=True)
         else:
@@ -169,12 +175,12 @@ def _copy_paths(paths: list[Path]) -> list[str]:
     return copied
 
 
-def _add_paths(paths: list[Path], con: Console) -> None:
+def _add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
     """Copy *paths* into the knowledge base and sync (human output)."""
     import lilbee.config as cfg
     from lilbee.ingest import sync
 
-    copied = _copy_paths(paths)
+    copied = _copy_paths(paths, force=force)
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
 
     result = sync()
@@ -226,7 +232,7 @@ def _handle_slash_add(args: str, con: Console) -> None:
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        _add_paths([p], con)
+        _add_paths([p], con, force=True)
     else:
         try:
             from prompt_toolkit import prompt as pt_prompt
@@ -242,7 +248,7 @@ def _handle_slash_add(args: str, con: Console) -> None:
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        _add_paths([p], con)
+        _add_paths([p], con, force=True)
 
 
 class _QuitChat(Exception):
@@ -393,8 +399,18 @@ def _default(
     data_dir: Path | None = _data_dir_option,
     model: str | None = _model_option,
     json_output: bool = _json_option,
+    show_version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show version and exit.",
+        is_eager=True,
+    ),
 ) -> None:
     """Start interactive chat when no command is given."""
+    if show_version:
+        typer.echo(f"lilbee {_get_version()}")
+        raise SystemExit(0)
     global _json_mode
     _json_mode = json_output
     if ctx.invoked_subcommand is None:
@@ -512,21 +528,116 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
     console.print(f"Rebuilt: {len(result['added'])} documents ingested")
 
 
+_force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
+
+
 @app.command()
 def add(
     paths: list[Path] = _paths_argument,
     data_dir: Path | None = _data_dir_option,
+    force: bool = _force_option,
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
     _apply_overrides(data_dir=data_dir)
     if _json_mode:
         from lilbee.ingest import sync
 
-        copied = _copy_paths(paths)
+        copied = _copy_paths(paths, force=force)
         result = sync(quiet=True)
         _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
         return
-    _add_paths(paths, console)
+    _add_paths(paths, console, force=force)
+
+
+_chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")
+
+
+@app.command()
+def chunks(
+    source: str = _chunks_source_argument,
+    data_dir: Path | None = _data_dir_option,
+) -> None:
+    """Show chunks a document was split into (useful for debugging retrieval)."""
+    _apply_overrides(data_dir=data_dir)
+    from lilbee.store import get_chunks_by_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    if source not in known:
+        if _json_mode:
+            _json_output({"error": f"Source not found: {source}"})
+            raise SystemExit(1)
+        console.print(f"[red]Source not found:[/red] {source}")
+        raise SystemExit(1)
+
+    raw_chunks = get_chunks_by_source(source)
+    cleaned = sorted(
+        [_clean_result(c) for c in raw_chunks],
+        key=lambda c: c.get("chunk_index", 0),
+    )
+
+    if _json_mode:
+        _json_output({"command": "chunks", "source": source, "chunks": cleaned})
+        return
+
+    console.print(f"[bold]{len(cleaned)}[/bold] chunks from [cyan]{source}[/cyan]\n")
+    for c in cleaned:
+        idx = c.get("chunk_index", "?")
+        preview = c.get("chunk", "")[:_CHUNK_PREVIEW_LEN]
+        if len(c.get("chunk", "")) > _CHUNK_PREVIEW_LEN:
+            preview += "..."
+        console.print(f"  [{idx}] {preview}")
+
+
+_remove_names_argument = typer.Argument(
+    ..., help="Source name(s) to remove from the knowledge base."
+)
+
+_delete_file_option = typer.Option(
+    False, "--delete", help="Also delete the file from the documents directory."
+)
+
+
+@app.command()
+def remove(
+    names: list[str] = _remove_names_argument,
+    data_dir: Path | None = _data_dir_option,
+    delete_file: bool = _delete_file_option,
+) -> None:
+    """Remove documents from the knowledge base by source name."""
+    _apply_overrides(data_dir=data_dir)
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_file:
+            import lilbee.config as cfg
+
+            path = cfg.DOCUMENTS_DIR / name
+            if path.exists():
+                path.unlink()
+
+    if _json_mode:
+        payload: dict = {"command": "remove", "removed": removed}
+        if not_found:
+            payload["not_found"] = not_found
+        _json_output(payload)
+        return
+
+    for name in removed:
+        console.print(f"Removed [cyan]{name}[/cyan]")
+    for name in not_found:
+        console.print(f"[red]Not found:[/red] {name}")
+    if not removed and not_found:
+        raise SystemExit(1)
 
 
 @app.command()
@@ -589,3 +700,11 @@ def status(data_dir: Path | None = _data_dir_option) -> None:
         _json_output(_gather_status())
         return
     _render_status(console)
+
+
+@app.command(name="mcp")
+def mcp_cmd() -> None:
+    """Start the MCP server (stdio transport) for agent integration."""
+    from lilbee.mcp import main
+
+    main()

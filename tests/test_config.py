@@ -114,6 +114,20 @@ class TestMaxEmbedChars:
             assert cfg.MAX_EMBED_CHARS == 3000
 
 
+class TestSystemPrompt:
+    def test_default_system_prompt(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = _reload_config()
+            assert "helpful" in cfg.SYSTEM_PROMPT
+            assert "context" in cfg.SYSTEM_PROMPT
+
+    def test_system_prompt_override(self):
+        with mock.patch.dict(os.environ, {"LILBEE_SYSTEM_PROMPT": "You are a pirate."}):
+            cfg = _reload_config()
+            assert cfg.SYSTEM_PROMPT == "You are a pirate."
+
+
 class TestDefaults:
     def test_default_values(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}

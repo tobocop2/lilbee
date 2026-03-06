@@ -60,6 +60,15 @@ MAX_EMBED_CHARS = _env_int("MAX_EMBED_CHARS", 2000)
 # Retrieval
 TOP_K = _env_int("TOP_K", 10)
 
+# System prompt for RAG answers
+SYSTEM_PROMPT = _env(
+    "SYSTEM_PROMPT",
+    "You are a helpful technical assistant. Answer questions using "
+    "the provided context. Be specific — prefer exact numbers, part numbers, "
+    "and measurements over vague references. Cite facts directly from the context. "
+    "Do not make up information.",
+)
+
 # LanceDB table names
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"

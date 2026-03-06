@@ -1,21 +1,14 @@
 [project]
 name = "lilbee"
-version = "0.2.0"
+version = "0.1.0"
 description = "Local RAG for the terminal. Drop files in a folder, ask questions, get answers. JSON API for coding agents."
 requires-python = ">=3.11"
 dependencies = [
     "ollama",
     "lancedb",
     "pymupdf4llm",
-    "tree-sitter>=0.23",
-    "tree-sitter-python",
-    "tree-sitter-javascript",
-    "tree-sitter-typescript",
-    "tree-sitter-go",
-    "tree-sitter-rust",
-    "tree-sitter-java",
-    "tree-sitter-c",
-    "tree-sitter-cpp",
+    "tree-sitter>=0.25",
+    "tree-sitter-language-pack>=0.7",
     "typer",
     "tiktoken",
     "pymupdf-layout>=1.27.1",
@@ -27,6 +20,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "pytesseract>=0.3",
     "Pillow>=10.0",
+    "mcp>=1.26.0",
 ]
 
 [project.scripts]

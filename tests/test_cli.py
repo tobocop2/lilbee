@@ -18,6 +18,14 @@ from lilbee.cli import (
 
 runner = CliRunner()
 
+
+@pytest.fixture(autouse=True)
+def _skip_model_validation():
+    """CLI tests never need real Ollama model validation."""
+    with mock.patch("lilbee.embedder.validate_model"):
+        yield
+
+
 _SYNC_NOOP = {
     "added": [],
     "updated": [],
@@ -171,20 +179,36 @@ class TestAdd:
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_add_overwrites_existing_dir(self, _e, _eb, isolated_env, tmp_path):
-        """Re-adding a directory updates content."""
+        """Re-adding a directory with --force updates content."""
         import lilbee.config as cfg
 
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
         (src_dir / "file1.txt").write_text("Version 1")
 
-        runner.invoke(app, ["add", str(src_dir)])
+        runner.invoke(app, ["add", "--force", str(src_dir)])
 
-        # Update content and re-add
+        # Update content and re-add with --force
         (src_dir / "file1.txt").write_text("Version 2")
-        result = runner.invoke(app, ["add", str(src_dir)])
+        result = runner.invoke(app, ["add", "--force", str(src_dir)])
         assert result.exit_code == 0
         assert (cfg.DOCUMENTS_DIR / "docs" / "file1.txt").read_text() == "Version 2"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_warns_on_existing(self, _e, _eb, isolated_env, tmp_path):
+        """Adding a file that already exists warns without --force."""
+        src_file = tmp_path / "source" / "manual.txt"
+        src_file.parent.mkdir()
+        src_file.write_text("Original content")
+
+        runner.invoke(app, ["add", "--force", str(src_file)])
+
+        src_file.write_text("New content")
+        result = runner.invoke(app, ["add", str(src_file)])
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+        assert "already exists" in result.output
 
 
 class TestAsk:
@@ -804,6 +828,195 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 # JSON status tests (Task 3)
 # ---------------------------------------------------------------------------
+
+
+class TestVersionFlag:
+    """Test --version / -V CLI flag."""
+
+    def test_version_flag(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+        assert _get_version() in result.output
+
+    def test_short_version_flag(self):
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        assert _get_version() in result.output
+
+
+class TestRemove:
+    """Test remove command."""
+
+    def test_remove_existing_source(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("test.pdf", "abc123", 10)
+        assert len(get_sources()) == 1
+
+        result = runner.invoke(app, ["remove", "test.pdf"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert "test.pdf" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_nonexistent_source(self):
+        result = runner.invoke(app, ["remove", "nope.pdf"])
+        assert result.exit_code == 1
+        assert "Not found" in result.output
+
+    def test_remove_multiple_sources(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("a.pdf", "hash1", 5)
+        upsert_source("b.pdf", "hash2", 3)
+
+        result = runner.invoke(app, ["remove", "a.pdf", "b.pdf"])
+        assert result.exit_code == 0
+        assert "a.pdf" in result.output
+        assert "b.pdf" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_mixed_existing_and_not(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("a.pdf", "hash1", 5)
+
+        result = runner.invoke(app, ["remove", "a.pdf", "nope.pdf"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert "Not found" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_with_delete_flag(self, isolated_env):
+        import lilbee.config as cfg
+        from lilbee.store import upsert_source
+
+        doc = cfg.DOCUMENTS_DIR / "test.txt"
+        doc.write_text("content")
+        upsert_source("test.txt", "abc123", 1)
+
+        result = runner.invoke(app, ["remove", "--delete", "test.txt"])
+        assert result.exit_code == 0
+        assert not doc.exists()
+
+    def test_remove_json(self, isolated_env):
+        from lilbee.store import upsert_source
+
+        upsert_source("test.pdf", "abc123", 10)
+
+        result = runner.invoke(app, ["--json", "remove", "test.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "remove"
+        assert "test.pdf" in data["removed"]
+
+    def test_remove_json_not_found(self):
+        result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["removed"] == []
+        assert "nope.pdf" in data["not_found"]
+
+
+class TestChunks:
+    """Test chunks command."""
+
+    def test_chunks_nonexistent_source(self):
+        result = runner.invoke(app, ["chunks", "nope.pdf"])
+        assert result.exit_code == 1
+        assert "Source not found" in result.output
+
+    def test_chunks_nonexistent_json(self):
+        result = runner.invoke(app, ["--json", "chunks", "nope.pdf"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+    def test_chunks_with_source(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("test.txt", "abc123", 2)
+        add_chunks(
+            [
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "First chunk content",
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Second chunk content",
+                    "chunk_index": 1,
+                    "vector": [0.2] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0
+        assert "2 chunks" in result.output
+        assert "First chunk" in result.output
+
+    def test_chunks_truncates_long_chunk(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("long.txt", "abc123", 1)
+        add_chunks(
+            [
+                {
+                    "source": "long.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "x" * 200,
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["chunks", "long.txt"])
+        assert result.exit_code == 0
+        assert "..." in result.output
+
+    def test_chunks_json(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("test.txt", "abc123", 1)
+        add_chunks(
+            [
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Chunk content",
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["--json", "chunks", "test.txt"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "chunks"
+        assert data["source"] == "test.txt"
+        assert len(data["chunks"]) == 1
+        assert "vector" not in data["chunks"][0]
 
 
 class TestVersion:
