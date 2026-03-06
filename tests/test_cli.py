@@ -1,13 +1,30 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import json
 from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.cli import _make_completer, _QuitChat, app, console
+from lilbee.cli import (
+    _clean_result,
+    _get_version,
+    _list_ollama_models,
+    _make_completer,
+    _QuitChat,
+    app,
+    console,
+)
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _skip_model_validation():
+    """CLI tests never need real Ollama model validation."""
+    with mock.patch("lilbee.embedder.validate_model"):
+        yield
+
 
 _SYNC_NOOP = {
     "added": [],
@@ -162,20 +179,63 @@ class TestAdd:
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_add_overwrites_existing_dir(self, _e, _eb, isolated_env, tmp_path):
-        """Re-adding a directory updates content."""
+        """Re-adding a directory with --force updates content."""
         import lilbee.config as cfg
 
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
         (src_dir / "file1.txt").write_text("Version 1")
 
-        runner.invoke(app, ["add", str(src_dir)])
+        runner.invoke(app, ["add", "--force", str(src_dir)])
 
-        # Update content and re-add
+        # Update content and re-add with --force
         (src_dir / "file1.txt").write_text("Version 2")
-        result = runner.invoke(app, ["add", str(src_dir)])
+        result = runner.invoke(app, ["add", "--force", str(src_dir)])
         assert result.exit_code == 0
         assert (cfg.DOCUMENTS_DIR / "docs" / "file1.txt").read_text() == "Version 2"
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_warns_on_existing(self, _e, _eb, isolated_env, tmp_path):
+        """Adding a file that already exists warns without --force."""
+        src_file = tmp_path / "source" / "manual.txt"
+        src_file.parent.mkdir()
+        src_file.write_text("Original content")
+
+        runner.invoke(app, ["add", "--force", str(src_file)])
+
+        src_file.write_text("New content")
+        result = runner.invoke(app, ["add", str(src_file)])
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+        assert "already exists" in result.output
+
+
+class TestAddIgnoresDirs:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_directory_skips_git_and_node_modules(self, _e, _eb, isolated_env, tmp_path):
+        """Adding a directory filters out .git/ and node_modules/."""
+        import lilbee.config as cfg
+
+        src_dir = tmp_path / "source" / "project"
+        src_dir.mkdir(parents=True)
+        (src_dir / "readme.txt").write_text("Real content")
+        (src_dir / ".git").mkdir()
+        (src_dir / ".git" / "config").write_text("git stuff")
+        (src_dir / "node_modules").mkdir()
+        (src_dir / "node_modules" / "pkg.txt").write_text("npm junk")
+        (src_dir / "__pycache__").mkdir()
+        (src_dir / "__pycache__" / "mod.pyc").write_bytes(b"\x00")
+
+        result = runner.invoke(app, ["add", str(src_dir)])
+        assert result.exit_code == 0
+
+        dest = cfg.DOCUMENTS_DIR / "project"
+        assert (dest / "readme.txt").exists()
+        assert not (dest / ".git").exists()
+        assert not (dest / "node_modules").exists()
+        assert not (dest / "__pycache__").exists()
 
 
 class TestAsk:
@@ -231,7 +291,7 @@ class TestAutoSync:
 
 
 class TestChat:
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"]))
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
     def test_chat_quit(self, _sync, _stream):
         result = runner.invoke(app, ["chat"], input="question\n/quit\n")
@@ -358,6 +418,9 @@ class TestDispatchSlash:
         output = buf.getvalue()
         assert "/status" in output
         assert "/add" in output
+        assert "/model" in output
+        assert "/version" in output
+        assert "/reset" in output
         assert "/help" in output
         assert "/quit" in output
 
@@ -466,6 +529,77 @@ class TestSlashAdd:
             assert result.exit_code == 0
 
 
+class TestSlashModel:
+    """Test /model slash command."""
+
+    def test_model_shows_current(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_model
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        _handle_slash_model("", con)
+        assert "Current model:" in buf.getvalue()
+
+    def test_model_switches(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        import lilbee.config as cfg
+        from lilbee.cli import _handle_slash_model
+
+        original = cfg.CHAT_MODEL
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            _handle_slash_model("llama3", con)
+            assert cfg.CHAT_MODEL == "llama3"
+            assert "Switched to model" in buf.getvalue()
+        finally:
+            cfg.CHAT_MODEL = original
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_model_in_chat_loop(self, _sync):
+        import lilbee.config as cfg
+
+        original = cfg.CHAT_MODEL
+        try:
+            result = runner.invoke(app, ["chat"], input="/model\n/model phi3\n/quit\n")
+            assert result.exit_code == 0
+            assert "Current model:" in result.output
+            assert "Switched to model" in result.output
+        finally:
+            cfg.CHAT_MODEL = original
+
+
+class TestSlashVersion:
+    """Test /version slash command."""
+
+    def test_version_shows_version(self):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_version
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        _handle_slash_version("", con)
+        output = buf.getvalue()
+        assert "lilbee" in output
+        assert _get_version() in output
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_version_in_chat_loop(self, _sync):
+        result = runner.invoke(app, ["chat"], input="/version\n/quit\n")
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+
+
 class TestSlashUnknown:
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
     def test_unknown_slash_command(self, _sync):
@@ -510,6 +644,9 @@ class TestLilbeeCompleter:
         results = self._complete("/")
         assert "/status" in results
         assert "/add" in results
+        assert "/model" in results
+        assert "/version" in results
+        assert "/reset" in results
         assert "/help" in results
         assert "/quit" in results
 
@@ -521,9 +658,48 @@ class TestLilbeeCompleter:
         results = self._complete("/add /")
         assert len(results) > 0
 
+    @mock.patch(
+        "lilbee.cli._chat._list_ollama_models",
+        return_value=["llama3:latest", "mistral:latest", "phi3:latest"],
+    )
+    def test_model_prefix_completes(self, _models):
+        results = self._complete("/model ")
+        assert "llama3:latest" in results
+        assert "mistral:latest" in results
+        assert "phi3:latest" in results
+
+    @mock.patch(
+        "lilbee.cli._chat._list_ollama_models",
+        return_value=["llama3:latest", "mistral:latest"],
+    )
+    def test_model_prefix_filters(self, _models):
+        results = self._complete("/model ll")
+        assert results == ["llama3:latest"]
+
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=[])
+    def test_model_prefix_no_models(self, _models):
+        results = self._complete("/model ")
+        assert results == []
+
     def test_plain_text_no_completions(self):
         results = self._complete("hello")
         assert results == []
+
+
+class TestListOllamaModels:
+    """Test _list_ollama_models helper."""
+
+    def test_returns_model_names(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with mock.patch("ollama.list", return_value=mock_response):
+            assert _list_ollama_models() == ["llama3:latest"]
+
+    def test_returns_empty_on_error(self):
+        with mock.patch("ollama.list", side_effect=Exception("not running")):
+            assert _list_ollama_models() == []
 
 
 class TestQuitChat:
@@ -577,3 +753,575 @@ class TestPromptSessionBranch:
             _chat_loop(mock_con)
             # Verify it fell back to con.input (not PromptSession)
             mock_con.input.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# JSON output infrastructure tests (Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanResult:
+    def test_strips_vector(self):
+        result = _clean_result({"source": "a.pdf", "vector": [0.1, 0.2], "chunk": "hi"})
+        assert "vector" not in result
+        assert result["source"] == "a.pdf"
+
+    def test_renames_distance(self):
+        result = _clean_result({"_distance": 0.42, "chunk": "hi"})
+        assert "distance" in result
+        assert "_distance" not in result
+        assert result["distance"] == 0.42
+
+    def test_passthrough_other_fields(self):
+        result = _clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
+        assert result == {"source": "a.pdf", "chunk": "hi", "page_start": 1}
+
+
+class TestJsonFlag:
+    def test_json_no_subcommand_returns_error(self):
+        result = runner.invoke(app, ["--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "terminal" in data["error"].lower()
+
+    def test_short_j_flag_works(self):
+        result = runner.invoke(app, ["-j"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Search command tests (Task 2)
+# ---------------------------------------------------------------------------
+
+_MOCK_SEARCH_RESULTS = [
+    {
+        "source": "manual.pdf",
+        "content_type": "pdf",
+        "page_start": 5,
+        "page_end": 5,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": "The engine oil capacity is 5 quarts.",
+        "chunk_index": 0,
+        "_distance": 0.25,
+        "vector": [0.1] * 768,
+    },
+]
+
+
+class TestSearch:
+    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    def test_search_json_with_results(self, _search):
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "search"
+        assert data["query"] == "engine oil"
+        assert len(data["results"]) == 1
+        assert "vector" not in data["results"][0]
+        assert "distance" in data["results"][0]
+
+    @mock.patch("lilbee.query.search_context", return_value=[])
+    def test_search_json_empty_results(self, _search):
+        result = runner.invoke(app, ["--json", "search", "nothing"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["results"] == []
+
+    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    def test_search_human_output(self, _search):
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0
+        assert "manual.pdf" in result.output
+
+    @mock.patch(
+        "lilbee.query.search_context",
+        return_value=[{**_MOCK_SEARCH_RESULTS[0], "chunk": "x" * 100}],
+    )
+    def test_search_human_truncates_long_chunks(self, _search):
+        result = runner.invoke(app, ["search", "test"])
+        assert result.exit_code == 0
+        # Chunk is truncated (100 chars doesn't all appear, Rich truncates with …)
+        assert result.output.count("x") < 100
+
+    @mock.patch("lilbee.query.search_context", return_value=[])
+    def test_search_human_no_results(self, _search):
+        result = runner.invoke(app, ["search", "nothing"])
+        assert result.exit_code == 0
+        assert "No results found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# JSON status tests (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionFlag:
+    """Test --version / -V CLI flag."""
+
+    def test_version_flag(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+        assert _get_version() in result.output
+
+    def test_short_version_flag(self):
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        assert _get_version() in result.output
+
+
+class TestRemove:
+    """Test remove command."""
+
+    def test_remove_existing_source(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("test.pdf", "abc123", 10)
+        assert len(get_sources()) == 1
+
+        result = runner.invoke(app, ["remove", "test.pdf"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert "test.pdf" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_nonexistent_source(self):
+        result = runner.invoke(app, ["remove", "nope.pdf"])
+        assert result.exit_code == 1
+        assert "Not found" in result.output
+
+    def test_remove_multiple_sources(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("a.pdf", "hash1", 5)
+        upsert_source("b.pdf", "hash2", 3)
+
+        result = runner.invoke(app, ["remove", "a.pdf", "b.pdf"])
+        assert result.exit_code == 0
+        assert "a.pdf" in result.output
+        assert "b.pdf" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_mixed_existing_and_not(self, isolated_env):
+        from lilbee.store import get_sources, upsert_source
+
+        upsert_source("a.pdf", "hash1", 5)
+
+        result = runner.invoke(app, ["remove", "a.pdf", "nope.pdf"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert "Not found" in result.output
+        assert len(get_sources()) == 0
+
+    def test_remove_with_delete_flag(self, isolated_env):
+        import lilbee.config as cfg
+        from lilbee.store import upsert_source
+
+        doc = cfg.DOCUMENTS_DIR / "test.txt"
+        doc.write_text("content")
+        upsert_source("test.txt", "abc123", 1)
+
+        result = runner.invoke(app, ["remove", "--delete", "test.txt"])
+        assert result.exit_code == 0
+        assert not doc.exists()
+
+    def test_remove_json(self, isolated_env):
+        from lilbee.store import upsert_source
+
+        upsert_source("test.pdf", "abc123", 10)
+
+        result = runner.invoke(app, ["--json", "remove", "test.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "remove"
+        assert "test.pdf" in data["removed"]
+
+    def test_remove_json_not_found(self):
+        result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["removed"] == []
+        assert "nope.pdf" in data["not_found"]
+
+
+class TestChunks:
+    """Test chunks command."""
+
+    def test_chunks_nonexistent_source(self):
+        result = runner.invoke(app, ["chunks", "nope.pdf"])
+        assert result.exit_code == 1
+        assert "Source not found" in result.output
+
+    def test_chunks_nonexistent_json(self):
+        result = runner.invoke(app, ["--json", "chunks", "nope.pdf"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+    def test_chunks_with_source(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("test.txt", "abc123", 2)
+        add_chunks(
+            [
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "First chunk content",
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Second chunk content",
+                    "chunk_index": 1,
+                    "vector": [0.2] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["chunks", "test.txt"])
+        assert result.exit_code == 0
+        assert "2 chunks" in result.output
+        assert "First chunk" in result.output
+
+    def test_chunks_truncates_long_chunk(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("long.txt", "abc123", 1)
+        add_chunks(
+            [
+                {
+                    "source": "long.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "x" * 200,
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["chunks", "long.txt"])
+        assert result.exit_code == 0
+        assert "..." in result.output
+
+    def test_chunks_json(self, isolated_env):
+        from lilbee.store import add_chunks, upsert_source
+
+        upsert_source("test.txt", "abc123", 1)
+        add_chunks(
+            [
+                {
+                    "source": "test.txt",
+                    "content_type": "text",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "Chunk content",
+                    "chunk_index": 0,
+                    "vector": [0.1] * 768,
+                },
+            ]
+        )
+        result = runner.invoke(app, ["--json", "chunks", "test.txt"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "chunks"
+        assert data["source"] == "test.txt"
+        assert len(data["chunks"]) == 1
+        assert "vector" not in data["chunks"][0]
+
+
+class TestReset:
+    """Test reset command."""
+
+    def test_reset_deletes_everything(self, isolated_env):
+        """With --yes, both dirs are cleared."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.DATA_DIR / "db_file").write_text("data")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.DATA_DIR.iterdir()) == []
+
+    def test_reset_without_yes_prompts(self, isolated_env):
+        """Without --yes, prompts and aborts on 'n'."""
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["reset"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        # File should still exist
+        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
+
+    def test_reset_without_yes_confirms(self, isolated_env):
+        """Without --yes, confirming with 'y' deletes everything."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["reset"], input="y\n")
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    def test_reset_json_output(self, isolated_env):
+        """JSON mode returns structured output."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["--json", "reset", "--yes"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "reset"
+        assert data["deleted_docs"] == 1
+
+    def test_reset_json_without_yes_errors(self):
+        """JSON mode without --yes returns error."""
+        result = runner.invoke(app, ["--json", "reset"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+
+    def test_reset_empty_dirs(self, isolated_env):
+        """Reset on already-empty dirs doesn't crash."""
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert "0 document(s)" in result.output
+
+    def test_reset_with_subdirectories(self, isolated_env):
+        """Reset removes subdirectories too."""
+        import lilbee.config as cfg
+
+        sub = cfg.DOCUMENTS_DIR / "subdir"
+        sub.mkdir()
+        (sub / "nested.txt").write_text("nested content")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    def test_reset_data_dir_with_subdirectories(self, isolated_env):
+        """Reset removes subdirectories in data dir too."""
+        import lilbee.config as cfg
+
+        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        sub = cfg.DATA_DIR / "lancedb"
+        sub.mkdir()
+        (sub / "table.lance").write_text("lance data")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert list(cfg.DATA_DIR.iterdir()) == []
+
+
+class TestSlashReset:
+    """Test /reset inside the chat loop."""
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_confirms(self, _sync, isolated_env):
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["chat"], input="/reset\nyes\n/quit\n")
+        assert result.exit_code == 0
+        assert "Reset complete" in result.output
+        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_eof_aborts(self, _sync):
+        """EOF during /reset confirmation aborts gracefully."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_reset
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch.object(con, "input", side_effect=EOFError):
+            _handle_slash_reset("", con)
+        assert "Aborted" in buf.getvalue()
+
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_slash_reset_aborts(self, _sync, isolated_env):
+        import lilbee.config as cfg
+
+        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+
+        result = runner.invoke(app, ["chat"], input="/reset\nno\n/quit\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
+
+
+class TestVersion:
+    def test_version_human(self):
+        result = runner.invoke(app, ["version"])
+        assert result.exit_code == 0
+        assert "lilbee" in result.output
+        assert _get_version() in result.output
+
+    def test_version_json(self):
+        result = runner.invoke(app, ["--json", "version"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "version"
+        assert data["version"] == _get_version()
+
+
+class TestGetVersion:
+    def test_returns_string(self):
+        ver = _get_version()
+        assert isinstance(ver, str)
+        assert len(ver) > 0
+
+
+class TestStatusJson:
+    def test_status_json_empty(self):
+        result = runner.invoke(app, ["--json", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "status"
+        assert "config" in data
+        assert data["sources"] == []
+        assert data["total_chunks"] == 0
+
+    def test_status_json_with_sources(self, isolated_env):
+        from lilbee.store import upsert_source
+
+        upsert_source("test.pdf", "abc123hash", 10)
+        result = runner.invoke(app, ["--json", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert len(data["sources"]) == 1
+        assert data["sources"][0]["filename"] == "test.pdf"
+        assert data["total_chunks"] == 10
+        assert "documents_dir" in data["config"]
+
+
+# ---------------------------------------------------------------------------
+# JSON sync/rebuild/add tests (Task 4)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_sync_json_empty(self, _e, _eb):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "sync"
+        assert data["added"] == []
+        assert data["unchanged"] == 0
+
+    @mock.patch(
+        "lilbee.ingest.sync",
+        return_value={
+            "added": ["new.txt"],
+            "updated": [],
+            "removed": ["old.txt"],
+            "unchanged": 2,
+            "failed": [],
+        },
+    )
+    def test_sync_json_with_changes(self, _sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["added"] == ["new.txt"]
+        assert data["removed"] == ["old.txt"]
+        assert data["unchanged"] == 2
+
+
+class TestRebuildJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_rebuild_json(self, _e, _eb):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "rebuild"
+        assert "ingested" in data
+
+
+class TestAddJson:
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_add_json(self, _e, _eb, isolated_env, tmp_path):
+        src = tmp_path / "source" / "manual.txt"
+        src.parent.mkdir()
+        src.write_text("Engine oil capacity is 5 quarts.")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "add"
+        assert "manual.txt" in data["copied"]
+        assert "sync" in data
+
+
+# ---------------------------------------------------------------------------
+# JSON ask tests (Task 5)
+# ---------------------------------------------------------------------------
+
+
+class TestAskJson:
+    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_json(self, _sync, mock_ask_raw):
+        from lilbee.query import AskResult
+
+        mock_ask_raw.return_value = AskResult(
+            answer="5 quarts",
+            sources=[{"source": "manual.pdf", "_distance": 0.3, "vector": [0.1], "chunk": "oil"}],
+        )
+        result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "ask"
+        assert data["question"] == "oil capacity?"
+        assert data["answer"] == "5 quarts"
+        assert len(data["sources"]) == 1
+        assert "vector" not in data["sources"][0]
+        assert "distance" in data["sources"][0]
+
+    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_json_no_results(self, _sync, mock_ask_raw):
+        from lilbee.query import AskResult
+
+        mock_ask_raw.return_value = AskResult(answer="No relevant documents found.", sources=[])
+        result = runner.invoke(app, ["--json", "ask", "anything"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["sources"] == []
+        assert "No relevant" in data["answer"]
