@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 import lancedb
 import pyarrow as pa
 
-from lilbee.config import CHUNKS_TABLE, EMBEDDING_DIM, LANCEDB_DIR, SOURCES_TABLE, TOP_K
+from lilbee.config import (
+    CHUNKS_TABLE,
+    EMBEDDING_DIM,
+    LANCEDB_DIR,
+    MAX_DISTANCE,
+    SOURCES_TABLE,
+    TOP_K,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +55,10 @@ def _table_names(db: lancedb.DBConnection) -> list[str]:
 def _ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
     if name in _table_names(db):
         return db.open_table(name)
-    return db.create_table(name, schema=schema)
+    try:
+        return db.create_table(name, schema=schema)
+    except ValueError:
+        return db.open_table(name)
 
 
 def _open_table(name: str) -> lancedb.table.Table | None:
@@ -89,13 +99,33 @@ def add_chunks(records: list[dict]) -> int:
     return len(records)
 
 
-def search(query_vector: list[float], top_k: int = TOP_K) -> list[dict]:
-    """Search for similar chunks by vector similarity."""
+def search(
+    query_vector: list[float],
+    top_k: int = TOP_K,
+    max_distance: float = MAX_DISTANCE,
+) -> list[dict]:
+    """Search for similar chunks by vector similarity.
+
+    Results with distance > max_distance are filtered out.
+    Pass max_distance=0 to disable filtering.
+    """
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    result: list[dict] = table.search(query_vector).limit(top_k).to_list()
-    return result
+    results: list[dict] = table.search(query_vector).limit(top_k).to_list()
+    if max_distance > 0:
+        results = [r for r in results if r.get("_distance", float("inf")) <= max_distance]
+    return results
+
+
+def get_chunks_by_source(source: str) -> list[dict]:
+    """Return all chunks for a given source file."""
+    table = _open_table(CHUNKS_TABLE)
+    if table is None:
+        return []
+    escaped = _escape_sql_string(source)
+    rows: list[dict] = table.search().where(f"source = '{escaped}'").to_list()
+    return rows
 
 
 def delete_by_source(source: str) -> None:

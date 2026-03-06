@@ -154,6 +154,46 @@ class TestValidateVector:
             embed("test")
 
 
+class TestValidateModel:
+    def test_model_found(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "nomic-embed-text:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with mock.patch("ollama.list", return_value=mock_response):
+            from lilbee.embedder import validate_model
+
+            validate_model()  # Should not raise
+
+    def test_model_found_by_base_name(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "nomic-embed-text:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with mock.patch("ollama.list", return_value=mock_response):
+            from lilbee.embedder import validate_model
+
+            validate_model()  # "nomic-embed-text" matches base of "nomic-embed-text:latest"
+
+    def test_model_not_found(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with mock.patch("ollama.list", return_value=mock_response):
+            from lilbee.embedder import validate_model
+
+            with pytest.raises(RuntimeError, match="not found"):
+                validate_model()
+
+    def test_connection_error(self):
+        with mock.patch("ollama.list", side_effect=ConnectionError("refused")):
+            from lilbee.embedder import validate_model
+
+            with pytest.raises(RuntimeError, match="Cannot connect"):
+                validate_model()
+
+
 class TestRetry:
     @mock.patch("time.sleep")  # Don't actually sleep
     @mock.patch("ollama.embed")

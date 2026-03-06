@@ -1,25 +1,26 @@
 [project]
 name = "lilbee"
 version = "0.1.0"
-description = "Local RAG knowledge base — ask questions about your documents"
+description = "Local RAG for the terminal. Drop files in a folder, ask questions, get answers. JSON API for coding agents."
 requires-python = ">=3.11"
 dependencies = [
     "ollama",
     "lancedb",
     "pymupdf4llm",
-    "tree-sitter>=0.23",
-    "tree-sitter-python",
-    "tree-sitter-javascript",
-    "tree-sitter-typescript",
-    "tree-sitter-go",
-    "tree-sitter-rust",
-    "tree-sitter-java",
-    "tree-sitter-c",
-    "tree-sitter-cpp",
+    "tree-sitter>=0.25",
+    "tree-sitter-language-pack>=0.7",
     "typer",
     "tiktoken",
     "pymupdf-layout>=1.27.1",
     "prompt-toolkit>=3.0",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "pytesseract>=0.3",
+    "Pillow>=10.0",
+    "mcp>=1.26.0",
 ]
 
 [project.scripts]
@@ -35,6 +36,7 @@ packages = ["src/lilbee"]
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    "pexpect>=4.9.0",
     "pytest",
     "pytest-cov",
     "reportlab",

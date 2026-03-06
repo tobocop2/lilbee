@@ -1,93 +1,18 @@
 """Tree-sitter based code chunking — splits source files on function/class boundaries."""
 
-import importlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import tree_sitter
 
+from lilbee._languages import _DEFINITION_TYPES, _EXT_TO_LANG
 from lilbee.chunker import chunk_text
 
 log = logging.getLogger(__name__)
 
-# Extension → (tree-sitter language package module, language name)
-_EXT_TO_LANG: dict[str, tuple[str, str]] = {
-    ".py": ("tree_sitter_python", "python"),
-    ".js": ("tree_sitter_javascript", "javascript"),
-    ".ts": ("tree_sitter_typescript", "typescript"),
-    ".go": ("tree_sitter_go", "go"),
-    ".rs": ("tree_sitter_rust", "rust"),
-    ".java": ("tree_sitter_java", "java"),
-    ".c": ("tree_sitter_c", "c"),
-    ".cpp": ("tree_sitter_cpp", "cpp"),
-    ".h": ("tree_sitter_c", "c"),
-}
-
-# AST node types that represent extractable definitions, per language
-_DEFINITION_TYPES: dict[str, frozenset[str]] = {
-    "python": frozenset(
-        {
-            "function_definition",
-            "class_definition",
-            "decorated_definition",
-        }
-    ),
-    "javascript": frozenset(
-        {
-            "function_declaration",
-            "class_declaration",
-            "export_statement",
-            "lexical_declaration",
-        }
-    ),
-    "typescript": frozenset(
-        {
-            "function_declaration",
-            "class_declaration",
-            "export_statement",
-            "lexical_declaration",
-            "interface_declaration",
-            "type_alias_declaration",
-        }
-    ),
-    "go": frozenset(
-        {
-            "function_declaration",
-            "method_declaration",
-            "type_declaration",
-        }
-    ),
-    "rust": frozenset(
-        {
-            "function_item",
-            "impl_item",
-            "struct_item",
-            "enum_item",
-            "trait_item",
-        }
-    ),
-    "java": frozenset(
-        {
-            "class_declaration",
-            "method_declaration",
-            "interface_declaration",
-        }
-    ),
-    "c": frozenset({"function_definition", "struct_specifier"}),
-    "cpp": frozenset(
-        {
-            "function_definition",
-            "class_specifier",
-            "struct_specifier",
-        }
-    ),
-}
-
 # Container nodes whose children may also be definitions
 _CONTAINERS = frozenset({"class_body", "block", "declaration_list", "impl_body"})
-
-_parsers: dict[str, tree_sitter.Parser] = {}
 
 
 @dataclass
@@ -100,32 +25,15 @@ class CodeChunk:
     chunk_index: int
 
 
-def _load_language(module_name: str, lang_name: str) -> tree_sitter.Language | None:
-    """Load a tree-sitter language from its package module."""
+def _get_parser(lang_name: str) -> tree_sitter.Parser | None:
+    """Get a tree-sitter parser for the given language."""
     try:
-        mod = importlib.import_module(module_name)
-        # tree-sitter-typescript exposes typescript() and tsx()
-        fn = getattr(mod, "language_typescript", None) or getattr(mod, "language", None)
-        if fn is None:
-            return None
-        return tree_sitter.Language(fn())
+        from tree_sitter_language_pack import get_parser
+
+        return get_parser(lang_name)  # type: ignore[arg-type]
     except Exception:
-        log.debug("Failed to load tree-sitter language: %s", module_name)
+        log.debug("Failed to load tree-sitter language: %s", lang_name)
         return None
-
-
-def _get_parser(module_name: str, lang_name: str) -> tree_sitter.Parser | None:
-    """Get or create a cached tree-sitter parser."""
-    if lang_name in _parsers:
-        return _parsers[lang_name]
-
-    language = _load_language(module_name, lang_name)
-    if language is None:
-        return None
-
-    parser = tree_sitter.Parser(language)
-    _parsers[lang_name] = parser
-    return parser
 
 
 def _node_span(node: tree_sitter.Node, source: bytes) -> dict:
@@ -189,12 +97,11 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     source = file_path.read_bytes()
     source_text = source.decode("utf-8", errors="replace")
 
-    lang_info = _EXT_TO_LANG.get(file_path.suffix.lower())
-    if not lang_info:
+    lang_name = _EXT_TO_LANG.get(file_path.suffix.lower())
+    if not lang_name:
         return _fallback_chunks(source_text)
 
-    module_name, lang_name = lang_info
-    parser = _get_parser(module_name, lang_name)
+    parser = _get_parser(lang_name)
     def_types = _DEFINITION_TYPES.get(lang_name, frozenset())
     if not parser or not def_types:
         return _fallback_chunks(source_text)

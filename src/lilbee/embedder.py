@@ -52,6 +52,22 @@ def _validate_vector(vector: list[float]) -> None:
             raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
 
 
+def validate_model() -> None:
+    """Check that the configured embedding model is available in Ollama."""
+    try:
+        models = ollama.list()
+        names = {m.model for m in models.models if m.model}
+        # Also match without :latest tag
+        base_names = {n.split(":")[0] for n in names}
+        if EMBEDDING_MODEL not in names and EMBEDDING_MODEL not in base_names:
+            raise RuntimeError(
+                f"Embedding model '{EMBEDDING_MODEL}' not found in Ollama. "
+                f"Run: ollama pull {EMBEDDING_MODEL}"
+            )
+    except (ConnectionError, OSError) as exc:
+        raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+
+
 def embed(text: str) -> list[float]:
     """Embed a single text string, return vector."""
     response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=_truncate(text))
