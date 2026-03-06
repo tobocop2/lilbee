@@ -7,10 +7,11 @@
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> Local RAG for the terminal. `pip install`, point at a folder, ask questions. Agents get JSON.
+> Local RAG for the terminal. Ground your LLM answers in real documents — no hallucinations, no cloud, no Docker.
 
 ---
 
+- [Why lilbee](#why-lilbee)
 - [What it does](#what-it-does)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -22,13 +23,23 @@
 
 ---
 
+## Why lilbee
+
+LLMs are confident, fluent, and wrong often enough to matter. Ask a model about your company's internal process, a hardware manual, or a niche API and you'll get a plausible answer fabricated from training data. For questions where **accuracy matters more than speed**, you need the model to work from your actual documents — not its best guess.
+
+That's retrieval-augmented generation (RAG): instead of hoping the model "knows" the answer, you retrieve the relevant passages first and hand them to the model as context. The model synthesizes an answer from real text, with citations you can verify. Hallucinations drop dramatically because the model is reading, not remembering.
+
+**Why this matters even more for coding agents:** When an AI agent makes decisions autonomously — writing code, choosing libraries, following internal conventions — a hallucinated "fact" doesn't just show up in a chat bubble. It gets committed, deployed, and depended on. Giving an agent access to a local RAG tool means it can look things up instead of guessing. It can query your API docs before generating a client, check your style guide before refactoring, or search a hardware spec before writing a driver. The agent stays grounded in your actual knowledge base, and you stay confident in its output.
+
 ## What it does
 
 lilbee is a local RAG tool that runs entirely on your machine. No Docker, no external databases, no cloud APIs — just Python and [Ollama](https://ollama.com).
 
-**For humans:** Drop files into a folder and ask questions in an interactive chat with slash commands, tab completion, and streaming responses. lilbee extracts text, chunks it, embeds it with a local model, and stores vectors in LanceDB. When you ask a question, it finds the most relevant chunks and passes them to a local LLM to get an answer with source citations.
+**The workflow:** Install lilbee, add documents to it (`lilbee add ~/path/to/docs`), and sync to build the index (`lilbee sync`). Syncing extracts text, chunks it, embeds it with a local model, and stores vectors in LanceDB. After that, you can ask questions and get answers grounded in your actual documents — with source citations so you can verify. If you're using lilbee through an agent, the agent can drive this entire workflow itself via MCP or the JSON CLI (add files, trigger a sync, then search).
 
-**For coding agents:** lilbee exposes an MCP server and a JSON CLI so any agent can search your indexed documents directly. `search` returns pre-embedded chunks without calling Ollama at query time — agents use their own LLM to reason over the results.
+**For humans:** Run `lilbee` to enter an interactive chat with slash commands, tab completion, and streaming responses. Use `/add` to index new documents right from the chat.
+
+**For coding agents:** lilbee exposes an MCP server and a JSON CLI so any agent can add documents, sync, and search your indexed knowledge base directly. `search` returns pre-embedded chunks without calling Ollama at query time — agents use their own LLM to reason over the results. Instead of hallucinating an answer about your codebase or docs, the agent retrieves the real content and reasons over it.
 
 **Ollama is needed for two things:** (1) embedding documents during `sync`/indexing, and (2) interactive chat and `ask`. Once documents are indexed, `search` works without Ollama.
 
@@ -37,9 +48,13 @@ lilbee is a local RAG tool that runs entirely on your machine. No Docker, no ext
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) — needed for embedding (during sync) and interactive chat/ask, not for `search`
+- [Ollama](https://ollama.com) — only the embedding model is required for indexing and search (which is all agents need):
   ```bash
-  ollama pull mistral && ollama pull nomic-embed-text
+  ollama pull nomic-embed-text    # required — used for embedding during sync
+  ```
+  If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
+  ```bash
+  ollama pull mistral             # or qwen3, llama3, etc.
   ```
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
 
@@ -79,8 +94,8 @@ lilbee search "oil change interval"
 # Remove a document from the knowledge base
 lilbee remove manual.pdf
 
-# Use a different model
-lilbee ask "Explain this" --model llama3
+# Use a different local chat model (requires ollama pull <model>)
+lilbee ask "Explain this" --model qwen3
 
 # Check what's indexed
 lilbee status
