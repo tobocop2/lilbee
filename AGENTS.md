@@ -1,0 +1,146 @@
+# lilbee — Development Guide
+
+## Project
+Local RAG knowledge base. Python 3.11+, Ollama for LLM/embeddings, LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+
+## Task Tracking (beads)
+```bash
+bd ready                      # See what's ready to work on
+bd update <id> -s in_progress # Claim a task
+bd close <id>                 # Mark done
+bd list                       # All issues
+```
+Every code change MUST be tracked as a beads task. Create tasks before starting work, close them when done.
+
+## Commands
+```bash
+uv sync                       # Install dependencies
+make check                    # Run all checks: lint, format, typecheck, test (same as CI)
+make test                     # Tests with coverage
+make lint                     # Ruff linting
+make typecheck                # Mypy
+make format                   # Auto-format code
+uv run lilbee sync            # Sync documents to vector DB
+uv run lilbee ask "question"
+uv run lilbee chat
+uv run lilbee status
+uv run lilbee rebuild
+```
+
+## Architecture
+- `src/lilbee/` — All source code
+- Documents + data stored in platform-standard location (see `lilbee status`)
+  - macOS: `~/Library/Application Support/lilbee/`
+  - Linux: `~/.local/share/lilbee/`
+  - Windows: `%LOCALAPPDATA%/lilbee/`
+  - Override: `LILBEE_DATA=/path` or `--data-dir`
+- All settings configurable via `LILBEE_*` env vars or CLI flags
+- Auto-sync: documents/ is source of truth, data/ is rebuilt from it
+
+## Configuration
+All settings override via environment variables:
+- `LILBEE_DATA` — data directory path
+- `LILBEE_CHAT_MODEL` — LLM model (default: `mistral`)
+- `LILBEE_EMBEDDING_MODEL` — embedding model (default: `nomic-embed-text`)
+- `LILBEE_EMBEDDING_DIM` — embedding dimensions (default: `768`)
+- `LILBEE_CHUNK_SIZE` — tokens per chunk (default: `512`)
+- `LILBEE_CHUNK_OVERLAP` — overlap tokens (default: `100`)
+- `LILBEE_TOP_K` — retrieval result count (default: `5`)
+
+CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
+
+## Code Quality Rules
+
+### Test-Driven Development
+- **100% test coverage required** — enforced by `pytest-cov` with `fail_under = 100`
+- Write tests BEFORE or alongside implementation, not after
+- Every public function MUST have at least one test
+- Mock all external dependencies (Ollama, filesystem I/O where needed) — tests must run without a live server
+- Use `pytest.mark.skipif` only for integration tests that genuinely require live services
+- Use `tmp_path` fixtures for filesystem tests — never write to real paths
+- Test edge cases and error paths, not just the happy path
+- Tests are documentation — name them descriptively (`test_add_nonexistent_fails`, not `test_add_3`)
+
+### DRY & Modularity
+- **Don't Repeat Yourself** — extract shared logic into helpers when duplicated
+- Single Responsibility — each function does one thing well
+- Small functions — max ~20 lines, max 2 levels of nesting
+- Low cyclomatic complexity — extract helpers when branches exceed 3
+- Compose small functions rather than writing monolithic ones
+- If you need to copy-paste code, refactor into a shared function instead
+
+### Code Style
+- No LangChain — raw Ollama SDK
+- Type hints on all public functions
+- Dataclasses for structured return types (not raw dicts)
+- Named constants for magic numbers — with descriptive comments
+- Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
+- Logging with `logging.getLogger(__name__)` — no bare `except: pass`
+- No hardcoded values — all configurable through `config.py` with env var overrides
+- Imports: stdlib first, then third-party, then local — no star imports
+- Lazy imports in CLI callbacks (avoid loading heavy deps at import time)
+- Linting: `ruff check` + `ruff format` (line length 100)
+- Type checking: `mypy` with strict settings
+
+### YAGNI & Simplicity
+- Don't add features, abstractions, or config that isn't needed yet
+- Three similar lines are better than a premature abstraction
+- Only validate at system boundaries (user input, external APIs) — trust internal code
+- No backwards-compatibility shims — if something is unused, delete it
+
+### Git & Workflow
+- Every change tracked as a beads task (`bd create` → `bd close`)
+- Run `make check` before closing any task — it mirrors CI exactly
+- Tests, lint, and type checks must pass before closing a task
+- CI runs on every push and PR
+
+### Behavior Learning (floop)
+- `floop` captures corrections and learned behaviors across sessions
+- Hooks run automatically via `~/.claude/settings.json` (session-start, dynamic-context, detect-correction)
+- `floop active` — show behaviors active in current context
+- `floop learn` — manually capture a correction/behavior
+- `floop list` — list all learned behaviors
+- `floop prompt` — generate prompt section from active behaviors
+
+## Agent Integration
+
+lilbee has a local knowledge base you can query. Use it for domain-specific questions about the user's documents.
+
+### MCP Server (recommended)
+
+An MCP server is configured in `.claude/settings.json` for this project. Tools available:
+
+| Tool | Description | Requires Ollama |
+|------|-------------|-----------------|
+| `lilbee_search(query, top_k)` | Search for relevant chunks | No |
+| `lilbee_ask(question)` | Ask with local RAG | Yes |
+| `lilbee_status()` | Show indexed docs and config | No |
+| `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
+
+Prefer `lilbee_search` — it returns pre-embedded chunks without calling Ollama at query time.
+
+### JSON CLI (fallback)
+
+All commands accept `--json` (before the subcommand) for structured output:
+
+```bash
+lilbee --json search "query" --top-k 5
+lilbee --json ask "question"
+lilbee --json status
+lilbee --json sync
+```
+
+Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`.
+
+See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
+
+## Key Files
+- `config.py` — All settings (env-var configurable)
+- `ingest.py` — Document sync engine (hash-based change detection)
+- `query.py` — RAG pipeline (embed → search → generate)
+- `store.py` — LanceDB operations
+- `chunker.py` — Text chunking (token-based recursive)
+- `code_chunker.py` — Code chunking (tree-sitter AST)
+- `embedder.py` — Ollama embedding wrapper
+- `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
+- `mcp.py` — MCP server exposing search, ask, status, sync as tools
