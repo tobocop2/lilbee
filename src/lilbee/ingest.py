@@ -3,8 +3,10 @@
 import hashlib
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TypedDict
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -14,6 +16,42 @@ from lilbee.chunker import chunk_pages, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 
 log = logging.getLogger(__name__)
+
+
+class ChunkRecord(TypedDict):
+    """A single store-ready chunk record matching store._CHUNKS_SCHEMA."""
+
+    source: str
+    content_type: str
+    page_start: int
+    page_end: int
+    line_start: int
+    line_end: int
+    chunk: str
+    chunk_index: int
+    vector: list[float]
+
+
+def _build_records(chunks: list[str], source: str, content_type: str) -> list[ChunkRecord]:
+    """Embed chunks and build store-ready records with zeroed page/line fields."""
+    if not chunks:
+        return []
+    vectors = embedder.embed_batch(chunks)
+    return [
+        ChunkRecord(
+            source=source,
+            content_type=content_type,
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=chunk,
+            chunk_index=idx,
+            vector=vec,
+        )
+        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
+    ]
+
 
 # File extensions routed to the text chunker
 _TEXT_EXTENSIONS = frozenset({".md", ".txt", ".html", ".rst"})
@@ -93,7 +131,7 @@ def _classify_file(path: Path) -> str | None:
     return None
 
 
-def _ingest_pdf(path: Path, source_name: str) -> list[dict]:
+def _ingest_pdf(path: Path, source_name: str) -> list[ChunkRecord]:
     """Extract text from PDF, chunk, embed, and return store-ready records."""
     import pymupdf4llm
 
@@ -108,47 +146,28 @@ def _ingest_pdf(path: Path, source_name: str) -> list[dict]:
     vectors = embedder.embed_batch(texts)
 
     return [
-        {
-            "source": source_name,
-            "content_type": "pdf",
-            "page_start": pc.page_start,
-            "page_end": pc.page_end,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": pc.chunk,
-            "chunk_index": pc.chunk_index,
-            "vector": vec,
-        }
+        ChunkRecord(
+            source=source_name,
+            content_type="pdf",
+            page_start=pc.page_start,
+            page_end=pc.page_end,
+            line_start=0,
+            line_end=0,
+            chunk=pc.chunk,
+            chunk_index=pc.chunk_index,
+            vector=vec,
+        )
         for pc, vec in zip(page_chunks, vectors, strict=True)
     ]
 
 
-def _ingest_text(path: Path, source_name: str) -> list[dict]:
+def _ingest_text(path: Path, source_name: str) -> list[ChunkRecord]:
     """Read text file, chunk, embed, and return store-ready records."""
     text = path.read_text(encoding="utf-8", errors="replace")
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-
-    vectors = embedder.embed_batch(chunks)
-
-    return [
-        {
-            "source": source_name,
-            "content_type": "text",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text(text), source_name, "text")
 
 
-def _ingest_code(path: Path, source_name: str) -> list[dict]:
+def _ingest_code(path: Path, source_name: str) -> list[ChunkRecord]:
     """Parse code with tree-sitter, chunk, embed, and return store-ready records."""
     code_chunks: list[CodeChunk] = chunk_code(path)
     if not code_chunks:
@@ -158,22 +177,22 @@ def _ingest_code(path: Path, source_name: str) -> list[dict]:
     vectors = embedder.embed_batch(texts)
 
     return [
-        {
-            "source": source_name,
-            "content_type": "code",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": cc.line_start,
-            "line_end": cc.line_end,
-            "chunk": cc.chunk,
-            "chunk_index": cc.chunk_index,
-            "vector": vec,
-        }
+        ChunkRecord(
+            source=source_name,
+            content_type="code",
+            page_start=0,
+            page_end=0,
+            line_start=cc.line_start,
+            line_end=cc.line_end,
+            chunk=cc.chunk,
+            chunk_index=cc.chunk_index,
+            vector=vec,
+        )
         for cc, vec in zip(code_chunks, vectors, strict=True)
     ]
 
 
-def _ingest_docx(path: Path, source_name: str) -> list[dict]:
+def _ingest_docx(path: Path, source_name: str) -> list[ChunkRecord]:
     """Extract text from DOCX, chunk, embed, and return store-ready records."""
     from docx import Document
 
@@ -187,28 +206,10 @@ def _ingest_docx(path: Path, source_name: str) -> list[dict]:
             cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
             if cells:
                 parts.append("\t".join(cells))
-    text = "\n\n".join(parts)
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "docx",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text("\n\n".join(parts)), source_name, "docx")
 
 
-def _ingest_xlsx(path: Path, source_name: str) -> list[dict]:
+def _ingest_xlsx(path: Path, source_name: str) -> list[ChunkRecord]:
     """Extract text from XLSX, chunk, embed, and return store-ready records."""
     from openpyxl import load_workbook
 
@@ -224,28 +225,10 @@ def _ingest_xlsx(path: Path, source_name: str) -> list[dict]:
         if len(sheet_lines) > 1:
             parts.append("\n".join(sheet_lines))
     wb.close()
-    text = "\n\n".join(parts)
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "xlsx",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text("\n\n".join(parts)), source_name, "xlsx")
 
 
-def _ingest_pptx(path: Path, source_name: str) -> list[dict]:
+def _ingest_pptx(path: Path, source_name: str) -> list[ChunkRecord]:
     """Extract text from PPTX, chunk, embed, and return store-ready records."""
     from pptx import Presentation
 
@@ -260,28 +243,10 @@ def _ingest_pptx(path: Path, source_name: str) -> list[dict]:
                     slide_texts.append(text)
         if len(slide_texts) > 1:
             parts.append("\n".join(slide_texts))
-    text = "\n\n".join(parts)
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "pptx",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text("\n\n".join(parts)), source_name, "pptx")
 
 
-def _ingest_epub(path: Path, source_name: str) -> list[dict]:
+def _ingest_epub(path: Path, source_name: str) -> list[ChunkRecord]:
     """Extract text from EPUB, chunk, embed, and return store-ready records."""
     import ebooklib
     from bs4 import BeautifulSoup
@@ -294,28 +259,10 @@ def _ingest_epub(path: Path, source_name: str) -> list[dict]:
         text = BeautifulSoup(html, "html.parser").get_text(separator="\n").strip()
         if text:
             parts.append(text)
-    full_text = "\n\n".join(parts)
-    chunks = chunk_text(full_text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "epub",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text("\n\n".join(parts)), source_name, "epub")
 
 
-def _ingest_image(path: Path, source_name: str) -> list[dict]:
+def _ingest_image(path: Path, source_name: str) -> list[ChunkRecord]:
     """OCR an image, chunk, embed, and return store-ready records."""
     import pytesseract
     from PIL import Image
@@ -323,27 +270,10 @@ def _ingest_image(path: Path, source_name: str) -> list[dict]:
     text = pytesseract.image_to_string(Image.open(path)).strip()
     if not text:
         return []
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "image",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text(text), source_name, "image")
 
 
-def _ingest_data(path: Path, source_name: str) -> list[dict]:
+def _ingest_data(path: Path, source_name: str) -> list[ChunkRecord]:
     """Read CSV/TSV, chunk, embed, and return store-ready records."""
     import csv
 
@@ -351,28 +281,10 @@ def _ingest_data(path: Path, source_name: str) -> list[dict]:
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.reader(f, delimiter=delimiter)
         lines = ["\t".join(row) for row in reader if any(cell.strip() for cell in row)]
-    text = "\n".join(lines)
-    chunks = chunk_text(text)
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        {
-            "source": source_name,
-            "content_type": "data",
-            "page_start": 0,
-            "page_end": 0,
-            "line_start": 0,
-            "line_end": 0,
-            "chunk": chunk,
-            "chunk_index": idx,
-            "vector": vec,
-        }
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
+    return _build_records(chunk_text("\n".join(lines)), source_name, "data")
 
 
-_INGEST_DISPATCH = {
+_INGEST_DISPATCH: dict[str, Callable[[Path, str], list[ChunkRecord]]] = {
     "pdf": _ingest_pdf,
     "text": _ingest_text,
     "code": _ingest_code,
@@ -388,7 +300,7 @@ _INGEST_DISPATCH = {
 def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     """Ingest a single file. Returns chunk count."""
     ingest_fn = _INGEST_DISPATCH[content_type]
-    records = ingest_fn(path, source_name)
+    records: list[dict] = ingest_fn(path, source_name)  # type: ignore[assignment]
     return store.add_chunks(records)
 
 

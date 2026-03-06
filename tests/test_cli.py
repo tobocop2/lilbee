@@ -659,7 +659,7 @@ class TestLilbeeCompleter:
         assert len(results) > 0
 
     @mock.patch(
-        "lilbee.cli._list_ollama_models",
+        "lilbee.cli._chat._list_ollama_models",
         return_value=["llama3:latest", "mistral:latest", "phi3:latest"],
     )
     def test_model_prefix_completes(self, _models):
@@ -669,14 +669,14 @@ class TestLilbeeCompleter:
         assert "phi3:latest" in results
 
     @mock.patch(
-        "lilbee.cli._list_ollama_models",
+        "lilbee.cli._chat._list_ollama_models",
         return_value=["llama3:latest", "mistral:latest"],
     )
     def test_model_prefix_filters(self, _models):
         results = self._complete("/model ll")
         assert results == ["llama3:latest"]
 
-    @mock.patch("lilbee.cli._list_ollama_models", return_value=[])
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=[])
     def test_model_prefix_no_models(self, _models):
         results = self._complete("/model ")
         assert results == []
