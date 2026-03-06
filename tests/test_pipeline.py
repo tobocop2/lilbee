@@ -215,6 +215,22 @@ class TestStoreOperations:
         # Should not raise
         _safe_delete(mock_table, "bad predicate")
 
+    def test_ensure_table_handles_already_exists(self):
+        """_ensure_table recovers when create_table raises ValueError."""
+        from unittest import mock
+
+        from lilbee.store import _CHUNKS_SCHEMA, _ensure_table, _get_db
+
+        db = _get_db()
+        mock_table = mock.MagicMock()
+
+        with (
+            mock.patch.object(db, "create_table", side_effect=ValueError("already exists")),
+            mock.patch.object(db, "open_table", return_value=mock_table),
+        ):
+            result = _ensure_table(db, "chunks", _CHUNKS_SCHEMA)
+            assert result is mock_table
+
     def test_add_chunks_wrong_dimension_raises(self):
         from lilbee.store import add_chunks
 

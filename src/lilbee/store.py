@@ -48,7 +48,10 @@ def _table_names(db: lancedb.DBConnection) -> list[str]:
 def _ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
     if name in _table_names(db):
         return db.open_table(name)
-    return db.create_table(name, schema=schema)
+    try:
+        return db.create_table(name, schema=schema)
+    except ValueError:
+        return db.open_table(name)
 
 
 def _open_table(name: str) -> lancedb.table.Table | None:
