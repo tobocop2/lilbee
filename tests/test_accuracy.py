@@ -16,7 +16,9 @@ def _models_available() -> bool:
     try:
         import ollama
 
-        ollama.embed(model=cfg.EMBEDDING_MODEL, input="test")
+        from lilbee.embedder import embed
+
+        embed("test")  # fastembed, no Ollama needed
         ollama.chat(model=cfg.CHAT_MODEL, messages=[{"role": "user", "content": "hi"}])
         return True
     except Exception:
@@ -114,9 +116,11 @@ def ingested_db(tmp_path_factory):
     pdf_path = docs_dir / "test_vehicle_specs.pdf"
     _generate_test_pdf(pdf_path)
 
+    import asyncio
+
     from lilbee.ingest import sync
 
-    sync()
+    asyncio.run(sync())
 
     yield tmp
 
