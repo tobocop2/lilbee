@@ -12,7 +12,6 @@
 ---
 
 - [Why lilbee](#why-lilbee)
-- [What it does](#what-it-does)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Interactive chat](#interactive-chat)
@@ -25,23 +24,13 @@
 
 ## Why lilbee
 
-LLMs are confident, fluent, and wrong often enough to matter. Ask a model about your company's internal process, a hardware manual, or a niche API and you'll get a plausible answer fabricated from training data. For questions where **accuracy matters more than speed**, you need the model to work from your actual documents — not its best guess.
+LLMs are confident, fluent, and wrong often enough to matter. When a coding agent hallucinates a "fact", it doesn't just show up in a chat bubble — it gets committed, deployed, and depended on. lilbee grounds answers in your actual documents so neither you nor your agents have to guess.
 
-That's retrieval-augmented generation (RAG): instead of hoping the model "knows" the answer, you retrieve the relevant passages first and hand them to the model as context. The model synthesizes an answer from real text, with citations you can verify. Hallucinations drop dramatically because the model is reading, not remembering.
+- **For humans** — interactive chat with streaming responses, slash commands, and source citations you can verify
+- **For agents** — MCP server and JSON CLI for adding documents, syncing, and searching your knowledge base directly
+- **Fully offline** — runs entirely on your machine with [Ollama](https://ollama.com) and LanceDB, no cloud APIs or Docker
 
-**Why this matters even more for coding agents:** When an AI agent makes decisions autonomously — writing code, choosing libraries, following internal conventions — a hallucinated "fact" doesn't just show up in a chat bubble. It gets committed, deployed, and depended on. Giving an agent access to a local RAG tool means it can look things up instead of guessing. It can query your API docs before generating a client, check your style guide before refactoring, or search a hardware spec before writing a driver. The agent stays grounded in your actual knowledge base, and you stay confident in its output.
-
-## What it does
-
-lilbee is a local RAG tool that runs entirely on your machine. No Docker, no external databases, no cloud APIs — just Python and [Ollama](https://ollama.com).
-
-**The workflow:** Install lilbee, add documents to it (`lilbee add ~/path/to/docs`), and sync to build the index (`lilbee sync`). Syncing extracts text, chunks it, embeds it with a local model, and stores vectors in LanceDB. After that, you can ask questions and get answers grounded in your actual documents — with source citations so you can verify. If you're using lilbee through an agent, the agent can drive this entire workflow itself via MCP or the JSON CLI (add files, trigger a sync, then search).
-
-**For humans:** Run `lilbee` to enter an interactive chat with slash commands, tab completion, and streaming responses. Use `/add` to index new documents right from the chat.
-
-**For coding agents:** lilbee exposes an MCP server and a JSON CLI so any agent can add documents, sync, and search your indexed knowledge base directly. `search` returns pre-embedded chunks without calling Ollama at query time — agents use their own LLM to reason over the results. Instead of hallucinating an answer about your codebase or docs, the agent retrieves the real content and reasons over it.
-
-**Ollama is needed for two things:** (1) embedding documents during `sync`/indexing, and (2) interactive chat and `ask`. Once documents are indexed, `search` works without Ollama.
+Add documents (`lilbee add`), sync to build the index (`lilbee sync`), then ask questions or search. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
 
 ## Install
 
@@ -111,6 +100,7 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 | `/add [path]` | Add a file or directory (tab-completes paths) |
 | `/model [name]` | Show or switch chat model (tab-completes Ollama models) |
 | `/version` | Show lilbee version |
+| `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |
 | `/quit` | Exit chat |
 
@@ -140,7 +130,6 @@ Add this to your MCP client's config and the following tools become available:
 | Tool | Description | Requires Ollama |
 |------|-------------|-----------------|
 | `lilbee_search(query, top_k)` | Search for relevant document chunks | No |
-| `lilbee_ask(question)` | Ask a question answered by local RAG | Yes |
 | `lilbee_status()` | Show indexed documents, config, chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with vector store | Yes (embedding) |
 
@@ -148,27 +137,7 @@ Prefer `lilbee_search` — it queries pre-computed embeddings without calling Ol
 
 ### JSON CLI
 
-For agents that shell out, every command supports `--json` (or `-j`) for structured output:
-
-```bash
-# Search — no Ollama needed at query time
-lilbee --json search "query" --top-k 5
-# → {"command": "search", "query": "...", "results": [...]}
-
-# Ask — full local RAG via Ollama
-lilbee --json ask "question"
-# → {"command": "ask", "question": "...", "answer": "...", "sources": [...]}
-
-# Check what's indexed
-lilbee --json status
-# → {"command": "status", "config": {...}, "sources": [...], "total_chunks": N}
-
-# Trigger document sync
-lilbee --json sync
-# → {"command": "sync", "added": [...], "updated": [...], "removed": [...], ...}
-```
-
-All JSON commands return a single object on stdout. Errors return non-zero exit + `{"error": "message"}`. See [docs/agent-integration.md](docs/agent-integration.md) for the full reference.
+For agents that shell out, every command supports `--json` (or `-j`) for structured output (e.g. `lilbee --json search "query"`). See [docs/agent-integration.md](docs/agent-integration.md) for the full reference.
 
 ## Supported formats
 
@@ -180,9 +149,7 @@ All JSON commands return a single object on stdout. Errors return non-zero exit 
 | Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp` | [Tesseract](https://github.com/tesseract-ocr/tesseract) |
 | Data | `.csv`, `.tsv` | — |
 | Text | `.md`, `.txt`, `.html`, `.rst` | — |
-| Code | 154 extensions via [tree-sitter-language-pack](https://github.com/Goldziher/tree-sitter-language-pack) — `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java`, `.c`, `.cpp`, `.rb`, `.cs`, `.swift`, `.kt`, `.scala`, `.lua`, `.zig`, `.ex`, `.hs`, `.dart`, `.jl`, `.r`, `.ml`, `.el`, `.clj`, `.sol`, `.sql`, `.sh`, `.yaml`, `.json`, `.toml`, `.tf`, and [many more](src/lilbee/code_chunker.py) | — |
-
-Code files use AST-aware chunking via tree-sitter — functions and classes are kept intact rather than split mid-definition. Languages with AST definition rules get structural chunking; all others fall back to token-based chunking.
+| Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | — |
 
 ## Configuration
 

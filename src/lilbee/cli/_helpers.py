@@ -150,17 +150,22 @@ def _stream_response(
     stream = ask_stream(question, history=history)
     response_parts: list[str] = []
 
-    # Show a spinner while waiting for the first token from the LLM.
-    with con.status("Thinking..."):
-        first_token = next(stream, None)
+    try:
+        # Show a spinner while waiting for the first token from the LLM.
+        with con.status("Thinking..."):
+            first_token = next(stream, None)
 
-    if first_token is not None:
-        con.print(first_token, end="")
-        response_parts.append(first_token)
+        if first_token is not None:
+            con.print(first_token, end="")
+            response_parts.append(first_token)
 
-    for token in stream:
-        con.print(token, end="")
-        response_parts.append(token)
+        for token in stream:
+            con.print(token, end="")
+            response_parts.append(token)
+    except RuntimeError as exc:
+        con.print(f"\n[red]Error:[/red] {exc}")
+        return
+
     con.print("\n")
     history.append({"role": "user", "content": question})
     history.append({"role": "assistant", "content": "".join(response_parts)})

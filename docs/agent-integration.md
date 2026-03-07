@@ -26,7 +26,6 @@ Add to your MCP client's MCP server configuration:
 | Tool | Description | Requires Ollama |
 |------|-------------|-----------------|
 | `lilbee_search(query, top_k)` | Search for relevant document chunks by vector similarity | No (uses pre-computed embeddings) |
-| `lilbee_ask(question)` | Ask a question answered by local RAG | Yes |
 | `lilbee_status()` | Show indexed documents, config, and chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with the vector store | Yes (for embedding) |
 
@@ -37,14 +36,6 @@ Add to your MCP client's MCP server configuration:
 [
   {"source": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, ...}
 ]
-```
-
-**`lilbee_ask("What is the oil capacity?")`**
-```json
-{
-  "answer": "The oil capacity is 5 quarts.",
-  "sources": [{"source": "manual.pdf", "chunk": "...", "distance": 0.25}]
-}
 ```
 
 **`lilbee_status()`**
