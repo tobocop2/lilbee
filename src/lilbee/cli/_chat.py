@@ -63,6 +63,11 @@ def _handle_slash_model(args: str, con: Console) -> None:
     if not name:
         con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}")
         return
+    available = _list_ollama_models()
+    if available and name not in available:
+        con.print(f"[red]Unknown model:[/red] {name}")
+        con.print(f"Available: {', '.join(sorted(available))}")
+        return
     cfg.CHAT_MODEL = name
     con.print(f"Switched to model [bold]{name}[/bold]")
 

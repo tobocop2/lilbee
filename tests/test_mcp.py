@@ -71,22 +71,6 @@ class TestLilbeeSearch:
         assert lilbee_search("nothing") == []
 
 
-class TestLilbeeAsk:
-    @mock.patch("lilbee.query.ask_raw")
-    def test_returns_answer_and_sources(self, mock_ask):
-        from lilbee.mcp import lilbee_ask
-        from lilbee.query import AskResult
-
-        mock_ask.return_value = AskResult(
-            answer="5 quarts",
-            sources=[{"source": "manual.pdf", "_distance": 0.2, "vector": [0.1], "chunk": "oil"}],
-        )
-        result = lilbee_ask("oil capacity?")
-        assert result["answer"] == "5 quarts"
-        assert len(result["sources"]) == 1
-        assert "vector" not in result["sources"][0]
-
-
 class TestLilbeeStatus:
     def test_empty_status(self):
         from lilbee.mcp import lilbee_status

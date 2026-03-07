@@ -2,6 +2,9 @@
 
 from unittest import mock
 
+import ollama
+import pytest
+
 
 def _make_result(
     source="test.pdf",
@@ -291,3 +294,41 @@ class TestAskStreamError:
         combined = "".join(tokens)
         assert "partial" in combined
         assert "Connection lost" in combined
+
+
+class TestModelNotFound:
+    """ResponseError from Ollama (e.g. model not found) should raise RuntimeError."""
+
+    @mock.patch("ollama.chat", side_effect=ollama.ResponseError("model 'bad' not found", 404))
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_raw_model_not_found(self, _embed, _search, _chat):
+        from lilbee.query import ask_raw
+
+        with pytest.raises(RuntimeError, match="not found"):
+            ask_raw("hello")
+
+    @mock.patch("ollama.chat", side_effect=ollama.ResponseError("model 'bad' not found", 404))
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_stream_model_not_found(self, _embed, _search, _chat):
+        from lilbee.query import ask_stream
+
+        with pytest.raises(RuntimeError, match="not found"):
+            list(ask_stream("hello"))
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_stream_model_not_found_mid_stream(self, _embed, _search, mock_chat):
+        """ResponseError raised during iteration should also become RuntimeError."""
+
+        def failing_mid_stream():
+            yield {"message": {"content": "partial"}}
+            raise ollama.ResponseError("model 'bad' not found", 404)
+
+        mock_chat.return_value = failing_mid_stream()
+        from lilbee.query import ask_stream
+
+        with pytest.raises(RuntimeError, match="not found"):
+            list(ask_stream("hello"))
