@@ -20,8 +20,11 @@ check: lint format-check typecheck test  ## Run all checks (same as CI)
 install:
 	uv tool install . --force --reinstall
 
-demo:  ## Record demo GIF via asciinema + pexpect + agg
-	uv run python scripts/record_demo.py
+demo:  ## Record all demo GIFs via VHS
+	vhs demos/chat.tape
+	vhs demos/code-search.tape
+	vhs demos/json.tape
+	vhs demos/opencode.tape
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage
