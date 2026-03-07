@@ -60,7 +60,7 @@ _TEXT_EXTENSIONS = frozenset({".md", ".txt", ".html", ".rst"})
 _CODE_EXTENSIONS = supported_extensions()
 
 # Office document extensions
-_OFFICE_EXTENSIONS: dict[str, str] = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx"}
+_OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx", ".pptx"})
 
 # eBook extensions
 _EBOOK_EXTENSIONS = frozenset({".epub"})
@@ -70,6 +70,17 @@ _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp",
 
 # Data file extensions
 _DATA_EXTENSIONS = frozenset({".csv", ".tsv"})
+
+# Unified extension → content type lookup (built from the named sets above)
+_EXTENSION_MAP: dict[str, str] = {
+    **{ext: "text" for ext in _TEXT_EXTENSIONS},
+    ".pdf": "pdf",
+    **{ext: "code" for ext in _CODE_EXTENSIONS},
+    **{ext: ext.lstrip(".") for ext in _OFFICE_EXTENSIONS},
+    **{ext: "epub" for ext in _EBOOK_EXTENSIONS},
+    **{ext: "image" for ext in _IMAGE_EXTENSIONS},
+    **{ext: "data" for ext in _DATA_EXTENSIONS},
+}
 
 
 def _file_hash(path: Path) -> str:
@@ -91,44 +102,20 @@ def _discover_files() -> dict[str, Path]:
     if not cfg.DOCUMENTS_DIR.exists():
         return {}
     files: dict[str, Path] = {}
-    supported = (
-        _TEXT_EXTENSIONS
-        | _CODE_EXTENSIONS
-        | frozenset({".pdf"})
-        | frozenset(_OFFICE_EXTENSIONS)
-        | _EBOOK_EXTENSIONS
-        | _IMAGE_EXTENSIONS
-        | _DATA_EXTENSIONS
-    )
     for root, dirs, filenames in os.walk(cfg.DOCUMENTS_DIR, topdown=True):
         dirs[:] = [d for d in dirs if not cfg.is_ignored_dir(d)]
         for fname in filenames:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if path.suffix.lower() in supported:
+            if path.suffix.lower() in _EXTENSION_MAP:
                 files[_relative_name(path)] = path
     return files
 
 
 def _classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
-    ext = path.suffix.lower()
-    if ext == ".pdf":
-        return "pdf"
-    if ext in _TEXT_EXTENSIONS:
-        return "text"
-    if ext in _CODE_EXTENSIONS:
-        return "code"
-    if ext in _OFFICE_EXTENSIONS:
-        return _OFFICE_EXTENSIONS[ext]
-    if ext in _EBOOK_EXTENSIONS:
-        return "epub"
-    if ext in _IMAGE_EXTENSIONS:
-        return "image"
-    if ext in _DATA_EXTENSIONS:
-        return "data"
-    return None
+    return _EXTENSION_MAP.get(path.suffix.lower())
 
 
 def _ingest_pdf(path: Path, source_name: str) -> list[ChunkRecord]:

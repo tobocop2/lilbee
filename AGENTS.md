@@ -66,6 +66,7 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - Single Responsibility — each function does one thing well
 - Small functions — max ~20 lines, max 2 levels of nesting
 - Low cyclomatic complexity — extract helpers when branches exceed 3
+- **Use maps for classification/dispatch** — if-chains that map values to categories belong in a dict, not repeated `if`/`elif` blocks
 - Compose small functions rather than writing monolithic ones
 - If you need to copy-paste code, refactor into a shared function instead
 
@@ -113,7 +114,6 @@ An MCP server is configured in `.claude/settings.json` for this project. Tools a
 | Tool | Description | Requires Ollama |
 |------|-------------|-----------------|
 | `lilbee_search(query, top_k)` | Search for relevant chunks | No |
-| `lilbee_ask(question)` | Ask with local RAG | Yes |
 | `lilbee_status()` | Show indexed docs and config | No |
 | `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
 

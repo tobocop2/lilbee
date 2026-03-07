@@ -341,6 +341,20 @@ class TestChat:
         assert result.exit_code == 0
         assert call_count == 2
 
+    @mock.patch("lilbee.query.ask_stream")
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_chat_model_not_found_recovers(self, _sync, mock_stream):
+        """Model error in chat shows message and continues the loop."""
+
+        def failing_gen(*_args, **_kwargs):
+            raise RuntimeError("Model 'bad' not found")
+            yield  # type: ignore[misc]  # noqa: unreachable — makes this a generator
+
+        mock_stream.side_effect = failing_gen
+        result = runner.invoke(app, ["chat"], input="hello\n/quit\n")
+        assert result.exit_code == 0
+        assert "not found" in result.output
+
 
 class TestApplyOverrides:
     def test_data_dir_override(self, tmp_path):
@@ -544,7 +558,8 @@ class TestSlashModel:
         _handle_slash_model("", con)
         assert "Current model:" in buf.getvalue()
 
-    def test_model_switches(self):
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
+    def test_model_switches(self, _models):
         from io import StringIO
 
         from rich.console import Console as RichConsole
@@ -562,8 +577,30 @@ class TestSlashModel:
         finally:
             cfg.CHAT_MODEL = original
 
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
+    def test_model_rejects_unknown(self, _models):
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        import lilbee.config as cfg
+        from lilbee.cli import _handle_slash_model
+
+        original = cfg.CHAT_MODEL
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            _handle_slash_model("nonexistent", con)
+            assert original == cfg.CHAT_MODEL
+            output = buf.getvalue()
+            assert "Unknown model" in output
+            assert "Available:" in output
+        finally:
+            cfg.CHAT_MODEL = original
+
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["phi3", "mistral"])
     @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
-    def test_model_in_chat_loop(self, _sync):
+    def test_model_in_chat_loop(self, _sync, _models):
         import lilbee.config as cfg
 
         original = cfg.CHAT_MODEL
@@ -1325,3 +1362,22 @@ class TestAskJson:
         data = json.loads(result.output.strip())
         assert data["sources"] == []
         assert "No relevant" in data["answer"]
+
+
+class TestAskModelNotFound:
+    """CLI should show a friendly error when the model doesn't exist."""
+
+    @mock.patch("lilbee.query.ask_stream", side_effect=RuntimeError("Model 'bad' not found"))
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_model_not_found_human(self, _sync, _stream):
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    @mock.patch("lilbee.query.ask_raw", side_effect=RuntimeError("Model 'bad' not found"))
+    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    def test_ask_model_not_found_json(self, _sync, _raw):
+        result = runner.invoke(app, ["--json", "ask", "hello"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "not found" in data["error"]

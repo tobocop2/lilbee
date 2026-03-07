@@ -91,7 +91,12 @@ def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    response = ollama.chat(model=CHAT_MODEL, messages=messages)
+    try:
+        response = ollama.chat(model=CHAT_MODEL, messages=messages)
+    except ollama.ResponseError as exc:
+        raise RuntimeError(
+            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+        ) from exc
     return AskResult(answer=response["message"]["content"], sources=results)
 
 
@@ -122,17 +127,26 @@ def ask_stream(
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    stream = ollama.chat(
-        model=CHAT_MODEL,
-        messages=messages,
-        stream=True,
-    )
+    try:
+        stream = ollama.chat(
+            model=CHAT_MODEL,
+            messages=messages,
+            stream=True,
+        )
+    except ollama.ResponseError as exc:
+        raise RuntimeError(
+            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+        ) from exc
 
     try:
         for chunk in stream:
             token = chunk["message"]["content"]
             if token:
                 yield token
+    except ollama.ResponseError as exc:
+        raise RuntimeError(
+            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+        ) from exc
     except (ConnectionError, OSError) as exc:
         yield f"\n\n[Connection lost: {exc}]"
 
