@@ -1,8 +1,22 @@
 [project]
 name = "lilbee"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local RAG for the terminal. Drop files in a folder, ask questions, get answers. JSON API for coding agents."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Indexing",
+]
 dependencies = [
     "ollama",
     "lancedb",
@@ -14,6 +28,11 @@ dependencies = [
     "prompt-toolkit>=3.0",
     "mcp>=1.26.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tobocop2/lilbee"
+Repository = "https://github.com/tobocop2/lilbee"
+Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
 lilbee = "lilbee.cli:app"
