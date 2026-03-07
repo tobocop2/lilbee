@@ -2,6 +2,7 @@
 
 from unittest import mock
 
+import ollama
 import pytest
 
 
@@ -175,16 +176,64 @@ class TestValidateModel:
 
             validate_model()  # "nomic-embed-text" matches base of "nomic-embed-text:latest"
 
-    def test_model_not_found(self):
+    def test_auto_pull_when_model_missing(self):
         mock_model = mock.MagicMock()
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
         mock_response.models = [mock_model]
-        with mock.patch("ollama.list", return_value=mock_response):
+        event = mock.MagicMock(status="done", total=100, completed=100)
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", return_value=iter([event])) as mock_pull,
+        ):
             from lilbee.embedder import validate_model
 
-            with pytest.raises(RuntimeError, match="not found"):
+            validate_model()
+            mock_pull.assert_called_once_with("nomic-embed-text", stream=True)
+
+    def test_auto_pull_failure_propagates(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", side_effect=ollama.ResponseError("model not found")),
+        ):
+            from lilbee.embedder import validate_model
+
+            with pytest.raises(ollama.ResponseError):
                 validate_model()
+
+    def test_auto_pull_shows_ready_message(self, capsys):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        event = mock.MagicMock(status="downloading", total=1_000_000, completed=1_000_000)
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", return_value=iter([event])),
+        ):
+            from lilbee.embedder import validate_model
+
+            validate_model()
+            stderr = capsys.readouterr().err
+            assert "ready" in stderr
+
+    def test_auto_pull_handles_events_without_total(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        event = mock.MagicMock(status="pulling manifest", total=0, completed=0)
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", return_value=iter([event])),
+        ):
+            from lilbee.embedder import validate_model
+
+            validate_model()  # Should not raise
 
     def test_connection_error(self):
         with mock.patch("ollama.list", side_effect=ConnectionError("refused")):

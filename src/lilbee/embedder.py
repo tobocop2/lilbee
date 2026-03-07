@@ -2,6 +2,7 @@
 
 import logging
 import math
+import sys
 import time
 from typing import Any, cast
 
@@ -52,18 +53,38 @@ def _validate_vector(vector: list[float]) -> None:
             raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
 
 
+def _pull_with_progress(model: str) -> None:
+    """Pull an Ollama model, showing a Rich progress bar on stderr."""
+    from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        transient=True,
+    ) as progress:
+        desc = f"Downloading model '{model}'..."
+        ptask = progress.add_task(desc, total=None)
+        for event in ollama.pull(model, stream=True):
+            total = event.total or 0
+            completed = event.completed or 0
+            if total > 0:
+                progress.update(ptask, total=total, completed=completed)
+    sys.stderr.write(f"Model '{model}' ready.\n")
+
+
 def validate_model() -> None:
-    """Check that the configured embedding model is available in Ollama."""
+    """Ensure the configured embedding model is available, pulling if needed."""
     try:
         models = ollama.list()
         names = {m.model for m in models.models if m.model}
         # Also match without :latest tag
         base_names = {n.split(":")[0] for n in names}
         if EMBEDDING_MODEL not in names and EMBEDDING_MODEL not in base_names:
-            raise RuntimeError(
-                f"Embedding model '{EMBEDDING_MODEL}' not found in Ollama. "
-                f"Run: ollama pull {EMBEDDING_MODEL}"
-            )
+            log.info("Pulling embedding model '%s' from Ollama...", EMBEDDING_MODEL)
+            _pull_with_progress(EMBEDDING_MODEL)
     except (ConnectionError, OSError) as exc:
         raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 
