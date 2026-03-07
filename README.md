@@ -1,13 +1,13 @@
 # lilbee
 
 [![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
-[![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
-> Local RAG for the terminal. Ground your LLM answers in real documents — no hallucinations, no cloud, no Docker.
+> A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there.
 
 ---
 

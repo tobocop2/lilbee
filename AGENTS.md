@@ -116,6 +116,7 @@ An MCP server is configured in `.claude/settings.json` for this project. Tools a
 | `lilbee_search(query, top_k)` | Search for relevant chunks | No |
 | `lilbee_status()` | Show indexed docs and config | No |
 | `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
+| `lilbee_reset()` | Delete all documents and data (factory reset) | No |
 
 Prefer `lilbee_search` — it returns pre-embedded chunks without calling Ollama at query time.
 
@@ -125,7 +126,6 @@ All commands accept `--json` (before the subcommand) for structured output:
 
 ```bash
 lilbee --json search "query" --top-k 5
-lilbee --json ask "question"
 lilbee --json status
 lilbee --json sync
 ```

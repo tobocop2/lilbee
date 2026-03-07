@@ -1,7 +1,7 @@
 [project]
 name = "lilbee"
-version = "0.3.1"
-description = "Local RAG for the terminal. Drop files in a folder, ask questions, get answers. JSON API for coding agents."
+version = "0.3.2"
+description = "A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
