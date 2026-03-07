@@ -220,7 +220,11 @@ def _auto_sync(con: Console) -> None:
     """Run document sync before queries."""
     from lilbee.ingest import sync
 
-    result = asyncio.run(sync())
+    try:
+        result = asyncio.run(sync())
+    except RuntimeError as exc:
+        con.print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from None
     total = (
         len(result["added"])
         + len(result["updated"])
