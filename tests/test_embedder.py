@@ -181,14 +181,15 @@ class TestValidateModel:
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
         mock_response.models = [mock_model]
+        event = mock.MagicMock(status="done", total=100, completed=100)
         with (
             mock.patch("ollama.list", return_value=mock_response),
-            mock.patch("ollama.pull") as mock_pull,
+            mock.patch("ollama.pull", return_value=iter([event])) as mock_pull,
         ):
             from lilbee.embedder import validate_model
 
             validate_model()
-            mock_pull.assert_called_once_with("nomic-embed-text")
+            mock_pull.assert_called_once_with("nomic-embed-text", stream=True)
 
     def test_auto_pull_failure_propagates(self):
         mock_model = mock.MagicMock()
@@ -204,22 +205,35 @@ class TestValidateModel:
             with pytest.raises(ollama.ResponseError):
                 validate_model()
 
-    def test_auto_pull_logs_info(self, caplog):
-        import logging
-
+    def test_auto_pull_shows_ready_message(self, capsys):
         mock_model = mock.MagicMock()
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
         mock_response.models = [mock_model]
+        event = mock.MagicMock(status="downloading", total=1_000_000, completed=1_000_000)
         with (
             mock.patch("ollama.list", return_value=mock_response),
-            mock.patch("ollama.pull"),
-            caplog.at_level(logging.INFO, logger="lilbee.embedder"),
+            mock.patch("ollama.pull", return_value=iter([event])),
         ):
             from lilbee.embedder import validate_model
 
             validate_model()
-            assert "Pulling embedding model" in caplog.text
+            stderr = capsys.readouterr().err
+            assert "ready" in stderr
+
+    def test_auto_pull_handles_events_without_total(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        event = mock.MagicMock(status="pulling manifest", total=0, completed=0)
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", return_value=iter([event])),
+        ):
+            from lilbee.embedder import validate_model
+
+            validate_model()  # Should not raise
 
     def test_connection_error(self):
         with mock.patch("ollama.list", side_effect=ConnectionError("refused")):
