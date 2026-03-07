@@ -171,7 +171,7 @@ CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, and `--version` / `-V` f
 
 ## How it works
 
-Documents are hashed and synced automatically — new files get ingested, modified files re-ingested, deleted files removed. Text is split into overlapping chunks (token-based for prose, AST-aware via tree-sitter for code), embedded with a local model, and stored in LanceDB. Queries embed the question, find the most relevant chunks by vector similarity, and pass them as context to the LLM.
+Documents are hashed and synced automatically — new files get ingested, modified files re-ingested, deleted files removed. [Kreuzberg](https://github.com/Goldziher/kreuzberg) handles extraction and chunking across all document formats (PDF, Office, images via OCR, etc.), while [tree-sitter](https://tree-sitter.github.io/tree-sitter/) provides AST-aware chunking for code. Chunks are embedded via [Ollama](https://ollama.com) and stored in [LanceDB](https://lancedb.com). Ollama uses llama.cpp with native Metal support, which is significantly faster than in-process alternatives like ONNX Runtime — CoreML can't accelerate nomic-embed-text's rotary embeddings, making CPU the only ONNX path on macOS (~170ms/chunk vs near-instant with Ollama's GPU inference). Queries embed the question, find the most relevant chunks by vector similarity, and pass them as context to the LLM.
 
 ### Data location
 

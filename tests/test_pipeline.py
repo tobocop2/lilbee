@@ -23,23 +23,21 @@ def isolated_db(tmp_path):
 
 def _embedding_model_available() -> bool:
     try:
-        import ollama
+        from lilbee.embedder import embed
 
-        from lilbee.config import EMBEDDING_MODEL
-
-        ollama.embed(model=EMBEDDING_MODEL, input="test")
+        embed("test")
         return True
     except Exception:
         return False
 
 
-requires_ollama = pytest.mark.skipif(
+requires_embedding = pytest.mark.skipif(
     not _embedding_model_available(),
-    reason="Ollama not running or nomic-embed-text not pulled",
+    reason="Embedding model not available",
 )
 
 
-@requires_ollama
+@requires_embedding
 class TestEmbedder:
     def test_embed_returns_float_vector(self):
         from lilbee.embedder import embed
@@ -61,7 +59,7 @@ class TestEmbedder:
         assert embed_batch([]) == []
 
 
-@requires_ollama
+@requires_embedding
 class TestStoreRoundTrip:
     def test_add_and_search(self):
         from lilbee.embedder import embed

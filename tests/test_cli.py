@@ -2,6 +2,7 @@
 
 import json
 from unittest import mock
+from unittest.mock import AsyncMock
 
 import pytest
 from typer.testing import CliRunner
@@ -83,16 +84,24 @@ class TestStatus:
 
 
 class TestSync:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_empty(self, _e, _eb):
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_empty(self, _sync):
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
         assert "Added: 0" in result.output
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_with_file(self, _e, _eb, isolated_env):
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        return_value={
+            "added": ["test.txt"],
+            "updated": [],
+            "removed": [],
+            "unchanged": 0,
+            "failed": [],
+        },
+    )
+    def test_sync_with_file(self, _sync, isolated_env):
         import lilbee.config as cfg
 
         (cfg.DOCUMENTS_DIR / "test.txt").write_text("Hello world content.")
@@ -102,6 +111,7 @@ class TestSync:
 
     @mock.patch(
         "lilbee.ingest.sync",
+        new_callable=AsyncMock,
         return_value={
             "added": [],
             "updated": [],
@@ -240,14 +250,14 @@ class TestAddIgnoresDirs:
 
 class TestAsk:
     @mock.patch("lilbee.query.ask_stream")
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_prints_response(self, _sync, mock_stream):
         mock_stream.return_value = iter(["Hello", " world"])
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
     @mock.patch("lilbee.query.ask_stream")
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, _sync, mock_stream):
         mock_stream.return_value = iter(["answer"])
         result = runner.invoke(app, ["ask", "question", "--model", "llama3"])
@@ -275,6 +285,7 @@ class TestDataDirFlag:
 class TestAutoSync:
     @mock.patch(
         "lilbee.ingest.sync",
+        new_callable=AsyncMock,
         return_value={
             "added": ["new.pdf"],
             "updated": [],
@@ -292,25 +303,25 @@ class TestAutoSync:
 
 class TestChat:
     @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"]))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_quit(self, _sync, _stream):
         result = runner.invoke(app, ["chat"], input="question\n/quit\n")
         assert result.exit_code == 0
 
     @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_slash_quit(self, _sync, _stream):
         """Bare /quit exits immediately."""
         result = runner.invoke(app, ["chat"], input="/quit\n")
         assert result.exit_code == 0
 
     @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_empty_input_skipped(self, _sync, _stream):
         result = runner.invoke(app, ["chat"], input="\n/quit\n")
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_eof_exits(self, _sync):
         # Empty input simulates EOF
         result = runner.invoke(app, ["chat"], input="")
@@ -319,6 +330,7 @@ class TestChat:
     @mock.patch("lilbee.query.ask_stream")
     @mock.patch(
         "lilbee.ingest.sync",
+        new_callable=AsyncMock,
         return_value={"added": [], "updated": [], "removed": [], "unchanged": 0},
     )
     def test_chat_passes_history(self, _sync, mock_stream):
@@ -342,7 +354,7 @@ class TestChat:
         assert call_count == 2
 
     @mock.patch("lilbee.query.ask_stream")
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_model_not_found_recovers(self, _sync, mock_stream):
         """Model error in chat shows message and continues the loop."""
 
@@ -442,7 +454,7 @@ class TestDispatchSlash:
 class TestSlashStatus:
     """Test /status inside the chat loop."""
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_status_in_chat(self, _sync):
         result = runner.invoke(app, ["chat"], input="/status\n/quit\n")
         assert result.exit_code == 0
@@ -450,7 +462,7 @@ class TestSlashStatus:
 
 
 class TestSlashHelp:
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_help_in_chat(self, _sync):
         result = runner.invoke(app, ["chat"], input="/help\n/quit\n")
         assert result.exit_code == 0
@@ -460,7 +472,7 @@ class TestSlashHelp:
 class TestSlashAdd:
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_with_path(self, _sync, _e, _eb, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
@@ -478,13 +490,13 @@ class TestSlashAdd:
         result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_nonexistent_path(self, _sync):
         result = runner.invoke(app, ["chat"], input="/add /tmp/nope_xyz_999\n/quit\n")
         assert result.exit_code == 0
         assert "Path not found" in result.output
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_interactive_import_error(self, _sync):
         """When prompt_toolkit import fails, /add with no args does nothing."""
         import sys
@@ -500,21 +512,21 @@ class TestSlashAdd:
             else:
                 sys.modules.pop("prompt_toolkit", None)
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_interactive_eof(self, _sync):
         """When user hits Ctrl+C / EOF in prompt_toolkit, /add exits gracefully."""
         with mock.patch("prompt_toolkit.prompt", side_effect=EOFError):
             result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
             assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_interactive_empty_input(self, _sync):
         """When user enters empty path in prompt_toolkit, /add does nothing."""
         with mock.patch("prompt_toolkit.prompt", return_value="   "):
             result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
             assert result.exit_code == 0
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_add_interactive_nonexistent(self, _sync):
         """When user enters nonexistent path in prompt_toolkit prompt."""
         with mock.patch("prompt_toolkit.prompt", return_value="/tmp/nope_xyz_999"):
@@ -524,7 +536,7 @@ class TestSlashAdd:
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    @mock.patch("lilbee.ingest.sync")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock)
     def test_slash_add_interactive_success(self, mock_sync, _e, _eb, tmp_path):
         """Full /add interactive flow with successful file."""
         src = tmp_path / "source" / "doc.txt"
@@ -599,7 +611,7 @@ class TestSlashModel:
             cfg.CHAT_MODEL = original
 
     @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["phi3", "mistral"])
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_model_in_chat_loop(self, _sync, _models):
         import lilbee.config as cfg
 
@@ -630,7 +642,7 @@ class TestSlashVersion:
         assert "lilbee" in output
         assert _get_version() in output
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_version_in_chat_loop(self, _sync):
         result = runner.invoke(app, ["chat"], input="/version\n/quit\n")
         assert result.exit_code == 0
@@ -638,7 +650,7 @@ class TestSlashVersion:
 
 
 class TestSlashUnknown:
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_unknown_slash_command(self, _sync):
         result = runner.invoke(app, ["chat"], input="/foobar\n/quit\n")
         assert result.exit_code == 0
@@ -649,13 +661,13 @@ class TestDefaultInvokesChatLoop:
     """Invoking `lilbee` with no subcommand enters chat mode."""
 
     @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_default_chat(self, _sync, _stream):
         result = runner.invoke(app, [], input="question\n/quit\n")
         assert result.exit_code == 0
         assert "lilbee chat" in result.output
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_default_slash_help(self, _sync):
         result = runner.invoke(app, [], input="/help\n/quit\n")
         assert result.exit_code == 0
@@ -755,7 +767,7 @@ class TestQuitChat:
 class TestPromptSessionBranch:
     """Test that TTY branch uses PromptSession."""
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_tty_uses_prompt_session(self, _sync):
         mock_session = mock.MagicMock()
         mock_session.prompt.side_effect = ["/quit"]
@@ -774,7 +786,7 @@ class TestPromptSessionBranch:
             _chat_loop(console)
             mock_session.prompt.assert_called()
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_tty_import_error_falls_back(self, _sync):
         """When prompt_toolkit import fails in TTY mode, falls back to con.input."""
         from lilbee.cli import _chat_loop
@@ -1182,7 +1194,7 @@ class TestReset:
 class TestSlashReset:
     """Test /reset inside the chat loop."""
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_confirms(self, _sync, isolated_env):
         import lilbee.config as cfg
 
@@ -1193,7 +1205,7 @@ class TestSlashReset:
         assert "Reset complete" in result.output
         assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_eof_aborts(self, _sync):
         """EOF during /reset confirmation aborts gracefully."""
         from io import StringIO
@@ -1208,7 +1220,7 @@ class TestSlashReset:
             _handle_slash_reset("", con)
         assert "Aborted" in buf.getvalue()
 
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_aborts(self, _sync, isolated_env):
         import lilbee.config as cfg
 
@@ -1271,9 +1283,8 @@ class TestStatusJson:
 
 
 class TestSyncJson:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_json_empty(self, _e, _eb):
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_json_empty(self, _sync):
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1283,6 +1294,7 @@ class TestSyncJson:
 
     @mock.patch(
         "lilbee.ingest.sync",
+        new_callable=AsyncMock,
         return_value={
             "added": ["new.txt"],
             "updated": [],
@@ -1333,7 +1345,7 @@ class TestAddJson:
 
 class TestAskJson:
     @mock.patch("lilbee.query.ask_raw")
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json(self, _sync, mock_ask_raw):
         from lilbee.query import AskResult
 
@@ -1352,7 +1364,7 @@ class TestAskJson:
         assert "distance" in data["sources"][0]
 
     @mock.patch("lilbee.query.ask_raw")
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, _sync, mock_ask_raw):
         from lilbee.query import AskResult
 
@@ -1368,14 +1380,14 @@ class TestAskModelNotFound:
     """CLI should show a friendly error when the model doesn't exist."""
 
     @mock.patch("lilbee.query.ask_stream", side_effect=RuntimeError("Model 'bad' not found"))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_human(self, _sync, _stream):
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
     @mock.patch("lilbee.query.ask_raw", side_effect=RuntimeError("Model 'bad' not found"))
-    @mock.patch("lilbee.ingest.sync", return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_json(self, _sync, _raw):
         result = runner.invoke(app, ["--json", "ask", "hello"])
         assert result.exit_code == 1
