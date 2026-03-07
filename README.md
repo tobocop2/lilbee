@@ -1,9 +1,9 @@
 # lilbee
 
-> NOTE: this is an early experimental project and things are likely unstable
-
-[![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
+[![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -12,6 +12,7 @@
 ---
 
 - [Why lilbee](#why-lilbee)
+- [Demos](#demos)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Interactive chat](#interactive-chat)
@@ -24,13 +25,51 @@
 
 ## Why lilbee
 
-LLMs are confident, fluent, and wrong often enough to matter. When a coding agent hallucinates a "fact", it doesn't just show up in a chat bubble — it gets committed, deployed, and depended on. lilbee grounds answers in your actual documents so neither you nor your agents have to guess.
+Index your documents and code into a local knowledge base, then ask questions grounded in what's actually there. Most tools like this only handle code. lilbee handles PDFs, Word docs, epics — and code too, with AST-aware chunking.
 
-- **For humans** — interactive chat with streaming responses, slash commands, and source citations you can verify
-- **For agents** — MCP server and JSON CLI for adding documents, syncing, and searching your knowledge base directly
-- **Fully offline** — runs entirely on your machine with [Ollama](https://ollama.com) and LanceDB, no cloud APIs or Docker
+- **Documents and code alike** — add anything from a vehicle manual to an entire codebase
+- **Fully offline** — runs on your machine with [Ollama](https://ollama.com) and LanceDB, no cloud APIs or Docker
+- **Works with AI agents** — MCP server and JSON CLI so agents can search your knowledge base too
 
-Add documents (`lilbee add`), sync to build the index (`lilbee sync`), then ask questions or search. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
+Add files (`lilbee add`), then ask questions or search. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
+
+## Demos
+
+<details>
+<summary><b>AI agent using lilbee (opencode)</b></summary>
+
+![opencode + lilbee](demos/opencode.gif)
+
+An AI coding agent shells out to `lilbee --json search` to ground its answers in your documents.
+</details>
+
+<details>
+<summary><b>Interactive local offline chat</b></summary>
+
+> [!NOTE]
+> Entirely local on a 2021 M1 Pro with 32 GB RAM.
+
+Model switching via tab completion, then a Q&A grounded in an indexed PDF.
+
+![Interactive local offline chat](demos/chat.gif)
+
+</details>
+
+<details>
+<summary><b>Code index and search</b></summary>
+
+![Code search](demos/code-search.gif)
+
+Add a codebase and search with natural language. Tree-sitter provides AST-aware chunking.
+</details>
+
+<details>
+<summary><b>JSON output</b></summary>
+
+![JSON output](demos/json.gif)
+
+Structured JSON output for agents and scripts.
+</details>
 
 ## Install
 
@@ -50,8 +89,7 @@ Add documents (`lilbee add`), sync to build the index (`lilbee sync`), then ask 
 ### Install
 
 ```bash
-git clone https://github.com/tobocop2/lilbee && cd lilbee
-pip install .        # or: uv tool install .
+pip install lilbee        # or: uv tool install lilbee
 ```
 
 ### Development (run from source)
@@ -90,6 +128,7 @@ lilbee ask "Explain this" --model qwen3
 lilbee status
 ```
 
+
 ## Interactive chat
 
 Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation history, streaming responses, and slash commands:
@@ -108,36 +147,7 @@ Slash commands and paths tab-complete. A spinner shows while waiting for the fir
 
 ## Agent integration
 
-lilbee can serve as a local retrieval backend for AI coding agents. Two integration methods:
-
-### MCP server
-
-For agents that support [MCP](https://modelcontextprotocol.io), lilbee ships a built-in MCP server:
-
-```json
-{
-  "mcpServers": {
-    "lilbee": {
-      "command": "lilbee",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Add this to your MCP client's config and the following tools become available:
-
-| Tool | Description | Requires Ollama |
-|------|-------------|-----------------|
-| `lilbee_search(query, top_k)` | Search for relevant document chunks | No |
-| `lilbee_status()` | Show indexed documents, config, chunk counts | No |
-| `lilbee_sync()` | Sync documents directory with vector store | Yes (embedding) |
-
-Prefer `lilbee_search` — it queries pre-computed embeddings without calling Ollama at query time.
-
-### JSON CLI
-
-For agents that shell out, every command supports `--json` (or `-j`) for structured output (e.g. `lilbee --json search "query"`). See [docs/agent-integration.md](docs/agent-integration.md) for the full reference.
+lilbee can serve as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [docs/agent-integration.md](docs/agent-integration.md) for setup and usage.
 
 ## Supported formats
 
