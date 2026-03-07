@@ -1,5 +1,6 @@
 """Shared helper functions for CLI commands and slash commands."""
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -133,7 +134,7 @@ def _add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
     copied = _copy_paths(paths, con, force=force)
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
 
-    result = sync()
+    result = asyncio.run(sync())
     con.print(f"Added: {len(result['added'])}")
     con.print(f"Updated: {len(result['updated'])}")
     con.print(f"Unchanged: {result['unchanged']}")
@@ -219,7 +220,7 @@ def _auto_sync(con: Console) -> None:
     """Run document sync before queries."""
     from lilbee.ingest import sync
 
-    result = sync()
+    result = asyncio.run(sync())
     total = (
         len(result["added"])
         + len(result["updated"])

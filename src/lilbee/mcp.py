@@ -40,11 +40,11 @@ def lilbee_status() -> dict:
 
 
 @mcp.tool()
-def lilbee_sync() -> dict:
+async def lilbee_sync() -> dict:
     """Sync documents directory with the vector store."""
     from lilbee.ingest import sync
 
-    result = sync(quiet=True)
+    result = await sync(quiet=True)
     return {
         "added": result["added"],
         "updated": result["updated"],

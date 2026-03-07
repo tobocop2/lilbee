@@ -1,5 +1,6 @@
 """CLI command definitions registered on the app."""
 
+import asyncio
 from pathlib import Path
 
 import typer
@@ -75,7 +76,7 @@ def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
     from lilbee.cli import _state
     from lilbee.ingest import sync
 
-    result = sync(quiet=_state["json_mode"])
+    result = asyncio.run(sync(quiet=_state["json_mode"]))
     if _state["json_mode"]:
         _json_output(_sync_result_to_json(result))
         return
@@ -95,7 +96,7 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
     from lilbee.cli import _state
     from lilbee.ingest import sync
 
-    result = sync(force_rebuild=True, quiet=_state["json_mode"])
+    result = asyncio.run(sync(force_rebuild=True, quiet=_state["json_mode"]))
     if _state["json_mode"]:
         _json_output({"command": "rebuild", "ingested": len(result["added"])})
         return
@@ -119,7 +120,7 @@ def add(
         from lilbee.ingest import sync
 
         copied = _copy_paths(paths, console, force=force)
-        result = sync(quiet=True)
+        result = asyncio.run(sync(quiet=True))
         _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
         return
     _add_paths(paths, console, force=force)

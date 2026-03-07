@@ -1,6 +1,7 @@
 """Tests for the MCP server tools."""
 
 from unittest import mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -32,6 +33,15 @@ def _skip_model_validation():
     """MCP tests never need real Ollama model validation."""
     with mock.patch("lilbee.embedder.validate_model"):
         yield
+
+
+_SYNC_NOOP = {
+    "added": [],
+    "updated": [],
+    "removed": [],
+    "unchanged": 0,
+    "failed": [],
+}
 
 
 class TestClean:
@@ -92,22 +102,30 @@ class TestLilbeeStatus:
 
 
 class TestLilbeeSync:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_empty(self, _e, _eb):
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_sync_empty(self, _sync):
         from lilbee.mcp import lilbee_sync
 
-        result = lilbee_sync()
+        result = await lilbee_sync()
         assert result["added"] == []
         assert result["unchanged"] == 0
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_with_file(self, _e, _eb):
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        return_value={
+            "added": ["test.txt"],
+            "updated": [],
+            "removed": [],
+            "unchanged": 0,
+            "failed": [],
+        },
+    )
+    async def test_sync_with_file(self, _sync):
         from lilbee.mcp import lilbee_sync
 
         (cfg.DOCUMENTS_DIR / "test.txt").write_text("Hello world content.")
-        result = lilbee_sync()
+        result = await lilbee_sync()
         assert "test.txt" in result["added"]
 
 
