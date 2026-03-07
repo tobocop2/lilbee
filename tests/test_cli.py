@@ -1393,3 +1393,60 @@ class TestAskModelNotFound:
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "not found" in data["error"]
+
+
+class TestOllamaUnavailable:
+    """CLI commands should show friendly errors when Ollama is unreachable."""
+
+    _ERR = RuntimeError("Cannot connect to Ollama: Connection refused")
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_sync_ollama_unavailable(self, _sync):
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Cannot connect to Ollama" in result.output
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_sync_ollama_unavailable_json(self, _sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "Cannot connect to Ollama" in data["error"]
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_rebuild_ollama_unavailable(self, _sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Cannot connect to Ollama" in result.output
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_rebuild_ollama_unavailable_json(self, _sync):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "Cannot connect to Ollama" in data["error"]
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_add_ollama_unavailable(self, _sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 1
+        assert "Cannot connect to Ollama" in result.output
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_add_ollama_unavailable_json(self, _sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "Cannot connect to Ollama" in data["error"]
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
+    def test_auto_sync_ollama_unavailable(self, _sync):
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "Cannot connect to Ollama" in result.output
