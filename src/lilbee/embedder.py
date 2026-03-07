@@ -53,17 +53,15 @@ def _validate_vector(vector: list[float]) -> None:
 
 
 def validate_model() -> None:
-    """Check that the configured embedding model is available in Ollama."""
+    """Ensure the configured embedding model is available, pulling if needed."""
     try:
         models = ollama.list()
         names = {m.model for m in models.models if m.model}
         # Also match without :latest tag
         base_names = {n.split(":")[0] for n in names}
         if EMBEDDING_MODEL not in names and EMBEDDING_MODEL not in base_names:
-            raise RuntimeError(
-                f"Embedding model '{EMBEDDING_MODEL}' not found in Ollama. "
-                f"Run: ollama pull {EMBEDDING_MODEL}"
-            )
+            log.info("Pulling embedding model '%s' from Ollama...", EMBEDDING_MODEL)
+            ollama.pull(EMBEDDING_MODEL)
     except (ConnectionError, OSError) as exc:
         raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 

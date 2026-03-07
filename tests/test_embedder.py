@@ -2,6 +2,7 @@
 
 from unittest import mock
 
+import ollama
 import pytest
 
 
@@ -175,16 +176,50 @@ class TestValidateModel:
 
             validate_model()  # "nomic-embed-text" matches base of "nomic-embed-text:latest"
 
-    def test_model_not_found(self):
+    def test_auto_pull_when_model_missing(self):
         mock_model = mock.MagicMock()
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
         mock_response.models = [mock_model]
-        with mock.patch("ollama.list", return_value=mock_response):
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull") as mock_pull,
+        ):
             from lilbee.embedder import validate_model
 
-            with pytest.raises(RuntimeError, match="not found"):
+            validate_model()
+            mock_pull.assert_called_once_with("nomic-embed-text")
+
+    def test_auto_pull_failure_propagates(self):
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull", side_effect=ollama.ResponseError("model not found")),
+        ):
+            from lilbee.embedder import validate_model
+
+            with pytest.raises(ollama.ResponseError):
                 validate_model()
+
+    def test_auto_pull_logs_info(self, caplog):
+        import logging
+
+        mock_model = mock.MagicMock()
+        mock_model.model = "llama3:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [mock_model]
+        with (
+            mock.patch("ollama.list", return_value=mock_response),
+            mock.patch("ollama.pull"),
+            caplog.at_level(logging.INFO, logger="lilbee.embedder"),
+        ):
+            from lilbee.embedder import validate_model
+
+            validate_model()
+            assert "Pulling embedding model" in caplog.text
 
     def test_connection_error(self):
         with mock.patch("ollama.list", side_effect=ConnectionError("refused")):
