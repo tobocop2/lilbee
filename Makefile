@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test check clean install demo
+.PHONY: lint format format-check typecheck test check clean install demo build publish
 
 lint:
 	uv run ruff check src/ tests/
@@ -26,6 +26,12 @@ demo:  ## Record all demo GIFs via VHS
 	vhs demos/json.tape
 	vhs demos/opencode.tape
 
+build:
+	uv build
+
+publish: build  ## Build and upload to PyPI
+	uv publish
+
 clean:
-	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage
+	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage dist/
 	find . -type d -name __pycache__ -exec rm -rf {} +

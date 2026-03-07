@@ -76,7 +76,14 @@ def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
     from lilbee.cli import _state
     from lilbee.ingest import sync
 
-    result = asyncio.run(sync(quiet=_state["json_mode"]))
+    try:
+        result = asyncio.run(sync(quiet=_state["json_mode"]))
+    except RuntimeError as exc:
+        if _state["json_mode"]:
+            _json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from None
     if _state["json_mode"]:
         _json_output(_sync_result_to_json(result))
         return
@@ -96,7 +103,14 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
     from lilbee.cli import _state
     from lilbee.ingest import sync
 
-    result = asyncio.run(sync(force_rebuild=True, quiet=_state["json_mode"]))
+    try:
+        result = asyncio.run(sync(force_rebuild=True, quiet=_state["json_mode"]))
+    except RuntimeError as exc:
+        if _state["json_mode"]:
+            _json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from None
     if _state["json_mode"]:
         _json_output({"command": "rebuild", "ingested": len(result["added"])})
         return
@@ -116,14 +130,21 @@ def add(
     _apply_overrides(data_dir=data_dir)
     from lilbee.cli import _state
 
-    if _state["json_mode"]:
-        from lilbee.ingest import sync
+    try:
+        if _state["json_mode"]:
+            from lilbee.ingest import sync
 
-        copied = _copy_paths(paths, console, force=force)
-        result = asyncio.run(sync(quiet=True))
-        _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
-        return
-    _add_paths(paths, console, force=force)
+            copied = _copy_paths(paths, console, force=force)
+            result = asyncio.run(sync(quiet=True))
+            _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
+            return
+        _add_paths(paths, console, force=force)
+    except RuntimeError as exc:
+        if _state["json_mode"]:
+            _json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from None
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")

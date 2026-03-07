@@ -1,7 +1,9 @@
 # lilbee
 
-[![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
+[![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -87,8 +89,7 @@ Structured JSON output for agents and scripts.
 ### Install
 
 ```bash
-git clone https://github.com/tobocop2/lilbee && cd lilbee
-pip install .        # or: uv tool install .
+pip install lilbee        # or: uv tool install lilbee
 ```
 
 ### Development (run from source)
