@@ -229,25 +229,32 @@ def ask(
     _auto_sync(console)
     from lilbee.cli import _state
 
-    if _state["json_mode"]:
-        from lilbee.query import ask_raw
+    try:
+        if _state["json_mode"]:
+            from lilbee.query import ask_raw
 
-        result = ask_raw(question)
-        _json_output(
-            {
-                "command": "ask",
-                "question": question,
-                "answer": result.answer,
-                "sources": [_clean_result(s) for s in result.sources],
-            }
-        )
-        return
+            result = ask_raw(question)
+            _json_output(
+                {
+                    "command": "ask",
+                    "question": question,
+                    "answer": result.answer,
+                    "sources": [_clean_result(s) for s in result.sources],
+                }
+            )
+            return
 
-    from lilbee.query import ask_stream
+        from lilbee.query import ask_stream
 
-    for token in ask_stream(question):
-        console.print(token, end="")
-    console.print()
+        for token in ask_stream(question):
+            console.print(token, end="")
+        console.print()
+    except RuntimeError as exc:
+        if _state["json_mode"]:
+            _json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from None
 
 
 @app.command()

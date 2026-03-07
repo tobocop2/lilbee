@@ -18,18 +18,6 @@ def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
 
 
 @mcp.tool()
-def lilbee_ask(question: str) -> dict:
-    """Ask a question answered by local RAG (requires Ollama running)."""
-    from lilbee.query import ask_raw
-
-    result = ask_raw(question)
-    return {
-        "answer": result.answer,
-        "sources": [_clean(s) for s in result.sources],
-    }
-
-
-@mcp.tool()
 def lilbee_status() -> dict:
     """Show indexed documents, configuration, and chunk counts."""
     from lilbee.config import CHAT_MODEL, DATA_DIR, DOCUMENTS_DIR, EMBEDDING_MODEL

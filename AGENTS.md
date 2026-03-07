@@ -114,7 +114,6 @@ An MCP server is configured in `.claude/settings.json` for this project. Tools a
 | Tool | Description | Requires Ollama |
 |------|-------------|-----------------|
 | `lilbee_search(query, top_k)` | Search for relevant chunks | No |
-| `lilbee_ask(question)` | Ask with local RAG | Yes |
 | `lilbee_status()` | Show indexed docs and config | No |
 | `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
 
