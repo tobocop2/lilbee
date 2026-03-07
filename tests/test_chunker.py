@@ -3,13 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from lilbee.chunker import _CHUNK_POSITION_PREFIX_LEN, chunk_pages, chunk_text
-
-
-class TestChunkPositionPrefixLen:
-    def test_constant_exists_and_is_positive(self):
-        assert isinstance(_CHUNK_POSITION_PREFIX_LEN, int)
-        assert _CHUNK_POSITION_PREFIX_LEN > 0
+from lilbee.chunker import chunk_text
 
 
 class TestChunkText:
@@ -45,29 +39,6 @@ class TestChunkText:
         assert len(chunks) > 1
 
 
-class TestChunkPages:
-    def test_empty_pages(self):
-        assert chunk_pages([]) == []
-
-    def test_single_page(self):
-        pages = [{"page": 1, "text": "Some content on page one. It has details."}]
-        result = chunk_pages(pages)
-        assert len(result) >= 1
-        assert result[0].page_start == 1
-        assert result[0].page_end == 1
-
-    def test_multi_page_valid_ranges(self):
-        pages = [
-            {"page": 1, "text": "Page one content.\n\n"},
-            {"page": 2, "text": "Page two content.\n\n"},
-            {"page": 3, "text": "Page three content.\n\n"},
-        ]
-        result = chunk_pages(pages)
-        assert len(result) >= 1
-        for r in result:
-            assert 1 <= r.page_start <= r.page_end <= 3
-
-
 class TestHardSplitWords:
     """Cover _hard_split_words — the last-resort splitting path."""
 
@@ -101,55 +72,9 @@ class TestTailOverlap:
         assert len(chunks) > 2
 
 
-class TestChunkPagesEdge:
-    def test_chunk_not_found_in_text(self):
-        """Cover the pos == -1 fallback branch in chunk_pages."""
-        from unittest.mock import patch
-
-        from lilbee.chunker import chunk_pages
-
-        pages = [{"page": 1, "text": "Hello world. Some content here."}]
-        # Mock chunk_text to return a chunk that doesn't exist in the full text
-        with patch("lilbee.chunker.chunk_text", return_value=["NONEXISTENT_CHUNK"]):
-            result = chunk_pages(pages)
-            assert len(result) == 1
-            assert result[0].page_start >= 1
-
-
-class TestPagesForRange:
-    def test_no_overlap_falls_back_to_first_page(self):
-        """When char range doesn't overlap any boundary, return first page."""
-        from lilbee.chunker import _pages_for_range
-
-        boundaries = [(0, 100, 1), (100, 200, 2)]
-        # Range entirely outside all boundaries
-        ps, pe = _pages_for_range(300, 400, boundaries)
-        assert ps == 1
-        assert pe == 1
-
-
-class TestChunkPagesTracking:
-    def test_chunks_from_later_pages_have_correct_page_start(self):
-        """Chunks from page 200 should not have page_start=1."""
-        from lilbee.chunker import chunk_pages
-
-        header = "##### **Maintenance and Specifications**\n\n"
-        pages = [
-            {"page": 1, "text": header + "Introduction content " * 50},
-            {"page": 2, "text": header + "Chapter two content " * 50},
-            {"page": 100, "text": header + "Unique page 100 content " * 50},
-            {"page": 200, "text": header + "Unique page 200 content " * 50},
-        ]
-        chunks = chunk_pages(pages)
-        page_200_chunks = [c for c in chunks if "page 200 content" in c.chunk]
-        assert page_200_chunks, "Should have chunks from page 200"
-        for c in page_200_chunks:
-            assert c.page_start >= 200, f"Expected page_start >= 200, got {c.page_start}"
-
-
 class TestSegmentsEmpty:
     def test_segments_returns_empty(self):
-        """Cover the `not segments` early return in chunk_text (line 97)."""
+        """Cover the `not segments` early return in chunk_text."""
         from unittest.mock import patch
 
         from lilbee.chunker import chunk_text

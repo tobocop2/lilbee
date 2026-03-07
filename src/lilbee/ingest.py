@@ -1,21 +1,23 @@
 """Document sync engine — keeps documents/ dir in sync with LanceDB."""
 
+import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 import lilbee.config as cfg
 from lilbee import embedder, store
-from lilbee.chunker import chunk_pages, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 
 log = logging.getLogger(__name__)
+
+# Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
+_CHARS_PER_TOKEN = 4
 
 
 class ChunkRecord(TypedDict):
@@ -32,54 +34,42 @@ class ChunkRecord(TypedDict):
     vector: list[float]
 
 
-def _build_records(chunks: list[str], source: str, content_type: str) -> list[ChunkRecord]:
-    """Embed chunks and build store-ready records with zeroed page/line fields."""
-    if not chunks:
-        return []
-    vectors = embedder.embed_batch(chunks)
-    return [
-        ChunkRecord(
-            source=source,
-            content_type=content_type,
-            page_start=0,
-            page_end=0,
-            line_start=0,
-            line_end=0,
-            chunk=chunk,
-            chunk_index=idx,
-            vector=vec,
-        )
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True))
-    ]
-
-
-# File extensions routed to the text chunker
-_TEXT_EXTENSIONS = frozenset({".md", ".txt", ".html", ".rst"})
-
-# File extensions routed to the code chunker
+# File extensions routed to the code chunker (tree-sitter)
 _CODE_EXTENSIONS = supported_extensions()
 
-# Office document extensions
-_OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx", ".pptx"})
+# All document extensions handled by kreuzberg
+_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".txt",
+        ".html",
+        ".rst",
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".epub",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".tiff",
+        ".tif",
+        ".bmp",
+        ".webp",
+        ".csv",
+        ".tsv",
+    }
+)
 
-# eBook extensions
-_EBOOK_EXTENSIONS = frozenset({".epub"})
-
-# Image extensions (OCR via Tesseract)
-_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"})
-
-# Data file extensions
-_DATA_EXTENSIONS = frozenset({".csv", ".tsv"})
-
-# Unified extension → content type lookup (built from the named sets above)
+# Extension → content_type string for metadata
 _EXTENSION_MAP: dict[str, str] = {
-    **{ext: "text" for ext in _TEXT_EXTENSIONS},
+    **{ext: "text" for ext in (".md", ".txt", ".html", ".rst")},
     ".pdf": "pdf",
     **{ext: "code" for ext in _CODE_EXTENSIONS},
-    **{ext: ext.lstrip(".") for ext in _OFFICE_EXTENSIONS},
-    **{ext: "epub" for ext in _EBOOK_EXTENSIONS},
-    **{ext: "image" for ext in _IMAGE_EXTENSIONS},
-    **{ext: "data" for ext in _DATA_EXTENSIONS},
+    **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
+    ".epub": "epub",
+    **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
+    **{ext: "data" for ext in (".csv", ".tsv")},
 }
 
 
@@ -118,43 +108,53 @@ def _classify_file(path: Path) -> str | None:
     return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def _ingest_pdf(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Extract text from PDF, chunk, embed, and return store-ready records."""
-    import pymupdf4llm
+def _kreuzberg_config(content_type: str) -> object:
+    """Build kreuzberg ExtractionConfig for a given content type."""
+    from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
-    md = pymupdf4llm.to_markdown(str(path), page_chunks=True)
-    pages = [{"page": chunk["metadata"]["page"] + 1, "text": chunk["text"]} for chunk in md]
+    chunking = ChunkingConfig(
+        max_chars=cfg.CHUNK_SIZE * _CHARS_PER_TOKEN,
+        max_overlap=cfg.CHUNK_OVERLAP * _CHARS_PER_TOKEN,
+    )
 
-    page_chunks = chunk_pages(pages)
-    if not page_chunks:
+    if content_type == "pdf":
+        return ExtractionConfig(
+            chunking=chunking,
+            pages=PageConfig(extract_pages=True, insert_page_markers=False),
+        )
+    return ExtractionConfig(chunking=chunking)
+
+
+async def _ingest_document(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+    """Extract and chunk a document via kreuzberg, embed, return records."""
+    from kreuzberg import extract_file
+
+    config = _kreuzberg_config(content_type)
+    result = await extract_file(str(path), config=config)
+
+    if not result.chunks:
         return []
 
-    texts = [pc.chunk for pc in page_chunks]
-    vectors = embedder.embed_batch(texts)
+    texts = [chunk.content for chunk in result.chunks]
+    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
 
     return [
         ChunkRecord(
             source=source_name,
-            content_type="pdf",
-            page_start=pc.page_start,
-            page_end=pc.page_end,
+            content_type=content_type,
+            page_start=chunk.metadata.get("first_page") or 0,
+            page_end=chunk.metadata.get("last_page") or 0,
             line_start=0,
             line_end=0,
-            chunk=pc.chunk,
-            chunk_index=pc.chunk_index,
+            chunk=text,
+            chunk_index=chunk.metadata.get("chunk_index", idx),
             vector=vec,
         )
-        for pc, vec in zip(page_chunks, vectors, strict=True)
+        for idx, (chunk, text, vec) in enumerate(zip(result.chunks, texts, vectors, strict=True))
     ]
 
 
-def _ingest_text(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Read text file, chunk, embed, and return store-ready records."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return _build_records(chunk_text(text), source_name, "text")
-
-
-def _ingest_code(path: Path, source_name: str) -> list[ChunkRecord]:
+def _ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
     """Parse code with tree-sitter, chunk, embed, and return store-ready records."""
     code_chunks: list[CodeChunk] = chunk_code(path)
     if not code_chunks:
@@ -179,119 +179,17 @@ def _ingest_code(path: Path, source_name: str) -> list[ChunkRecord]:
     ]
 
 
-def _ingest_docx(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Extract text from DOCX, chunk, embed, and return store-ready records."""
-    from docx import Document
-
-    doc = Document(str(path))
-    parts: list[str] = []
-    for para in doc.paragraphs:
-        if para.text.strip():
-            parts.append(para.text)
-    for table in doc.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                parts.append("\t".join(cells))
-    return _build_records(chunk_text("\n\n".join(parts)), source_name, "docx")
-
-
-def _ingest_xlsx(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Extract text from XLSX, chunk, embed, and return store-ready records."""
-    from openpyxl import load_workbook
-
-    wb = load_workbook(str(path), read_only=True, data_only=True)
-    parts: list[str] = []
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        sheet_lines = [f"# Sheet: {sheet_name}"]
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
-            if any(cells):
-                sheet_lines.append("\t".join(cells))
-        if len(sheet_lines) > 1:
-            parts.append("\n".join(sheet_lines))
-    wb.close()
-    return _build_records(chunk_text("\n\n".join(parts)), source_name, "xlsx")
-
-
-def _ingest_pptx(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Extract text from PPTX, chunk, embed, and return store-ready records."""
-    from pptx import Presentation
-
-    prs = Presentation(str(path))
-    parts: list[str] = []
-    for slide_num, slide in enumerate(prs.slides, 1):
-        slide_texts = [f"# Slide {slide_num}"]
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                text = shape.text_frame.text.strip()
-                if text:
-                    slide_texts.append(text)
-        if len(slide_texts) > 1:
-            parts.append("\n".join(slide_texts))
-    return _build_records(chunk_text("\n\n".join(parts)), source_name, "pptx")
-
-
-def _ingest_epub(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Extract text from EPUB, chunk, embed, and return store-ready records."""
-    import ebooklib
-    from bs4 import BeautifulSoup
-    from ebooklib import epub
-
-    book = epub.read_epub(str(path))
-    parts: list[str] = []
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        html = item.get_content().decode("utf-8", errors="replace")
-        text = BeautifulSoup(html, "html.parser").get_text(separator="\n").strip()
-        if text:
-            parts.append(text)
-    return _build_records(chunk_text("\n\n".join(parts)), source_name, "epub")
-
-
-def _ingest_image(path: Path, source_name: str) -> list[ChunkRecord]:
-    """OCR an image, chunk, embed, and return store-ready records."""
-    import pytesseract
-    from PIL import Image
-
-    text = pytesseract.image_to_string(Image.open(path)).strip()
-    if not text:
-        return []
-    return _build_records(chunk_text(text), source_name, "image")
-
-
-def _ingest_data(path: Path, source_name: str) -> list[ChunkRecord]:
-    """Read CSV/TSV, chunk, embed, and return store-ready records."""
-    import csv
-
-    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
-    with open(path, newline="", encoding="utf-8", errors="replace") as f:
-        reader = csv.reader(f, delimiter=delimiter)
-        lines = ["\t".join(row) for row in reader if any(cell.strip() for cell in row)]
-    return _build_records(chunk_text("\n".join(lines)), source_name, "data")
-
-
-_INGEST_DISPATCH: dict[str, Callable[[Path, str], list[ChunkRecord]]] = {
-    "pdf": _ingest_pdf,
-    "text": _ingest_text,
-    "code": _ingest_code,
-    "docx": _ingest_docx,
-    "xlsx": _ingest_xlsx,
-    "pptx": _ingest_pptx,
-    "epub": _ingest_epub,
-    "image": _ingest_image,
-    "data": _ingest_data,
-}
-
-
-def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
+async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     """Ingest a single file. Returns chunk count."""
-    ingest_fn = _INGEST_DISPATCH[content_type]
-    records: list[dict] = ingest_fn(path, source_name)  # type: ignore[assignment]
-    return store.add_chunks(records)
+    records: list[ChunkRecord]
+    if content_type == "code":
+        records = await asyncio.to_thread(_ingest_code_sync, path, source_name)
+    else:
+        records = await _ingest_document(path, source_name, content_type)
+    return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
-def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
+async def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
     """Sync documents/ with the vector store.
 
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
@@ -345,7 +243,7 @@ def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
     # Ingest files (with optional progress bar)
     if files_to_process:
         embedder.validate_model()
-        _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
+        await _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
 
     return {
         "added": added,
@@ -356,7 +254,21 @@ def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
     }
 
 
-def _ingest_batch(
+# Limit concurrent ingestion to avoid overwhelming I/O
+_MAX_CONCURRENT = os.cpu_count() or 4
+
+
+@dataclass
+class _IngestResult:
+    """Outcome of a single file ingestion attempt."""
+
+    name: str
+    path: Path
+    chunk_count: int
+    error: Exception | None
+
+
+async def _ingest_batch(
     files_to_process: list[tuple[str, Path, str]],
     added: list[str],
     updated: list[str],
@@ -365,72 +277,74 @@ def _ingest_batch(
     quiet: bool = False,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar."""
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
-    def _process_file(name: str, path: Path, content_type: str) -> tuple[str, int]:
-        chunk_count = _ingest_file(path, name, content_type)
-        return name, chunk_count
+    async def _process_one(name: str, path: Path, content_type: str) -> _IngestResult:
+        async with semaphore:
+            try:
+                chunk_count = await _ingest_file(path, name, content_type)
+                return _IngestResult(name, path, chunk_count, error=None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return _IngestResult(name, path, 0, error=exc)
 
-    workers = min(os.cpu_count() or 4, len(files_to_process))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_process_file, name, path, ct): (name, path)
-            for name, path, ct in files_to_process
-        }
+    tasks = [
+        asyncio.ensure_future(_process_one(name, path, ct)) for name, path, ct in files_to_process
+    ]
 
-        if quiet:
-            _collect_results(futures, added, updated, failed)
-        else:
-            _collect_results_with_progress(futures, added, updated, failed)
+    if quiet:
+        await _collect_results(tasks, added, updated, failed)
+    else:
+        await _collect_results_with_progress(tasks, added, updated, failed)
 
 
-def _collect_results(
-    futures: dict,
+async def _collect_results(
+    tasks: list[asyncio.Task[_IngestResult]],
     added: list[str],
     updated: list[str],
     failed: list[str],
 ) -> None:
-    """Collect futures results without progress display."""
-    for future in as_completed(futures):
-        name, path = futures[future]
-        try:
-            _, chunk_count = future.result()
-            store.upsert_source(name, _file_hash(path), chunk_count)
-        except Exception:
-            log.exception("Failed to ingest %s", name)
-            if name in added:
-                added.remove(name)
-            if name in updated:
-                updated.remove(name)
-            failed.append(name)
+    """Collect task results without progress display."""
+    for fut in asyncio.as_completed(tasks):
+        result = await fut
+        _apply_result(result, added, updated, failed)
 
 
-def _collect_results_with_progress(
-    futures: dict,
+async def _collect_results_with_progress(
+    tasks: list[asyncio.Task[_IngestResult]],
     added: list[str],
     updated: list[str],
     failed: list[str],
 ) -> None:
-    """Collect futures results with Rich progress bar."""
+    """Collect task results with Rich progress bar."""
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
         transient=True,
     ) as progress:
-        task = progress.add_task("Ingesting documents...", total=len(futures))
-        for future in as_completed(futures):
-            name, path = futures[future]
-            try:
-                _, chunk_count = future.result()
-                store.upsert_source(name, _file_hash(path), chunk_count)
-            except Exception:
-                log.exception("Failed to ingest %s", name)
-                if name in added:
-                    added.remove(name)
-                if name in updated:
-                    updated.remove(name)
-                failed.append(name)
-                progress.update(task, description=f"Failed {name}")
-                progress.advance(task)
-                continue
-            progress.update(task, description=f"Ingested {name}")
-            progress.advance(task)
+        ptask = progress.add_task("Ingesting documents...", total=len(tasks))
+        for fut in asyncio.as_completed(tasks):
+            result = await fut
+            _apply_result(result, added, updated, failed)
+            desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+            progress.update(ptask, description=desc)
+            progress.advance(ptask)
+
+
+def _apply_result(
+    result: _IngestResult,
+    added: list[str],
+    updated: list[str],
+    failed: list[str],
+) -> None:
+    """Record an ingestion result — update store on success, track failure."""
+    if result.error is not None:
+        log.exception("Failed to ingest %s", result.name, exc_info=result.error)
+        if result.name in added:
+            added.remove(result.name)
+        if result.name in updated:
+            updated.remove(result.name)
+        failed.append(result.name)
+        return
+    store.upsert_source(result.name, _file_hash(result.path), result.chunk_count)

@@ -59,7 +59,7 @@ MAX_EMBED_CHARS = _env_int("MAX_EMBED_CHARS", 2000)
 
 # Retrieval
 TOP_K = _env_int("TOP_K", 10)
-MAX_DISTANCE = float(_env("MAX_DISTANCE", "1.5"))
+MAX_DISTANCE = float(_env("MAX_DISTANCE", "0.7"))
 
 # System prompt for RAG answers
 SYSTEM_PROMPT = _env(

@@ -112,7 +112,7 @@ def search(
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    results: list[dict] = table.search(query_vector).limit(top_k).to_list()
+    results: list[dict] = table.search(query_vector).metric("cosine").limit(top_k).to_list()
     if max_distance > 0:
         results = [r for r in results if r.get("_distance", float("inf")) <= max_distance]
     return results
