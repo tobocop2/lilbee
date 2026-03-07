@@ -76,11 +76,7 @@ Structured JSON output for agents and scripts.
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) — only the embedding model is required for indexing and search (which is all agents need):
-  ```bash
-  ollama pull nomic-embed-text    # required — used for embedding during sync
-  ```
-  If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
+- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is **auto-pulled** on first sync if not already installed. If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
   ```bash
   ollama pull mistral             # or qwen3, llama3, etc.
   ```
