@@ -86,7 +86,7 @@ class TestSyncDocx:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "sample.docx" in result["added"]
+        assert "sample.docx" in result.added
 
 
 @mock.patch("lilbee.embedder.validate_model")
@@ -103,7 +103,7 @@ class TestSyncXlsx:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "data.xlsx" in result["added"]
+        assert "data.xlsx" in result.added
 
 
 @mock.patch("lilbee.embedder.validate_model")
@@ -120,7 +120,7 @@ class TestSyncPptx:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "slides.pptx" in result["added"]
+        assert "slides.pptx" in result.added
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class TestSyncEpub:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "book.epub" in result["added"]
+        assert "book.epub" in result.added
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ class TestSyncImage:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "scan.png" in result["added"]
+        assert "scan.png" in result.added
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ class TestSyncCode:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert filename in result["added"]
+        assert filename in result.added
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +249,11 @@ class TestSyncCsvTsv:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "people.csv" in result["added"]
+        assert "people.csv" in result.added
 
     async def test_tsv_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "products.tsv").write_text("id\tproduct\n1\tWidget\n")
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "products.tsv" in result["added"]
+        assert "products.tsv" in result.added

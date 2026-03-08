@@ -91,12 +91,11 @@ IGNORE_DIRS = _DEFAULT_IGNORE_DIRS | frozenset(
     name.strip() for name in _extra.split(",") if name.strip()
 )
 
+# LanceDB table names
+CHUNKS_TABLE = "chunks"
+SOURCES_TABLE = "_sources"
+
 
 def is_ignored_dir(name: str) -> bool:
     """Return True if a directory name should be skipped during traversal."""
     return name.startswith(".") or name in IGNORE_DIRS or name.endswith(".egg-info")
-
-
-# LanceDB table names
-CHUNKS_TABLE = "chunks"
-SOURCES_TABLE = "_sources"
