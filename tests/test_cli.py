@@ -16,8 +16,11 @@ from lilbee.cli import (
     app,
     console,
 )
+from lilbee.ingest import SyncResult
 
 runner = CliRunner()
+
+_SYNC_NOOP = SyncResult()
 
 
 @pytest.fixture(autouse=True)
@@ -25,15 +28,6 @@ def _skip_model_validation():
     """CLI tests never need real Ollama model validation."""
     with mock.patch("lilbee.embedder.validate_model"):
         yield
-
-
-_SYNC_NOOP = {
-    "added": [],
-    "updated": [],
-    "removed": [],
-    "unchanged": 0,
-    "failed": [],
-}
 
 
 @pytest.fixture(autouse=True)
@@ -93,13 +87,7 @@ class TestSync:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={
-            "added": ["test.txt"],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        },
+        return_value=SyncResult(added=["test.txt"]),
     )
     def test_sync_with_file(self, _sync, isolated_env):
         import lilbee.config as cfg
@@ -112,13 +100,7 @@ class TestSync:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={
-            "added": [],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": ["bad.txt"],
-        },
+        return_value=SyncResult(failed=["bad.txt"]),
     )
     def test_sync_shows_failed(self, _sync):
         result = runner.invoke(app, ["sync"])
@@ -286,13 +268,7 @@ class TestAutoSync:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={
-            "added": ["new.pdf"],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        },
+        return_value=SyncResult(added=["new.pdf"]),
     )
     @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
     def test_auto_sync_prints_summary(self, _stream, _sync):
@@ -331,7 +307,7 @@ class TestChat:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={"added": [], "updated": [], "removed": [], "unchanged": 0},
+        return_value=SyncResult(),
     )
     def test_chat_passes_history(self, _sync, mock_stream):
         """Second question should include history from first exchange."""
@@ -360,7 +336,7 @@ class TestChat:
 
         def failing_gen(*_args, **_kwargs):
             raise RuntimeError("Model 'bad' not found")
-            yield  # type: ignore[misc]  # noqa: unreachable — makes this a generator
+            yield  # type: ignore[misc]  # makes this a generator
 
         mock_stream.side_effect = failing_gen
         result = runner.invoke(app, ["chat"], input="hello\n/quit\n")
@@ -479,13 +455,7 @@ class TestSlashAdd:
         src.write_text("content")
 
         # Re-mock sync for the _add_paths call (it calls sync() internally)
-        _sync.return_value = {
-            "added": ["test.txt"],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        }
+        _sync.return_value = SyncResult(added=["test.txt"])
 
         result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
         assert result.exit_code == 0
@@ -542,13 +512,7 @@ class TestSlashAdd:
         src = tmp_path / "source" / "doc.txt"
         src.parent.mkdir()
         src.write_text("some content")
-        mock_sync.return_value = {
-            "added": ["doc.txt"],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        }
+        mock_sync.return_value = SyncResult(added=["doc.txt"])
 
         with mock.patch("prompt_toolkit.prompt", return_value=str(src)):
             result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
@@ -1295,13 +1259,7 @@ class TestSyncJson:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={
-            "added": ["new.txt"],
-            "updated": [],
-            "removed": ["old.txt"],
-            "unchanged": 2,
-            "failed": [],
-        },
+        return_value=SyncResult(added=["new.txt"], removed=["old.txt"], unchanged=2),
     )
     def test_sync_json_with_changes(self, _sync):
         result = runner.invoke(app, ["--json", "sync"])
