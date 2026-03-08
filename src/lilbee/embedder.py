@@ -4,18 +4,13 @@ import logging
 import math
 import sys
 import time
-from typing import Any, cast
+from typing import Any
 
 import ollama
 
 from lilbee.config import EMBEDDING_DIM, EMBEDDING_MODEL, MAX_EMBED_CHARS
 
 log = logging.getLogger(__name__)
-
-# nomic-embed-text has 8192 token context but uses a BERT tokenizer that counts
-# whitespace-heavy text (tables, formatted code) much more expensively than tiktoken.
-# Worst-case table text (87% special chars) fails at 2345 chars; 2000 gives ~15% margin.
-_MAX_EMBED_CHARS = MAX_EMBED_CHARS
 
 _MAX_BATCH_CHARS = 6000
 
@@ -36,10 +31,10 @@ def _call_with_retry(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 def _truncate(text: str) -> str:
     """Truncate text to stay within the embedding model's context window."""
-    if len(text) <= _MAX_EMBED_CHARS:
+    if len(text) <= MAX_EMBED_CHARS:
         return text
-    log.debug("Truncating chunk from %d to %d chars for embedding", len(text), _MAX_EMBED_CHARS)
-    return text[:_MAX_EMBED_CHARS]
+    log.debug("Truncating chunk from %d to %d chars for embedding", len(text), MAX_EMBED_CHARS)
+    return text[:MAX_EMBED_CHARS]
 
 
 def _validate_vector(vector: list[float]) -> None:
@@ -92,7 +87,7 @@ def validate_model() -> None:
 def embed(text: str) -> list[float]:
     """Embed a single text string, return vector."""
     response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=_truncate(text))
-    result = cast(list[float], response["embeddings"][0])
+    result: list[float] = response.embeddings[0]
     _validate_vector(result)
     return result
 
@@ -109,14 +104,14 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         chunk_len = len(truncated)
         if batch and batch_chars + chunk_len > _MAX_BATCH_CHARS:
             response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=batch)
-            vectors.extend(cast(list[list[float]], response["embeddings"]))
+            vectors.extend(response.embeddings)
             batch = []
             batch_chars = 0
         batch.append(truncated)
         batch_chars += chunk_len
     if batch:
         response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=batch)
-        vectors.extend(cast(list[list[float]], response["embeddings"]))
+        vectors.extend(response.embeddings)
     for vec in vectors:
         _validate_vector(vec)
     return vectors

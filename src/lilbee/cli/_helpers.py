@@ -135,9 +135,7 @@ def _add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
 
     result = asyncio.run(sync())
-    con.print(f"Added: {len(result['added'])}")
-    con.print(f"Updated: {len(result['updated'])}")
-    con.print(f"Unchanged: {result['unchanged']}")
+    con.print(result)
 
 
 def _stream_response(
@@ -204,16 +202,11 @@ def _perform_reset() -> dict:
     }
 
 
-def _sync_result_to_json(result: dict) -> dict:
-    """Convert a sync result dict to the JSON output envelope."""
-    return {
-        "command": "sync",
-        "added": result["added"],
-        "updated": result["updated"],
-        "removed": result["removed"],
-        "unchanged": result["unchanged"],
-        "failed": result["failed"],
-    }
+def _sync_result_to_json(result: object) -> dict:
+    """Convert a SyncResult to the JSON output envelope."""
+    from dataclasses import asdict
+
+    return {"command": "sync", **asdict(result)}  # type: ignore[call-overload]
 
 
 def _auto_sync(con: Console) -> None:
@@ -225,16 +218,11 @@ def _auto_sync(con: Console) -> None:
     except RuntimeError as exc:
         con.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
-    total = (
-        len(result["added"])
-        + len(result["updated"])
-        + len(result["removed"])
-        + len(result.get("failed", []))
-    )
+    total = len(result.added) + len(result.updated) + len(result.removed) + len(result.failed)
     if total:
         con.print(
-            f"[dim]Synced: {len(result['added'])} added, "
-            f"{len(result['updated'])} updated, "
-            f"{len(result['removed'])} removed, "
-            f"{len(result.get('failed', []))} failed[/dim]"
+            f"[dim]Synced: {len(result.added)} added, "
+            f"{len(result.updated)} updated, "
+            f"{len(result.removed)} removed, "
+            f"{len(result.failed)} failed[/dim]"
         )

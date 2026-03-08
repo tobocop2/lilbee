@@ -42,16 +42,11 @@ def lilbee_status() -> dict:
 @mcp.tool()
 async def lilbee_sync() -> dict:
     """Sync documents directory with the vector store."""
+    from dataclasses import asdict
+
     from lilbee.ingest import sync
 
-    result = await sync(quiet=True)
-    return {
-        "added": result["added"],
-        "updated": result["updated"],
-        "removed": result["removed"],
-        "unchanged": result["unchanged"],
-        "failed": result["failed"],
-    }
+    return asdict(await sync(quiet=True))
 
 
 @mcp.tool()

@@ -7,6 +7,7 @@ import pytest
 
 import lilbee.config as cfg
 import lilbee.store as store_mod
+from lilbee.ingest import SyncResult
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +36,7 @@ def _skip_model_validation():
         yield
 
 
-_SYNC_NOOP = {
-    "added": [],
-    "updated": [],
-    "removed": [],
-    "unchanged": 0,
-    "failed": [],
-}
+_SYNC_NOOP = SyncResult()
 
 
 class TestClean:
@@ -113,13 +108,7 @@ class TestLilbeeSync:
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,
-        return_value={
-            "added": ["test.txt"],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        },
+        return_value=SyncResult(added=["test.txt"]),
     )
     async def test_sync_with_file(self, _sync):
         from lilbee.mcp import lilbee_sync
