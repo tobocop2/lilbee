@@ -146,7 +146,7 @@ class TestAskRaw:
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_returns_structured_result(self, _embed, _search, mock_chat):
-        mock_chat.return_value = {"message": {"content": "5 quarts."}}
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="5 quarts."))
         from lilbee.query import ask_raw
 
         result = ask_raw("oil capacity?")
@@ -167,7 +167,7 @@ class TestAskRaw:
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_ask_raw_with_history(self, _embed, _search, mock_chat):
-        mock_chat.return_value = {"message": {"content": "answer"}}
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
         from lilbee.query import ask_raw
 
         history = [{"role": "user", "content": "prev"}]
@@ -181,7 +181,9 @@ class TestAsk:
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_returns_answer_with_citations(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = {"message": {"content": "The oil capacity is 5 quarts."}}
+        mock_chat.return_value = mock.MagicMock(
+            message=mock.MagicMock(content="The oil capacity is 5 quarts.")
+        )
         from lilbee.query import ask
 
         answer = ask("oil capacity?")
@@ -201,7 +203,7 @@ class TestAsk:
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_ask_with_history(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = {"message": {"content": "answer"}}
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
         from lilbee.query import ask
 
         history = [
@@ -222,8 +224,8 @@ class TestAskStream:
     def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_chat):
         mock_chat.return_value = iter(
             [
-                {"message": {"content": "Hello"}},
-                {"message": {"content": " world"}},
+                mock.MagicMock(message=mock.MagicMock(content="Hello")),
+                mock.MagicMock(message=mock.MagicMock(content=" world")),
             ]
         )
         from lilbee.query import ask_stream
@@ -245,7 +247,7 @@ class TestAskStream:
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_ask_stream_with_history(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = iter([{"message": {"content": "response"}}])
+        mock_chat.return_value = iter([mock.MagicMock(message=mock.MagicMock(content="response"))])
         from lilbee.query import ask_stream
 
         history = [
@@ -266,8 +268,8 @@ class TestAskStream:
     def test_skips_empty_tokens(self, mock_embed, mock_search, mock_chat):
         mock_chat.return_value = iter(
             [
-                {"message": {"content": ""}},
-                {"message": {"content": "data"}},
+                mock.MagicMock(message=mock.MagicMock(content="")),
+                mock.MagicMock(message=mock.MagicMock(content="data")),
             ]
         )
         from lilbee.query import ask_stream
@@ -284,7 +286,7 @@ class TestAskStreamError:
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_stream_handles_disconnect(self, mock_embed, mock_search, mock_chat):
         def failing_stream():
-            yield {"message": {"content": "partial"}}
+            yield mock.MagicMock(message=mock.MagicMock(content="partial"))
             raise ConnectionError("lost connection")
 
         mock_chat.return_value = failing_stream()
@@ -324,7 +326,7 @@ class TestModelNotFound:
         """ResponseError raised during iteration should also become RuntimeError."""
 
         def failing_mid_stream():
-            yield {"message": {"content": "partial"}}
+            yield mock.MagicMock(message=mock.MagicMock(content="partial"))
             raise ollama.ResponseError("model 'bad' not found", 404)
 
         mock_chat.return_value = failing_mid_stream()

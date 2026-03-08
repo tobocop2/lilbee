@@ -87,13 +87,7 @@ def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
     if _state["json_mode"]:
         _json_output(_sync_result_to_json(result))
         return
-    console.print(f"Added: {len(result['added'])}")
-    console.print(f"Updated: {len(result['updated'])}")
-    console.print(f"Removed: {len(result['removed'])}")
-    console.print(f"Unchanged: {result['unchanged']}")
-    console.print(f"Failed: {len(result['failed'])}")
-    for f in result.get("failed", []):
-        console.print(f"  [red]{f}[/red]")
+    console.print(result)
 
 
 @app.command()
@@ -112,9 +106,9 @@ def rebuild(data_dir: Path | None = _data_dir_option) -> None:
         console.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
     if _state["json_mode"]:
-        _json_output({"command": "rebuild", "ingested": len(result["added"])})
+        _json_output({"command": "rebuild", "ingested": len(result.added)})
         return
-    console.print(f"Rebuilt: {len(result['added'])} documents ingested")
+    console.print(f"Rebuilt: {len(result.added)} documents ingested")
 
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
