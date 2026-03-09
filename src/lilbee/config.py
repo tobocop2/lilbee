@@ -46,7 +46,7 @@ DATA_DIR = _data_root / "data"
 LANCEDB_DIR = DATA_DIR / "lancedb"
 
 # Ollama models — configurable via LILBEE_CHAT_MODEL / LILBEE_EMBEDDING_MODEL
-CHAT_MODEL = _env("CHAT_MODEL", "mistral")
+CHAT_MODEL = _env("CHAT_MODEL", "qwen3-coder:30b")
 EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "nomic-embed-text")
 EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 768)
 
