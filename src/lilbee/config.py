@@ -47,7 +47,7 @@ LANCEDB_DIR = DATA_DIR / "lancedb"
 
 # Ollama models — configurable via LILBEE_CHAT_MODEL / LILBEE_EMBEDDING_MODEL
 # Priority: env var > config.toml > hardcoded default
-CHAT_MODEL = _env("CHAT_MODEL", "qwen3-coder:30b")
+CHAT_MODEL = _env("CHAT_MODEL", "qwen3:8b")
 if "LILBEE_CHAT_MODEL" not in os.environ:
     from lilbee import settings as _settings
 

@@ -58,10 +58,15 @@ def _handle_slash_quit(args: str, con: Console) -> None:
 
 def _handle_slash_model(args: str, con: Console) -> None:
     import lilbee.config as cfg
+    from lilbee.models import MODEL_CATALOG, OLLAMA_MODELS_URL
 
     name = args.strip()
     if not name:
         con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}")
+        con.print("\n[dim]Catalog:[/dim]")
+        for model in MODEL_CATALOG:
+            con.print(f"  {model.name:<22} {model.size_gb:>5.1f} GB  {model.description}")
+        con.print(f"\n  Browse more at {OLLAMA_MODELS_URL}")
         return
     available = _list_ollama_models()
     if available and name not in available:
