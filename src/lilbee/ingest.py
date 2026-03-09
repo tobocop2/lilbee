@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -32,6 +32,41 @@ class ChunkRecord(TypedDict):
     chunk: str
     chunk_index: int
     vector: list[float]
+
+
+@dataclass
+class SyncResult:
+    """Summary of a sync operation."""
+
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    unchanged: int = 0
+    failed: list[str] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        lines = [
+            f"Added: {len(self.added)}",
+            f"Updated: {len(self.updated)}",
+            f"Removed: {len(self.removed)}",
+            f"Unchanged: {self.unchanged}",
+            f"Failed: {len(self.failed)}",
+        ]
+        for f in self.failed:
+            lines.append(f"  [red]{f}[/red]")
+        return "\n".join(lines)
+
+    __repr__ = __str__
+
+
+@dataclass
+class _IngestResult:
+    """Outcome of a single file ingestion attempt."""
+
+    name: str
+    path: Path
+    chunk_count: int
+    error: Exception | None
 
 
 # File extensions routed to the code chunker (tree-sitter)
@@ -65,7 +100,7 @@ _DOCUMENT_EXTENSIONS = frozenset(
 _EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst")},
     ".pdf": "pdf",
-    **{ext: "code" for ext in _CODE_EXTENSIONS},
+    **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
@@ -189,7 +224,7 @@ async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
-async def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
+async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
     """Sync documents/ with the vector store.
 
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
@@ -245,27 +280,17 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> dict:
         embedder.validate_model()
         await _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
 
-    return {
-        "added": added,
-        "updated": updated,
-        "removed": removed,
-        "unchanged": unchanged,
-        "failed": failed,
-    }
+    return SyncResult(
+        added=added,
+        updated=updated,
+        removed=removed,
+        unchanged=unchanged,
+        failed=failed,
+    )
 
 
 # Limit concurrent ingestion to avoid overwhelming I/O
 _MAX_CONCURRENT = os.cpu_count() or 4
-
-
-@dataclass
-class _IngestResult:
-    """Outcome of a single file ingestion attempt."""
-
-    name: str
-    path: Path
-    chunk_count: int
-    error: Exception | None
 
 
 async def _ingest_batch(

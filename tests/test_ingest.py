@@ -80,48 +80,42 @@ def _make_empty_result():
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestSync:
     async def test_empty_documents_dir(self, _kf, _eb, _e, _vm, isolated_env):
-        from lilbee.ingest import sync
+        from lilbee.ingest import SyncResult, sync
 
         result = await sync()
-        assert result == {
-            "added": [],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        }
+        assert result == SyncResult()
 
     async def test_ingest_text_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "test.txt" in result["added"]
+        assert "test.txt" in result.added
 
     async def test_quiet_mode_suppresses_progress(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.ingest import sync
 
         result = await sync(quiet=True)
-        assert "quiet.txt" in result["added"]
+        assert "quiet.txt" in result.added
 
     async def test_ingest_markdown_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.ingest import sync
 
-        assert "readme.md" in (await sync())["added"]
+        assert "readme.md" in (await sync()).added
 
     async def test_ingest_html_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "page.html").write_text("<p>Content</p>")
         from lilbee.ingest import sync
 
-        assert "page.html" in (await sync())["added"]
+        assert "page.html" in (await sync()).added
 
     async def test_ingest_rst_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "doc.rst").write_text("Title\n=====\n\nContent.")
         from lilbee.ingest import sync
 
-        assert "doc.rst" in (await sync())["added"]
+        assert "doc.rst" in (await sync()).added
 
     async def test_modified_file_reingested(self, _kf, _eb, _e, _vm, isolated_env):
         f = isolated_env / "changing.txt"
@@ -130,7 +124,7 @@ class TestSync:
 
         await sync()
         f.write_text("Version 2 — different content now")
-        assert "changing.txt" in (await sync())["updated"]
+        assert "changing.txt" in (await sync()).updated
 
     async def test_deleted_file_removed(self, _kf, _eb, _e, _vm, isolated_env):
         f = isolated_env / "temp.txt"
@@ -139,7 +133,7 @@ class TestSync:
 
         await sync()
         f.unlink()
-        assert "temp.txt" in (await sync())["removed"]
+        assert "temp.txt" in (await sync()).removed
 
     async def test_unchanged_file_skipped(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "stable.txt").write_text("I stay the same")
@@ -147,20 +141,20 @@ class TestSync:
 
         await sync()
         result = await sync()
-        assert result["unchanged"] == 1
-        assert result["added"] == []
+        assert result.unchanged == 1
+        assert result.added == []
 
     async def test_unsupported_extension_skipped(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "data.zip").write_bytes(b"binary data")
         from lilbee.ingest import sync
 
-        assert (await sync())["added"] == []
+        assert (await sync()).added == []
 
     async def test_hidden_files_skipped(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / ".hidden").write_text("secret")
         from lilbee.ingest import sync
 
-        assert (await sync())["added"] == []
+        assert (await sync()).added == []
 
     async def test_subdirectory_files_ingested(self, _kf, _eb, _e, _vm, isolated_env):
         sub = isolated_env / "subdir"
@@ -168,13 +162,13 @@ class TestSync:
         (sub / "nested.txt").write_text("Nested content")
         from lilbee.ingest import sync
 
-        assert any("nested.txt" in f for f in (await sync())["added"])
+        assert any("nested.txt" in f for f in (await sync()).added)
 
     async def test_code_file_ingested(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "example.py").write_text("def hello():\n    print('hi')\n")
         from lilbee.ingest import sync
 
-        assert "example.py" in (await sync())["added"]
+        assert "example.py" in (await sync()).added
 
     async def test_force_rebuild_clears_and_reingests(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "keep.txt").write_text("I survive rebuilds")
@@ -182,7 +176,7 @@ class TestSync:
 
         await sync()
         result = await sync(force_rebuild=True)
-        assert "keep.txt" in result["added"]
+        assert "keep.txt" in result.added
 
     async def test_ingest_pdf(self, _kf, _eb, _e, _vm, isolated_env):
         from reportlab.lib.pagesizes import letter
@@ -196,21 +190,15 @@ class TestSync:
 
         from lilbee.ingest import sync
 
-        assert "test.pdf" in (await sync())["added"]
+        assert "test.pdf" in (await sync()).added
 
     async def test_nonexistent_documents_dir(self, _kf, _eb, _e, _vm, isolated_env, tmp_path):
         nonexistent = tmp_path / "nonexistent"
         cfg.DOCUMENTS_DIR = nonexistent
-        from lilbee.ingest import sync
+        from lilbee.ingest import SyncResult, sync
 
         result = await sync()
-        assert result == {
-            "added": [],
-            "updated": [],
-            "removed": [],
-            "unchanged": 0,
-            "failed": [],
-        }
+        assert result == SyncResult()
         assert nonexistent.exists()  # Directory was auto-created
 
     async def test_ingest_error_logged_not_raised(self, _kf, _eb, _e, _vm, isolated_env):
@@ -232,9 +220,9 @@ class TestSync:
         with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
             result = await sync()
         # good.txt was added, bad.txt failed
-        assert "good.txt" in result["added"]
-        assert "bad.txt" not in result["added"]
-        assert "bad.txt" in result["failed"]
+        assert "good.txt" in result.added
+        assert "bad.txt" not in result.added
+        assert "bad.txt" in result.failed
 
     async def test_ingest_error_on_update_tracked_as_failed(self, _kf, _eb, _e, _vm, isolated_env):
         """A file that fails re-ingestion on update goes to failed, not updated."""
@@ -258,8 +246,8 @@ class TestSync:
 
         with patch("lilbee.ingest._ingest_file", side_effect=_failing_ingest):
             result = await sync()
-        assert "flaky.txt" not in result["updated"]
-        assert "flaky.txt" in result["failed"]
+        assert "flaky.txt" not in result.updated
+        assert "flaky.txt" in result.failed
 
     async def test_ingest_error_in_quiet_mode(self, _kf, _eb, _e, _vm, isolated_env):
         """Quiet-mode error handling works the same as non-quiet."""
@@ -273,8 +261,8 @@ class TestSync:
 
         with patch("lilbee.ingest._ingest_file", side_effect=_fail):
             result = await sync(quiet=True)
-        assert "bad.txt" in result["failed"]
-        assert "bad.txt" not in result["added"]
+        assert "bad.txt" in result.failed
+        assert "bad.txt" not in result.added
 
     async def test_ingest_error_on_update_quiet_mode(self, _kf, _eb, _e, _vm, isolated_env):
         """Quiet-mode update failure tracks in failed list."""
@@ -296,8 +284,8 @@ class TestSync:
 
         with patch("lilbee.ingest._ingest_file", side_effect=_fail):
             result = await sync(quiet=True)
-        assert "qflaky.txt" in result["failed"]
-        assert "qflaky.txt" not in result["updated"]
+        assert "qflaky.txt" in result.failed
+        assert "qflaky.txt" not in result.updated
 
 
 class TestIngestHelpers:
@@ -491,6 +479,36 @@ class TestFileHash:
         f1.write_text("hello")
         f2.write_text("world")
         assert _file_hash(f1) != _file_hash(f2)
+
+
+class TestSyncResultStr:
+    def test_str_no_failures(self):
+        from lilbee.ingest import SyncResult
+
+        result = SyncResult(
+            added=["a.txt"], updated=["b.txt"], removed=["c.txt"], unchanged=2, failed=[]
+        )
+        text = str(result)
+        assert "Added: 1" in text
+        assert "Updated: 1" in text
+        assert "Removed: 1" in text
+        assert "Unchanged: 2" in text
+        assert "Failed: 0" in text
+
+    def test_str_with_failures(self):
+        from lilbee.ingest import SyncResult
+
+        result = SyncResult(failed=["x.txt", "y.txt"])
+        text = str(result)
+        assert "Failed: 2" in text
+        assert "[red]x.txt[/red]" in text
+        assert "[red]y.txt[/red]" in text
+
+    def test_repr_matches_str(self):
+        from lilbee.ingest import SyncResult
+
+        result = SyncResult(added=["a.txt"])
+        assert repr(result) == str(result)
 
 
 class TestClassifyNewFormats:

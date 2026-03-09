@@ -97,7 +97,7 @@ def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None
         raise RuntimeError(
             f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
         ) from exc
-    return AskResult(answer=response["message"]["content"], sources=results)
+    return AskResult(answer=response.message.content or "", sources=results)
 
 
 def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
@@ -140,7 +140,7 @@ def ask_stream(
 
     try:
         for chunk in stream:
-            token = chunk["message"]["content"]
+            token = chunk.message.content
             if token:
                 yield token
     except ollama.ResponseError as exc:

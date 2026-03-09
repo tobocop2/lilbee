@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.3.3"
+version = "0.3.4"
 description = "A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ dependencies = [
     "kreuzberg",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",
+
     "typer",
     "tiktoken",
     "prompt-toolkit>=3.0",

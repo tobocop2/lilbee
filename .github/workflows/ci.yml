@@ -59,9 +59,30 @@ jobs:
         run: uv sync
 
       - name: Run unit tests with coverage
-        run: make test
+        run: uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+
+      - name: Upload coverage HTML
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: htmlcov/
+
+  deploy-coverage:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
 
   test-with-ollama:
     runs-on: ubuntu-latest

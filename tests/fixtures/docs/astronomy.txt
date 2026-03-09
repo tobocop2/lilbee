@@ -1,0 +1,17 @@
+Proxima Centauri b — Exoplanet Factsheet
+
+Proxima Centauri b is a terrestrial exoplanet orbiting the red dwarf star
+Proxima Centauri, the closest star to our Sun. It was discovered in August
+2016 by the European Southern Observatory using the radial-velocity method.
+
+Key parameters:
+  Distance from Earth: 4.24 light-years
+  Orbital period: 11.2 days
+  Estimated mass: 1.17 Earth masses (minimum)
+  Semi-major axis: 0.0485 AU
+  Equilibrium temperature: approximately 234 K (-39 C)
+
+The planet orbits within the habitable zone of its host star, making it one
+of the most promising targets for future habitability studies. However, the
+intense stellar flare activity of Proxima Centauri raises questions about
+atmospheric retention and surface conditions.
