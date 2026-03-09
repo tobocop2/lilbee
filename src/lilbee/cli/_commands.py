@@ -242,6 +242,11 @@ def ask(
 ) -> None:
     """Ask a one-shot question (auto-syncs first)."""
     _apply_overrides(data_dir=data_dir, model=model)
+    from lilbee.embedder import validate_model
+    from lilbee.models import ensure_chat_model
+
+    ensure_chat_model()
+    validate_model()
     _auto_sync(console)
     from lilbee.cli import _state
 
@@ -280,6 +285,11 @@ def chat(
 ) -> None:
     """Interactive chat loop (auto-syncs first)."""
     _apply_overrides(data_dir=data_dir, model=model)
+    from lilbee.embedder import validate_model
+    from lilbee.models import ensure_chat_model
+
+    ensure_chat_model()
+    validate_model()
     _auto_sync(console)
     from lilbee.cli._chat import _chat_loop
 

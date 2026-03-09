@@ -137,11 +137,16 @@ def _dispatch_slash(raw_input: str, con: Console) -> bool:
 
 
 def _list_ollama_models() -> list[str]:
-    """Return installed Ollama model names, or empty list if unavailable."""
+    """Return installed Ollama chat model names, excluding embedding models."""
     try:
         import ollama
 
-        return [m.model for m in ollama.list().models if m.model]
+        import lilbee.config as cfg
+
+        embed_base = cfg.EMBEDDING_MODEL.split(":")[0]
+        return [
+            m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
+        ]
     except Exception:
         return []
 

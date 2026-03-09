@@ -2,7 +2,6 @@
 
 import logging
 import math
-import sys
 import time
 from typing import Any
 
@@ -50,24 +49,9 @@ def _validate_vector(vector: list[float]) -> None:
 
 def _pull_with_progress(model: str) -> None:
     """Pull an Ollama model, showing a Rich progress bar on stderr."""
-    from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
+    from lilbee.models import pull_with_progress
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        BarColumn(),
-        DownloadColumn(),
-        TextColumn("{task.percentage:>3.0f}%"),
-        transient=True,
-    ) as progress:
-        desc = f"Downloading model '{model}'..."
-        ptask = progress.add_task(desc, total=None)
-        for event in ollama.pull(model, stream=True):
-            total = event.total or 0
-            completed = event.completed or 0
-            if total > 0:
-                progress.update(ptask, total=total, completed=completed)
-    sys.stderr.write(f"Model '{model}' ready.\n")
+    pull_with_progress(model)
 
 
 def validate_model() -> None:
