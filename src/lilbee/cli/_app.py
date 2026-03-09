@@ -77,6 +77,11 @@ def _default(
         if _state["json_mode"]:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
+        from lilbee.embedder import validate_model
+        from lilbee.models import ensure_chat_model
+
+        ensure_chat_model()
+        validate_model()
         _auto_sync(console)
         from lilbee.cli._chat import _chat_loop
 

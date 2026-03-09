@@ -25,8 +25,11 @@ _SYNC_NOOP = SyncResult()
 
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
-    """CLI tests never need real Ollama model validation."""
-    with mock.patch("lilbee.embedder.validate_model"):
+    """CLI tests never need real Ollama model validation or chat model checks."""
+    with (
+        mock.patch("lilbee.embedder.validate_model"),
+        mock.patch("lilbee.models.ensure_chat_model"),
+    ):
         yield
 
 
@@ -717,6 +720,18 @@ class TestListOllamaModels:
     def test_returns_empty_on_error(self):
         with mock.patch("ollama.list", side_effect=Exception("not running")):
             assert _list_ollama_models() == []
+
+    def test_excludes_embedding_model(self):
+        chat = mock.MagicMock()
+        chat.model = "llama3:latest"
+        embed = mock.MagicMock()
+        embed.model = "nomic-embed-text:latest"
+        mock_response = mock.MagicMock()
+        mock_response.models = [chat, embed]
+        with mock.patch("ollama.list", return_value=mock_response):
+            result = _list_ollama_models()
+            assert result == ["llama3:latest"]
+            assert "nomic-embed-text:latest" not in result
 
 
 class TestQuitChat:
@@ -1412,3 +1427,46 @@ class TestOllamaUnavailable:
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
         assert "Cannot connect to Ollama" in result.output
+
+
+class TestEnsureChatModelWiring:
+    """Verify that ask and chat call ensure_chat_model before running."""
+
+    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_calls_ensure_chat_model(self, _sync, _stream):
+        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
+            runner.invoke(app, ["ask", "test"])
+            mock_ensure.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_chat_calls_ensure_chat_model(self, _sync):
+        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
+            runner.invoke(app, ["chat"], input="/quit\n")
+            mock_ensure.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_default_calls_ensure_chat_model(self, _sync):
+        """Bare `lilbee` (no subcommand) also calls ensure_chat_model."""
+        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
+            runner.invoke(app, [], input="/quit\n")
+            mock_ensure.assert_called_once()
+
+    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_calls_validate_model(self, _sync, _stream):
+        with mock.patch("lilbee.embedder.validate_model") as mock_val:
+            runner.invoke(app, ["ask", "test"])
+            mock_val.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_chat_calls_validate_model(self, _sync):
+        with mock.patch("lilbee.embedder.validate_model") as mock_val:
+            runner.invoke(app, ["chat"], input="/quit\n")
+            mock_val.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_default_calls_validate_model(self, _sync):
+        with mock.patch("lilbee.embedder.validate_model") as mock_val:
+            runner.invoke(app, [], input="/quit\n")
+            mock_val.assert_called_once()
