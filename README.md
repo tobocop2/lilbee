@@ -85,6 +85,8 @@ Structured JSON output for agents and scripts.
   ```
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
 
+> **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3-coder:30b` is ~18.6 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
+
 ### Install
 
 ```bash
