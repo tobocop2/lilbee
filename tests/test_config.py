@@ -149,7 +149,7 @@ class TestDefaults:
             mock.patch("lilbee.settings.get", return_value=None),
         ):
             cfg = _reload_config()
-            assert cfg.CHAT_MODEL == "qwen3-coder:30b"
+            assert cfg.CHAT_MODEL == "qwen3:8b"
             assert cfg.EMBEDDING_MODEL == "nomic-embed-text"
             assert cfg.EMBEDDING_DIM == 768
             assert cfg.CHUNK_SIZE == 512
@@ -250,7 +250,7 @@ class TestPersistedChatModel:
             mock.patch("lilbee.settings.get", return_value=None),
         ):
             cfg = _reload_config()
-            assert cfg.CHAT_MODEL == "qwen3-coder:30b"
+            assert cfg.CHAT_MODEL == "qwen3:8b"
 
 
 class TestHelpers:

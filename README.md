@@ -81,9 +81,11 @@ Structured JSON output for agents and scripts.
 - Python 3.11+
 - [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is **auto-pulled** on first sync if not already installed. If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
   ```bash
-  ollama pull qwen3-coder:30b     # or llama3, mistral, etc.
+  ollama pull qwen3:8b     # or llama3, mistral, etc.
   ```
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
+
+> **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
 
 ### Install
 
@@ -167,7 +169,7 @@ All settings are configurable via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path |
-| `LILBEE_CHAT_MODEL` | `qwen3-coder:30b` | Ollama chat model |
+| `LILBEE_CHAT_MODEL` | `qwen3:8b` | Ollama chat model |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensions |
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |

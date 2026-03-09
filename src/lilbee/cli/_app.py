@@ -19,7 +19,7 @@ _model_option = typer.Option(
     None,
     "--model",
     "-m",
-    help="Override chat model (default: $LILBEE_CHAT_MODEL or 'qwen3-coder:30b')",
+    help="Override chat model (default: $LILBEE_CHAT_MODEL or 'qwen3:8b')",
 )
 
 _json_option = typer.Option(

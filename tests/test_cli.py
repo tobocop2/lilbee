@@ -525,7 +525,7 @@ class TestSlashAdd:
 class TestSlashModel:
     """Test /model slash command."""
 
-    def test_model_shows_current(self):
+    def test_model_shows_current_and_catalog(self):
         from io import StringIO
 
         from rich.console import Console as RichConsole
@@ -535,7 +535,11 @@ class TestSlashModel:
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         _handle_slash_model("", con)
-        assert "Current model:" in buf.getvalue()
+        output = buf.getvalue()
+        assert "Current model:" in output
+        assert "Catalog:" in output
+        assert "qwen3:8b" in output
+        assert "ollama.com/library" in output
 
     @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
     def test_model_switches(self, _models):

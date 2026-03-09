@@ -40,7 +40,7 @@ uv run lilbee rebuild
 ## Configuration
 All settings override via environment variables:
 - `LILBEE_DATA` — data directory path
-- `LILBEE_CHAT_MODEL` — LLM model (default: `qwen3-coder:30b`)
+- `LILBEE_CHAT_MODEL` — LLM model (default: `qwen3:8b`)
 - `LILBEE_EMBEDDING_MODEL` — embedding model (default: `nomic-embed-text`)
 - `LILBEE_EMBEDDING_DIM` — embedding dimensions (default: `768`)
 - `LILBEE_CHUNK_SIZE` — tokens per chunk (default: `512`)
