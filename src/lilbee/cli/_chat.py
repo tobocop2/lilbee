@@ -69,7 +69,10 @@ def _handle_slash_model(args: str, con: Console) -> None:
         con.print(f"Available: {', '.join(sorted(available))}")
         return
     cfg.CHAT_MODEL = name
-    con.print(f"Switched to model [bold]{name}[/bold]")
+    from lilbee import settings
+
+    settings.set_value("chat_model", name)
+    con.print(f"Switched to model [bold]{name}[/bold] (saved)")
 
 
 def _handle_slash_version(args: str, con: Console) -> None:
