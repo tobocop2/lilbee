@@ -547,9 +547,13 @@ class TestSlashModel:
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         try:
-            _handle_slash_model("llama3", con)
-            assert cfg.CHAT_MODEL == "llama3"
-            assert "Switched to model" in buf.getvalue()
+            with mock.patch("lilbee.settings.set_value") as mock_set:
+                _handle_slash_model("llama3", con)
+                assert cfg.CHAT_MODEL == "llama3"
+                output = buf.getvalue()
+                assert "Switched to model" in output
+                assert "(saved)" in output
+                mock_set.assert_called_once_with("chat_model", "llama3")
         finally:
             cfg.CHAT_MODEL = original
 

@@ -144,7 +144,10 @@ class TestSystemPrompt:
 class TestDefaults:
     def test_default_values(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
-        with mock.patch.dict(os.environ, env, clear=True):
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
             cfg = _reload_config()
             assert cfg.CHAT_MODEL == "qwen3-coder:30b"
             assert cfg.EMBEDDING_MODEL == "nomic-embed-text"
@@ -215,6 +218,39 @@ class TestIgnoreDirs:
             cfg = _reload_config()
             assert cfg.is_ignored_dir("custom_output")
             assert not cfg.is_ignored_dir("src")
+
+
+class TestPersistedChatModel:
+    def test_config_toml_used_when_no_env_var(self):
+        """Persisted chat_model from config.toml is applied when LILBEE_CHAT_MODEL is unset."""
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value="my-saved-model") as mock_get,
+        ):
+            cfg = _reload_config()
+            mock_get.assert_called_once_with("chat_model")
+            assert cfg.CHAT_MODEL == "my-saved-model"
+
+    def test_env_var_overrides_config_toml(self):
+        """LILBEE_CHAT_MODEL env var takes precedence over config.toml."""
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "env-model"}),
+            mock.patch("lilbee.settings.get") as mock_get,
+        ):
+            cfg = _reload_config()
+            mock_get.assert_not_called()
+            assert cfg.CHAT_MODEL == "env-model"
+
+    def test_no_persisted_value_keeps_default(self):
+        """When config.toml has no chat_model, the hardcoded default is used."""
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            cfg = _reload_config()
+            assert cfg.CHAT_MODEL == "qwen3-coder:30b"
 
 
 class TestHelpers:
