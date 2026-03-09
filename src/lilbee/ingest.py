@@ -100,7 +100,7 @@ _DOCUMENT_EXTENSIONS = frozenset(
 _EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst")},
     ".pdf": "pdf",
-    **{ext: "code" for ext in _CODE_EXTENSIONS},
+    **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},

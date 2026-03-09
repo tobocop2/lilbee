@@ -5,7 +5,7 @@
 [![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](https://tobocop2.github.io/lilbee/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
