@@ -1,11 +1,12 @@
 # lilbee
 
-> This is an experimental tool and a work in progress and there will be issues with many formats and performance at scale is unknown at this time
+> This is an experimental tool and a work in progress. There will be issues with some formats and performance at scale is unknown at this time
 
 [![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](https://tobocop2.github.io/lilbee/)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
@@ -80,7 +81,7 @@ Structured JSON output for agents and scripts.
 - Python 3.11+
 - [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is **auto-pulled** on first sync if not already installed. If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
   ```bash
-  ollama pull mistral             # or qwen3, llama3, etc.
+  ollama pull qwen3-coder:30b     # or llama3, mistral, etc.
   ```
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
 
@@ -166,7 +167,7 @@ All settings are configurable via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path |
-| `LILBEE_CHAT_MODEL` | `mistral` | Ollama chat model |
+| `LILBEE_CHAT_MODEL` | `qwen3-coder:30b` | Ollama chat model |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensions |
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |

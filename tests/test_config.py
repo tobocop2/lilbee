@@ -40,7 +40,7 @@ class TestDefaultDataDir:
             mock.patch("sys.platform", "linux"),
         ):
             cfg = _reload_config()
-            assert ".local/share/lilbee" in str(cfg._default_data_dir())
+            assert cfg._default_data_dir().parts[-3:] == (".local", "share", "lilbee")
 
     def test_windows_uses_localappdata(self, tmp_path):
         with (
@@ -146,7 +146,7 @@ class TestDefaults:
         env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
         with mock.patch.dict(os.environ, env, clear=True):
             cfg = _reload_config()
-            assert cfg.CHAT_MODEL == "mistral"
+            assert cfg.CHAT_MODEL == "qwen3-coder:30b"
             assert cfg.EMBEDDING_MODEL == "nomic-embed-text"
             assert cfg.EMBEDDING_DIM == 768
             assert cfg.CHUNK_SIZE == 512

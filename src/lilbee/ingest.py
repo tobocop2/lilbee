@@ -118,8 +118,8 @@ def _file_hash(path: Path) -> str:
 
 
 def _relative_name(path: Path) -> str:
-    """Get path relative to documents dir as string."""
-    return str(path.relative_to(cfg.DOCUMENTS_DIR))
+    """Get path relative to documents dir as a forward-slash string (portable across OS)."""
+    return path.relative_to(cfg.DOCUMENTS_DIR).as_posix()
 
 
 def _discover_files() -> dict[str, Path]:

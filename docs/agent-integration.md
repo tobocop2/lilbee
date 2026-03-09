@@ -42,7 +42,7 @@ Add to your MCP client's MCP server configuration:
 **`lilbee_status()`**
 ```json
 {
-  "config": {"documents_dir": "...", "chat_model": "mistral", ...},
+  "config": {"documents_dir": "...", "chat_model": "qwen3-coder:30b", ...},
   "sources": [{"filename": "manual.pdf", "chunk_count": 42}],
   "total_chunks": 42
 }
