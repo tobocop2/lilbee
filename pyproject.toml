@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.3.7"
+version = "0.3.8"
 description = "A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there."
 readme = "README.md"
 license = "MIT"
