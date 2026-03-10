@@ -1,6 +1,7 @@
 """Tests for the CLI interface using typer's test runner."""
 
 import json
+from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -8,14 +9,15 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.cli import (
-    _clean_result,
-    _get_version,
-    _list_ollama_models,
-    _make_completer,
-    _QuitChat,
+    QuitChat,
     app,
+    clean_result,
     console,
+    get_version,
+    list_ollama_models,
+    make_completer,
 )
+from lilbee.config import cfg
 from lilbee.ingest import SyncResult
 
 runner = CliRunner()
@@ -36,23 +38,17 @@ def _skip_model_validation():
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all CLI tests."""
-    import lilbee.config as cfg
-    import lilbee.store as store_mod
-
-    orig_docs, orig_db, orig_data = cfg.DOCUMENTS_DIR, cfg.LANCEDB_DIR, cfg.DATA_DIR
-
-    cfg.DOCUMENTS_DIR = tmp_path / "documents"
-    cfg.DOCUMENTS_DIR.mkdir()
-    cfg.DATA_DIR = tmp_path / "data"
-    cfg.LANCEDB_DIR = tmp_path / "data" / "lancedb"
-    store_mod.LANCEDB_DIR = cfg.LANCEDB_DIR
+    snapshot = replace(cfg)
+    cfg.documents_dir = tmp_path / "documents"
+    cfg.documents_dir.mkdir()
+    cfg.data_dir = tmp_path / "data"
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.json_mode = False
 
     yield tmp_path
 
-    cfg.DOCUMENTS_DIR = orig_docs
-    cfg.DATA_DIR = orig_data
-    cfg.LANCEDB_DIR = orig_db
-    store_mod.LANCEDB_DIR = orig_db
+    for f in fields(cfg):
+        setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
 class TestStatus:
@@ -93,9 +89,8 @@ class TestSync:
         return_value=SyncResult(added=["test.txt"]),
     )
     def test_sync_with_file(self, _sync, isolated_env):
-        import lilbee.config as cfg
 
-        (cfg.DOCUMENTS_DIR / "test.txt").write_text("Hello world content.")
+        (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
         assert "Added: 1" in result.output
@@ -129,12 +124,10 @@ class TestAdd:
         src_file.parent.mkdir()
         src_file.write_text("Engine oil capacity is 5 quarts.")
 
-        import lilbee.config as cfg
-
         result = runner.invoke(app, ["add", str(src_file)])
         assert result.exit_code == 0
         assert "Copied 1" in result.output
-        assert (cfg.DOCUMENTS_DIR / "manual.txt").exists()
+        assert (cfg.documents_dir / "manual.txt").exists()
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
@@ -145,12 +138,10 @@ class TestAdd:
         (src_dir / "file1.txt").write_text("Content 1")
         (src_dir / "file2.txt").write_text("Content 2")
 
-        import lilbee.config as cfg
-
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
-        assert (cfg.DOCUMENTS_DIR / "docs" / "file1.txt").exists()
-        assert (cfg.DOCUMENTS_DIR / "docs" / "file2.txt").exists()
+        assert (cfg.documents_dir / "docs" / "file1.txt").exists()
+        assert (cfg.documents_dir / "docs" / "file2.txt").exists()
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
@@ -175,7 +166,6 @@ class TestAdd:
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_add_overwrites_existing_dir(self, _e, _eb, isolated_env, tmp_path):
         """Re-adding a directory with --force updates content."""
-        import lilbee.config as cfg
 
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
@@ -187,7 +177,7 @@ class TestAdd:
         (src_dir / "file1.txt").write_text("Version 2")
         result = runner.invoke(app, ["add", "--force", str(src_dir)])
         assert result.exit_code == 0
-        assert (cfg.DOCUMENTS_DIR / "docs" / "file1.txt").read_text() == "Version 2"
+        assert (cfg.documents_dir / "docs" / "file1.txt").read_text() == "Version 2"
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
@@ -211,7 +201,6 @@ class TestAddIgnoresDirs:
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_add_directory_skips_git_and_node_modules(self, _e, _eb, isolated_env, tmp_path):
         """Adding a directory filters out .git/ and node_modules/."""
-        import lilbee.config as cfg
 
         src_dir = tmp_path / "source" / "project"
         src_dir.mkdir(parents=True)
@@ -226,7 +215,7 @@ class TestAddIgnoresDirs:
         result = runner.invoke(app, ["add", str(src_dir)])
         assert result.exit_code == 0
 
-        dest = cfg.DOCUMENTS_DIR / "project"
+        dest = cfg.documents_dir / "project"
         assert (dest / "readme.txt").exists()
         assert not (dest / ".git").exists()
         assert not (dest / "node_modules").exists()
@@ -349,26 +338,23 @@ class TestChat:
 
 class TestApplyOverrides:
     def test_data_dir_override(self, tmp_path):
-        import lilbee.config as cfg
-        from lilbee.cli import _apply_overrides
+        from lilbee.cli import apply_overrides
 
-        _apply_overrides(data_dir=tmp_path)
-        assert tmp_path / "documents" == cfg.DOCUMENTS_DIR
+        apply_overrides(data_dir=tmp_path)
+        assert tmp_path / "documents" == cfg.documents_dir
 
     def test_model_override(self):
-        import lilbee.config as cfg
-        from lilbee.cli import _apply_overrides
+        from lilbee.cli import apply_overrides
 
-        _apply_overrides(model="phi3")
-        assert cfg.CHAT_MODEL == "phi3"
+        apply_overrides(model="phi3")
+        assert cfg.chat_model == "phi3"
 
     def test_none_values_are_noop(self):
-        import lilbee.config as cfg
-        from lilbee.cli import _apply_overrides
+        from lilbee.cli import apply_overrides
 
-        original_model = cfg.CHAT_MODEL
-        _apply_overrides(data_dir=None, model=None)
-        assert original_model == cfg.CHAT_MODEL
+        original_model = cfg.chat_model
+        apply_overrides(data_dir=None, model=None)
+        assert original_model == cfg.chat_model
 
 
 class TestMainModule:
@@ -385,28 +371,28 @@ class TestMainModule:
 
 
 class TestDispatchSlash:
-    """Test _dispatch_slash in isolation."""
+    """Test dispatch_slash in isolation."""
 
     def test_non_slash_returns_false(self):
-        from lilbee.cli import _dispatch_slash
+        from lilbee.cli import dispatch_slash
 
-        assert _dispatch_slash("hello", console) is False
+        assert dispatch_slash("hello", console) is False
 
     def test_known_command_returns_true(self):
-        from lilbee.cli import _dispatch_slash
+        from lilbee.cli import dispatch_slash
 
-        assert _dispatch_slash("/help", console) is True
+        assert dispatch_slash("/help", console) is True
 
     def test_unknown_command_prints_error(self):
         from io import StringIO
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _dispatch_slash
+        from lilbee.cli import dispatch_slash
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        result = _dispatch_slash("/foobar", con)
+        result = dispatch_slash("/foobar", con)
         assert result is True
         assert "Unknown command" in buf.getvalue()
 
@@ -415,11 +401,11 @@ class TestDispatchSlash:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _dispatch_slash
+        from lilbee.cli import dispatch_slash
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        _dispatch_slash("/help", con)
+        dispatch_slash("/help", con)
         output = buf.getvalue()
         assert "/status" in output
         assert "/add" in output
@@ -457,7 +443,7 @@ class TestSlashAdd:
         src.parent.mkdir()
         src.write_text("content")
 
-        # Re-mock sync for the _add_paths call (it calls sync() internally)
+        # Re-mock sync for the add_paths call (it calls sync() internally)
         _sync.return_value = SyncResult(added=["test.txt"])
 
         result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
@@ -533,16 +519,16 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         with mock.patch("builtins.input", return_value=""):
-            _handle_slash_model("", con)
+            handle_slash_model("", con)
         output = buf.getvalue()
         assert "Current model:" in output
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["qwen3:8b"])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["qwen3:8b"])
     @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
     @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
     def test_model_interactive_picks_installed(self, _ram, _disk, _models):
@@ -551,10 +537,9 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        import lilbee.config as cfg
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
-        original = cfg.CHAT_MODEL
+        original = cfg.chat_model
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         try:
@@ -562,15 +547,15 @@ class TestSlashModel:
                 mock.patch("builtins.input", return_value="4"),
                 mock.patch("lilbee.settings.set_value") as mock_set,
             ):
-                _handle_slash_model("", con)
-            assert cfg.CHAT_MODEL == "qwen3:8b"
+                handle_slash_model("", con)
+            assert cfg.chat_model == "qwen3:8b"
             output = buf.getvalue()
             assert "Switched to model" in output
-            mock_set.assert_called_once_with("chat_model", "qwen3:8b")
+            mock_set.assert_called_once_with(cfg.data_root, "chat_model", "qwen3:8b")
         finally:
-            cfg.CHAT_MODEL = original
+            cfg.chat_model = original
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=[])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[])
     @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
     @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
     @mock.patch("lilbee.models.pull_with_progress")
@@ -581,20 +566,19 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        import lilbee.config as cfg
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
-        original = cfg.CHAT_MODEL
+        original = cfg.chat_model
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         try:
             with mock.patch("builtins.input", return_value="1"):
-                _handle_slash_model("", con)
+                handle_slash_model("", con)
             mock_pull.assert_called_once_with("qwen3:1.7b")
             output = buf.getvalue()
             assert "Switched to model" in output
         finally:
-            cfg.CHAT_MODEL = original
+            cfg.chat_model = original
 
     @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
     @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
@@ -604,12 +588,12 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         with mock.patch("builtins.input", return_value="abc"):
-            _handle_slash_model("", con)
+            handle_slash_model("", con)
         output = buf.getvalue()
         assert "Enter a number" in output
 
@@ -621,12 +605,12 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         with mock.patch("builtins.input", return_value="99"):
-            _handle_slash_model("", con)
+            handle_slash_model("", con)
         output = buf.getvalue()
         assert "Enter a number" in output
 
@@ -638,70 +622,67 @@ class TestSlashModel:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         with mock.patch("builtins.input", side_effect=EOFError):
-            _handle_slash_model("", con)
+            handle_slash_model("", con)
         # Should not raise
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["llama3", "mistral"])
     def test_model_switches(self, _models):
         from io import StringIO
 
         from rich.console import Console as RichConsole
 
-        import lilbee.config as cfg
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
-        original = cfg.CHAT_MODEL
+        original = cfg.chat_model
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         try:
             with mock.patch("lilbee.settings.set_value") as mock_set:
-                _handle_slash_model("llama3", con)
-                assert cfg.CHAT_MODEL == "llama3"
+                handle_slash_model("llama3", con)
+                assert cfg.chat_model == "llama3"
                 output = buf.getvalue()
                 assert "Switched to model" in output
                 assert "(saved)" in output
-                mock_set.assert_called_once_with("chat_model", "llama3")
+                mock_set.assert_called_once_with(cfg.data_root, "chat_model", "llama3")
         finally:
-            cfg.CHAT_MODEL = original
+            cfg.chat_model = original
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["llama3", "mistral"])
     def test_model_rejects_unknown(self, _models):
         from io import StringIO
 
         from rich.console import Console as RichConsole
 
-        import lilbee.config as cfg
-        from lilbee.cli import _handle_slash_model
+        from lilbee.cli.chat import handle_slash_model
 
-        original = cfg.CHAT_MODEL
+        original = cfg.chat_model
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         try:
-            _handle_slash_model("nonexistent", con)
-            assert original == cfg.CHAT_MODEL
+            handle_slash_model("nonexistent", con)
+            assert original == cfg.chat_model
             output = buf.getvalue()
             assert "Unknown model" in output
             assert "Available:" in output
         finally:
-            cfg.CHAT_MODEL = original
+            cfg.chat_model = original
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["phi3", "mistral"])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["phi3", "mistral"])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_model_switch_in_chat_loop(self, _sync, _models):
-        import lilbee.config as cfg
+    def test_model_switch_inchat_loop(self, _sync, _models):
 
-        original = cfg.CHAT_MODEL
+        original = cfg.chat_model
         try:
             result = runner.invoke(app, ["chat"], input="/model phi3\n/quit\n")
             assert result.exit_code == 0
             assert "Switched to model" in result.output
         finally:
-            cfg.CHAT_MODEL = original
+            cfg.chat_model = original
 
 
 class TestSlashVersion:
@@ -712,17 +693,17 @@ class TestSlashVersion:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_version
+        from lilbee.cli.chat import handle_slash_version
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        _handle_slash_version("", con)
+        handle_slash_version("", con)
         output = buf.getvalue()
         assert "lilbee" in output
-        assert _get_version() in output
+        assert get_version() in output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_version_in_chat_loop(self, _sync):
+    def test_version_inchat_loop(self, _sync):
         result = runner.invoke(app, ["chat"], input="/version\n/quit\n")
         assert result.exit_code == 0
         assert "lilbee" in result.output
@@ -765,7 +746,7 @@ class TestLilbeeCompleter:
         from prompt_toolkit.document import Document
 
         doc = Document(text, len(text))
-        completer = _make_completer()
+        completer = make_completer()
         return [c.text for c in completer.get_completions(doc, None)]
 
     def test_slash_shows_all_commands(self):
@@ -787,7 +768,7 @@ class TestLilbeeCompleter:
         assert len(results) > 0
 
     @mock.patch(
-        "lilbee.cli._chat._list_ollama_models",
+        "lilbee.cli.chat.list_ollama_models",
         return_value=["llama3:latest", "mistral:latest", "phi3:latest"],
     )
     def test_model_prefix_completes(self, _models):
@@ -797,14 +778,14 @@ class TestLilbeeCompleter:
         assert "phi3:latest" in results
 
     @mock.patch(
-        "lilbee.cli._chat._list_ollama_models",
+        "lilbee.cli.chat.list_ollama_models",
         return_value=["llama3:latest", "mistral:latest"],
     )
     def test_model_prefix_filters(self, _models):
         results = self._complete("/model ll")
         assert results == ["llama3:latest"]
 
-    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=[])
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[])
     def test_model_prefix_no_models(self, _models):
         results = self._complete("/model ")
         assert results == []
@@ -815,7 +796,7 @@ class TestLilbeeCompleter:
 
 
 class TestListOllamaModels:
-    """Test _list_ollama_models helper."""
+    """Test list_ollama_models helper."""
 
     def test_returns_model_names(self):
         mock_model = mock.MagicMock()
@@ -823,11 +804,11 @@ class TestListOllamaModels:
         mock_response = mock.MagicMock()
         mock_response.models = [mock_model]
         with mock.patch("ollama.list", return_value=mock_response):
-            assert _list_ollama_models() == ["llama3:latest"]
+            assert list_ollama_models() == ["llama3:latest"]
 
     def test_returns_empty_on_error(self):
         with mock.patch("ollama.list", side_effect=Exception("not running")):
-            assert _list_ollama_models() == []
+            assert list_ollama_models() == []
 
     def test_excludes_embedding_model(self):
         chat = mock.MagicMock()
@@ -837,22 +818,22 @@ class TestListOllamaModels:
         mock_response = mock.MagicMock()
         mock_response.models = [chat, embed]
         with mock.patch("ollama.list", return_value=mock_response):
-            result = _list_ollama_models()
+            result = list_ollama_models()
             assert result == ["llama3:latest"]
             assert "nomic-embed-text:latest" not in result
 
 
 class TestQuitChat:
-    """Test _QuitChat sentinel."""
+    """Test QuitChat sentinel."""
 
     def test_quit_chat_is_exception(self):
-        assert issubclass(_QuitChat, Exception)
+        assert issubclass(QuitChat, Exception)
 
     def test_slash_quit_raises(self):
-        from lilbee.cli import _handle_slash_quit
+        from lilbee.cli.chat import handle_slash_quit
 
-        with pytest.raises(_QuitChat):
-            _handle_slash_quit("", console)
+        with pytest.raises(QuitChat):
+            handle_slash_quit("", console)
 
 
 class TestPromptSessionBranch:
@@ -872,15 +853,15 @@ class TestPromptSessionBranch:
             ),
         ):
             mock_stdin.isatty.return_value = True
-            from lilbee.cli import _chat_loop
+            from lilbee.cli import chat_loop
 
-            _chat_loop(console)
+            chat_loop(console)
             mock_session.prompt.assert_called()
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_tty_import_error_falls_back(self, _sync):
         """When prompt_toolkit import fails in TTY mode, falls back to con.input."""
-        from lilbee.cli import _chat_loop
+        from lilbee.cli import chat_loop
 
         mock_con = mock.MagicMock()
         mock_con.input.side_effect = EOFError
@@ -890,7 +871,7 @@ class TestPromptSessionBranch:
             mock.patch.dict("sys.modules", {"prompt_toolkit": None}),
         ):
             mock_stdin.isatty.return_value = True
-            _chat_loop(mock_con)
+            chat_loop(mock_con)
             # Verify it fell back to con.input (not PromptSession)
             mock_con.input.assert_called()
 
@@ -902,18 +883,18 @@ class TestPromptSessionBranch:
 
 class TestCleanResult:
     def test_strips_vector(self):
-        result = _clean_result({"source": "a.pdf", "vector": [0.1, 0.2], "chunk": "hi"})
+        result = clean_result({"source": "a.pdf", "vector": [0.1, 0.2], "chunk": "hi"})
         assert "vector" not in result
         assert result["source"] == "a.pdf"
 
     def test_renames_distance(self):
-        result = _clean_result({"_distance": 0.42, "chunk": "hi"})
+        result = clean_result({"_distance": 0.42, "chunk": "hi"})
         assert "distance" in result
         assert "_distance" not in result
         assert result["distance"] == 0.42
 
     def test_passthrough_other_fields(self):
-        result = _clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
+        result = clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
         assert result == {"source": "a.pdf", "chunk": "hi", "page_start": 1}
 
 
@@ -1006,12 +987,12 @@ class TestVersionFlag:
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
         assert "lilbee" in result.output
-        assert _get_version() in result.output
+        assert get_version() in result.output
 
     def test_short_version_flag(self):
         result = runner.invoke(app, ["-V"])
         assert result.exit_code == 0
-        assert _get_version() in result.output
+        assert get_version() in result.output
 
 
 class TestRemove:
@@ -1058,10 +1039,9 @@ class TestRemove:
         assert len(get_sources()) == 0
 
     def test_remove_with_delete_flag(self, isolated_env):
-        import lilbee.config as cfg
         from lilbee.store import upsert_source
 
-        doc = cfg.DOCUMENTS_DIR / "test.txt"
+        doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
         upsert_source("test.txt", "abc123", 1)
 
@@ -1193,48 +1173,44 @@ class TestReset:
 
     def test_reset_deletes_everything(self, isolated_env):
         """With --yes, both dirs are cleared."""
-        import lilbee.config as cfg
 
-        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
-        (cfg.DATA_DIR / "db_file").write_text("data")
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
+        (cfg.data_dir / "db_file").write_text("data")
 
         result = runner.invoke(app, ["reset", "--yes"])
         assert result.exit_code == 0
         assert "Reset complete" in result.output
-        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
-        assert list(cfg.DATA_DIR.iterdir()) == []
+        assert list(cfg.documents_dir.iterdir()) == []
+        assert list(cfg.data_dir.iterdir()) == []
 
     def test_reset_without_yes_prompts(self, isolated_env):
         """Without --yes, prompts and aborts on 'n'."""
-        import lilbee.config as cfg
 
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["reset"], input="n\n")
         assert result.exit_code == 0
         assert "Aborted" in result.output
         # File should still exist
-        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
+        assert (cfg.documents_dir / "doc.txt").exists()
 
     def test_reset_without_yes_confirms(self, isolated_env):
         """Without --yes, confirming with 'y' deletes everything."""
-        import lilbee.config as cfg
 
-        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["reset"], input="y\n")
         assert result.exit_code == 0
         assert "Reset complete" in result.output
-        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.documents_dir.iterdir()) == []
 
     def test_reset_json_output(self, isolated_env):
         """JSON mode returns structured output."""
-        import lilbee.config as cfg
 
-        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["--json", "reset", "--yes"])
         assert result.exit_code == 0
@@ -1258,28 +1234,26 @@ class TestReset:
 
     def test_reset_with_subdirectories(self, isolated_env):
         """Reset removes subdirectories too."""
-        import lilbee.config as cfg
 
-        sub = cfg.DOCUMENTS_DIR / "subdir"
+        sub = cfg.documents_dir / "subdir"
         sub.mkdir()
         (sub / "nested.txt").write_text("nested content")
 
         result = runner.invoke(app, ["reset", "--yes"])
         assert result.exit_code == 0
-        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.documents_dir.iterdir()) == []
 
     def test_reset_data_dir_with_subdirectories(self, isolated_env):
         """Reset removes subdirectories in data dir too."""
-        import lilbee.config as cfg
 
-        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        sub = cfg.DATA_DIR / "lancedb"
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        sub = cfg.data_dir / "lancedb"
         sub.mkdir()
         (sub / "table.lance").write_text("lance data")
 
         result = runner.invoke(app, ["reset", "--yes"])
         assert result.exit_code == 0
-        assert list(cfg.DATA_DIR.iterdir()) == []
+        assert list(cfg.data_dir.iterdir()) == []
 
 
 class TestSlashReset:
@@ -1287,14 +1261,13 @@ class TestSlashReset:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_confirms(self, _sync, isolated_env):
-        import lilbee.config as cfg
 
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["chat"], input="/reset\nyes\n/quit\n")
         assert result.exit_code == 0
         assert "Reset complete" in result.output
-        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
+        assert list(cfg.documents_dir.iterdir()) == []
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_eof_aborts(self, _sync):
@@ -1303,24 +1276,23 @@ class TestSlashReset:
 
         from rich.console import Console as RichConsole
 
-        from lilbee.cli import _handle_slash_reset
+        from lilbee.cli.chat import handle_slash_reset
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
         with mock.patch.object(con, "input", side_effect=EOFError):
-            _handle_slash_reset("", con)
+            handle_slash_reset("", con)
         assert "Aborted" in buf.getvalue()
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_slash_reset_aborts(self, _sync, isolated_env):
-        import lilbee.config as cfg
 
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
+        (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["chat"], input="/reset\nno\n/quit\n")
         assert result.exit_code == 0
         assert "Aborted" in result.output
-        assert (cfg.DOCUMENTS_DIR / "doc.txt").exists()
+        assert (cfg.documents_dir / "doc.txt").exists()
 
 
 class TestVersion:
@@ -1328,19 +1300,19 @@ class TestVersion:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         assert "lilbee" in result.output
-        assert _get_version() in result.output
+        assert get_version() in result.output
 
     def test_version_json(self):
         result = runner.invoke(app, ["--json", "version"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["command"] == "version"
-        assert data["version"] == _get_version()
+        assert data["version"] == get_version()
 
 
 class TestGetVersion:
     def test_returns_string(self):
-        ver = _get_version()
+        ver = get_version()
         assert isinstance(ver, str)
         assert len(ver) > 0
 

@@ -3,25 +3,28 @@
 import asyncio
 import json
 import shutil
+from dataclasses import asdict
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 
+from lilbee.config import cfg
+from lilbee.platform import is_ignored_dir
 
-def _get_version() -> str:
+
+def get_version() -> str:
     """Return the installed lilbee version."""
-    from importlib.metadata import version
-
-    return version("lilbee")
+    return _pkg_version("lilbee")
 
 
-def _json_output(data: dict) -> None:
+def json_output(data: dict) -> None:
     """Print a JSON object to stdout."""
     print(json.dumps(data))
 
 
-def _clean_result(result: dict) -> dict:
+def clean_result(result: dict) -> dict:
     """Strip vector field and rename _distance for JSON output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}
     if "_distance" in cleaned:
@@ -29,9 +32,8 @@ def _clean_result(result: dict) -> dict:
     return cleaned
 
 
-def _gather_status() -> dict:
+def gather_status() -> dict:
     """Collect status data as a plain dict (shared by human + JSON output)."""
-    from lilbee.config import CHAT_MODEL, DATA_DIR, DOCUMENTS_DIR, EMBEDDING_MODEL
     from lilbee.store import get_sources
 
     sources = get_sources()
@@ -40,10 +42,10 @@ def _gather_status() -> dict:
     return {
         "command": "status",
         "config": {
-            "documents_dir": str(DOCUMENTS_DIR),
-            "data_dir": str(DATA_DIR),
-            "chat_model": CHAT_MODEL,
-            "embedding_model": EMBEDDING_MODEL,
+            "documents_dir": str(cfg.documents_dir),
+            "data_dir": str(cfg.data_dir),
+            "chat_model": cfg.chat_model,
+            "embedding_model": cfg.embedding_model,
         },
         "sources": [
             {
@@ -58,14 +60,14 @@ def _gather_status() -> dict:
     }
 
 
-def _render_status(con: Console) -> None:
+def render_status(con: Console) -> None:
     """Print status info (documents, paths, chunk counts)."""
-    data = _gather_status()
-    cfg = data["config"]
-    con.print(f"[bold]Documents:[/bold]  {cfg['documents_dir']}")
-    con.print(f"[bold]Database:[/bold]   {cfg['data_dir']}")
-    con.print(f"[bold]Chat model:[/bold] {cfg['chat_model']}")
-    con.print(f"[bold]Embeddings:[/bold] {cfg['embedding_model']}")
+    data = gather_status()
+    conf = data["config"]
+    con.print(f"[bold]Documents:[/bold]  {conf['documents_dir']}")
+    con.print(f"[bold]Database:[/bold]   {conf['data_dir']}")
+    con.print(f"[bold]Chat model:[/bold] {conf['chat_model']}")
+    con.print(f"[bold]Embeddings:[/bold] {conf['embedding_model']}")
     con.print()
 
     if not data["sources"]:
@@ -95,14 +97,12 @@ def _render_status(con: Console) -> None:
     )
 
 
-def _copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
+def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
     """Copy *paths* into the documents directory. Returns list of copied names."""
-    import lilbee.config as cfg
-
-    cfg.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for p in paths:
-        dest = cfg.DOCUMENTS_DIR / p.name
+        dest = cfg.documents_dir / p.name
         if dest.exists() and not force:
             con.print(
                 f"[yellow]Warning:[/yellow] {p.name} already exists in knowledge base "
@@ -110,35 +110,33 @@ def _copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list
             )
             continue
         if p.is_dir():
-            from lilbee.config import is_ignored_dir
 
-            def _ignore_dirs(directory: str, contents: list[str]) -> set[str]:
+            def ignore_dirs(directory: str, contents: list[str]) -> set[str]:
                 return {
                     name
                     for name in contents
-                    if (Path(directory) / name).is_dir() and is_ignored_dir(name)
+                    if (Path(directory) / name).is_dir() and is_ignored_dir(name, cfg.ignore_dirs)
                 }
 
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_ignore_dirs)
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=ignore_dirs)
         else:
             shutil.copy2(p, dest)
         copied.append(p.name)
     return copied
 
 
-def _add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
+def add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
     """Copy *paths* into the knowledge base and sync (human output)."""
-    import lilbee.config as cfg
     from lilbee.ingest import sync
 
-    copied = _copy_paths(paths, con, force=force)
-    con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.DOCUMENTS_DIR}[/dim]")
+    copied = copy_paths(paths, con, force=force)
+    con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.documents_dir}[/dim]")
 
     result = asyncio.run(sync())
     con.print(result)
 
 
-def _stream_response(
+def stream_response(
     question: str,
     history: list[dict],
     con: Console,
@@ -170,23 +168,21 @@ def _stream_response(
     history.append({"role": "assistant", "content": "".join(response_parts)})
 
 
-def _perform_reset() -> dict:
+def perform_reset() -> dict:
     """Delete all documents and data. Returns summary of what was deleted."""
-    import lilbee.config as cfg
-
     deleted_docs = 0
     deleted_data = 0
 
-    if cfg.DOCUMENTS_DIR.exists():
-        for item in list(cfg.DOCUMENTS_DIR.iterdir()):
+    if cfg.documents_dir.exists():
+        for item in list(cfg.documents_dir.iterdir()):
             if item.is_dir():
                 shutil.rmtree(item)
             else:
                 item.unlink()
             deleted_docs += 1
 
-    if cfg.DATA_DIR.exists():
-        for item in list(cfg.DATA_DIR.iterdir()):
+    if cfg.data_dir.exists():
+        for item in list(cfg.data_dir.iterdir()):
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -197,19 +193,17 @@ def _perform_reset() -> dict:
         "command": "reset",
         "deleted_docs": deleted_docs,
         "deleted_data": deleted_data,
-        "documents_dir": str(cfg.DOCUMENTS_DIR),
-        "data_dir": str(cfg.DATA_DIR),
+        "documents_dir": str(cfg.documents_dir),
+        "data_dir": str(cfg.data_dir),
     }
 
 
-def _sync_result_to_json(result: object) -> dict:
+def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
-    from dataclasses import asdict
-
     return {"command": "sync", **asdict(result)}  # type: ignore[call-overload]
 
 
-def _auto_sync(con: Console) -> None:
+def auto_sync(con: Console) -> None:
     """Run document sync before queries."""
     from lilbee.ingest import sync
 

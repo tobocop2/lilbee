@@ -6,21 +6,22 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from lilbee.cli._app import _apply_overrides, _data_dir_option, _model_option, app, console
-from lilbee.cli._helpers import (
-    _add_paths,
-    _auto_sync,
-    _clean_result,
-    _copy_paths,
-    _gather_status,
-    _get_version,
-    _json_output,
-    _perform_reset,
-    _render_status,
-    _sync_result_to_json,
+from lilbee.cli.app import app, apply_overrides, console, data_dir_option, model_option
+from lilbee.cli.helpers import (
+    add_paths,
+    auto_sync,
+    clean_result,
+    copy_paths,
+    gather_status,
+    get_version,
+    json_output,
+    perform_reset,
+    render_status,
+    sync_result_to_json,
 )
+from lilbee.config import cfg
 
-_CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
+CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
 _paths_argument = typer.Argument(
     ...,
@@ -33,19 +34,17 @@ _paths_argument = typer.Argument(
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
-    data_dir: Path | None = _data_dir_option,
+    data_dir: Path | None = data_dir_option,
 ) -> None:
     """Search the knowledge base for relevant chunks."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
-    from lilbee.config import TOP_K
+    apply_overrides(data_dir=data_dir)
     from lilbee.query import search_context
 
-    results = search_context(query, top_k=top_k or TOP_K)
-    cleaned = [_clean_result(r) for r in results]
+    results = search_context(query, top_k=top_k or cfg.top_k)
+    cleaned = [clean_result(r) for r in results]
 
-    if _state["json_mode"]:
-        _json_output({"command": "search", "query": query, "results": cleaned})
+    if cfg.json_mode:
+        json_output({"command": "search", "query": query, "results": cleaned})
         return
 
     if not cleaned:
@@ -58,8 +57,8 @@ def search(
     table.add_column("Distance", justify="right", style="dim")
 
     for r in cleaned:
-        preview = r.get("chunk", "")[:_CHUNK_PREVIEW_LEN]
-        if len(r.get("chunk", "")) > _CHUNK_PREVIEW_LEN:
+        preview = r.get("chunk", "")[:CHUNK_PREVIEW_LEN]
+        if len(r.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
         table.add_row(
             r.get("source", ""),
@@ -70,43 +69,41 @@ def search(
 
 
 @app.command(name="sync")
-def sync_cmd(data_dir: Path | None = _data_dir_option) -> None:
+def sync_cmd(data_dir: Path | None = data_dir_option) -> None:
     """Manually trigger document sync."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
+    apply_overrides(data_dir=data_dir)
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(quiet=_state["json_mode"]))
+        result = asyncio.run(sync(quiet=cfg.json_mode))
     except RuntimeError as exc:
-        if _state["json_mode"]:
-            _json_output({"error": str(exc)})
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
-    if _state["json_mode"]:
-        _json_output(_sync_result_to_json(result))
+    if cfg.json_mode:
+        json_output(sync_result_to_json(result))
         return
     console.print(result)
 
 
 @app.command()
-def rebuild(data_dir: Path | None = _data_dir_option) -> None:
+def rebuild(data_dir: Path | None = data_dir_option) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
+    apply_overrides(data_dir=data_dir)
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(force_rebuild=True, quiet=_state["json_mode"]))
+        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode))
     except RuntimeError as exc:
-        if _state["json_mode"]:
-            _json_output({"error": str(exc)})
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
-    if _state["json_mode"]:
-        _json_output({"command": "rebuild", "ingested": len(result.added)})
+    if cfg.json_mode:
+        json_output({"command": "rebuild", "ingested": len(result.added)})
         return
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
 
@@ -117,25 +114,23 @@ _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing fi
 @app.command()
 def add(
     paths: list[Path] = _paths_argument,
-    data_dir: Path | None = _data_dir_option,
+    data_dir: Path | None = data_dir_option,
     force: bool = _force_option,
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
-
+    apply_overrides(data_dir=data_dir)
     try:
-        if _state["json_mode"]:
+        if cfg.json_mode:
             from lilbee.ingest import sync
 
-            copied = _copy_paths(paths, console, force=force)
+            copied = copy_paths(paths, console, force=force)
             result = asyncio.run(sync(quiet=True))
-            _json_output({"command": "add", "copied": copied, "sync": _sync_result_to_json(result)})
+            json_output({"command": "add", "copied": copied, "sync": sync_result_to_json(result)})
             return
-        _add_paths(paths, console, force=force)
+        add_paths(paths, console, force=force)
     except RuntimeError as exc:
-        if _state["json_mode"]:
-            _json_output({"error": str(exc)})
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
@@ -147,36 +142,36 @@ _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunk
 @app.command()
 def chunks(
     source: str = _chunks_source_argument,
-    data_dir: Path | None = _data_dir_option,
+    data_dir: Path | None = data_dir_option,
 ) -> None:
     """Show chunks a document was split into (useful for debugging retrieval)."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
+    apply_overrides(data_dir=data_dir)
+
     from lilbee.store import get_chunks_by_source, get_sources
 
     known = {s["filename"] for s in get_sources()}
     if source not in known:
-        if _state["json_mode"]:
-            _json_output({"error": f"Source not found: {source}"})
+        if cfg.json_mode:
+            json_output({"error": f"Source not found: {source}"})
             raise SystemExit(1)
         console.print(f"[red]Source not found:[/red] {source}")
         raise SystemExit(1)
 
     raw_chunks = get_chunks_by_source(source)
     cleaned = sorted(
-        [_clean_result(c) for c in raw_chunks],
+        [clean_result(c) for c in raw_chunks],
         key=lambda c: c.get("chunk_index", 0),
     )
 
-    if _state["json_mode"]:
-        _json_output({"command": "chunks", "source": source, "chunks": cleaned})
+    if cfg.json_mode:
+        json_output({"command": "chunks", "source": source, "chunks": cleaned})
         return
 
     console.print(f"[bold]{len(cleaned)}[/bold] chunks from [cyan]{source}[/cyan]\n")
     for c in cleaned:
         idx = c.get("chunk_index", "?")
-        preview = c.get("chunk", "")[:_CHUNK_PREVIEW_LEN]
-        if len(c.get("chunk", "")) > _CHUNK_PREVIEW_LEN:
+        preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
+        if len(c.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
         console.print(f"  [{idx}] {preview}")
 
@@ -193,12 +188,12 @@ _delete_file_option = typer.Option(
 @app.command()
 def remove(
     names: list[str] = _remove_names_argument,
-    data_dir: Path | None = _data_dir_option,
+    data_dir: Path | None = data_dir_option,
     delete_file: bool = _delete_file_option,
 ) -> None:
     """Remove documents from the knowledge base by source name."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
+    apply_overrides(data_dir=data_dir)
+
     from lilbee.store import delete_by_source, delete_source, get_sources
 
     known = {s["filename"] for s in get_sources()}
@@ -213,17 +208,15 @@ def remove(
         delete_source(name)
         removed.append(name)
         if delete_file:
-            import lilbee.config as cfg
-
-            path = cfg.DOCUMENTS_DIR / name
+            path = cfg.documents_dir / name
             if path.exists():
                 path.unlink()
 
-    if _state["json_mode"]:
+    if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": removed}
         if not_found:
             payload["not_found"] = not_found
-        _json_output(payload)
+        json_output(payload)
         return
 
     for name in removed:
@@ -237,30 +230,30 @@ def remove(
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="Question to ask"),
-    data_dir: Path | None = _data_dir_option,
-    model: str | None = _model_option,
+    data_dir: Path | None = data_dir_option,
+    model: str | None = model_option,
 ) -> None:
     """Ask a one-shot question (auto-syncs first)."""
-    _apply_overrides(data_dir=data_dir, model=model)
+    apply_overrides(data_dir=data_dir, model=model)
+
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
 
     ensure_chat_model()
     validate_model()
-    _auto_sync(console)
-    from lilbee.cli import _state
+    auto_sync(console)
 
     try:
-        if _state["json_mode"]:
+        if cfg.json_mode:
             from lilbee.query import ask_raw
 
             result = ask_raw(question)
-            _json_output(
+            json_output(
                 {
                     "command": "ask",
                     "question": question,
                     "answer": result.answer,
-                    "sources": [_clean_result(s) for s in result.sources],
+                    "sources": [clean_result(s) for s in result.sources],
                 }
             )
             return
@@ -271,8 +264,8 @@ def ask(
             console.print(token, end="")
         console.print()
     except RuntimeError as exc:
-        if _state["json_mode"]:
-            _json_output({"error": str(exc)})
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
             raise SystemExit(1) from None
         console.print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from None
@@ -280,44 +273,40 @@ def ask(
 
 @app.command()
 def chat(
-    data_dir: Path | None = _data_dir_option,
-    model: str | None = _model_option,
+    data_dir: Path | None = data_dir_option,
+    model: str | None = model_option,
 ) -> None:
     """Interactive chat loop (auto-syncs first)."""
-    _apply_overrides(data_dir=data_dir, model=model)
+    apply_overrides(data_dir=data_dir, model=model)
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
 
     ensure_chat_model()
     validate_model()
-    _auto_sync(console)
-    from lilbee.cli._chat import _chat_loop
+    auto_sync(console)
+    from lilbee.cli.chat import chat_loop
 
-    _chat_loop(console)
+    chat_loop(console)
 
 
 @app.command()
 def version() -> None:
     """Show the lilbee version."""
-    from lilbee.cli import _state
-
-    ver = _get_version()
-    if _state["json_mode"]:
-        _json_output({"command": "version", "version": ver})
+    ver = get_version()
+    if cfg.json_mode:
+        json_output({"command": "version", "version": ver})
         return
     console.print(f"lilbee {ver}")
 
 
 @app.command()
-def status(data_dir: Path | None = _data_dir_option) -> None:
+def status(data_dir: Path | None = data_dir_option) -> None:
     """Show indexed documents, paths, and chunk counts."""
-    _apply_overrides(data_dir=data_dir)
-    from lilbee.cli import _state
-
-    if _state["json_mode"]:
-        _json_output(_gather_status())
+    apply_overrides(data_dir=data_dir)
+    if cfg.json_mode:
+        json_output(gather_status())
         return
-    _render_status(console)
+    render_status(console)
 
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
@@ -325,32 +314,29 @@ _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.
 
 @app.command()
 def reset(
-    data_dir: Path | None = _data_dir_option,
+    data_dir: Path | None = data_dir_option,
     yes: bool = _yes_option,
 ) -> None:
     """Delete all documents and data (full factory reset)."""
-    _apply_overrides(data_dir=data_dir)
-    import lilbee.config as cfg
-    from lilbee.cli import _state
-
+    apply_overrides(data_dir=data_dir)
     if not yes:
-        if _state["json_mode"]:
-            _json_output({"error": "Use --yes to confirm reset in JSON mode"})
+        if cfg.json_mode:
+            json_output({"error": "Use --yes to confirm reset in JSON mode"})
             raise SystemExit(1)
         console.print(
             f"[bold red]This will delete ALL documents and data.[/bold red]\n"
-            f"  Documents: {cfg.DOCUMENTS_DIR}\n"
-            f"  Data:      {cfg.DATA_DIR}"
+            f"  Documents: {cfg.documents_dir}\n"
+            f"  Data:      {cfg.data_dir}"
         )
         confirmed = typer.confirm("Are you sure?", default=False)
         if not confirmed:
             console.print("Aborted.")
             raise SystemExit(0)
 
-    result = _perform_reset()
+    result = perform_reset()
 
-    if _state["json_mode"]:
-        _json_output(result)
+    if cfg.json_mode:
+        json_output(result)
         return
 
     console.print(

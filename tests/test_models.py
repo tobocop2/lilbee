@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 
 from lilbee import models
+from lilbee.config import cfg
 from lilbee.models import MODEL_CATALOG, ModelInfo
 
 
@@ -198,14 +199,14 @@ class TestValidateDiskAndPull:
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
         info = ModelInfo("test:1b", 1.0, 4, "test")
-        models._validate_disk_and_pull(info, 50.0)
+        models.validate_disk_and_pull(info, 50.0)
         mock_pull.assert_called_once_with("test:1b")
-        mock_save.assert_called_once_with("chat_model", "test:1b")
+        mock_save.assert_called_once_with(cfg.data_root, "chat_model", "test:1b")
 
     def test_insufficient_disk_raises(self):
         info = ModelInfo("test:big", 20.0, 32, "big")
         with pytest.raises(RuntimeError, match="Not enough disk space"):
-            models._validate_disk_and_pull(info, 5.0)
+            models.validate_disk_and_pull(info, 5.0)
 
 
 class TestPullWithProgress:
@@ -251,7 +252,7 @@ class TestEnsureChatModel:
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
         mock_pull.assert_called_once_with("qwen3-coder:30b")
-        mock_save.assert_called_once_with("chat_model", "qwen3-coder:30b")
+        mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
