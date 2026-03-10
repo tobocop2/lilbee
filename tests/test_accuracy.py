@@ -3,32 +3,12 @@
 Requires Ollama running with mistral and nomic-embed-text models pulled.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
-
-
-def _models_available() -> bool:
-    """Check that both embedding and chat models are available."""
-    try:
-        import ollama
-
-        from lilbee.embedder import embed
-
-        embed("test")  # fastembed, no Ollama needed
-        ollama.chat(model=cfg.CHAT_MODEL, messages=[{"role": "user", "content": "hi"}])
-        return True
-    except Exception:
-        return False
-
-
-requires_models = pytest.mark.skipif(
-    not _models_available(),
-    reason="Ollama not running or required models not pulled",
-)
+from tests.conftest import patched_lilbee_dirs, requires_models
 
 
 def _generate_test_pdf(output_path: Path) -> None:
@@ -105,29 +85,16 @@ def ingested_db(tmp_path_factory):
     docs_dir = tmp / "documents" / "test-docs"
     docs_dir.mkdir(parents=True)
 
-    # Patch config to use temp paths
-    original_db = cfg.LANCEDB_DIR
-    original_docs = cfg.DOCUMENTS_DIR
-    cfg.LANCEDB_DIR = db_dir
-    cfg.DOCUMENTS_DIR = docs_dir.parent
-    store_mod.LANCEDB_DIR = db_dir
+    with patched_lilbee_dirs(db_dir, docs_dir.parent):
+        # Generate and ingest test PDF
+        pdf_path = docs_dir / "test_vehicle_specs.pdf"
+        _generate_test_pdf(pdf_path)
 
-    # Generate and ingest test PDF
-    pdf_path = docs_dir / "test_vehicle_specs.pdf"
-    _generate_test_pdf(pdf_path)
+        from lilbee.ingest import sync
 
-    import asyncio
+        asyncio.run(sync())
 
-    from lilbee.ingest import sync
-
-    asyncio.run(sync())
-
-    yield tmp
-
-    # Restore config
-    cfg.LANCEDB_DIR = original_db
-    cfg.DOCUMENTS_DIR = original_docs
-    store_mod.LANCEDB_DIR = original_db
+        yield tmp
 
 
 # Each test checks retrieval + answer accuracy

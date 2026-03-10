@@ -58,10 +58,51 @@ def _handle_slash_quit(args: str, con: Console) -> None:
 
 def _handle_slash_model(args: str, con: Console) -> None:
     import lilbee.config as cfg
+    from lilbee.models import (
+        MODEL_CATALOG,
+        _validate_disk_and_pull,
+        display_model_picker,
+        get_free_disk_gb,
+        get_system_ram_gb,
+    )
 
     name = args.strip()
     if not name:
-        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}")
+        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}\n")
+        ram_gb = get_system_ram_gb()
+        free_disk_gb = get_free_disk_gb(cfg.DATA_DIR)
+        recommended = display_model_picker(ram_gb, free_disk_gb)
+        default_idx = list(MODEL_CATALOG).index(recommended) + 1
+        installed = set(_list_ollama_models())
+
+        try:
+            raw = input(f"Choice [{default_idx}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if not raw:
+            return
+
+        try:
+            choice = int(raw)
+        except ValueError:
+            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
+            return
+
+        if not (1 <= choice <= len(MODEL_CATALOG)):
+            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
+            return
+
+        model_info = MODEL_CATALOG[choice - 1]
+        if model_info.name in installed:
+            cfg.CHAT_MODEL = model_info.name
+            from lilbee import settings
+
+            settings.set_value("chat_model", model_info.name)
+            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
+        else:
+            _validate_disk_and_pull(model_info, free_disk_gb)
+            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
         return
     available = _list_ollama_models()
     if available and name not in available:
@@ -69,7 +110,10 @@ def _handle_slash_model(args: str, con: Console) -> None:
         con.print(f"Available: {', '.join(sorted(available))}")
         return
     cfg.CHAT_MODEL = name
-    con.print(f"Switched to model [bold]{name}[/bold]")
+    from lilbee import settings
+
+    settings.set_value("chat_model", name)
+    con.print(f"Switched to model [bold]{name}[/bold] (saved)")
 
 
 def _handle_slash_version(args: str, con: Console) -> None:
@@ -134,11 +178,16 @@ def _dispatch_slash(raw_input: str, con: Console) -> bool:
 
 
 def _list_ollama_models() -> list[str]:
-    """Return installed Ollama model names, or empty list if unavailable."""
+    """Return installed Ollama chat model names, excluding embedding models."""
     try:
         import ollama
 
-        return [m.model for m in ollama.list().models if m.model]
+        import lilbee.config as cfg
+
+        embed_base = cfg.EMBEDDING_MODEL.split(":")[0]
+        return [
+            m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
+        ]
     except Exception:
         return []
 

@@ -14,6 +14,7 @@ htmlcov/
 *.pdf
 *.html
 *.txt
+!tests/fixtures/**
 CLAUDE.md
 .worktrees/
 docs/plans/
