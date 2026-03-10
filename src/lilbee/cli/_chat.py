@@ -58,15 +58,51 @@ def _handle_slash_quit(args: str, con: Console) -> None:
 
 def _handle_slash_model(args: str, con: Console) -> None:
     import lilbee.config as cfg
-    from lilbee.models import MODEL_CATALOG, OLLAMA_MODELS_URL
+    from lilbee.models import (
+        MODEL_CATALOG,
+        _validate_disk_and_pull,
+        display_model_picker,
+        get_free_disk_gb,
+        get_system_ram_gb,
+    )
 
     name = args.strip()
     if not name:
-        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}")
-        con.print("\n[dim]Catalog:[/dim]")
-        for model in MODEL_CATALOG:
-            con.print(f"  {model.name:<22} {model.size_gb:>5.1f} GB  {model.description}")
-        con.print(f"\n  Browse more at {OLLAMA_MODELS_URL}")
+        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}\n")
+        ram_gb = get_system_ram_gb()
+        free_disk_gb = get_free_disk_gb(cfg.DATA_DIR)
+        recommended = display_model_picker(ram_gb, free_disk_gb)
+        default_idx = list(MODEL_CATALOG).index(recommended) + 1
+        installed = set(_list_ollama_models())
+
+        try:
+            raw = input(f"Choice [{default_idx}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if not raw:
+            return
+
+        try:
+            choice = int(raw)
+        except ValueError:
+            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
+            return
+
+        if not (1 <= choice <= len(MODEL_CATALOG)):
+            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
+            return
+
+        model_info = MODEL_CATALOG[choice - 1]
+        if model_info.name in installed:
+            cfg.CHAT_MODEL = model_info.name
+            from lilbee import settings
+
+            settings.set_value("chat_model", model_info.name)
+            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
+        else:
+            _validate_disk_and_pull(model_info, free_disk_gb)
+            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
         return
     available = _list_ollama_models()
     if available and name not in available:

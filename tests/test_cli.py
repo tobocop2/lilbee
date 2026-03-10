@@ -525,7 +525,10 @@ class TestSlashAdd:
 class TestSlashModel:
     """Test /model slash command."""
 
-    def test_model_shows_current_and_catalog(self):
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_model_interactive_cancel(self, _ram, _disk):
+        """Empty input cancels the interactive picker without changing model."""
         from io import StringIO
 
         from rich.console import Console as RichConsole
@@ -534,12 +537,114 @@ class TestSlashModel:
 
         buf = StringIO()
         con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        _handle_slash_model("", con)
+        with mock.patch("builtins.input", return_value=""):
+            _handle_slash_model("", con)
         output = buf.getvalue()
         assert "Current model:" in output
-        assert "Catalog:" in output
-        assert "qwen3:8b" in output
-        assert "ollama.com/library" in output
+
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["qwen3:8b"])
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_model_interactive_picks_installed(self, _ram, _disk, _models):
+        """Picking an already-installed model switches without pulling."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        import lilbee.config as cfg
+        from lilbee.cli import _handle_slash_model
+
+        original = cfg.CHAT_MODEL
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with (
+                mock.patch("builtins.input", return_value="4"),
+                mock.patch("lilbee.settings.set_value") as mock_set,
+            ):
+                _handle_slash_model("", con)
+            assert cfg.CHAT_MODEL == "qwen3:8b"
+            output = buf.getvalue()
+            assert "Switched to model" in output
+            mock_set.assert_called_once_with("chat_model", "qwen3:8b")
+        finally:
+            cfg.CHAT_MODEL = original
+
+    @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=[])
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    @mock.patch("lilbee.models.pull_with_progress")
+    @mock.patch("lilbee.settings.set_value")
+    def test_model_interactive_pulls_uninstalled(self, _save, mock_pull, _ram, _disk, _models):
+        """Picking an uninstalled model triggers a pull."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        import lilbee.config as cfg
+        from lilbee.cli import _handle_slash_model
+
+        original = cfg.CHAT_MODEL
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("builtins.input", return_value="1"):
+                _handle_slash_model("", con)
+            mock_pull.assert_called_once_with("qwen3:1.7b")
+            output = buf.getvalue()
+            assert "Switched to model" in output
+        finally:
+            cfg.CHAT_MODEL = original
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_model_interactive_invalid_input(self, _ram, _disk):
+        """Non-numeric input shows an error."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_model
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", return_value="abc"):
+            _handle_slash_model("", con)
+        output = buf.getvalue()
+        assert "Enter a number" in output
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_model_interactive_out_of_range(self, _ram, _disk):
+        """Out-of-range number shows an error."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_model
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", return_value="99"):
+            _handle_slash_model("", con)
+        output = buf.getvalue()
+        assert "Enter a number" in output
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_model_interactive_eof(self, _ram, _disk):
+        """EOF during input cancels gracefully."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import _handle_slash_model
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", side_effect=EOFError):
+            _handle_slash_model("", con)
+        # Should not raise
 
     @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["llama3", "mistral"])
     def test_model_switches(self, _models):
@@ -587,14 +692,13 @@ class TestSlashModel:
 
     @mock.patch("lilbee.cli._chat._list_ollama_models", return_value=["phi3", "mistral"])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_model_in_chat_loop(self, _sync, _models):
+    def test_model_switch_in_chat_loop(self, _sync, _models):
         import lilbee.config as cfg
 
         original = cfg.CHAT_MODEL
         try:
-            result = runner.invoke(app, ["chat"], input="/model\n/model phi3\n/quit\n")
+            result = runner.invoke(app, ["chat"], input="/model phi3\n/quit\n")
             assert result.exit_code == 0
-            assert "Current model:" in result.output
             assert "Switched to model" in result.output
         finally:
             cfg.CHAT_MODEL = original

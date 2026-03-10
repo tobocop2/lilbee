@@ -105,7 +105,7 @@ class TestPickDefaultModel:
 
     def test_16gb_ram(self):
         result = models.pick_default_model(16.0)
-        assert result.name == "mistral-small:24b"
+        assert result.name == "qwen3:8b"
 
     def test_32gb_ram(self):
         result = models.pick_default_model(32.0)
