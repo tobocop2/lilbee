@@ -4,37 +4,34 @@ import tomllib
 from pathlib import Path
 
 
-def _config_path() -> Path:
-    """Return path to the persistent config file (next to documents/ and data/)."""
-    from lilbee.config import _data_root
-
-    return _data_root / "config.toml"
+def _config_path(data_root: Path) -> Path:
+    return data_root / "config.toml"
 
 
-def load() -> dict[str, str]:
+def load(data_root: Path) -> dict[str, str]:
     """Read all settings from config.toml. Returns {} if file is missing."""
-    path = _config_path()
+    path = _config_path(data_root)
     if not path.exists():
         return {}
     with path.open("rb") as f:
         return {k: str(v) for k, v in tomllib.load(f).items()}
 
 
-def save(settings: dict[str, str]) -> None:
+def save(data_root: Path, settings: dict[str, str]) -> None:
     """Write settings dict as simple TOML key-value pairs."""
-    path = _config_path()
+    path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{v}"\n' for k, v in sorted(settings.items())]
     path.write_text("".join(lines))
 
 
-def get(key: str) -> str | None:
+def get(data_root: Path, key: str) -> str | None:
     """Look up a single key from config.toml."""
-    return load().get(key)
+    return load(data_root).get(key)
 
 
-def set_value(key: str, value: str) -> None:
+def set_value(data_root: Path, key: str, value: str) -> None:
     """Read-modify-write a single key in config.toml."""
-    settings = load()
-    settings[key] = value
-    save(settings)
+    current = load(data_root)
+    current[key] = value
+    save(data_root, current)

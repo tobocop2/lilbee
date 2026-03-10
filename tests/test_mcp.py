@@ -1,32 +1,29 @@
 """Tests for the MCP server tools."""
 
+from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
+from lilbee.config import cfg
 from lilbee.ingest import SyncResult
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
-    orig_docs, orig_db, orig_data = cfg.DOCUMENTS_DIR, cfg.LANCEDB_DIR, cfg.DATA_DIR
+    snapshot = replace(cfg)
 
-    cfg.DOCUMENTS_DIR = tmp_path / "documents"
-    cfg.DOCUMENTS_DIR.mkdir()
-    cfg.DATA_DIR = tmp_path / "data"
-    cfg.LANCEDB_DIR = tmp_path / "data" / "lancedb"
-    store_mod.LANCEDB_DIR = cfg.LANCEDB_DIR
+    cfg.documents_dir = tmp_path / "documents"
+    cfg.documents_dir.mkdir()
+    cfg.data_dir = tmp_path / "data"
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
 
     yield tmp_path
 
-    cfg.DOCUMENTS_DIR = orig_docs
-    cfg.DATA_DIR = orig_data
-    cfg.LANCEDB_DIR = orig_db
-    store_mod.LANCEDB_DIR = orig_db
+    for f in fields(cfg):
+        setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
 @pytest.fixture(autouse=True)
@@ -41,23 +38,23 @@ _SYNC_NOOP = SyncResult()
 
 class TestClean:
     def test_strips_vector(self):
-        from lilbee.mcp import _clean
+        from lilbee.mcp import clean
 
-        result = _clean({"source": "a.pdf", "vector": [0.1], "chunk": "hi"})
+        result = clean({"source": "a.pdf", "vector": [0.1], "chunk": "hi"})
         assert "vector" not in result
         assert result["source"] == "a.pdf"
 
     def test_renames_distance(self):
-        from lilbee.mcp import _clean
+        from lilbee.mcp import clean
 
-        result = _clean({"_distance": 0.42, "chunk": "hi"})
+        result = clean({"_distance": 0.42, "chunk": "hi"})
         assert result["distance"] == 0.42
         assert "_distance" not in result
 
 
 class TestLilbeeSearch:
     @mock.patch("lilbee.query.search_context")
-    def test_returns_cleaned_results(self, mock_search):
+    def test_returnscleaned_results(self, mock_search):
         from lilbee.mcp import lilbee_search
 
         mock_search.return_value = [
@@ -113,7 +110,7 @@ class TestLilbeeSync:
     async def test_sync_with_file(self, _sync):
         from lilbee.mcp import lilbee_sync
 
-        (cfg.DOCUMENTS_DIR / "test.txt").write_text("Hello world content.")
+        (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = await lilbee_sync()
         assert "test.txt" in result["added"]
 
@@ -122,16 +119,16 @@ class TestLilbeeReset:
     def test_reset_clears_everything(self):
         from lilbee.mcp import lilbee_reset
 
-        cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        (cfg.DOCUMENTS_DIR / "doc.txt").write_text("content")
-        (cfg.DATA_DIR / "db_file").write_text("data")
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "doc.txt").write_text("content")
+        (cfg.data_dir / "db_file").write_text("data")
 
         result = lilbee_reset()
         assert result["command"] == "reset"
         assert result["deleted_docs"] == 1
         assert result["deleted_data"] == 1
-        assert list(cfg.DOCUMENTS_DIR.iterdir()) == []
-        assert list(cfg.DATA_DIR.iterdir()) == []
+        assert list(cfg.documents_dir.iterdir()) == []
+        assert list(cfg.data_dir.iterdir()) == []
 
     def test_reset_empty_dirs(self):
         from lilbee.mcp import lilbee_reset

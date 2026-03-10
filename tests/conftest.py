@@ -3,12 +3,12 @@
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
+from lilbee.config import cfg
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -21,7 +21,7 @@ def _models_available() -> bool:
         from lilbee.embedder import embed
 
         embed("test")  # fastembed, no Ollama needed
-        ollama.chat(model=cfg.CHAT_MODEL, messages=[{"role": "user", "content": "hi"}])
+        ollama.chat(model=cfg.chat_model, messages=[{"role": "user", "content": "hi"}])
         return True
     except Exception:
         return False
@@ -36,17 +36,14 @@ requires_models = pytest.mark.skipif(
 @contextmanager
 def patched_lilbee_dirs(db_dir: Path, documents_dir: Path) -> Generator[None, None, None]:
     """Temporarily patch lilbee config to use the given directories."""
-    original_db = cfg.LANCEDB_DIR
-    original_docs = cfg.DOCUMENTS_DIR
-    cfg.LANCEDB_DIR = db_dir
-    cfg.DOCUMENTS_DIR = documents_dir
-    store_mod.LANCEDB_DIR = db_dir
+    snapshot = replace(cfg)
+    cfg.lancedb_dir = db_dir
+    cfg.documents_dir = documents_dir
     try:
         yield
     finally:
-        cfg.LANCEDB_DIR = original_db
-        cfg.DOCUMENTS_DIR = original_docs
-        store_mod.LANCEDB_DIR = original_db
+        for f in fields(cfg):
+            setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
 def copy_fixtures_to(subdir: str, dest: Path) -> None:
@@ -60,6 +57,7 @@ def copy_fixtures_to(subdir: str, dest: Path) -> None:
 def batch_search(queries: list[str], top_k: int = 10) -> dict[str, list[dict]]:
     """Embed all queries in one batch call, then search for each. Returns {query: results}."""
     from lilbee.embedder import embed_batch
+    from lilbee.store import search
 
     vectors = embed_batch(queries)
-    return {q: store_mod.search(v, top_k=top_k) for q, v in zip(queries, vectors, strict=True)}
+    return {q: search(v, top_k=top_k) for q, v in zip(queries, vectors, strict=True)}

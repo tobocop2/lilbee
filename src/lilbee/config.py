@@ -1,85 +1,16 @@
-"""Constants and configuration for lilbee.
+"""Application configuration for lilbee.
 
 All settings can be overridden via environment variables prefixed with LILBEE_.
 """
 
 import os
-import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from lilbee import settings
+from lilbee.platform import default_data_dir, env, env_int
 
-def _default_data_dir() -> Path:
-    """Return platform-appropriate data directory.
-
-    - Linux:   ~/.local/share/lilbee  (XDG_DATA_HOME)
-    - macOS:   ~/Library/Application Support/lilbee
-    - Windows: %LOCALAPPDATA%/lilbee
-    """
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "lilbee"
-
-
-def _env(key: str, default: str) -> str:
-    """Read a LILBEE_ env var with fallback."""
-    return os.environ.get(f"LILBEE_{key}", default)
-
-
-def _env_int(key: str, default: int) -> int:
-    """Read a LILBEE_ env var as int with fallback."""
-    raw = os.environ.get(f"LILBEE_{key}")
-    if raw is None:
-        return default
-    return int(raw)
-
-
-# Paths — LILBEE_DATA overrides the platform default
-_data_env = _env("DATA", "")
-_data_root = Path(_data_env) if _data_env else _default_data_dir()
-
-DOCUMENTS_DIR = _data_root / "documents"
-DATA_DIR = _data_root / "data"
-LANCEDB_DIR = DATA_DIR / "lancedb"
-
-# Ollama models — configurable via LILBEE_CHAT_MODEL / LILBEE_EMBEDDING_MODEL
-# Priority: env var > config.toml > hardcoded default
-CHAT_MODEL = _env("CHAT_MODEL", "qwen3:8b")
-if "LILBEE_CHAT_MODEL" not in os.environ:
-    from lilbee import settings as _settings
-
-    _saved_chat_model = _settings.get("chat_model")
-    if _saved_chat_model:
-        CHAT_MODEL = _saved_chat_model
-    del _saved_chat_model, _settings
-EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "nomic-embed-text")
-EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 768)
-
-# Chunking — configurable via LILBEE_CHUNK_SIZE / LILBEE_CHUNK_OVERLAP
-CHUNK_SIZE = _env_int("CHUNK_SIZE", 512)
-CHUNK_OVERLAP = _env_int("CHUNK_OVERLAP", 100)
-
-# Embedding limits
-MAX_EMBED_CHARS = _env_int("MAX_EMBED_CHARS", 2000)
-
-# Retrieval
-TOP_K = _env_int("TOP_K", 10)
-MAX_DISTANCE = float(_env("MAX_DISTANCE", "0.7"))
-
-# System prompt for RAG answers
-SYSTEM_PROMPT = _env(
-    "SYSTEM_PROMPT",
-    "You are a helpful technical assistant. Answer questions using "
-    "the provided context. Be specific — prefer exact numbers, part numbers, "
-    "and measurements over vague references. Cite facts directly from the context. "
-    "Do not make up information.",
-)
-
-# Directory ignore patterns for file discovery and copy
-_DEFAULT_IGNORE_DIRS = frozenset(
+DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",
         "__pycache__",
@@ -94,16 +25,72 @@ _DEFAULT_IGNORE_DIRS = frozenset(
     }
 )
 
-_extra = _env("IGNORE", "")
-IGNORE_DIRS = _DEFAULT_IGNORE_DIRS | frozenset(
-    name.strip() for name in _extra.split(",") if name.strip()
-)
-
-# LanceDB table names
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 
 
-def is_ignored_dir(name: str) -> bool:
-    """Return True if a directory name should be skipped during traversal."""
-    return name.startswith(".") or name in IGNORE_DIRS or name.endswith(".egg-info")
+@dataclass
+class Config:
+    """Runtime configuration — one singleton instance, mutated by CLI overrides."""
+
+    data_root: Path
+    documents_dir: Path
+    data_dir: Path
+    lancedb_dir: Path
+    chat_model: str
+    embedding_model: str
+    embedding_dim: int
+    chunk_size: int
+    chunk_overlap: int
+    max_embed_chars: int
+    top_k: int
+    max_distance: float
+    system_prompt: str
+    ignore_dirs: frozenset[str]
+    json_mode: bool = False
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        """Build config from environment variables and settings file."""
+        data_env = env("DATA", "")
+        data_root = Path(data_env) if data_env else default_data_dir()
+
+        chat_model = env("CHAT_MODEL", "qwen3:8b")
+        if "LILBEE_CHAT_MODEL" not in os.environ:
+            try:
+                saved = settings.get(data_root, "chat_model")
+            except Exception:
+                saved = None
+            if saved:
+                chat_model = saved
+
+        extra = env("IGNORE", "")
+        ignore_dirs = DEFAULT_IGNORE_DIRS | frozenset(
+            name.strip() for name in extra.split(",") if name.strip()
+        )
+
+        return cls(
+            data_root=data_root,
+            documents_dir=data_root / "documents",
+            data_dir=data_root / "data",
+            lancedb_dir=data_root / "data" / "lancedb",
+            chat_model=chat_model,
+            embedding_model=env("EMBEDDING_MODEL", "nomic-embed-text"),
+            embedding_dim=env_int("EMBEDDING_DIM", 768),
+            chunk_size=env_int("CHUNK_SIZE", 512),
+            chunk_overlap=env_int("CHUNK_OVERLAP", 100),
+            max_embed_chars=env_int("MAX_EMBED_CHARS", 2000),
+            top_k=env_int("TOP_K", 10),
+            max_distance=float(env("MAX_DISTANCE", "0.7")),
+            system_prompt=env(
+                "SYSTEM_PROMPT",
+                "You are a helpful technical assistant. Answer questions using "
+                "the provided context. Be specific — prefer exact numbers, part numbers, "
+                "and measurements over vague references. Cite facts directly from the context. "
+                "Do not make up information.",
+            ),
+            ignore_dirs=ignore_dirs,
+        )
+
+
+cfg = Config.from_env()
