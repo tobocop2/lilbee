@@ -5,20 +5,16 @@ Requires a running Ollama instance with nomic-embed-text model.
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
+from lilbee.config import cfg
 
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
     """Point store at a temp directory, clean up after."""
-    test_dir = tmp_path / "lancedb_test"
-    original = cfg.LANCEDB_DIR
-    cfg.LANCEDB_DIR = test_dir
-    store_mod.LANCEDB_DIR = test_dir
+    original = cfg.lancedb_dir
+    cfg.lancedb_dir = tmp_path / "lancedb_test"
     yield
-    cfg.LANCEDB_DIR = original
-    store_mod.LANCEDB_DIR = original
+    cfg.lancedb_dir = original
 
 
 def _embedding_model_available() -> bool:
@@ -230,31 +226,31 @@ class TestStoreOperations:
         # Should not raise on empty store
         delete_by_source("nonexistent.txt")
 
-    def test_safe_delete_exception(self):
-        """Cover _safe_delete logging on failure."""
+    def testsafe_delete_exception(self):
+        """Cover safe_delete logging on failure."""
         from unittest.mock import MagicMock
 
-        from lilbee.store import _safe_delete
+        from lilbee.store import safe_delete
 
         mock_table = MagicMock()
         mock_table.delete.side_effect = RuntimeError("test error")
         # Should not raise
-        _safe_delete(mock_table, "bad predicate")
+        safe_delete(mock_table, "bad predicate")
 
-    def test_ensure_table_handles_already_exists(self):
-        """_ensure_table recovers when create_table raises ValueError."""
+    def testensure_table_handles_already_exists(self):
+        """ensure_table recovers when create_table raises ValueError."""
         from unittest import mock
 
-        from lilbee.store import _CHUNKS_SCHEMA, _ensure_table, _get_db
+        from lilbee.store import _chunks_schema, ensure_table, get_db
 
-        db = _get_db()
+        db = get_db()
         mock_table = mock.MagicMock()
 
         with (
             mock.patch.object(db, "create_table", side_effect=ValueError("already exists")),
             mock.patch.object(db, "open_table", return_value=mock_table),
         ):
-            result = _ensure_table(db, "chunks", _CHUNKS_SCHEMA)
+            result = ensure_table(db, "chunks", _chunks_schema())
             assert result is mock_table
 
     def test_add_chunks_wrong_dimension_raises(self):

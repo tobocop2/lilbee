@@ -1,10 +1,19 @@
 """RAM detection, model selection, interactive picker, and auto-install for chat models."""
 
 import logging
+import os
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import ollama
+from rich.console import Console
+from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+
+from lilbee import settings
+from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +66,6 @@ def get_system_ram_gb() -> float:
             ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
             return stat.ullTotalPhys / (1024**3)
         else:
-            import os
-
             pages = os.sysconf("SC_PHYS_PAGES")
             page_size = os.sysconf("SC_PAGE_SIZE")
             return (pages * page_size) / (1024**3)
@@ -94,9 +101,6 @@ def _model_download_size_gb(model: str) -> float:
 
 def display_model_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
     """Show a Rich table of catalog models on stderr and return the recommended model."""
-    from rich.console import Console
-    from rich.table import Table
-
     console = Console(stderr=True)
     recommended = pick_default_model(ram_gb)
 
@@ -137,9 +141,7 @@ def display_model_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
 
 def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
-    import lilbee.config as cfg
-
-    free_disk_gb = get_free_disk_gb(cfg.DATA_DIR)
+    free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
     default_idx = list(MODEL_CATALOG).index(recommended) + 1
 
@@ -164,10 +166,8 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
 
 
-def _validate_disk_and_pull(model_info: ModelInfo, free_gb: float) -> None:
+def validate_disk_and_pull(model_info: ModelInfo, free_gb: float) -> None:
     """Check disk space, pull the model, and persist the choice."""
-    import lilbee.config as cfg
-
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
@@ -177,18 +177,12 @@ def _validate_disk_and_pull(model_info: ModelInfo, free_gb: float) -> None:
         )
 
     pull_with_progress(model_info.name)
-    cfg.CHAT_MODEL = model_info.name
-
-    from lilbee import settings
-
-    settings.set_value("chat_model", model_info.name)
+    cfg.chat_model = model_info.name
+    settings.set_value(cfg.data_root, "chat_model", model_info.name)
 
 
 def pull_with_progress(model: str) -> None:
     """Pull an Ollama model, showing a Rich progress bar on stderr."""
-    import ollama
-    from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
-
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -214,17 +208,13 @@ def ensure_chat_model() -> None:
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
-    import ollama
-
-    import lilbee.config as cfg
-
     try:
         models = ollama.list()
     except (ConnectionError, OSError) as exc:
         raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 
     # Filter out embedding model — only check for chat models
-    embed_base = cfg.EMBEDDING_MODEL.split(":")[0]
+    embed_base = cfg.embedding_model.split(":")[0]
     chat_models = [
         m.model for m in models.models if m.model and m.model.split(":")[0] != embed_base
     ]
@@ -232,7 +222,7 @@ def ensure_chat_model() -> None:
         return
 
     ram_gb = get_system_ram_gb()
-    free_gb = get_free_disk_gb(cfg.DATA_DIR)
+    free_gb = get_free_disk_gb(cfg.data_dir)
 
     if sys.stdin.isatty():
         model_info = prompt_model_choice(ram_gb)
@@ -243,4 +233,4 @@ def ensure_chat_model() -> None:
             f"(detected {ram_gb:.0f} GB RAM)...\n"
         )
 
-    _validate_disk_and_pull(model_info, free_gb)
+    validate_disk_and_pull(model_info, free_gb)

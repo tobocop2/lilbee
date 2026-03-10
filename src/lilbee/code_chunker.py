@@ -6,8 +6,8 @@ from pathlib import Path
 
 import tree_sitter
 
-from lilbee._languages import _DEFINITION_TYPES, _EXT_TO_LANG
 from lilbee.chunker import chunk_text
+from lilbee.languages import DEFINITION_TYPES, EXT_TO_LANG
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class CodeChunk:
     chunk_index: int
 
 
-def _get_parser(lang_name: str) -> tree_sitter.Parser | None:
+def get_parser(lang_name: str) -> tree_sitter.Parser | None:
     """Get a tree-sitter parser for the given language."""
     try:
         from tree_sitter_language_pack import get_parser
@@ -45,7 +45,7 @@ def _node_span(node: tree_sitter.Node, source: bytes) -> dict:
     }
 
 
-def _collect_definitions(
+def collect_definitions(
     root: tree_sitter.Node,
     source: bytes,
     def_types: frozenset[str],
@@ -60,7 +60,7 @@ def _collect_definitions(
     return results
 
 
-def _find_line(needle: str, lines: list[str], start: int) -> int:
+def find_line(needle: str, lines: list[str], start: int) -> int:
     """Find the first line index (1-based) containing needle, from start."""
     for i in range(start, len(lines)):
         if needle and needle in lines[i]:
@@ -77,7 +77,7 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
 
     for idx, chunk in enumerate(raw):
         first_line = chunk.split("\n")[0][:80]
-        line_start = _find_line(first_line, lines, search_from)
+        line_start = find_line(first_line, lines, search_from)
         line_end = min(line_start + chunk.count("\n"), len(lines))
         results.append(
             CodeChunk(
@@ -97,16 +97,16 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     source = file_path.read_bytes()
     source_text = source.decode("utf-8", errors="replace")
 
-    lang_name = _EXT_TO_LANG.get(file_path.suffix.lower())
+    lang_name = EXT_TO_LANG.get(file_path.suffix.lower())
     if not lang_name:
         return _fallback_chunks(source_text)
 
-    parser = _get_parser(lang_name)
-    def_types = _DEFINITION_TYPES.get(lang_name, frozenset())
+    parser = get_parser(lang_name)
+    def_types = DEFINITION_TYPES.get(lang_name, frozenset())
     if not parser or not def_types:
         return _fallback_chunks(source_text)
 
-    definitions = _collect_definitions(parser.parse(source).root_node, source, def_types)
+    definitions = collect_definitions(parser.parse(source).root_node, source, def_types)
     if not definitions:
         return _fallback_chunks(source_text)
 
@@ -124,4 +124,4 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
 
 def supported_extensions() -> set[str]:
     """File extensions supported by tree-sitter chunking."""
-    return set(_EXT_TO_LANG)
+    return set(EXT_TO_LANG)
