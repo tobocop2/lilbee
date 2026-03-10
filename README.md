@@ -79,10 +79,7 @@ Structured JSON output for agents and scripts.
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is **auto-pulled** on first sync if not already installed. If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
-  ```bash
-  ollama pull qwen3:8b     # or llama3, mistral, etc.
-  ```
+- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
 
 > **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
@@ -122,7 +119,7 @@ lilbee search "oil change interval"
 # Remove a document from the knowledge base
 lilbee remove manual.pdf
 
-# Use a different local chat model (requires ollama pull <model>)
+# Use a different chat model
 lilbee ask "Explain this" --model qwen3
 
 # Check what's indexed
@@ -138,7 +135,7 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 |---------|-------------|
 | `/status` | Show indexed documents and config |
 | `/add [path]` | Add a file or directory (tab-completes paths) |
-| `/model [name]` | Show or switch chat model (tab-completes Ollama models) |
+| `/model [name]` | Switch chat model — no args opens an interactive picker; with a name, switches directly (tab-completes installed models) |
 | `/version` | Show lilbee version |
 | `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |
