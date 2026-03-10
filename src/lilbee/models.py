@@ -29,7 +29,6 @@ MODEL_CATALOG: tuple[ModelInfo, ...] = (
     ModelInfo("qwen3:4b", 2.5, 8, "Small — good balance for 8 GB RAM"),
     ModelInfo("mistral:7b", 4.4, 8, "Small — Mistral's fast 7B, 32K context"),
     ModelInfo("qwen3:8b", 5.0, 8, "Medium — strong general-purpose"),
-    ModelInfo("mistral-small:24b", 14.0, 16, "Large — Mistral Small, 128K context"),
     ModelInfo("qwen3-coder:30b", 18.0, 32, "Extra large — best quality, needs 32 GB RAM"),
 )
 
