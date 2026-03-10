@@ -6,34 +6,36 @@ from pathlib import Path
 
 from rich.console import Console
 
-from lilbee.cli._helpers import (
-    _add_paths,
-    _get_version,
-    _perform_reset,
-    _render_status,
-    _stream_response,
+from lilbee import settings
+from lilbee.cli.helpers import (
+    add_paths,
+    get_version,
+    perform_reset,
+    render_status,
+    stream_response,
 )
+from lilbee.config import cfg
 
 _ADD_PREFIX = "/add "
 _MODEL_PREFIX = "/model "
 
 
-class _QuitChat(Exception):
+class QuitChat(Exception):
     """Raised by /quit to exit the chat loop."""
 
 
-def _handle_slash_status(args: str, con: Console) -> None:
-    _render_status(con)
+def handle_slash_status(args: str, con: Console) -> None:
+    render_status(con)
 
 
-def _handle_slash_add(args: str, con: Console) -> None:
+def handle_slash_add(args: str, con: Console) -> None:
     raw = args.strip()
     if raw:
         p = Path(raw).expanduser()
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        _add_paths([p], con, force=True)
+        add_paths([p], con, force=True)
     else:
         try:
             from prompt_toolkit import prompt as pt_prompt
@@ -49,31 +51,30 @@ def _handle_slash_add(args: str, con: Console) -> None:
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        _add_paths([p], con, force=True)
+        add_paths([p], con, force=True)
 
 
-def _handle_slash_quit(args: str, con: Console) -> None:
-    raise _QuitChat
+def handle_slash_quit(args: str, con: Console) -> None:
+    raise QuitChat
 
 
-def _handle_slash_model(args: str, con: Console) -> None:
-    import lilbee.config as cfg
+def handle_slash_model(args: str, con: Console) -> None:
     from lilbee.models import (
         MODEL_CATALOG,
-        _validate_disk_and_pull,
         display_model_picker,
         get_free_disk_gb,
         get_system_ram_gb,
+        validate_disk_and_pull,
     )
 
     name = args.strip()
     if not name:
-        con.print(f"[bold]Current model:[/bold] {cfg.CHAT_MODEL}\n")
+        con.print(f"[bold]Current model:[/bold] {cfg.chat_model}\n")
         ram_gb = get_system_ram_gb()
-        free_disk_gb = get_free_disk_gb(cfg.DATA_DIR)
+        free_disk_gb = get_free_disk_gb(cfg.data_dir)
         recommended = display_model_picker(ram_gb, free_disk_gb)
         default_idx = list(MODEL_CATALOG).index(recommended) + 1
-        installed = set(_list_ollama_models())
+        installed = set(list_ollama_models())
 
         try:
             raw = input(f"Choice [{default_idx}]: ").strip()
@@ -95,32 +96,28 @@ def _handle_slash_model(args: str, con: Console) -> None:
 
         model_info = MODEL_CATALOG[choice - 1]
         if model_info.name in installed:
-            cfg.CHAT_MODEL = model_info.name
-            from lilbee import settings
-
-            settings.set_value("chat_model", model_info.name)
+            cfg.chat_model = model_info.name
+            settings.set_value(cfg.data_root, "chat_model", model_info.name)
             con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
         else:
-            _validate_disk_and_pull(model_info, free_disk_gb)
+            validate_disk_and_pull(model_info, free_disk_gb)
             con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
         return
-    available = _list_ollama_models()
+    available = list_ollama_models()
     if available and name not in available:
         con.print(f"[red]Unknown model:[/red] {name}")
         con.print(f"Available: {', '.join(sorted(available))}")
         return
-    cfg.CHAT_MODEL = name
-    from lilbee import settings
-
-    settings.set_value("chat_model", name)
+    cfg.chat_model = name
+    settings.set_value(cfg.data_root, "chat_model", name)
     con.print(f"Switched to model [bold]{name}[/bold] (saved)")
 
 
-def _handle_slash_version(args: str, con: Console) -> None:
-    con.print(f"lilbee [bold]{_get_version()}[/bold]")
+def handle_slash_version(args: str, con: Console) -> None:
+    con.print(f"lilbee [bold]{get_version()}[/bold]")
 
 
-def _handle_slash_reset(args: str, con: Console) -> None:
+def handle_slash_reset(args: str, con: Console) -> None:
     con.print(
         "[bold red]This will delete ALL documents and data.[/bold red]\nType 'yes' to confirm:"
     )
@@ -132,14 +129,14 @@ def _handle_slash_reset(args: str, con: Console) -> None:
     if answer.strip().lower() != "yes":
         con.print("Aborted.")
         return
-    result = _perform_reset()
+    result = perform_reset()
     con.print(
         f"Reset complete: {result['deleted_docs']} document(s), "
         f"{result['deleted_data']} data item(s) deleted."
     )
 
 
-def _handle_slash_help(args: str, con: Console) -> None:
+def handle_slash_help(args: str, con: Console) -> None:
     con.print("[bold]Slash commands:[/bold]")
     con.print("  /status  — show indexed documents and config")
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
@@ -151,17 +148,17 @@ def _handle_slash_help(args: str, con: Console) -> None:
 
 
 _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
-    "status": _handle_slash_status,
-    "add": _handle_slash_add,
-    "model": _handle_slash_model,
-    "version": _handle_slash_version,
-    "reset": _handle_slash_reset,
-    "help": _handle_slash_help,
-    "quit": _handle_slash_quit,
+    "status": handle_slash_status,
+    "add": handle_slash_add,
+    "model": handle_slash_model,
+    "version": handle_slash_version,
+    "reset": handle_slash_reset,
+    "help": handle_slash_help,
+    "quit": handle_slash_quit,
 }
 
 
-def _dispatch_slash(raw_input: str, con: Console) -> bool:
+def dispatch_slash(raw_input: str, con: Console) -> bool:
     """Try to dispatch *raw_input* as a ``/command``.  Returns True if handled."""
     stripped = raw_input.strip()
     if not stripped.startswith("/"):
@@ -177,14 +174,12 @@ def _dispatch_slash(raw_input: str, con: Console) -> bool:
     return True
 
 
-def _list_ollama_models() -> list[str]:
+def list_ollama_models() -> list[str]:
     """Return installed Ollama chat model names, excluding embedding models."""
     try:
         import ollama
 
-        import lilbee.config as cfg
-
-        embed_base = cfg.EMBEDDING_MODEL.split(":")[0]
+        embed_base = cfg.embedding_model.split(":")[0]
         return [
             m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
         ]
@@ -192,7 +187,7 @@ def _list_ollama_models() -> list[str]:
         return []
 
 
-def _make_completer():  # type: ignore[no-untyped-def]
+def make_completer():  # type: ignore[no-untyped-def]
     """Build a completer class that inherits from prompt_toolkit.completion.Completer."""
     from prompt_toolkit.completion import Completer, Completion, PathCompleter
     from prompt_toolkit.document import Document
@@ -206,7 +201,7 @@ def _make_completer():  # type: ignore[no-untyped-def]
                 yield from PathCompleter(expanduser=True).get_completions(sub_doc, complete_event)
             elif text.startswith(_MODEL_PREFIX):
                 prefix = text[len(_MODEL_PREFIX) :]
-                for name in _list_ollama_models():
+                for name in list_ollama_models():
                     if name.startswith(prefix):
                         yield Completion(name, start_position=-len(prefix))
             elif text.startswith("/"):
@@ -218,7 +213,7 @@ def _make_completer():  # type: ignore[no-untyped-def]
     return LilbeeCompleter()
 
 
-def _chat_loop(con: Console) -> None:
+def chat_loop(con: Console) -> None:
     """Interactive REPL with slash-command support."""
     con.print("[bold]lilbee chat[/bold] — type /help for commands\n")
     history: list[dict] = []
@@ -228,7 +223,7 @@ def _chat_loop(con: Console) -> None:
         try:
             from prompt_toolkit import PromptSession
 
-            _session: PromptSession[str] = PromptSession(completer=_make_completer())
+            _session: PromptSession[str] = PromptSession(completer=make_completer())
             _prompt_fn = lambda: _session.prompt("> ")  # noqa: E731
         except ImportError:
             pass
@@ -244,8 +239,8 @@ def _chat_loop(con: Console) -> None:
         if not question.strip():
             continue
         try:
-            if _dispatch_slash(question, con):
+            if dispatch_slash(question, con):
                 continue
-        except _QuitChat:
+        except QuitChat:
             break
-        _stream_response(question, history, con)
+        stream_response(question, history, con)

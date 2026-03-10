@@ -10,9 +10,10 @@ from typing import TypedDict, cast
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-import lilbee.config as cfg
 from lilbee import embedder, store
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
+from lilbee.config import cfg
+from lilbee.platform import is_ignored_dir
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _CHARS_PER_TOKEN = 4
 
 
 class ChunkRecord(TypedDict):
-    """A single store-ready chunk record matching store._CHUNKS_SCHEMA."""
+    """A single store-ready chunk record matching store.CHUNKS_SCHEMA."""
 
     source: str
     content_type: str
@@ -108,7 +109,7 @@ _EXTENSION_MAP: dict[str, str] = {
 }
 
 
-def _file_hash(path: Path) -> str:
+def file_hash(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -119,16 +120,16 @@ def _file_hash(path: Path) -> str:
 
 def _relative_name(path: Path) -> str:
     """Get path relative to documents dir as a forward-slash string (portable across OS)."""
-    return path.relative_to(cfg.DOCUMENTS_DIR).as_posix()
+    return path.relative_to(cfg.documents_dir).as_posix()
 
 
-def _discover_files() -> dict[str, Path]:
+def discover_files() -> dict[str, Path]:
     """Scan documents/ recursively, return {relative_name: absolute_path}."""
-    if not cfg.DOCUMENTS_DIR.exists():
+    if not cfg.documents_dir.exists():
         return {}
     files: dict[str, Path] = {}
-    for root, dirs, filenames in os.walk(cfg.DOCUMENTS_DIR, topdown=True):
-        dirs[:] = [d for d in dirs if not cfg.is_ignored_dir(d)]
+    for root, dirs, filenames in os.walk(cfg.documents_dir, topdown=True):
+        dirs[:] = [d for d in dirs if not is_ignored_dir(d, cfg.ignore_dirs)]
         for fname in filenames:
             if fname.startswith("."):
                 continue
@@ -138,18 +139,18 @@ def _discover_files() -> dict[str, Path]:
     return files
 
 
-def _classify_file(path: Path) -> str | None:
+def classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
     return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def _kreuzberg_config(content_type: str) -> object:
+def kreuzberg_config(content_type: str) -> object:
     """Build kreuzberg ExtractionConfig for a given content type."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
     chunking = ChunkingConfig(
-        max_chars=cfg.CHUNK_SIZE * _CHARS_PER_TOKEN,
-        max_overlap=cfg.CHUNK_OVERLAP * _CHARS_PER_TOKEN,
+        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
+        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
     )
 
     if content_type == "pdf":
@@ -160,11 +161,11 @@ def _kreuzberg_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking)
 
 
-async def _ingest_document(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+async def ingest_document(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
     """Extract and chunk a document via kreuzberg, embed, return records."""
     from kreuzberg import extract_file
 
-    config = _kreuzberg_config(content_type)
+    config = kreuzberg_config(content_type)
     result = await extract_file(str(path), config=config)
 
     if not result.chunks:
@@ -189,7 +190,7 @@ async def _ingest_document(path: Path, source_name: str, content_type: str) -> l
     ]
 
 
-def _ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
+def ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
     """Parse code with tree-sitter, chunk, embed, and return store-ready records."""
     code_chunks: list[CodeChunk] = chunk_code(path)
     if not code_chunks:
@@ -218,9 +219,9 @@ async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     """Ingest a single file. Returns chunk count."""
     records: list[ChunkRecord]
     if content_type == "code":
-        records = await asyncio.to_thread(_ingest_code_sync, path, source_name)
+        records = await asyncio.to_thread(ingest_code_sync, path, source_name)
     else:
-        records = await _ingest_document(path, source_name, content_type)
+        records = await ingest_document(path, source_name, content_type)
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
@@ -233,9 +234,9 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
     if force_rebuild:
         store.drop_all()
 
-    cfg.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
-    disk_files = _discover_files()
+    disk_files = discover_files()
     existing_sources = {s["filename"]: s["file_hash"] for s in store.get_sources()}
 
     added: list[str] = []
@@ -255,10 +256,10 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
     files_to_process: list[tuple[str, Path, str]] = []  # (name, path, content_type)
 
     for name, path in sorted(disk_files.items()):
-        content_type = _classify_file(path)
+        content_type = classify_file(path)
         assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
 
-        current_hash = _file_hash(path)
+        current_hash = file_hash(path)
         old_hash = existing_sources.get(name)
 
         if old_hash == current_hash:
@@ -278,7 +279,7 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
     # Ingest files (with optional progress bar)
     if files_to_process:
         embedder.validate_model()
-        await _ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
+        await ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
 
     return SyncResult(
         added=added,
@@ -293,7 +294,7 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
 _MAX_CONCURRENT = os.cpu_count() or 4
 
 
-async def _ingest_batch(
+async def ingest_batch(
     files_to_process: list[tuple[str, Path, str]],
     added: list[str],
     updated: list[str],
@@ -372,4 +373,4 @@ def _apply_result(
             updated.remove(result.name)
         failed.append(result.name)
         return
-    store.upsert_source(result.name, _file_hash(result.path), result.chunk_count)
+    store.upsert_source(result.name, file_hash(result.path), result.chunk_count)

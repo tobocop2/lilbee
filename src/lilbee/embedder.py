@@ -7,11 +7,12 @@ from typing import Any
 
 import ollama
 
-from lilbee.config import EMBEDDING_DIM, EMBEDDING_MODEL, MAX_EMBED_CHARS
+from lilbee.config import cfg
+from lilbee.models import pull_with_progress
 
 log = logging.getLogger(__name__)
 
-_MAX_BATCH_CHARS = 6000
+MAX_BATCH_CHARS = 6000
 
 
 def _call_with_retry(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -28,30 +29,23 @@ def _call_with_retry(fn: Any, *args: Any, **kwargs: Any) -> Any:
     raise last_err  # type: ignore[misc]
 
 
-def _truncate(text: str) -> str:
+def truncate(text: str) -> str:
     """Truncate text to stay within the embedding model's context window."""
-    if len(text) <= MAX_EMBED_CHARS:
+    if len(text) <= cfg.max_embed_chars:
         return text
-    log.debug("Truncating chunk from %d to %d chars for embedding", len(text), MAX_EMBED_CHARS)
-    return text[:MAX_EMBED_CHARS]
+    log.debug("Truncating chunk from %d to %d chars for embedding", len(text), cfg.max_embed_chars)
+    return text[: cfg.max_embed_chars]
 
 
-def _validate_vector(vector: list[float]) -> None:
+def validate_vector(vector: list[float]) -> None:
     """Validate embedding vector dimension and values."""
-    if len(vector) != EMBEDDING_DIM:
+    if len(vector) != cfg.embedding_dim:
         raise ValueError(
-            f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, got {len(vector)}"
+            f"Embedding dimension mismatch: expected {cfg.embedding_dim}, got {len(vector)}"
         )
     for i, v in enumerate(vector):
         if math.isnan(v) or math.isinf(v):
             raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
-
-
-def _pull_with_progress(model: str) -> None:
-    """Pull an Ollama model, showing a Rich progress bar on stderr."""
-    from lilbee.models import pull_with_progress
-
-    pull_with_progress(model)
 
 
 def validate_model() -> None:
@@ -61,18 +55,18 @@ def validate_model() -> None:
         names = {m.model for m in models.models if m.model}
         # Also match without :latest tag
         base_names = {n.split(":")[0] for n in names}
-        if EMBEDDING_MODEL not in names and EMBEDDING_MODEL not in base_names:
-            log.info("Pulling embedding model '%s' from Ollama...", EMBEDDING_MODEL)
-            _pull_with_progress(EMBEDDING_MODEL)
+        if cfg.embedding_model not in names and cfg.embedding_model not in base_names:
+            log.info("Pulling embedding model '%s' from Ollama...", cfg.embedding_model)
+            pull_with_progress(cfg.embedding_model)
     except (ConnectionError, OSError) as exc:
         raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 
 
 def embed(text: str) -> list[float]:
     """Embed a single text string, return vector."""
-    response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=_truncate(text))
+    response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=truncate(text))
     result: list[float] = response.embeddings[0]
-    _validate_vector(result)
+    validate_vector(result)
     return result
 
 
@@ -84,18 +78,18 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     batch: list[str] = []
     batch_chars = 0
     for text in texts:
-        truncated = _truncate(text)
+        truncated = truncate(text)
         chunk_len = len(truncated)
-        if batch and batch_chars + chunk_len > _MAX_BATCH_CHARS:
-            response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=batch)
+        if batch and batch_chars + chunk_len > MAX_BATCH_CHARS:
+            response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
             vectors.extend(response.embeddings)
             batch = []
             batch_chars = 0
         batch.append(truncated)
         batch_chars += chunk_len
     if batch:
-        response = _call_with_retry(ollama.embed, model=EMBEDDING_MODEL, input=batch)
+        response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
         vectors.extend(response.embeddings)
     for vec in vectors:
-        _validate_vector(vec)
+        validate_vector(vec)
     return vectors

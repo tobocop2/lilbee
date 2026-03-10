@@ -1,5 +1,7 @@
 """MCP server exposing lilbee as tools for AI agents."""
 
+from dataclasses import asdict
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
@@ -14,22 +16,22 @@ def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
     from lilbee.query import search_context
 
     results = search_context(query, top_k=top_k)
-    return [_clean(r) for r in results]
+    return [clean(r) for r in results]
 
 
 @mcp.tool()
 def lilbee_status() -> dict:
     """Show indexed documents, configuration, and chunk counts."""
-    from lilbee.config import CHAT_MODEL, DATA_DIR, DOCUMENTS_DIR, EMBEDDING_MODEL
+    from lilbee.config import cfg
     from lilbee.store import get_sources
 
     sources = get_sources()
     return {
         "config": {
-            "documents_dir": str(DOCUMENTS_DIR),
-            "data_dir": str(DATA_DIR),
-            "chat_model": CHAT_MODEL,
-            "embedding_model": EMBEDDING_MODEL,
+            "documents_dir": str(cfg.documents_dir),
+            "data_dir": str(cfg.data_dir),
+            "chat_model": cfg.chat_model,
+            "embedding_model": cfg.embedding_model,
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}
@@ -42,8 +44,6 @@ def lilbee_status() -> dict:
 @mcp.tool()
 async def lilbee_sync() -> dict:
     """Sync documents directory with the vector store."""
-    from dataclasses import asdict
-
     from lilbee.ingest import sync
 
     return asdict(await sync(quiet=True))
@@ -55,12 +55,12 @@ def lilbee_reset() -> dict:
 
     WARNING: This permanently removes all indexed documents and vector data.
     """
-    from lilbee.cli import _perform_reset
+    from lilbee.cli import perform_reset
 
-    return _perform_reset()
+    return perform_reset()
 
 
-def _clean(result: dict) -> dict:
+def clean(result: dict) -> dict:
     """Strip vector field and rename _distance for output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}
     if "_distance" in cleaned:

@@ -7,35 +7,30 @@ extraction since we're testing the pipeline, not kreuzberg itself.
 
 from __future__ import annotations
 
+from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
+from lilbee.config import cfg
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths to temp dir for every test."""
+    snapshot = replace(cfg)
+
     docs = tmp_path / "documents"
     docs.mkdir()
-    data = tmp_path / "data" / "lancedb"
-
-    orig_docs, orig_db, orig_data = cfg.DOCUMENTS_DIR, cfg.LANCEDB_DIR, cfg.DATA_DIR
-
-    cfg.DOCUMENTS_DIR = docs
-    cfg.DATA_DIR = tmp_path / "data"
-    cfg.LANCEDB_DIR = data
-    store_mod.LANCEDB_DIR = data
+    cfg.documents_dir = docs
+    cfg.data_dir = tmp_path / "data"
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
 
     yield docs
 
-    cfg.DOCUMENTS_DIR = orig_docs
-    cfg.DATA_DIR = orig_data
-    cfg.LANCEDB_DIR = orig_db
-    store_mod.LANCEDB_DIR = orig_db
+    for f in fields(cfg):
+        setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
 def _fake_embed_batch(texts):
