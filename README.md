@@ -1,11 +1,12 @@
 # lilbee
 
-> This is an experimental tool and a work in progress and there will be issues with many formats and performance at scale is unknown at this time
+> This is an experimental tool and a work in progress. There will be issues with some formats and performance at scale is unknown at this time
 
 [![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg)](https://github.com/tobocop2/lilbee/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](https://tobocop2.github.io/lilbee/)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
@@ -78,11 +79,10 @@ Structured JSON output for agents and scripts.
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is **auto-pulled** on first sync if not already installed. If you want to use lilbee as a standalone local chat (no cloud LLM), also pull a chat model:
-  ```bash
-  ollama pull mistral             # or qwen3, llama3, etc.
-  ```
+- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
+
+> **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
 
 ### Install
 
@@ -119,7 +119,7 @@ lilbee search "oil change interval"
 # Remove a document from the knowledge base
 lilbee remove manual.pdf
 
-# Use a different local chat model (requires ollama pull <model>)
+# Use a different chat model
 lilbee ask "Explain this" --model qwen3
 
 # Check what's indexed
@@ -135,7 +135,7 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 |---------|-------------|
 | `/status` | Show indexed documents and config |
 | `/add [path]` | Add a file or directory (tab-completes paths) |
-| `/model [name]` | Show or switch chat model (tab-completes Ollama models) |
+| `/model [name]` | Switch chat model — no args opens an interactive picker; with a name, switches directly (tab-completes installed models) |
 | `/version` | Show lilbee version |
 | `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |
@@ -166,7 +166,7 @@ All settings are configurable via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path |
-| `LILBEE_CHAT_MODEL` | `mistral` | Ollama chat model |
+| `LILBEE_CHAT_MODEL` | `qwen3:8b` | Ollama chat model |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensions |
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |

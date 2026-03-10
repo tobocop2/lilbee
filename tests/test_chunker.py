@@ -133,9 +133,19 @@ class Greeter:
         from lilbee.code_chunker import supported_extensions
 
         exts = supported_extensions()
-        assert ".py" in exts
-        assert ".js" in exts
-        assert ".go" in exts
+        expected = {".py", ".js", ".go", ".rs", ".ts", ".rb"}
+        missing = expected - exts
+        assert not missing, f"Missing extensions: {missing}"
+
+    def test_definition_types_languages_have_extensions(self):
+        """Every language in _DEFINITION_TYPES must have at least one extension in _EXT_TO_LANG."""
+        from lilbee._languages import _DEFINITION_TYPES, _EXT_TO_LANG
+
+        langs_with_ext = set(_EXT_TO_LANG.values())
+        missing = sorted(set(_DEFINITION_TYPES) - langs_with_ext)
+        assert not missing, (
+            f"Languages in _DEFINITION_TYPES without any _EXT_TO_LANG entry: {missing}"
+        )
 
     def test_no_definitions_falls_back(self):
         """File with no functions/classes falls back to token chunking."""
