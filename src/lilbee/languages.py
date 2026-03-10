@@ -6,8 +6,8 @@ must be maintained manually when adding support for new languages.
 """
 
 # Extension -> tree-sitter language name.
-# Languages without _DEFINITION_TYPES entries fall back to token-based chunking.
-_EXT_TO_LANG: dict[str, str] = {
+# Languages without DEFINITION_TYPES entries fall back to token-based chunking.
+EXT_TO_LANG: dict[str, str] = {
     # Systems / compiled
     ".c": "c",
     ".h": "c",
@@ -184,7 +184,7 @@ _EXT_TO_LANG: dict[str, str] = {
 }
 
 # AST node types that represent extractable definitions, per language.
-_DEFINITION_TYPES: dict[str, frozenset[str]] = {
+DEFINITION_TYPES: dict[str, frozenset[str]] = {
     "python": frozenset(
         {
             "function_definition",

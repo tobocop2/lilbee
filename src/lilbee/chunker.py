@@ -2,7 +2,7 @@
 
 import tiktoken
 
-from lilbee.config import CHUNK_OVERLAP, CHUNK_SIZE
+from lilbee.config import cfg
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
@@ -32,10 +32,10 @@ def _split_to_segments(text: str, max_tokens: int) -> list[str]:
         if len(parts) > 1:
             return [seg for part in parts for seg in _split_to_segments(part, max_tokens)]
 
-    return _hard_split_words(text, max_tokens)
+    return hard_split_words(text, max_tokens)
 
 
-def _hard_split_words(text: str, max_tokens: int) -> list[str]:
+def hard_split_words(text: str, max_tokens: int) -> list[str]:
     """Last-resort split by individual words."""
     words = text.split()
     segments: list[str] = []
@@ -70,14 +70,18 @@ def _tail_overlap(segments: list[str], max_tokens: int) -> list[str]:
 
 def chunk_text(
     text: str,
-    chunk_size: int = CHUNK_SIZE,
-    chunk_overlap: int = CHUNK_OVERLAP,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> list[str]:
     """Split text into overlapping token-sized chunks.
 
     Strategy: recursively split on paragraph/sentence/word boundaries,
     then merge segments into target-sized chunks with overlap.
     """
+    if chunk_size is None:
+        chunk_size = cfg.chunk_size
+    if chunk_overlap is None:
+        chunk_overlap = cfg.chunk_overlap
     if not text or not text.strip():
         return []
 

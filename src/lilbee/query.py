@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import ollama
 
 from lilbee import embedder, store
-from lilbee.config import CHAT_MODEL, SYSTEM_PROMPT, TOP_K
+from lilbee.config import cfg
 
 _CONTEXT_TEMPLATE = """Context:
 {context}
@@ -14,7 +14,7 @@ _CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
-def _format_source(result: dict) -> str:
+def format_source(result: dict) -> str:
     """Format a search result as a source citation line."""
     source = result.get("source", "unknown")
     content_type = result.get("content_type", "")
@@ -32,12 +32,12 @@ def _format_source(result: dict) -> str:
     return f"  → {source}"
 
 
-def _deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[str]:
+def deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[str]:
     """Merge results from same source into deduplicated citation lines."""
     seen: set[str] = set()
     citations: list[str] = []
     for r in results:
-        line = _format_source(r)
+        line = format_source(r)
         if line not in seen:
             seen.add(line)
             citations.append(line)
@@ -46,12 +46,12 @@ def _deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[st
     return citations
 
 
-def _sort_by_relevance(results: list[dict]) -> list[dict]:
+def sort_by_relevance(results: list[dict]) -> list[dict]:
     """Sort search results by distance (lower = more relevant)."""
     return sorted(results, key=lambda r: r.get("_distance", float("inf")))
 
 
-def _build_context(results: list[dict]) -> str:
+def build_context(results: list[dict]) -> str:
     """Build context block from search results."""
     parts: list[str] = []
     for i, r in enumerate(results, 1):
@@ -59,8 +59,10 @@ def _build_context(results: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def search_context(question: str, top_k: int = TOP_K) -> list[dict]:
+def search_context(question: str, top_k: int = 0) -> list[dict]:
     """Embed question and return top-K matching chunks."""
+    if top_k == 0:
+        top_k = cfg.top_k
     query_vec = embedder.embed(question)
     return store.search(query_vec, top_k=top_k)
 
@@ -73,7 +75,7 @@ class AskResult:
     sources: list[dict]
 
 
-def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> AskResult:
+def ask_raw(question: str, top_k: int = 0, history: list[dict] | None = None) -> AskResult:
     """One-shot question returning structured answer + raw sources."""
     results = search_context(question, top_k=top_k)
     if not results:
@@ -82,35 +84,35 @@ def ask_raw(question: str, top_k: int = TOP_K, history: list[dict] | None = None
             sources=[],
         )
 
-    results = _sort_by_relevance(results)
-    context = _build_context(results)
+    results = sort_by_relevance(results)
+    context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
     try:
-        response = ollama.chat(model=CHAT_MODEL, messages=messages)
+        response = ollama.chat(model=cfg.chat_model, messages=messages)
     except ollama.ResponseError as exc:
         raise RuntimeError(
-            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
         ) from exc
     return AskResult(answer=response.message.content or "", sources=results)
 
 
-def ask(question: str, top_k: int = TOP_K, history: list[dict] | None = None) -> str:
+def ask(question: str, top_k: int = 0, history: list[dict] | None = None) -> str:
     """One-shot question: returns full answer with source citations."""
     result = ask_raw(question, top_k=top_k, history=history)
     if not result.sources:
         return result.answer
-    citations = _deduplicate_sources(result.sources)
+    citations = deduplicate_sources(result.sources)
     return f"{result.answer}\n\nSources:\n" + "\n".join(citations)
 
 
 def ask_stream(
-    question: str, top_k: int = TOP_K, history: list[dict] | None = None
+    question: str, top_k: int = 0, history: list[dict] | None = None
 ) -> Generator[str, None, None]:
     """Streaming question: yields answer tokens, then source citations."""
     results = search_context(question, top_k=top_k)
@@ -118,24 +120,24 @@ def ask_stream(
         yield "No relevant documents found. Try ingesting some documents first."
         return
 
-    results = _sort_by_relevance(results)
-    context = _build_context(results)
+    results = sort_by_relevance(results)
+    context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
     try:
         stream = ollama.chat(
-            model=CHAT_MODEL,
+            model=cfg.chat_model,
             messages=messages,
             stream=True,
         )
     except ollama.ResponseError as exc:
         raise RuntimeError(
-            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
         ) from exc
 
     try:
@@ -145,10 +147,10 @@ def ask_stream(
                 yield token
     except ollama.ResponseError as exc:
         raise RuntimeError(
-            f"Model '{CHAT_MODEL}' not found in Ollama. Run: ollama pull {CHAT_MODEL}"
+            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
         ) from exc
     except (ConnectionError, OSError) as exc:
         yield f"\n\n[Connection lost: {exc}]"
 
-    citations = _deduplicate_sources(results)
+    citations = deduplicate_sources(results)
     yield "\n\nSources:\n" + "\n".join(citations)

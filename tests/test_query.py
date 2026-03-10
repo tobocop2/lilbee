@@ -32,35 +32,35 @@ def _make_result(
 
 class TestFormatSource:
     def test_pdf_single_page(self):
-        from lilbee.query import _format_source
+        from lilbee.query import format_source
 
         r = _make_result(source="manual.pdf", content_type="pdf", page_start=5, page_end=5)
-        assert "manual.pdf" in _format_source(r)
-        assert "page 5" in _format_source(r)
+        assert "manual.pdf" in format_source(r)
+        assert "page 5" in format_source(r)
 
     def test_pdf_page_range(self):
-        from lilbee.query import _format_source
+        from lilbee.query import format_source
 
         r = _make_result(source="manual.pdf", content_type="pdf", page_start=3, page_end=7)
-        assert "pages 3-7" in _format_source(r)
+        assert "pages 3-7" in format_source(r)
 
     def test_code_line_range(self):
-        from lilbee.query import _format_source
+        from lilbee.query import format_source
 
         r = _make_result(source="app.py", content_type="code", line_start=10, line_end=25)
-        assert "lines 10-25" in _format_source(r)
+        assert "lines 10-25" in format_source(r)
 
     def test_code_single_line(self):
-        from lilbee.query import _format_source
+        from lilbee.query import format_source
 
         r = _make_result(source="app.py", content_type="code", line_start=10, line_end=10)
-        assert "line 10" in _format_source(r)
+        assert "line 10" in format_source(r)
 
     def test_text_file_no_page_or_line(self):
-        from lilbee.query import _format_source
+        from lilbee.query import format_source
 
         r = _make_result(source="readme.md", content_type="text")
-        result = _format_source(r)
+        result = format_source(r)
         assert "readme.md" in result
         assert "page" not in result
         assert "line" not in result
@@ -68,63 +68,63 @@ class TestFormatSource:
 
 class TestDeduplicateSources:
     def test_removes_duplicates(self):
-        from lilbee.query import _deduplicate_sources
+        from lilbee.query import deduplicate_sources
 
         results = [
             _make_result(source="a.pdf", page_start=1, page_end=1),
             _make_result(source="a.pdf", page_start=1, page_end=1),
             _make_result(source="b.pdf", page_start=2, page_end=2),
         ]
-        citations = _deduplicate_sources(results)
+        citations = deduplicate_sources(results)
         assert len(citations) == 2
 
     def test_caps_at_max_citations(self):
-        from lilbee.query import _deduplicate_sources
+        from lilbee.query import deduplicate_sources
 
         results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
-        citations = _deduplicate_sources(results, max_citations=5)
+        citations = deduplicate_sources(results, max_citations=5)
         assert len(citations) == 5
 
     def test_custom_max_citations(self):
-        from lilbee.query import _deduplicate_sources
+        from lilbee.query import deduplicate_sources
 
         results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
-        citations = _deduplicate_sources(results, max_citations=3)
+        citations = deduplicate_sources(results, max_citations=3)
         assert len(citations) == 3
 
 
 class TestSortByRelevance:
     def test_sorts_by_distance(self):
-        from lilbee.query import _sort_by_relevance
+        from lilbee.query import sort_by_relevance
 
         results = [
             _make_result(source="far.pdf", _distance=0.9),
             _make_result(source="close.pdf", _distance=0.1),
             _make_result(source="mid.pdf", _distance=0.5),
         ]
-        sorted_results = _sort_by_relevance(results)
+        sorted_results = sort_by_relevance(results)
         assert sorted_results[0]["source"] == "close.pdf"
         assert sorted_results[1]["source"] == "mid.pdf"
         assert sorted_results[2]["source"] == "far.pdf"
 
     def test_missing_distance_sorts_last(self):
-        from lilbee.query import _sort_by_relevance
+        from lilbee.query import sort_by_relevance
 
         results = [
             {"source": "no_dist.pdf", "chunk": "text"},
             _make_result(source="has_dist.pdf", _distance=0.3),
         ]
-        sorted_results = _sort_by_relevance(results)
+        sorted_results = sort_by_relevance(results)
         assert sorted_results[0]["source"] == "has_dist.pdf"
         assert sorted_results[1]["source"] == "no_dist.pdf"
 
 
 class TestBuildContext:
     def test_numbers_chunks(self):
-        from lilbee.query import _build_context
+        from lilbee.query import build_context
 
         results = [_make_result(chunk="chunk one"), _make_result(chunk="chunk two")]
-        ctx = _build_context(results)
+        ctx = build_context(results)
         assert "[1]" in ctx
         assert "[2]" in ctx
         assert "chunk one" in ctx
