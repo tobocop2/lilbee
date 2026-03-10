@@ -1,35 +1,30 @@
 """Tests for the document sync engine (mocked — no live server needed)."""
 
+from dataclasses import fields, replace
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
 
-import lilbee.config as cfg
-import lilbee.store as store_mod
+from lilbee.config import cfg
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths to temp dir for every test."""
+    snapshot = replace(cfg)
+
     docs = tmp_path / "documents"
     docs.mkdir()
-    data = tmp_path / "data" / "lancedb"
-
-    orig_docs, orig_db, orig_data = cfg.DOCUMENTS_DIR, cfg.LANCEDB_DIR, cfg.DATA_DIR
-
-    cfg.DOCUMENTS_DIR = docs
-    cfg.DATA_DIR = tmp_path / "data"
-    cfg.LANCEDB_DIR = data
-    store_mod.LANCEDB_DIR = data
+    cfg.documents_dir = docs
+    cfg.data_dir = tmp_path / "data"
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
 
     yield docs
 
-    cfg.DOCUMENTS_DIR = orig_docs
-    cfg.DATA_DIR = orig_data
-    cfg.LANCEDB_DIR = orig_db
-    store_mod.LANCEDB_DIR = orig_db
+    for f in fields(cfg):
+        setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
 def _fake_embed_batch(texts):
@@ -194,7 +189,7 @@ class TestSync:
 
     async def test_nonexistent_documents_dir(self, _kf, _eb, _e, _vm, isolated_env, tmp_path):
         nonexistent = tmp_path / "nonexistent"
-        cfg.DOCUMENTS_DIR = nonexistent
+        cfg.documents_dir = nonexistent
         from lilbee.ingest import SyncResult, sync
 
         result = await sync()
@@ -289,17 +284,17 @@ class TestSync:
 
 
 class TestIngestHelpers:
-    """Cover edge cases in _ingest_document and _ingest_code_sync."""
+    """Cover edge cases in ingest_document and ingest_code_sync."""
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[])
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
-    async def test_ingest_document_empty_chunks(self, _kf, _eb, isolated_env):
+    async def testingest_document_empty_chunks(self, _kf, _eb, isolated_env):
         """Document that produces no chunks returns empty list."""
-        from lilbee.ingest import _ingest_document
+        from lilbee.ingest import ingest_document
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result = await _ingest_document(f, "empty.txt", "text")
+        result = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     @mock.patch("lilbee.embedder.embed_batch", return_value=[])
@@ -307,28 +302,28 @@ class TestIngestHelpers:
         """Code file that produces no chunks returns empty list."""
         from unittest.mock import patch
 
-        from lilbee.ingest import _ingest_code_sync
+        from lilbee.ingest import ingest_code_sync
 
         f = isolated_env / "empty.py"
         f.write_text("")
         with patch("lilbee.code_chunker.chunk_code", return_value=[]):
-            result = _ingest_code_sync(f, "empty.py")
+            result = ingest_code_sync(f, "empty.py")
             assert result == []
 
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_ingest_document_pdf_with_pages(self, mock_kf, _eb, isolated_env):
+    async def testingest_document_pdf_with_pages(self, mock_kf, _eb, isolated_env):
         """PDF document returns records with page metadata."""
         mock_kf.return_value = _make_kreuzberg_result(
             text="Page 1 content. " * 10 + "Page 2 content. " * 10,
             num_chunks=2,
             has_pages=True,
         )
-        from lilbee.ingest import _ingest_document
+        from lilbee.ingest import ingest_document
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result = await _ingest_document(f, "test.pdf", "pdf")
+        result = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -348,11 +343,11 @@ class TestCancellation:
             raise asyncio.CancelledError()
 
         with mock.patch("lilbee.ingest._ingest_file", side_effect=_cancel):
-            from lilbee.ingest import _ingest_batch
+            from lilbee.ingest import ingest_batch
 
             added = ["cancel.txt"]
             with pytest.raises(asyncio.CancelledError):
-                await _ingest_batch(
+                await ingest_batch(
                     [("cancel.txt", isolated_env / "cancel.txt", "text")],
                     added,
                     [],
@@ -363,70 +358,57 @@ class TestCancellation:
 
 class TestDiscoverFiles:
     def test_nonexistent_dir_returns_empty(self, isolated_env, tmp_path):
-        cfg.DOCUMENTS_DIR = tmp_path / "does_not_exist"
-        from lilbee.ingest import _discover_files
+        cfg.documents_dir = tmp_path / "does_not_exist"
+        from lilbee.ingest import discover_files
 
-        assert _discover_files() == {}
+        assert discover_files() == {}
 
     def test_skips_hidden_directories(self, isolated_env):
-        from lilbee.ingest import _discover_files
+        from lilbee.ingest import discover_files
 
         hidden = isolated_env / ".git"
         hidden.mkdir()
         (hidden / "config.txt").write_text("git config")
         (isolated_env / "visible.txt").write_text("visible")
 
-        found = _discover_files()
+        found = discover_files()
         assert "visible.txt" in found
         assert not any(".git" in name for name in found)
 
     def test_skips_node_modules(self, isolated_env):
-        from lilbee.ingest import _discover_files
+        from lilbee.ingest import discover_files
 
         nm = isolated_env / "node_modules"
         nm.mkdir()
         (nm / "pkg.txt").write_text("npm package")
         (isolated_env / "app.txt").write_text("app code")
 
-        found = _discover_files()
+        found = discover_files()
         assert "app.txt" in found
         assert not any("node_modules" in name for name in found)
 
     def test_skips_pycache(self, isolated_env):
-        from lilbee.ingest import _discover_files
+        from lilbee.ingest import discover_files
 
         pc = isolated_env / "__pycache__"
         pc.mkdir()
         (pc / "mod.py").write_text("cached")
         (isolated_env / "main.py").write_text("def main(): pass")
 
-        found = _discover_files()
+        found = discover_files()
         assert "main.py" in found
         assert not any("__pycache__" in name for name in found)
 
     def test_skips_custom_ignore_via_env(self, isolated_env):
-        from unittest import mock as _mock
+        from lilbee.ingest import discover_files
 
         custom = isolated_env / "generated"
         custom.mkdir()
         (custom / "output.txt").write_text("generated output")
         (isolated_env / "source.txt").write_text("real source")
 
-        with _mock.patch.dict("os.environ", {"LILBEE_IGNORE": "generated"}):
-            import importlib
-
-            import lilbee.config
-
-            # Save and restore DOCUMENTS_DIR since reload resets it
-            saved_docs = cfg.DOCUMENTS_DIR
-            importlib.reload(lilbee.config)
-            cfg.DOCUMENTS_DIR = saved_docs
-            cfg.IGNORE_DIRS = lilbee.config.IGNORE_DIRS
-            cfg.is_ignored_dir = lilbee.config.is_ignored_dir
-
-            from lilbee.ingest import _discover_files
-
-            found = _discover_files()
+        cfg.ignore_dirs = cfg.ignore_dirs | frozenset({"generated"})
+        found = discover_files()
 
         assert "source.txt" in found
         assert not any("generated" in name for name in found)
@@ -434,51 +416,51 @@ class TestDiscoverFiles:
 
 class TestClassifyFile:
     def test_pdf(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("doc.pdf")) == "pdf"
+        assert classify_file(Path("doc.pdf")) == "pdf"
 
     def test_text_types(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("f.md")) == "text"
-        assert _classify_file(Path("f.txt")) == "text"
-        assert _classify_file(Path("f.html")) == "text"
-        assert _classify_file(Path("f.rst")) == "text"
+        assert classify_file(Path("f.md")) == "text"
+        assert classify_file(Path("f.txt")) == "text"
+        assert classify_file(Path("f.html")) == "text"
+        assert classify_file(Path("f.rst")) == "text"
 
     def test_code_types(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("f.py")) == "code"
-        assert _classify_file(Path("f.js")) == "code"
-        assert _classify_file(Path("f.go")) == "code"
+        assert classify_file(Path("f.py")) == "code"
+        assert classify_file(Path("f.js")) == "code"
+        assert classify_file(Path("f.go")) == "code"
 
     def test_unsupported(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("f.zip")) is None
-        assert _classify_file(Path("f.exe")) is None
+        assert classify_file(Path("f.zip")) is None
+        assert classify_file(Path("f.exe")) is None
 
 
 class TestFileHash:
     def test_deterministic(self, tmp_path):
-        from lilbee.ingest import _file_hash
+        from lilbee.ingest import file_hash
 
         f = tmp_path / "test.txt"
         f.write_text("hello")
-        h1 = _file_hash(f)
-        h2 = _file_hash(f)
+        h1 = file_hash(f)
+        h2 = file_hash(f)
         assert h1 == h2
         assert len(h1) == 64  # SHA-256 hex
 
     def test_different_content_different_hash(self, tmp_path):
-        from lilbee.ingest import _file_hash
+        from lilbee.ingest import file_hash
 
         f1 = tmp_path / "a.txt"
         f2 = tmp_path / "b.txt"
         f1.write_text("hello")
         f2.write_text("world")
-        assert _file_hash(f1) != _file_hash(f2)
+        assert file_hash(f1) != file_hash(f2)
 
 
 class TestSyncResultStr:
@@ -513,62 +495,62 @@ class TestSyncResultStr:
 
 class TestClassifyNewFormats:
     def test_office_formats(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("doc.docx")) == "docx"
-        assert _classify_file(Path("sheet.xlsx")) == "xlsx"
-        assert _classify_file(Path("slides.pptx")) == "pptx"
+        assert classify_file(Path("doc.docx")) == "docx"
+        assert classify_file(Path("sheet.xlsx")) == "xlsx"
+        assert classify_file(Path("slides.pptx")) == "pptx"
 
     def test_epub(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("book.epub")) == "epub"
+        assert classify_file(Path("book.epub")) == "epub"
 
     def test_image_formats(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("photo.png")) == "image"
-        assert _classify_file(Path("photo.jpg")) == "image"
-        assert _classify_file(Path("photo.jpeg")) == "image"
-        assert _classify_file(Path("scan.tiff")) == "image"
-        assert _classify_file(Path("scan.tif")) == "image"
-        assert _classify_file(Path("img.bmp")) == "image"
-        assert _classify_file(Path("img.webp")) == "image"
+        assert classify_file(Path("photo.png")) == "image"
+        assert classify_file(Path("photo.jpg")) == "image"
+        assert classify_file(Path("photo.jpeg")) == "image"
+        assert classify_file(Path("scan.tiff")) == "image"
+        assert classify_file(Path("scan.tif")) == "image"
+        assert classify_file(Path("img.bmp")) == "image"
+        assert classify_file(Path("img.webp")) == "image"
 
     def test_data_formats(self):
-        from lilbee.ingest import _classify_file
+        from lilbee.ingest import classify_file
 
-        assert _classify_file(Path("data.csv")) == "data"
-        assert _classify_file(Path("data.tsv")) == "data"
+        assert classify_file(Path("data.csv")) == "data"
+        assert classify_file(Path("data.tsv")) == "data"
 
 
 class TestDiscoverNewFormats:
     def test_new_extensions_discovered(self, isolated_env):
-        from lilbee.ingest import _discover_files
+        from lilbee.ingest import discover_files
 
         for ext in [".docx", ".xlsx", ".pptx", ".epub", ".png", ".csv", ".tsv"]:
             (isolated_env / f"test{ext}").write_bytes(b"dummy")
 
-        found = _discover_files()
+        found = discover_files()
         for ext in [".docx", ".xlsx", ".pptx", ".epub", ".png", ".csv", ".tsv"]:
             assert f"test{ext}" in found
 
 
 class TestKreuzbergConfig:
     def test_pdf_gets_page_config(self):
-        from lilbee.ingest import _kreuzberg_config
+        from lilbee.ingest import kreuzberg_config
 
-        config = _kreuzberg_config("pdf")
+        config = kreuzberg_config("pdf")
         assert config.pages is not None
 
     def test_non_pdf_no_page_config(self):
-        from lilbee.ingest import _kreuzberg_config
+        from lilbee.ingest import kreuzberg_config
 
-        config = _kreuzberg_config("text")
+        config = kreuzberg_config("text")
         assert config.pages is None
 
     def test_chunking_config_set(self):
-        from lilbee.ingest import _kreuzberg_config
+        from lilbee.ingest import kreuzberg_config
 
-        config = _kreuzberg_config("text")
+        config = kreuzberg_config("text")
         assert config.chunking is not None

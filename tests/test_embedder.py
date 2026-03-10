@@ -5,28 +5,30 @@ from unittest import mock
 import ollama
 import pytest
 
+from lilbee.config import cfg
+
 
 class TestTruncate:
     def test_short_text_unchanged(self):
-        from lilbee.embedder import _truncate
+        from lilbee.embedder import truncate
 
         text = "short text"
-        assert _truncate(text) == text
+        assert truncate(text) == text
 
-    def test_long_text_truncated(self):
-        from lilbee.config import MAX_EMBED_CHARS
-        from lilbee.embedder import _truncate
+    def test_long_texttruncated(self):
 
-        text = "x" * (MAX_EMBED_CHARS + 500)
-        result = _truncate(text)
-        assert len(result) == MAX_EMBED_CHARS
+        from lilbee.embedder import truncate
+
+        text = "x" * (cfg.max_embed_chars + 500)
+        result = truncate(text)
+        assert len(result) == cfg.max_embed_chars
 
     def test_exact_limit_unchanged(self):
-        from lilbee.config import MAX_EMBED_CHARS
-        from lilbee.embedder import _truncate
 
-        text = "a" * MAX_EMBED_CHARS
-        assert _truncate(text) == text
+        from lilbee.embedder import truncate
+
+        text = "a" * cfg.max_embed_chars
+        assert truncate(text) == text
 
 
 class TestEmbed:
@@ -49,15 +51,15 @@ class TestEmbed:
         assert call_kwargs[1]["input"] == "hello"
 
     @mock.patch("ollama.embed")
-    def test_truncates_long_input(self, mock_ollama):
-        from lilbee.config import MAX_EMBED_CHARS
+    def testtruncates_long_input(self, mock_ollama):
+
         from lilbee.embedder import embed
 
         mock_ollama.return_value = mock.MagicMock(embeddings=[[0.0] * 768])
-        long_text = "a" * (MAX_EMBED_CHARS + 1000)
+        long_text = "a" * (cfg.max_embed_chars + 1000)
         embed(long_text)
         actual_input = mock_ollama.call_args[1]["input"]
-        assert len(actual_input) == MAX_EMBED_CHARS
+        assert len(actual_input) == cfg.max_embed_chars
 
 
 class TestEmbedBatch:
@@ -85,14 +87,14 @@ class TestEmbedBatch:
 
     @mock.patch("ollama.embed")
     def test_batches_large_input(self, mock_ollama):
-        """Texts exceeding _MAX_BATCH_CHARS split into multiple API calls."""
-        from lilbee.config import MAX_EMBED_CHARS
-        from lilbee.embedder import _MAX_BATCH_CHARS, embed_batch
+        """Texts exceeding MAX_BATCH_CHARS split into multiple API calls."""
 
-        # Use chunks under MAX_EMBED_CHARS so they don't get truncated
-        chunk_size = min(MAX_EMBED_CHARS, _MAX_BATCH_CHARS // 2 + 1)
-        # Need enough chunks so total chars > _MAX_BATCH_CHARS
-        n_to_fill = _MAX_BATCH_CHARS // chunk_size + 1
+        from lilbee.embedder import MAX_BATCH_CHARS, embed_batch
+
+        # Use chunks under cfg.max_embed_chars so they don't get truncated
+        chunk_size = min(cfg.max_embed_chars, MAX_BATCH_CHARS // 2 + 1)
+        # Need enough chunks so total chars > MAX_BATCH_CHARS
+        n_to_fill = MAX_BATCH_CHARS // chunk_size + 1
         texts = ["x" * chunk_size for _ in range(n_to_fill + 1)]
         mock_ollama.side_effect = [
             mock.MagicMock(embeddings=[[0.1] * 768 for _ in range(n_to_fill)]),
@@ -103,25 +105,25 @@ class TestEmbedBatch:
         assert mock_ollama.call_count == 2
 
     @mock.patch("ollama.embed")
-    def test_truncates_long_texts_in_batch(self, mock_ollama):
-        from lilbee.config import MAX_EMBED_CHARS
+    def testtruncates_long_texts_in_batch(self, mock_ollama):
+
         from lilbee.embedder import embed_batch
 
         mock_ollama.return_value = mock.MagicMock(embeddings=[[0.0] * 768, [0.0] * 768])
-        texts = ["short", "x" * (MAX_EMBED_CHARS + 500)]
+        texts = ["short", "x" * (cfg.max_embed_chars + 500)]
         embed_batch(texts)
-        # Both fit in one batch after truncation (total < _MAX_BATCH_CHARS)
+        # Both fit in one batch after truncation (total < MAX_BATCH_CHARS)
         mock_ollama.assert_called_once()
         call_input = mock_ollama.call_args[1]["input"]
         assert call_input[0] == "short"
-        assert len(call_input[1]) == MAX_EMBED_CHARS
+        assert len(call_input[1]) == cfg.max_embed_chars
 
 
 class TestValidateVector:
     def test_valid_vector_passes(self):
-        from lilbee.embedder import _validate_vector
+        from lilbee.embedder import validate_vector
 
-        _validate_vector([0.1] * 768)  # Should not raise
+        validate_vector([0.1] * 768)  # Should not raise
 
     @mock.patch("ollama.embed")
     def test_embed_wrong_dim_raises(self, mock_ollama):

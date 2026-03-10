@@ -83,6 +83,35 @@ CLI also accepts `--model` / `-m` for chat model and `--data-dir` / `-d`.
 - Linting: `ruff check` + `ruff format` (line length 100)
 - Type checking: `mypy` with strict settings
 
+### Configuration & State
+- **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.config import cfg`)
+- Never duplicate state across modules (e.g. no `store_mod.LANCEDB_DIR` mirroring `cfg.lancedb_dir`)
+- Prefer dependency injection (pass values as parameters) over reading globals inside functions
+- Access config via `cfg.attribute` (late-bound), never `from lilbee.config import SOME_CONSTANT` (early-bound copy)
+
+### Import Discipline
+- **Lazy imports only when justified**: circular dependency, heavy third-party lib (ollama, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path
+- Everything else goes at the top of the module — `from lilbee.config import cfg` is always safe top-level
+- Never use `importlib.reload` — it's a sign of bad design. If you need different config in tests, mutate the singleton
+
+### Test Fixtures
+- **Snapshot/restore pattern** for config isolation:
+  ```python
+  from dataclasses import fields, replace
+  from lilbee.config import cfg
+
+  @pytest.fixture(autouse=True)
+  def isolated_env(tmp_path):
+      snapshot = replace(cfg)
+      cfg.documents_dir = tmp_path / "documents"
+      # ... set test values ...
+      yield
+      for f in fields(cfg):
+          setattr(cfg, f.name, getattr(snapshot, f.name))
+  ```
+- Never save/restore individual fields manually — snapshot the whole object
+- Never touch internal module state (e.g. `store_mod.LANCEDB_DIR`) — only mutate `cfg`
+
 ### YAGNI & Simplicity
 - Don't add features, abstractions, or config that isn't needed yet
 - Three similar lines are better than a premature abstraction
