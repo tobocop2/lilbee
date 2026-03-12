@@ -375,6 +375,38 @@ class TestApplyOverrides:
         with pytest.raises(typer.BadParameter, match="Cannot use --global with --data-dir"):
             apply_overrides(data_dir=tmp_path, use_global=True)
 
+    def test_lilbee_data_env_overrides_local_root(self, tmp_path, monkeypatch):
+        """LILBEE_DATA env var takes precedence over .lilbee/ walk-up."""
+        from lilbee.cli import apply_overrides
+
+        env_dir = tmp_path / "env-data"
+        env_dir.mkdir()
+        monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+        apply_overrides()
+        assert cfg.data_root == env_dir
+        assert cfg.documents_dir == env_dir / "documents"
+
+    def test_lilbee_data_env_ignored_when_data_dir_passed(self, tmp_path, monkeypatch):
+        """Explicit --data-dir takes precedence over LILBEE_DATA."""
+        from lilbee.cli import apply_overrides
+
+        env_dir = tmp_path / "env-data"
+        env_dir.mkdir()
+        explicit_dir = tmp_path / "explicit"
+        explicit_dir.mkdir()
+        monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+        apply_overrides(data_dir=explicit_dir)
+        assert cfg.data_root == explicit_dir
+
+    def test_lilbee_data_env_ignored_when_global(self, monkeypatch):
+        """--global takes precedence over LILBEE_DATA."""
+        from lilbee.cli import apply_overrides
+        from lilbee.platform import default_data_dir
+
+        monkeypatch.setenv("LILBEE_DATA", "/tmp/should-be-ignored")
+        apply_overrides(use_global=True)
+        assert cfg.data_root == default_data_dir()
+
 
 class TestGlobalFlag:
     """Tests for the --global / -g CLI flag."""
