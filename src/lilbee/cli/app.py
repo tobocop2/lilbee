@@ -1,5 +1,6 @@
 """App creation, console, and global callback."""
 
+import os
 from pathlib import Path
 
 import typer
@@ -55,7 +56,11 @@ def apply_overrides(
     model: str | None = None,
     use_global: bool = False,
 ) -> None:
-    """Apply CLI overrides to config before any work begins."""
+    """Apply CLI overrides to config before any work begins.
+
+    Precedence (highest first):
+    --data-dir / LILBEE_DATA  >  .lilbee/ (local walk-up)  >  global platform default
+    """
     if data_dir is not None and use_global:
         raise typer.BadParameter("Cannot use --global with --data-dir")
 
@@ -65,6 +70,10 @@ def apply_overrides(
         _apply_data_root(default_data_dir())
     elif data_dir is not None:
         _apply_data_root(data_dir)
+    else:
+        data_env = os.environ.get("LILBEE_DATA", "")
+        if data_env:
+            _apply_data_root(Path(data_env))
 
     if model is not None:
         cfg.chat_model = ensure_tag(model)
