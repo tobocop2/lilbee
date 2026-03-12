@@ -139,6 +139,35 @@ class TestLilbeeReset:
         assert result["deleted_data"] == 0
 
 
+class TestLilbeeInit:
+    def test_init_creates_structure(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        result = lilbee_init(str(tmp_path))
+        root = tmp_path / ".lilbee"
+        assert result["command"] == "init"
+        assert result["created"] is True
+        assert root.is_dir()
+        assert (root / "documents").is_dir()
+        assert (root / "data").is_dir()
+        assert (root / ".gitignore").read_text() == "data/\n"
+
+    def test_init_already_exists(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        (tmp_path / ".lilbee").mkdir()
+        result = lilbee_init(str(tmp_path))
+        assert result["created"] is False
+
+    def test_init_default_cwd(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = lilbee_init()
+        assert result["created"] is True
+        assert (tmp_path / ".lilbee" / "documents").is_dir()
+
+
 class TestLilbeeAdd:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, _sync, tmp_path):

@@ -103,6 +103,25 @@ async def lilbee_add(
 
 
 @mcp.tool()
+def lilbee_init(path: str = "") -> dict:
+    """Initialize a local .lilbee/ knowledge base in a directory.
+
+    Creates .lilbee/ with documents/, data/, and .gitignore.
+    If path is empty, uses the current working directory.
+    """
+    from pathlib import Path
+
+    root = Path(path) / ".lilbee" if path else Path.cwd() / ".lilbee"
+    if root.is_dir():
+        return {"command": "init", "path": str(root), "created": False}
+
+    (root / "documents").mkdir(parents=True)
+    (root / "data").mkdir(parents=True)
+    (root / ".gitignore").write_text("data/\n")
+    return {"command": "init", "path": str(root), "created": True}
+
+
+@mcp.tool()
 def lilbee_reset() -> dict:
     """Delete all documents and data (full factory reset).
 

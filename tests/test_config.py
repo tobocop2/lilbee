@@ -166,6 +166,46 @@ class TestVisionModelConfig:
             assert c.vision_model == "maternion/LightOnOCR-2"
 
 
+class TestLocalDotLilbee:
+    def test_local_lilbee_overrides_default(self, tmp_path):
+        local = tmp_path / ".lilbee"
+        local.mkdir()
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_DATA"}
+        env["LILBEE_DATA"] = ""
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.platform.find_local_root", return_value=local),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.data_root == local
+            assert c.documents_dir == local / "documents"
+            assert c.lancedb_dir == local / "data" / "lancedb"
+
+    def test_lilbee_data_takes_precedence_over_local(self, tmp_path):
+        local = tmp_path / ".lilbee"
+        local.mkdir()
+        explicit = tmp_path / "explicit"
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_DATA": str(explicit)}),
+            mock.patch("lilbee.platform.find_local_root", return_value=local),
+        ):
+            c = Config.from_env()
+            assert c.data_root == explicit
+
+    def test_no_local_uses_platform_default(self):
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_DATA"}
+        env["LILBEE_DATA"] = ""
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.platform.find_local_root", return_value=None),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.data_root.name == "lilbee"
+            assert c.data_root.name != ".lilbee"
+
+
 class TestIgnoreDirs:
     def test_default_ignore_dirs_contains_expected(self):
         c = Config.from_env()
