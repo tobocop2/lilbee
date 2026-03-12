@@ -139,6 +139,108 @@ class TestLilbeeReset:
         assert result["deleted_data"] == 0
 
 
+class TestLilbeeAdd:
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_single_file(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        src = tmp_path / "test.txt"
+        src.write_text("hello world")
+
+        result = await lilbee_add([str(src)])
+
+        assert result["command"] == "add"
+        assert "test.txt" in result["copied"]
+        assert result["errors"] == []
+        assert result["skipped"] == []
+        assert (cfg.documents_dir / "test.txt").read_text() == "hello world"
+        _sync.assert_awaited_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_nonexistent_path(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        result = await lilbee_add(["/no/such/path.txt"])
+
+        assert "/no/such/path.txt" in result["errors"]
+        assert result["copied"] == []
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_existing_no_force(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        (cfg.documents_dir / "exist.txt").write_text("old")
+        src = tmp_path / "exist.txt"
+        src.write_text("new")
+
+        result = await lilbee_add([str(src)])
+
+        assert "exist.txt" in result["skipped"]
+        assert result["copied"] == []
+        assert (cfg.documents_dir / "exist.txt").read_text() == "old"
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_existing_with_force(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        (cfg.documents_dir / "exist.txt").write_text("old")
+        src = tmp_path / "exist.txt"
+        src.write_text("new")
+
+        result = await lilbee_add([str(src)], force=True)
+
+        assert "exist.txt" in result["copied"]
+        assert result["skipped"] == []
+        assert (cfg.documents_dir / "exist.txt").read_text() == "new"
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_directory(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        src_dir = tmp_path / "mydir"
+        src_dir.mkdir()
+        (src_dir / "a.txt").write_text("a")
+
+        result = await lilbee_add([str(src_dir)])
+
+        assert "mydir" in result["copied"]
+        assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_with_vision_model(self, mock_sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-fake")
+
+        await lilbee_add([str(src)], vision_model="test-vision:latest")
+
+        # vision_model should be restored after the call
+        assert getattr(cfg, "vision_model", "") == ""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
+    async def test_add_vision_model_restored_on_error(self, _sync, tmp_path):
+        from lilbee.mcp import lilbee_add
+
+        src = tmp_path / "file.txt"
+        src.write_text("content")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await lilbee_add([str(src)], vision_model="test-vision:latest")
+
+        assert getattr(cfg, "vision_model", "") == ""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_empty_paths(self, _sync):
+        from lilbee.mcp import lilbee_add
+
+        result = await lilbee_add([])
+
+        assert result["copied"] == []
+        assert result["skipped"] == []
+        assert result["errors"] == []
+
+
 class TestMain:
     @mock.patch("lilbee.mcp.mcp")
     def test_main_calls_run(self, mock_mcp):
