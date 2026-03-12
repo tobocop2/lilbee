@@ -46,6 +46,7 @@ def gather_status() -> dict:
             "data_dir": str(cfg.data_dir),
             "chat_model": cfg.chat_model,
             "embedding_model": cfg.embedding_model,
+            **({"vision_model": cfg.vision_model} if cfg.vision_model else {}),
         },
         "sources": [
             {
@@ -68,6 +69,8 @@ def render_status(con: Console) -> None:
     con.print(f"[bold]Database:[/bold]   {conf['data_dir']}")
     con.print(f"[bold]Chat model:[/bold] {conf['chat_model']}")
     con.print(f"[bold]Embeddings:[/bold] {conf['embedding_model']}")
+    if "vision_model" in conf:
+        con.print(f"[bold]Vision OCR:[/bold] {conf['vision_model']}")
     con.print()
 
     if not data["sources"]:
