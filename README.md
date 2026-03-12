@@ -21,6 +21,7 @@
 - [Interactive chat](#interactive-chat)
 - [Agent integration](#agent-integration)
 - [Supported formats](#supported-formats)
+- [Vision OCR (optional)](#vision-ocr-optional)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
 
@@ -31,7 +32,7 @@
 Index your documents and code into a local knowledge base, then ask questions grounded in what's actually there. Most tools like this only handle code. lilbee handles PDFs, Word docs, epics — and code too, with AST-aware chunking.
 
 - **Documents and code alike** — add anything from a vehicle manual to an entire codebase
-- **Fully offline** — runs on your machine with [Ollama](https://ollama.com) and LanceDB, no cloud APIs or Docker
+- **Fully offline** — runs on your machine with [Ollama] and LanceDB, no cloud APIs or Docker
 - **Works with AI agents** — MCP server and JSON CLI so agents can search your knowledge base too
 
 Add files (`lilbee add`), then ask questions or search. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
@@ -39,12 +40,47 @@ Add files (`lilbee add`), then ask questions or search. Once indexed, `search` w
 ## Demos
 
 <details>
-<summary><b>AI agent using lilbee (opencode)</b></summary>
+<summary><b>AI agent</b> — lilbee search vs web search (<a href="docs/benchmarks/godot-level-generator.md">detailed analysis</a>)</summary>
 
-![opencode + lilbee](demos/opencode.gif)
+[opencode] + [minimax-m2.5-free][opencode], single prompt, no follow-ups. The [Godot 4.4 XML class reference][godot-docs] (917 files) is indexed in lilbee. The baseline uses [Exa AI][exa] code search instead.
 
-An AI coding agent shells out to `lilbee --json search` to ground its answers in your documents.
+> [!CAUTION]
+> minimax-m2.5-free is a cloud model — retrieved chunks are sent to an external API. Use a local model if your documents are private.
+
+| | API hallucinations | Lines |
+|---|---|---|
+| **With lilbee** ([code](demos/godot-with-lilbee/level_generator.gd) · [config](demos/godot-with-lilbee/)) | 0 | 261 |
+| **Without lilbee** ([code](demos/godot-without-lilbee/level_generator.gd) · [config](demos/godot-without-lilbee/)) | 4 (~22% error rate) | 213 |
+
+<details>
+<summary><b>With lilbee</b> — all Godot API calls match the class reference</summary>
+
+![With lilbee MCP](demos/godot-with-lilbee.gif)
 </details>
+
+<details>
+<summary><b>Without lilbee</b> — 4 hallucinated APIs (<a href="docs/benchmarks/godot-level-generator.md#without-lilbee-213-lines--4-bugs">details</a>)</summary>
+
+![Without lilbee](demos/godot-without-lilbee.gif)
+</details>
+
+If you spot issues with these benchmarks, please [open an issue](https://github.com/tobocop2/lilbee/issues).
+
+</details>
+
+### Vision OCR
+
+<details>
+<summary><b>Scanned PDF → searchable knowledge base</b></summary>
+
+A scanned 1998 Star Wars: X-Wing Collector's Edition manual indexed with vision OCR ([LightOnOCR-2][lightonocr]), then queried in lilbee's interactive chat (`qwen3-coder:30b`, fully local). Three questions about dev team credits, energy management, and starfighter speeds — all answered from the OCR'd content.
+
+![Vision OCR demo](demos/vision-ocr.gif)
+
+See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md) for model comparisons.
+</details>
+
+### Standalone
 
 <details>
 <summary><b>Interactive local offline chat</b></summary>
@@ -79,7 +115,7 @@ Structured JSON output for agents and scripts.
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
+- [Ollama] — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
 - **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
 
 > **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
@@ -156,8 +192,38 @@ lilbee can serve as a local retrieval backend for AI coding agents via MCP or JS
 | eBook | `.epub` | — |
 | Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp` | [Tesseract](https://github.com/tesseract-ocr/tesseract) |
 | Data | `.csv`, `.tsv` | — |
+| Structured | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml` | — |
 | Text | `.md`, `.txt`, `.html`, `.rst` | — |
 | Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | — |
+
+### Vision OCR (optional)
+
+Scanned PDFs that produce no extractable text can be processed using a local vision model via Ollama. During `sync`, lilbee detects empty PDFs and:
+- **Without a vision model configured:** skips the file and warns you to set one up
+- **With a vision model configured:** rasterizes each page and sends it to the vision model for OCR
+
+**Setup:**
+```bash
+# In chat, use the interactive picker:
+/vision
+
+# Or set directly:
+/vision maternion/LightOnOCR-2
+
+# Or via environment variable:
+export LILBEE_VISION_MODEL=maternion/LightOnOCR-2
+```
+
+**Recommended models:**
+
+| Model | Size | Speed | Quality |
+|-------|------|-------|---------|
+| maternion/LightOnOCR-2 | 1.5 GB | 11.9s/page | Best — clean markdown output |
+| deepseek-ocr | 6.7 GB | 17.4s/page | Excellent accuracy, plain text |
+| glm-ocr | 2.2 GB | 51.7s/page | Good accuracy |
+| minicpm-v | 5.5 GB | 35.6s/page | Decent, slower |
+
+> Benchmarks: Apple M1 Pro, 32 GB RAM, Ollama 0.17.7. See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md).
 
 ## Configuration
 
@@ -179,7 +245,7 @@ CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, and `--version` / `-V` f
 
 ## How it works
 
-Documents are hashed and synced automatically — new files get ingested, modified files re-ingested, deleted files removed. [Kreuzberg](https://github.com/Goldziher/kreuzberg) handles extraction and chunking across all document formats (PDF, Office, images via OCR, etc.), while [tree-sitter](https://tree-sitter.github.io/tree-sitter/) provides AST-aware chunking for code. Chunks are embedded via [Ollama](https://ollama.com) and stored in [LanceDB](https://lancedb.com). Ollama uses llama.cpp with native Metal support, which is significantly faster than in-process alternatives like ONNX Runtime — CoreML can't accelerate nomic-embed-text's rotary embeddings, making CPU the only ONNX path on macOS (~170ms/chunk vs near-instant with Ollama's GPU inference). Queries embed the question, find the most relevant chunks by vector similarity, and pass them as context to the LLM.
+Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
 
 ### Data location
 
@@ -194,3 +260,16 @@ Override with `LILBEE_DATA=/path` or `--data-dir`.
 ## License
 
 MIT
+
+[Ollama]: https://ollama.com
+[opencode]: https://opencode.ai
+[Kreuzberg]: https://github.com/Goldziher/kreuzberg
+[tree-sitter]: https://tree-sitter.github.io/tree-sitter/
+[LanceDB]: https://lancedb.com
+[godot-docs]: https://github.com/godotengine/godot/tree/4.4-stable/doc/classes
+[tml]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/TileMapLayer.xml
+[asg2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/AStarGrid2D.xml
+[nr2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/NavigationRegion2D.xml
+[ns2d]: https://github.com/godotengine/godot/blob/4.4-stable/doc/classes/NavigationServer2D.xml
+[exa]: https://exa.ai
+[lightonocr]: https://ollama.com/maternion/LightOnOCR-2
