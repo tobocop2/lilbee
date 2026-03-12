@@ -34,6 +34,19 @@ def default_data_dir() -> Path:
     return base / "lilbee"
 
 
+def find_local_root(start: Path | None = None) -> Path | None:
+    """Walk up from start (default: cwd) looking for .lilbee/ directory."""
+    current = start or Path.cwd()
+    while True:
+        candidate = current / ".lilbee"
+        if candidate.is_dir():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 def is_ignored_dir(name: str, ignore_dirs: frozenset[str]) -> bool:
     """Return True if a directory name should be skipped during traversal."""
     return name.startswith(".") or name in ignore_dirs or name.endswith(".egg-info")
