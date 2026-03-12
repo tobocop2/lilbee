@@ -113,6 +113,19 @@ Add a codebase and search with natural language. Tree-sitter provides AST-aware 
 Structured JSON output for agents and scripts.
 </details>
 
+## Hardware requirements
+
+lilbee runs entirely on your local machine — your hardware is the compute.
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| **RAM** | 8 GB | 16–32 GB |
+| **GPU / Accelerator** | — | Apple Metal (M-series), NVIDIA GPU (6+ GB VRAM) |
+| **Disk** | 2 GB (models + data) | 10+ GB if using multiple models |
+| **CPU** | Any modern x86_64 / ARM64 | — |
+
+Ollama handles inference and uses Metal on macOS or CUDA on Linux/Windows. Without a GPU, models fall back to CPU — usable for embedding but slow for chat.
+
 ## Install
 
 ### Prerequisites
@@ -245,6 +258,7 @@ All settings are configurable via environment variables:
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
+| `LILBEE_VISION_MODEL` | *(none)* | Vision model for scanned PDF OCR |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
 
 CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, and `--version` / `-V` flags.
