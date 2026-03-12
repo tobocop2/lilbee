@@ -23,6 +23,13 @@ _DISK_HEADROOM_GB = 2
 OLLAMA_MODELS_URL = "https://ollama.com/library"
 
 
+def ensure_tag(name: str) -> str:
+    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``)."""
+    if not name or ":" in name:
+        return name
+    return f"{name}:latest"
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     """A curated chat model with metadata for the picker UI."""
@@ -39,6 +46,16 @@ MODEL_CATALOG: tuple[ModelInfo, ...] = (
     ModelInfo("mistral:7b", 4.4, 8, "Small — Mistral's fast 7B, 32K context"),
     ModelInfo("qwen3:8b", 5.0, 8, "Medium — strong general-purpose"),
     ModelInfo("qwen3-coder:30b", 18.0, 32, "Extra large — best quality, needs 32 GB RAM"),
+)
+
+
+VISION_CATALOG: tuple[ModelInfo, ...] = (
+    ModelInfo(
+        "maternion/LightOnOCR-2:latest", 1.5, 4, "Best quality/speed — clean markdown OCR output"
+    ),
+    ModelInfo("deepseek-ocr:latest", 6.7, 8, "Excellent accuracy — plain text, no markdown"),
+    ModelInfo("minicpm-v:latest", 5.5, 8, "Good — some transcription errors, slower"),
+    ModelInfo("glm-ocr:latest", 2.2, 4, "Good accuracy — surprisingly slow despite small size"),
 )
 
 
@@ -131,6 +148,51 @@ def display_model_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
 
     console.print()
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
+    console.print(table)
+    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
+    console.print("  \u2605 = recommended for your system")
+    console.print(f"  Browse more models at {OLLAMA_MODELS_URL}\n")
+
+    return recommended
+
+
+def pick_default_vision_model() -> ModelInfo:
+    """Return the recommended vision model (first catalog entry, best quality)."""
+    return VISION_CATALOG[0]
+
+
+def display_vision_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
+    """Show a Rich table of vision models on stderr and return the recommended model."""
+    console = Console(stderr=True)
+    recommended = pick_default_vision_model()
+
+    table = Table(title="Vision OCR Models", show_lines=False)
+    table.add_column("#", justify="right", style="bold")
+    table.add_column("Model", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Description")
+
+    for idx, model in enumerate(VISION_CATALOG, 1):
+        num_str = str(idx)
+        name = model.name
+        size_str = f"{model.size_gb:.1f} GB"
+        desc = model.description
+
+        is_recommended = model == recommended
+        disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
+
+        if is_recommended:
+            name = f"[bold]{name} \u2605[/bold]"
+            desc = f"[bold]{desc}[/bold]"
+            num_str = f"[bold]{num_str}[/bold]"
+
+        if disk_too_small:
+            size_str = f"[red]{model.size_gb:.1f} GB[/red]"
+
+        table.add_row(num_str, name, size_str, desc)
+
+    console.print()
+    console.print("[bold]Select a vision OCR model for scanned PDF extraction:[/bold]\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
     console.print("  \u2605 = recommended for your system")

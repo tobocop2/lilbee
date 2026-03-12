@@ -23,11 +23,12 @@ dependencies = [
     "kreuzberg",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",
-
     "typer",
     "tiktoken",
     "prompt-toolkit>=3.0",
     "mcp>=1.26.0",
+    "pypdfium2>=5.6.0",
+    "pillow>=11.3.0",
 ]
 
 [project.urls]
