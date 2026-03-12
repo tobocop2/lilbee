@@ -36,9 +36,11 @@ def _skip_model_validation():
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = replace(cfg)
+    cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
@@ -66,6 +68,17 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
+
+    def test_status_shows_vision_model_when_set(self):
+        cfg.vision_model = "test-vision:latest"
+        result = runner.invoke(app, ["status"])
+        assert "Vision OCR:" in result.output
+        assert "test-vision:latest" in result.output
+
+    def test_status_hides_vision_model_when_empty(self):
+        cfg.vision_model = ""
+        result = runner.invoke(app, ["status"])
+        assert "Vision OCR:" not in result.output
 
     def test_status_with_indexed_docs(self, isolated_env):
         from lilbee.store import upsert_source
@@ -1743,6 +1756,18 @@ class TestStatusJson:
         assert data["sources"][0]["filename"] == "test.pdf"
         assert data["total_chunks"] == 10
         assert "documents_dir" in data["config"]
+
+    def test_status_json_includes_vision_model_when_set(self):
+        cfg.vision_model = "test-vision:latest"
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert data["config"]["vision_model"] == "test-vision:latest"
+
+    def test_status_json_excludes_vision_model_when_empty(self):
+        cfg.vision_model = ""
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert "vision_model" not in data["config"]
 
 
 # ---------------------------------------------------------------------------
