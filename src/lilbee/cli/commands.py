@@ -7,7 +7,14 @@ import typer
 from rich.table import Table
 
 from lilbee import settings
-from lilbee.cli.app import app, apply_overrides, console, data_dir_option, model_option
+from lilbee.cli.app import (
+    _global_option,
+    app,
+    apply_overrides,
+    console,
+    data_dir_option,
+    model_option,
+)
 from lilbee.cli.helpers import (
     add_paths,
     auto_sync,
@@ -151,9 +158,10 @@ def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
 ) -> None:
     """Search the knowledge base for relevant chunks."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.query import search_context
 
     results = search_context(query, top_k=top_k or cfg.top_k)
@@ -187,10 +195,11 @@ def search(
 @app.command(name="sync")
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
     vision: bool = _vision_option,
 ) -> None:
     """Manually trigger document sync."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if vision:
         _ensure_vision_model()
     from lilbee.ingest import sync
@@ -212,10 +221,11 @@ def sync_cmd(
 @app.command()
 def rebuild(
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
     vision: bool = _vision_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if vision:
         _ensure_vision_model()
     from lilbee.ingest import sync
@@ -241,11 +251,12 @@ _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing fi
 def add(
     paths: list[Path] = _paths_argument,
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
     force: bool = _force_option,
     vision: bool = _vision_option,
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if vision:
         _ensure_vision_model()
     try:
@@ -272,9 +283,10 @@ _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunk
 def chunks(
     source: str = _chunks_source_argument,
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
 ) -> None:
     """Show chunks a document was split into (useful for debugging retrieval)."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
 
     from lilbee.store import get_chunks_by_source, get_sources
 
@@ -318,10 +330,11 @@ _delete_file_option = typer.Option(
 def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
     delete_file: bool = _delete_file_option,
 ) -> None:
     """Remove documents from the knowledge base by source name."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
 
     from lilbee.store import delete_by_source, delete_source, get_sources
 
@@ -361,9 +374,10 @@ def ask(
     question: str = typer.Argument(..., help="Question to ask"),
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
+    use_global: bool = _global_option,
 ) -> None:
     """Ask a one-shot question (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model)
+    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
 
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
@@ -404,9 +418,10 @@ def ask(
 def chat(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
+    use_global: bool = _global_option,
 ) -> None:
     """Interactive chat loop (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model)
+    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
 
@@ -429,9 +444,12 @@ def version() -> None:
 
 
 @app.command()
-def status(data_dir: Path | None = data_dir_option) -> None:
+def status(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
     """Show indexed documents, paths, and chunk counts."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if cfg.json_mode:
         json_output(gather_status())
         return
@@ -444,10 +462,11 @@ _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.
 @app.command()
 def reset(
     data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
     yes: bool = _yes_option,
 ) -> None:
     """Delete all documents and data (full factory reset)."""
-    apply_overrides(data_dir=data_dir)
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     if not yes:
         if cfg.json_mode:
             json_output({"error": "Use --yes to confirm reset in JSON mode"})
@@ -472,6 +491,31 @@ def reset(
         f"Reset complete: {result['deleted_docs']} document(s), "
         f"{result['deleted_data']} data item(s) deleted."
     )
+
+
+@app.command()
+def init() -> None:
+    """Initialize a local .lilbee/ knowledge base in the current directory."""
+    from pathlib import Path
+
+    root = Path.cwd() / ".lilbee"
+    if root.is_dir():
+        if cfg.json_mode:
+            json_output({"command": "init", "path": str(root), "created": False})
+            return
+        console.print(f"Already initialized: {root}")
+        return
+
+    docs = root / "documents"
+    data = root / "data"
+    docs.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (root / ".gitignore").write_text("data/\n")
+
+    if cfg.json_mode:
+        json_output({"command": "init", "path": str(root), "created": True})
+        return
+    console.print(f"Initialized local knowledge base at {root}")
 
 
 @app.command(name="mcp")

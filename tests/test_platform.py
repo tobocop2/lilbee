@@ -80,6 +80,34 @@ class TestHelpers:
             assert "lilbee" in str(result)
 
 
+class TestFindLocalRoot:
+    def test_finds_in_cwd(self, tmp_path):
+        from lilbee.platform import find_local_root
+
+        (tmp_path / ".lilbee").mkdir()
+        assert find_local_root(tmp_path) == tmp_path / ".lilbee"
+
+    def test_finds_in_parent(self, tmp_path):
+        from lilbee.platform import find_local_root
+
+        (tmp_path / ".lilbee").mkdir()
+        child = tmp_path / "sub" / "deep"
+        child.mkdir(parents=True)
+        assert find_local_root(child) == tmp_path / ".lilbee"
+
+    def test_returns_none_when_absent(self, tmp_path):
+        from lilbee.platform import find_local_root
+
+        assert find_local_root(tmp_path) is None
+
+    def test_defaults_to_cwd(self, tmp_path):
+        from lilbee.platform import find_local_root
+
+        (tmp_path / ".lilbee").mkdir()
+        with mock.patch("lilbee.platform.Path.cwd", return_value=tmp_path):
+            assert find_local_root() == tmp_path / ".lilbee"
+
+
 class TestIsIgnoredDir:
     _DEFAULTS = frozenset({"node_modules", "__pycache__", "venv"})
 

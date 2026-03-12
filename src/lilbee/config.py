@@ -56,6 +56,13 @@ class Config:
         data_env = env("DATA", "")
         data_root = Path(data_env) if data_env else default_data_dir()
 
+        if not data_env:
+            from lilbee.platform import find_local_root
+
+            local = find_local_root()
+            if local is not None:
+                data_root = local
+
         chat_model = env("CHAT_MODEL", "qwen3:8b")
         if "LILBEE_CHAT_MODEL" not in os.environ:
             try:

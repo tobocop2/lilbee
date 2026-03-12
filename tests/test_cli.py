@@ -36,9 +36,11 @@ def _skip_model_validation():
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = replace(cfg)
+    cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
@@ -66,6 +68,17 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
+
+    def test_status_shows_vision_model_when_set(self):
+        cfg.vision_model = "test-vision:latest"
+        result = runner.invoke(app, ["status"])
+        assert "Vision OCR:" in result.output
+        assert "test-vision:latest" in result.output
+
+    def test_status_hides_vision_model_when_empty(self):
+        cfg.vision_model = ""
+        result = runner.invoke(app, ["status"])
+        assert "Vision OCR:" not in result.output
 
     def test_status_with_indexed_docs(self, isolated_env):
         from lilbee.store import upsert_source
@@ -355,6 +368,88 @@ class TestApplyOverrides:
         original_model = cfg.chat_model
         apply_overrides(data_dir=None, model=None)
         assert original_model == cfg.chat_model
+
+    def test_use_global_resets_to_platform_default(self):
+        from lilbee.cli import apply_overrides
+        from lilbee.platform import default_data_dir
+
+        apply_overrides(use_global=True)
+        expected = default_data_dir()
+        assert cfg.data_root == expected
+        assert cfg.documents_dir == expected / "documents"
+        assert cfg.data_dir == expected / "data"
+        assert cfg.lancedb_dir == expected / "data" / "lancedb"
+
+    def test_use_global_with_data_dir_raises(self, tmp_path):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        with pytest.raises(typer.BadParameter, match="Cannot use --global with --data-dir"):
+            apply_overrides(data_dir=tmp_path, use_global=True)
+
+    def test_lilbee_data_env_overrides_local_root(self, tmp_path, monkeypatch):
+        """LILBEE_DATA env var takes precedence over .lilbee/ walk-up."""
+        from lilbee.cli import apply_overrides
+
+        env_dir = tmp_path / "env-data"
+        env_dir.mkdir()
+        monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+        apply_overrides()
+        assert cfg.data_root == env_dir
+        assert cfg.documents_dir == env_dir / "documents"
+
+    def test_lilbee_data_env_ignored_when_data_dir_passed(self, tmp_path, monkeypatch):
+        """Explicit --data-dir takes precedence over LILBEE_DATA."""
+        from lilbee.cli import apply_overrides
+
+        env_dir = tmp_path / "env-data"
+        env_dir.mkdir()
+        explicit_dir = tmp_path / "explicit"
+        explicit_dir.mkdir()
+        monkeypatch.setenv("LILBEE_DATA", str(env_dir))
+        apply_overrides(data_dir=explicit_dir)
+        assert cfg.data_root == explicit_dir
+
+    def test_lilbee_data_env_ignored_when_global(self, monkeypatch):
+        """--global takes precedence over LILBEE_DATA."""
+        from lilbee.cli import apply_overrides
+        from lilbee.platform import default_data_dir
+
+        monkeypatch.setenv("LILBEE_DATA", "/tmp/should-be-ignored")
+        apply_overrides(use_global=True)
+        assert cfg.data_root == default_data_dir()
+
+
+class TestGlobalFlag:
+    """Tests for the --global / -g CLI flag."""
+
+    def test_global_flag_on_status(self):
+        from lilbee.platform import default_data_dir
+
+        result = runner.invoke(app, ["--json", "status", "--global"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        expected = str(default_data_dir() / "documents")
+        assert data["config"]["documents_dir"] == expected
+
+    def test_global_short_flag_on_status(self):
+        from lilbee.platform import default_data_dir
+
+        result = runner.invoke(app, ["--json", "status", "-g"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        expected = str(default_data_dir() / "documents")
+        assert data["config"]["documents_dir"] == expected
+
+    def test_global_with_data_dir_errors(self, tmp_path):
+        result = runner.invoke(app, ["status", "--global", "--data-dir", str(tmp_path)])
+        assert result.exit_code != 0
+
+    def test_help_shows_global_flag(self):
+        result = runner.invoke(app, ["status", "--help"])
+        # Rich wraps "--global" with ANSI codes in CI, so match without the dashes
+        assert "global" in result.output
 
 
 class TestMainModule:
@@ -1581,6 +1676,43 @@ class TestSlashReset:
         assert (cfg.documents_dir / "doc.txt").exists()
 
 
+class TestInit:
+    def test_init_creates_structure(self, tmp_path):
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        root = tmp_path / ".lilbee"
+        assert root.is_dir()
+        assert (root / "documents").is_dir()
+        assert (root / "data").is_dir()
+        assert (root / ".gitignore").read_text() == "data/\n"
+        assert "Initialized" in result.output
+
+    def test_init_already_exists(self, tmp_path):
+        (tmp_path / ".lilbee").mkdir()
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        assert "Already initialized" in result.output
+
+    def test_init_json_created(self, tmp_path):
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["--json", "init"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "init"
+        assert data["created"] is True
+        assert ".lilbee" in data["path"]
+
+    def test_init_json_already_exists(self, tmp_path):
+        (tmp_path / ".lilbee").mkdir()
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["--json", "init"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["created"] is False
+
+
 class TestVersion:
     def test_version_human(self):
         result = runner.invoke(app, ["version"])
@@ -1624,6 +1756,18 @@ class TestStatusJson:
         assert data["sources"][0]["filename"] == "test.pdf"
         assert data["total_chunks"] == 10
         assert "documents_dir" in data["config"]
+
+    def test_status_json_includes_vision_model_when_set(self):
+        cfg.vision_model = "test-vision:latest"
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert data["config"]["vision_model"] == "test-vision:latest"
+
+    def test_status_json_excludes_vision_model_when_empty(self):
+        cfg.vision_model = ""
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert "vision_model" not in data["config"]
 
 
 # ---------------------------------------------------------------------------
