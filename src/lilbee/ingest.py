@@ -4,21 +4,38 @@ import asyncio
 import hashlib
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from lilbee import embedder, store
+from lilbee.chunker import chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 
 log = logging.getLogger(__name__)
 
+# Minimum total chars for kreuzberg text to be considered meaningful.
+# 50 chars ≈ 12 words — if a PDF yields less, it's almost certainly a scanned
+# document with no embedded text layer. Text PDFs with even just a title page
+# easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
+_MIN_MEANINGFUL_CHARS = 50
+
 # Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
 _CHARS_PER_TOKEN = 4
+
+
+def _has_meaningful_text(result: Any) -> bool:
+    """Check if kreuzberg extraction produced meaningful text."""
+    if hasattr(result, "chunks") and result.chunks:
+        total = sum(len(c.content.strip()) for c in result.chunks)
+        return total > _MIN_MEANINGFUL_CHARS
+    return False
 
 
 class ChunkRecord(TypedDict):
@@ -73,7 +90,7 @@ class _IngestResult:
 # File extensions routed to the code chunker (tree-sitter)
 _CODE_EXTENSIONS = supported_extensions()
 
-# All document extensions handled by kreuzberg
+# All document extensions handled by kreuzberg or structured preprocessors
 _DOCUMENT_EXTENSIONS = frozenset(
     {
         ".md",
@@ -94,18 +111,33 @@ _DOCUMENT_EXTENSIONS = frozenset(
         ".webp",
         ".csv",
         ".tsv",
+        ".xml",
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
     }
 )
 
 # Extension → content_type string for metadata
 _EXTENSION_MAP: dict[str, str] = {
-    **{ext: "text" for ext in (".md", ".txt", ".html", ".rst")},
+    **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
     ".pdf": "pdf",
     **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
     **{ext: "data" for ext in (".csv", ".tsv")},
+    ".xml": "xml",
+    **{ext: "json" for ext in (".json", ".jsonl")},
+}
+
+
+# Preprocessors for structured formats: content_type → callable(Path) → str
+_PREPROCESSORS: dict[str, Callable[[Path], str]] = {
+    "xml": preprocess_xml,
+    "json": preprocess_json,
+    "data": preprocess_csv,
 }
 
 
@@ -158,7 +190,37 @@ def kreuzberg_config(content_type: str) -> object:
             chunking=chunking,
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
         )
-    return ExtractionConfig(chunking=chunking)
+    return ExtractionConfig(chunking=chunking, output_format="markdown")
+
+
+async def _vision_fallback(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+    """OCR a scanned PDF via vision model, chunk, and embed."""
+    from lilbee.vision import extract_pdf_vision
+
+    page_texts = await asyncio.to_thread(extract_pdf_vision, path, cfg.vision_model)
+    if not page_texts:
+        return []
+
+    all_chunks = [(page_num, chunk) for page_num, text in page_texts for chunk in chunk_text(text)]
+    if not all_chunks:
+        return []
+
+    texts = [c for _, c in all_chunks]
+    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
+    return [
+        ChunkRecord(
+            source=source_name,
+            content_type=content_type,
+            page_start=page_num,
+            page_end=page_num,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=i,
+            vector=vec,
+        )
+        for i, ((page_num, text), vec) in enumerate(zip(all_chunks, vectors, strict=True))
+    ]
 
 
 async def ingest_document(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
@@ -167,6 +229,18 @@ async def ingest_document(path: Path, source_name: str, content_type: str) -> li
 
     config = kreuzberg_config(content_type)
     result = await extract_file(str(path), config=config)
+
+    # Vision fallback for scanned PDFs
+    if content_type == "pdf" and not _has_meaningful_text(result):
+        if not cfg.vision_model:
+            log.warning(
+                "Skipped %s: no extractable text (scanned PDF?). "
+                "Set a vision model with /vision or LILBEE_VISION_MODEL for OCR.",
+                source_name,
+            )
+            return []
+        log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
+        return await _vision_fallback(path, source_name, content_type)
 
     if not result.chunks:
         return []
@@ -215,11 +289,39 @@ def ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
     ]
 
 
+async def ingest_structured(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+    """Preprocess a structured file, chunk, embed, and return store-ready records."""
+    preprocessor = _PREPROCESSORS[content_type]
+    text = await asyncio.to_thread(preprocessor, path)
+    if not text.strip():
+        return []
+    texts = chunk_text(text)
+    if not texts:
+        return []
+    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
+    return [
+        ChunkRecord(
+            source=source_name,
+            content_type=content_type,
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=idx,
+            vector=vec,
+        )
+        for idx, (text, vec) in enumerate(zip(texts, vectors, strict=True))
+    ]
+
+
 async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     """Ingest a single file. Returns chunk count."""
     records: list[ChunkRecord]
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name)
+    elif content_type in _PREPROCESSORS:
+        records = await ingest_structured(path, source_name, content_type)
     else:
         records = await ingest_document(path, source_name, content_type)
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
@@ -372,5 +474,13 @@ def _apply_result(
         if result.name in updated:
             updated.remove(result.name)
         failed.append(result.name)
+        return
+    if result.chunk_count == 0:
+        # No chunks produced (e.g. scanned PDF without vision model).
+        # Don't record as a source so it gets retried on next sync.
+        if result.name in added:
+            added.remove(result.name)
+        if result.name in updated:
+            updated.remove(result.name)
         return
     store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
