@@ -20,6 +20,7 @@ make test                     # Tests with coverage
 make lint                     # Ruff linting
 make typecheck                # Mypy
 make format                   # Auto-format code
+uv run lilbee init            # Create .lilbee/ in current dir (per-project DB)
 uv run lilbee sync            # Sync documents to vector DB
 uv run lilbee ask "question"
 uv run lilbee chat
@@ -29,11 +30,11 @@ uv run lilbee rebuild
 
 ## Architecture
 - `src/lilbee/` — All source code
-- Documents + data stored in platform-standard location (see `lilbee status`)
+- Per-project DB: `lilbee init` creates `.lilbee/` in cwd (like `.git/`)
+- Data location precedence: `--data-dir`/`LILBEE_DATA` > `.lilbee/` (walk up from cwd) > global platform default
   - macOS: `~/Library/Application Support/lilbee/`
   - Linux: `~/.local/share/lilbee/`
   - Windows: `%LOCALAPPDATA%/lilbee/`
-  - Override: `LILBEE_DATA=/path` or `--data-dir`
 - All settings configurable via `LILBEE_*` env vars or CLI flags
 - Auto-sync: documents/ is source of truth, data/ is rebuilt from it
 
@@ -145,6 +146,8 @@ An MCP server is configured in `.claude/settings.json` for this project. Tools a
 | `lilbee_search(query, top_k)` | Search for relevant chunks | No |
 | `lilbee_status()` | Show indexed docs and config | No |
 | `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
+| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync | Yes (embedding) |
+| `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base | No |
 | `lilbee_reset()` | Delete all documents and data (factory reset) | No |
 
 Prefer `lilbee_search` — it returns pre-embedded chunks without calling Ollama at query time.
@@ -171,5 +174,6 @@ See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 - `chunker.py` — Text chunking (token-based recursive)
 - `code_chunker.py` — Code chunking (tree-sitter AST)
 - `embedder.py` — Ollama embedding wrapper
+- `platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
 - `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
-- `mcp.py` — MCP server exposing search, ask, status, sync as tools
+- `mcp.py` — MCP server exposing search, ask, status, sync, init as tools

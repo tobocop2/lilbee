@@ -1,7 +1,7 @@
 [project]
 name = "lilbee"
-version = "0.4.0"
-description = "A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there."
+version = "0.4.1"
+description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]

@@ -356,6 +356,56 @@ class TestApplyOverrides:
         apply_overrides(data_dir=None, model=None)
         assert original_model == cfg.chat_model
 
+    def test_use_global_resets_to_platform_default(self):
+        from lilbee.cli import apply_overrides
+        from lilbee.platform import default_data_dir
+
+        apply_overrides(use_global=True)
+        expected = default_data_dir()
+        assert cfg.data_root == expected
+        assert cfg.documents_dir == expected / "documents"
+        assert cfg.data_dir == expected / "data"
+        assert cfg.lancedb_dir == expected / "data" / "lancedb"
+
+    def test_use_global_with_data_dir_raises(self, tmp_path):
+        import typer
+
+        from lilbee.cli import apply_overrides
+
+        with pytest.raises(typer.BadParameter, match="Cannot use --global with --data-dir"):
+            apply_overrides(data_dir=tmp_path, use_global=True)
+
+
+class TestGlobalFlag:
+    """Tests for the --global / -g CLI flag."""
+
+    def test_global_flag_on_status(self):
+        from lilbee.platform import default_data_dir
+
+        result = runner.invoke(app, ["--json", "status", "--global"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        expected = str(default_data_dir() / "documents")
+        assert data["config"]["documents_dir"] == expected
+
+    def test_global_short_flag_on_status(self):
+        from lilbee.platform import default_data_dir
+
+        result = runner.invoke(app, ["--json", "status", "-g"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        expected = str(default_data_dir() / "documents")
+        assert data["config"]["documents_dir"] == expected
+
+    def test_global_with_data_dir_errors(self, tmp_path):
+        result = runner.invoke(app, ["status", "--global", "--data-dir", str(tmp_path)])
+        assert result.exit_code != 0
+
+    def test_help_shows_global_flag(self):
+        result = runner.invoke(app, ["status", "--help"])
+        # Rich wraps "--global" with ANSI codes in CI, so match without the dashes
+        assert "global" in result.output
+
 
 class TestMainModule:
     def test_python_m_lilbee_runs(self):
@@ -1579,6 +1629,43 @@ class TestSlashReset:
         assert result.exit_code == 0
         assert "Aborted" in result.output
         assert (cfg.documents_dir / "doc.txt").exists()
+
+
+class TestInit:
+    def test_init_creates_structure(self, tmp_path):
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        root = tmp_path / ".lilbee"
+        assert root.is_dir()
+        assert (root / "documents").is_dir()
+        assert (root / "data").is_dir()
+        assert (root / ".gitignore").read_text() == "data/\n"
+        assert "Initialized" in result.output
+
+    def test_init_already_exists(self, tmp_path):
+        (tmp_path / ".lilbee").mkdir()
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["init"])
+        assert result.exit_code == 0
+        assert "Already initialized" in result.output
+
+    def test_init_json_created(self, tmp_path):
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["--json", "init"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "init"
+        assert data["created"] is True
+        assert ".lilbee" in data["path"]
+
+    def test_init_json_already_exists(self, tmp_path):
+        (tmp_path / ".lilbee").mkdir()
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(app, ["--json", "init"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["created"] is False
 
 
 class TestVersion:
