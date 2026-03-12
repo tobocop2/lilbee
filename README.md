@@ -266,7 +266,7 @@ CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, and `--version` / `-V` f
 
 ## How it works
 
-Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
+Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. For scanned or image-heavy PDFs, lilbee can rasterize pages to images and run them through a local vision model via Ollama for higher-quality extraction. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
 
 ### Data location
 
