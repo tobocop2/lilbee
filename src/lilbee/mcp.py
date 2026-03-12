@@ -33,6 +33,7 @@ def lilbee_status() -> dict:
             "data_dir": str(cfg.data_dir),
             "chat_model": cfg.chat_model,
             "embedding_model": cfg.embedding_model,
+            **({"vision_model": cfg.vision_model} if cfg.vision_model else {}),
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}

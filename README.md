@@ -162,7 +162,8 @@ lilbee init
 # Chat with a local LLM (requires Ollama)
 lilbee
 
-# Add documents to your knowledge base
+# Add documents to your knowledge base (embedding runs locally — may take
+# a moment per file, longer for large collections)
 lilbee add ~/Documents/manual.pdf ~/notes/
 
 # Ask questions — answers come from your documents via a local LLM
@@ -219,7 +220,7 @@ Slash commands and paths tab-complete. A spinner shows while waiting for the fir
 
 Scanned PDFs that produce no extractable text can be processed using a local vision model via Ollama. During `sync`, lilbee detects empty PDFs and:
 - **Without a vision model configured:** skips the file and warns you to set one up
-- **With a vision model configured:** rasterizes each page and sends it to the vision model for OCR
+- **With a vision model configured:** rasterizes each page and sends it to the vision model for OCR. This is compute-intensive — expect seconds to tens of seconds per page depending on your hardware and model (see benchmarks below)
 
 **Setup:**
 ```bash
