@@ -463,6 +463,45 @@ class TestFileHash:
         assert file_hash(f1) != file_hash(f2)
 
 
+class TestApplyResultZeroChunks:
+    def test_zero_chunks_not_recorded_as_added(self):
+        from lilbee.ingest import _apply_result, _IngestResult
+
+        added = ["scanned.pdf"]
+        updated: list[str] = []
+        failed: list[str] = []
+        result = _IngestResult("scanned.pdf", Path("scanned.pdf"), chunk_count=0, error=None)
+        _apply_result(result, added, updated, failed)
+        assert "scanned.pdf" not in added
+        assert "scanned.pdf" not in failed
+
+    def test_zero_chunks_not_recorded_as_updated(self):
+        from lilbee.ingest import _apply_result, _IngestResult
+
+        added: list[str] = []
+        updated = ["scanned.pdf"]
+        failed: list[str] = []
+        result = _IngestResult("scanned.pdf", Path("scanned.pdf"), chunk_count=0, error=None)
+        _apply_result(result, added, updated, failed)
+        assert "scanned.pdf" not in updated
+        assert "scanned.pdf" not in failed
+
+    def test_nonzero_chunks_recorded(self):
+        from lilbee.ingest import _apply_result, _IngestResult
+
+        added = ["doc.pdf"]
+        updated: list[str] = []
+        failed: list[str] = []
+        result = _IngestResult("doc.pdf", Path("doc.pdf"), chunk_count=5, error=None)
+        with (
+            mock.patch("lilbee.ingest.store") as mock_store,
+            mock.patch("lilbee.ingest.file_hash", return_value="abc123"),
+        ):
+            _apply_result(result, added, updated, failed)
+        mock_store.upsert_source.assert_called_once()
+        assert "doc.pdf" in added
+
+
 class TestSyncResultStr:
     def test_str_no_failures(self):
         from lilbee.ingest import SyncResult
@@ -543,6 +582,12 @@ class TestKreuzbergConfig:
         config = kreuzberg_config("pdf")
         assert config.pages is not None
 
+    def test_pdf_no_markdown_output(self):
+        from lilbee.ingest import kreuzberg_config
+
+        config = kreuzberg_config("pdf")
+        assert getattr(config, "output_format", None) != "markdown"
+
     def test_non_pdf_no_page_config(self):
         from lilbee.ingest import kreuzberg_config
 
@@ -554,3 +599,235 @@ class TestKreuzbergConfig:
 
         config = kreuzberg_config("text")
         assert config.chunking is not None
+
+    @pytest.mark.parametrize("content_type", ["text", "docx", "xlsx", "pptx", "epub", "image"])
+    def test_non_pdf_gets_markdown_output(self, content_type):
+        from lilbee.ingest import kreuzberg_config
+
+        config = kreuzberg_config(content_type)
+        assert config.output_format == "markdown"
+
+
+class TestClassifyStructuredFormats:
+    def test_xml_classified_as_xml(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("data.xml")) == "xml"
+
+    def test_json_classified_as_json(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("data.json")) == "json"
+
+    def test_jsonl_classified_as_json(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("data.jsonl")) == "json"
+
+    def test_yaml_classified_as_text(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("config.yaml")) == "text"
+
+    def test_yml_classified_as_text(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("config.yml")) == "text"
+
+    def test_csv_still_classified_as_data(self):
+        from lilbee.ingest import classify_file
+
+        assert classify_file(Path("data.csv")) == "data"
+
+
+def _fake_preprocess(path: Path) -> str:
+    return f"Preprocessed content from {path.name}. " * 20
+
+
+@mock.patch("lilbee.embedder.validate_model")
+@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
+@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+class TestSyncStructuredFormats:
+    @mock.patch("lilbee.preprocessors.preprocess_xml", side_effect=_fake_preprocess)
+    async def test_xml_file_ingested(self, _px, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "data.xml").write_text("<root><item>value</item></root>")
+        from lilbee.ingest import sync
+
+        result = await sync()
+        assert "data.xml" in result.added
+
+    @mock.patch("lilbee.preprocessors.preprocess_json", side_effect=_fake_preprocess)
+    async def test_json_file_ingested(self, _pj, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "data.json").write_text('{"key": "value"}')
+        from lilbee.ingest import sync
+
+        result = await sync()
+        assert "data.json" in result.added
+
+    @mock.patch("lilbee.preprocessors.preprocess_json", side_effect=_fake_preprocess)
+    async def test_jsonl_file_ingested(self, _pj, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "data.jsonl").write_text('{"key": "value"}\n{"key2": "value2"}')
+        from lilbee.ingest import sync
+
+        result = await sync()
+        assert "data.jsonl" in result.added
+
+    @mock.patch("lilbee.preprocessors.preprocess_csv", side_effect=_fake_preprocess)
+    async def test_csv_file_ingested_via_preprocessor(self, _pc, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "data.csv").write_text("name,age\nAlice,30\nBob,25")
+        from lilbee.ingest import sync
+
+        result = await sync()
+        assert "data.csv" in result.added
+
+
+class TestHasMeaningfulText:
+    def test_empty_chunks_returns_false(self):
+        from lilbee.ingest import _has_meaningful_text
+
+        result = mock.MagicMock(chunks=[])
+        assert _has_meaningful_text(result) is False
+
+    def test_no_chunks_attr_returns_false(self):
+        from lilbee.ingest import _has_meaningful_text
+
+        result = object()
+        assert _has_meaningful_text(result) is False
+
+    def test_short_text_returns_false(self):
+        from lilbee.ingest import _has_meaningful_text
+
+        chunk = mock.MagicMock()
+        chunk.content = "short"
+        result = mock.MagicMock(chunks=[chunk])
+        assert _has_meaningful_text(result) is False
+
+    def test_meaningful_text_returns_true(self):
+        from lilbee.ingest import _has_meaningful_text
+
+        chunk = mock.MagicMock()
+        chunk.content = "A" * 100
+        result = mock.MagicMock(chunks=[chunk])
+        assert _has_meaningful_text(result) is True
+
+
+class TestVisionFallback:
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
+    async def test_vision_fallback_called_for_empty_pdf(self, _kf, _eb, isolated_env):
+        """When PDF extraction is empty and vision_model is set, fall back to vision."""
+        cfg.vision_model = "test-vision"
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        vision_pages = [(1, "Vision extracted text. " * 10)]
+        with mock.patch(
+            "lilbee.vision.extract_pdf_vision", return_value=vision_pages
+        ) as mock_vision:
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "scanned.pdf", "pdf")
+        mock_vision.assert_called_once_with(f, "test-vision")
+        assert len(result) > 0
+        assert result[0]["content_type"] == "pdf"
+        assert result[0]["page_start"] == 1
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
+    async def test_vision_fallback_not_called_without_model(self, _kf, _eb, isolated_env):
+        """When vision_model is empty, no fallback occurs."""
+        cfg.vision_model = ""
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "scanned.pdf", "pdf")
+        mock_vision.assert_not_called()
+        assert result == []
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_vision_fallback_not_called_for_non_pdf(self, mock_kf, _eb, isolated_env):
+        """Vision fallback only triggers for PDF content type."""
+        mock_kf.return_value = _make_empty_result()
+        cfg.vision_model = "test-vision"
+        f = isolated_env / "doc.txt"
+        f.write_text("")
+
+        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "doc.txt", "text")
+        mock_vision.assert_not_called()
+        assert result == []
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
+    async def test_vision_fallback_empty_vision_text_returns_empty(self, _kf, _eb, isolated_env):
+        """When vision also returns empty text, return empty list."""
+        cfg.vision_model = "test-vision"
+        f = isolated_env / "blank.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with mock.patch("lilbee.vision.extract_pdf_vision", return_value=[]):
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "blank.pdf", "pdf")
+        assert result == []
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_no_vision_fallback_when_text_meaningful(self, mock_kf, _eb, isolated_env):
+        """When kreuzberg produces meaningful text, no vision fallback."""
+        mock_kf.return_value = _make_kreuzberg_result(
+            text="Meaningful PDF content. " * 20, num_chunks=1, has_pages=True
+        )
+        cfg.vision_model = "test-vision"
+        f = isolated_env / "good.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "good.pdf", "pdf")
+        mock_vision.assert_not_called()
+        assert len(result) > 0
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
+    async def test_vision_fallback_no_chunks_returns_empty(self, _kf, _eb, isolated_env):
+        """When vision text produces no chunks, return empty list."""
+        cfg.vision_model = "test-vision"
+        f = isolated_env / "nochunks.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with (
+            mock.patch("lilbee.vision.extract_pdf_vision", return_value=[(1, "Some text")]),
+            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
+        ):
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "nochunks.pdf", "pdf")
+        assert result == []
+
+
+class TestIngestStructuredEdgeCases:
+    async def test_empty_preprocessed_text_returns_empty(self, isolated_env):
+        from lilbee.ingest import _PREPROCESSORS, ingest_structured
+
+        with mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "   "}):
+            result = await ingest_structured(isolated_env / "e.xml", "e.xml", "xml")
+        assert result == []
+
+    async def test_no_chunks_returns_empty(self, isolated_env):
+        from lilbee.ingest import _PREPROCESSORS, ingest_structured
+
+        with (
+            mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "some content here"}),
+            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
+        ):
+            result = await ingest_structured(isolated_env / "s.xml", "s.xml", "xml")
+        assert result == []

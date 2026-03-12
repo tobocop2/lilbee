@@ -103,8 +103,13 @@ class TestPersistedChatModel:
             assert c.chat_model == "my-saved-model"
 
     def test_env_var_overrides_config_toml(self):
+        # When LILBEE_CHAT_MODEL is set, settings.get must NOT be called for chat_model.
+        # We also set LILBEE_VISION_MODEL to avoid any settings.get call in this test.
         with (
-            mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "env-model"}),
+            mock.patch.dict(
+                os.environ,
+                {"LILBEE_CHAT_MODEL": "env-model", "LILBEE_VISION_MODEL": "noop"},
+            ),
             mock.patch("lilbee.settings.get") as mock_get,
         ):
             c = Config.from_env()
@@ -128,6 +133,37 @@ class TestPersistedChatModel:
         ):
             c = Config.from_env()
             assert c.chat_model == "qwen3:8b"
+
+
+class TestVisionModelConfig:
+    def test_default_vision_model_is_empty(self) -> None:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.vision_model == ""
+
+    def test_vision_model_env_override(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}):
+            c = Config.from_env()
+            assert c.vision_model == "minicpm-v"
+
+    def test_vision_model_from_config_toml(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_VISION_MODEL"}
+
+        def fake_get(root, key):
+            if key == "vision_model":
+                return "maternion/LightOnOCR-2"
+            return None
+
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", side_effect=fake_get),
+        ):
+            c = Config.from_env()
+            assert c.vision_model == "maternion/LightOnOCR-2"
 
 
 class TestIgnoreDirs:

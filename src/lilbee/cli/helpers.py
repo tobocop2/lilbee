@@ -3,7 +3,7 @@
 import asyncio
 import json
 import shutil
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
@@ -97,17 +97,22 @@ def render_status(con: Console) -> None:
     )
 
 
-def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
-    """Copy *paths* into the documents directory. Returns list of copied names."""
+@dataclass
+class CopyResult:
+    """Result of copying files into the documents directory."""
+
+    copied: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
+    """Copy paths into documents dir. Returns structured result (no console output)."""
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
-    copied: list[str] = []
+    result = CopyResult()
     for p in paths:
         dest = cfg.documents_dir / p.name
         if dest.exists() and not force:
-            con.print(
-                f"[yellow]Warning:[/yellow] {p.name} already exists in knowledge base "
-                f"(use --force to overwrite)"
-            )
+            result.skipped.append(p.name)
             continue
         if p.is_dir():
 
@@ -121,8 +126,19 @@ def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[
             shutil.copytree(p, dest, dirs_exist_ok=True, ignore=ignore_dirs)
         else:
             shutil.copy2(p, dest)
-        copied.append(p.name)
-    return copied
+        result.copied.append(p.name)
+    return result
+
+
+def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[str]:
+    """Copy *paths* into the documents directory. Returns list of copied names."""
+    result = copy_files(paths, force=force)
+    for name in result.skipped:
+        con.print(
+            f"[yellow]Warning:[/yellow] {name} already exists in knowledge base "
+            f"(use --force to overwrite)"
+        )
+    return result.copied
 
 
 def add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:

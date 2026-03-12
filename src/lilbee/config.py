@@ -47,6 +47,7 @@ class Config:
     max_distance: float
     system_prompt: str
     ignore_dirs: frozenset[str]
+    vision_model: str = ""
     json_mode: bool = False
 
     @classmethod
@@ -63,6 +64,15 @@ class Config:
                 saved = None
             if saved:
                 chat_model = saved
+
+        vision_model_env = os.environ.get("LILBEE_VISION_MODEL", "").strip()
+        if vision_model_env:
+            vision_model: str = vision_model_env
+        else:
+            try:
+                vision_model = settings.get(data_root, "vision_model") or ""
+            except Exception:
+                vision_model = ""
 
         extra = env("IGNORE", "")
         ignore_dirs = DEFAULT_IGNORE_DIRS | frozenset(
@@ -90,6 +100,7 @@ class Config:
                 "Do not make up information.",
             ),
             ignore_dirs=ignore_dirs,
+            vision_model=vision_model,
         )
 
 
