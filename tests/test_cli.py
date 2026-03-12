@@ -347,7 +347,7 @@ class TestApplyOverrides:
         from lilbee.cli import apply_overrides
 
         apply_overrides(model="phi3")
-        assert cfg.chat_model == "phi3"
+        assert cfg.chat_model == "phi3:latest"
 
     def test_none_values_are_noop(self):
         from lilbee.cli import apply_overrides
@@ -410,6 +410,7 @@ class TestDispatchSlash:
         assert "/status" in output
         assert "/add" in output
         assert "/model" in output
+        assert "/vision" in output
         assert "/version" in output
         assert "/reset" in output
         assert "/help" in output
@@ -630,7 +631,9 @@ class TestSlashModel:
             handle_slash_model("", con)
         # Should not raise
 
-    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["llama3", "mistral"])
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models", return_value=["llama3:latest", "mistral:latest"]
+    )
     def test_model_switches(self, _models):
         from io import StringIO
 
@@ -644,15 +647,17 @@ class TestSlashModel:
         try:
             with mock.patch("lilbee.settings.set_value") as mock_set:
                 handle_slash_model("llama3", con)
-                assert cfg.chat_model == "llama3"
+                assert cfg.chat_model == "llama3:latest"
                 output = buf.getvalue()
                 assert "Switched to model" in output
                 assert "(saved)" in output
-                mock_set.assert_called_once_with(cfg.data_root, "chat_model", "llama3")
+                mock_set.assert_called_once_with(cfg.data_root, "chat_model", "llama3:latest")
         finally:
             cfg.chat_model = original
 
-    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["llama3", "mistral"])
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models", return_value=["llama3:latest", "mistral:latest"]
+    )
     def test_model_rejects_unknown(self, _models):
         from io import StringIO
 
@@ -672,7 +677,9 @@ class TestSlashModel:
         finally:
             cfg.chat_model = original
 
-    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["phi3", "mistral"])
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models", return_value=["phi3:latest", "mistral:latest"]
+    )
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_model_switch_inchat_loop(self, _sync, _models):
 
@@ -683,6 +690,270 @@ class TestSlashModel:
             assert "Switched to model" in result.output
         finally:
             cfg.chat_model = original
+
+
+class TestSlashVision:
+    """Test /vision slash command."""
+
+    def test_vision_off_disables(self):
+        """Test /vision off clears the vision model."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        cfg.vision_model = "some-model"
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("lilbee.settings.set_value") as mock_set:
+                handle_slash_vision("off", con)
+            assert cfg.vision_model == ""
+            output = buf.getvalue()
+            assert "disabled" in output
+            assert "(saved)" in output
+            mock_set.assert_called_once_with(cfg.data_root, "vision_model", "")
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_shows_current(self, _ram, _disk):
+        """Test /vision with no args shows current model."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        cfg.vision_model = "test-model"
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("builtins.input", return_value=""):
+                handle_slash_vision("", con)
+            output = buf.getvalue()
+            assert "test-model" in output
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_shows_disabled_when_empty(self, _ram, _disk):
+        """Test /vision with no args shows disabled when no model set."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        cfg.vision_model = ""
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("builtins.input", return_value=""):
+                handle_slash_vision("", con)
+            output = buf.getvalue()
+            assert "disabled" in output
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["test-vision:latest"])
+    def test_vision_set_named_model(self, _models):
+        """Test /vision <name> sets the model directly."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("lilbee.settings.set_value") as mock_set:
+                handle_slash_vision("test-vision", con)
+            assert cfg.vision_model == "test-vision:latest"
+            output = buf.getvalue()
+            assert "Vision model set to" in output
+            assert "(saved)" in output
+            mock_set.assert_called_once_with(cfg.data_root, "vision_model", "test-vision:latest")
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models", return_value=["model-a:latest", "model-b:latest"]
+    )
+    def test_vision_rejects_unknown(self, _models):
+        """Test /vision <name> rejects unknown models."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            handle_slash_vision("nonexistent", con)
+            assert cfg.vision_model == original
+            output = buf.getvalue()
+            assert "Unknown model" in output
+            assert "Available:" in output
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models",
+        return_value=["maternion/LightOnOCR-2:latest"],
+    )
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_interactive_picks_installed(self, _ram, _disk, _models):
+        """Picking an already-installed model switches without pulling."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with (
+                mock.patch("builtins.input", return_value="1"),
+                mock.patch("lilbee.settings.set_value") as mock_set,
+            ):
+                handle_slash_vision("", con)
+            assert cfg.vision_model == "maternion/LightOnOCR-2:latest"
+            output = buf.getvalue()
+            assert "Vision model set to" in output
+            mock_set.assert_called_once_with(
+                cfg.data_root, "vision_model", "maternion/LightOnOCR-2:latest"
+            )
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[])
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    @mock.patch("lilbee.models.pull_with_progress")
+    @mock.patch("lilbee.settings.set_value")
+    def test_vision_interactive_pulls_uninstalled(self, _save, mock_pull, _ram, _disk, _models):
+        """Picking an uninstalled model triggers a pull."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        original = cfg.vision_model
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        try:
+            with mock.patch("builtins.input", return_value="1"):
+                handle_slash_vision("", con)
+            mock_pull.assert_called_once_with("maternion/LightOnOCR-2:latest")
+            output = buf.getvalue()
+            assert "Vision model set to" in output
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_interactive_invalid_input(self, _ram, _disk):
+        """Non-numeric input shows an error."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", return_value="abc"):
+            handle_slash_vision("", con)
+        output = buf.getvalue()
+        assert "Enter a number" in output
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_interactive_out_of_range(self, _ram, _disk):
+        """Out-of-range number shows an error."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", return_value="99"):
+            handle_slash_vision("", con)
+        output = buf.getvalue()
+        assert "Enter a number" in output
+
+    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
+    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
+    def test_vision_interactive_eof(self, _ram, _disk):
+        """EOF during input cancels gracefully."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli.chat import handle_slash_vision
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        with mock.patch("builtins.input", side_effect=EOFError):
+            handle_slash_vision("", con)
+        # Should not raise
+
+    def test_vision_help_listed(self):
+        """Test /vision appears in help output."""
+        from io import StringIO
+
+        from rich.console import Console as RichConsole
+
+        from lilbee.cli import dispatch_slash
+
+        buf = StringIO()
+        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        dispatch_slash("/help", con)
+        output = buf.getvalue()
+        assert "/vision" in output
+
+    @mock.patch(
+        "lilbee.cli.chat.list_ollama_models", return_value=["phi3:latest", "mistral:latest"]
+    )
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_vision_switch_inchat_loop(self, _sync, _models):
+        """Test /vision <name> works in the chat loop."""
+        original = cfg.vision_model
+        try:
+            result = runner.invoke(app, ["chat"], input="/vision phi3\n/quit\n")
+            assert result.exit_code == 0
+            assert "Vision model set to" in result.output
+        finally:
+            cfg.vision_model = original
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_vision_off_inchat_loop(self, _sync):
+        """Test /vision off works in the chat loop."""
+        original = cfg.vision_model
+        cfg.vision_model = "some-model"
+        try:
+            result = runner.invoke(app, ["chat"], input="/vision off\n/quit\n")
+            assert result.exit_code == 0
+            assert "disabled" in result.output
+        finally:
+            cfg.vision_model = original
 
 
 class TestSlashVersion:
@@ -754,6 +1025,7 @@ class TestLilbeeCompleter:
         assert "/status" in results
         assert "/add" in results
         assert "/model" in results
+        assert "/vision" in results
         assert "/version" in results
         assert "/reset" in results
         assert "/help" in results
@@ -790,6 +1062,20 @@ class TestLilbeeCompleter:
         results = self._complete("/model ")
         assert results == []
 
+    def test_vision_prefix_completes(self):
+        results = self._complete("/vision ")
+        # Should include all VISION_CATALOG models plus "off"
+        assert "off" in results
+        assert "maternion/LightOnOCR-2:latest" in results
+
+    def test_vision_prefix_filters(self):
+        results = self._complete("/vision gl")
+        assert results == ["glm-ocr:latest"]
+
+    def test_vision_off_completes(self):
+        results = self._complete("/vision o")
+        assert "off" in results
+
     def test_plain_text_no_completions(self):
         results = self._complete("hello")
         assert results == []
@@ -798,7 +1084,7 @@ class TestLilbeeCompleter:
 class TestListOllamaModels:
     """Test list_ollama_models helper."""
 
-    def test_returns_model_names(self):
+    def test_returns_model_names_with_tags(self):
         mock_model = mock.MagicMock()
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
@@ -1550,3 +1836,277 @@ class TestEnsureChatModelWiring:
         with mock.patch("lilbee.embedder.validate_model") as mock_val:
             runner.invoke(app, [], input="/quit\n")
             mock_val.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# --vision flag tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureVisionModel:
+    """Test _ensure_vision_model helper and --vision CLI flag."""
+
+    def test_already_configured_and_installed(self):
+        """No-op when vision model is set and installed."""
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "test-vision"
+        with mock.patch("lilbee.cli.chat.list_ollama_models", return_value=["test-vision:latest"]):
+            _ensure_vision_model()
+        assert cfg.vision_model == "test-vision:latest"
+
+    def test_configured_but_not_installed_pulls(self):
+        """Pulls the model when configured but not installed."""
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "test-vision"
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
+        ):
+            _ensure_vision_model()
+        mock_pull.assert_called_once_with("test-vision:latest")
+        assert cfg.vision_model == "test-vision:latest"
+
+    def test_configured_pull_fails_gracefully(self):
+        """Clears vision model when configured model can't be pulled."""
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "test-vision"
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch(
+                "lilbee.models.pull_with_progress",
+                side_effect=Exception("pull failed"),
+            ),
+        ):
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    def test_configured_ollama_unreachable_keeps_model(self):
+        """When Ollama is unreachable, keeps configured model for downstream handling."""
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "test-vision"
+        with mock.patch(
+            "lilbee.cli.chat.list_ollama_models", side_effect=Exception("conn refused")
+        ):
+            _ensure_vision_model()
+        # Model kept — downstream will surface the error during ingestion
+        assert cfg.vision_model == "test-vision:latest"
+
+    def test_not_configured_non_interactive_auto_picks(self):
+        """Auto-picks and pulls in non-interactive mode."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_model = ModelInfo("auto-vision", 1.5, 4, "test")
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.models.pick_default_vision_model", return_value=fake_model),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
+            mock.patch("lilbee.settings.set_value") as mock_set,
+        ):
+            mock_stdin.isatty.return_value = False
+            _ensure_vision_model()
+        mock_pull.assert_called_once_with("auto-vision")
+        assert cfg.vision_model == "auto-vision"
+        mock_set.assert_called_once_with(cfg.data_root, "vision_model", "auto-vision")
+
+    def test_not_configured_interactive_shows_picker(self):
+        """Shows picker in interactive mode."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_catalog = (
+            ModelInfo("picked-vision", 1.5, 4, "test"),
+            ModelInfo("other-vision", 2.0, 4, "other"),
+        )
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.models.display_vision_picker", return_value=fake_catalog[0]),
+            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
+            mock.patch("lilbee.settings.set_value") as mock_set,
+            mock.patch("builtins.input", return_value=""),
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+        mock_pull.assert_called_once_with("picked-vision")
+        assert cfg.vision_model == "picked-vision"
+        mock_set.assert_called_once_with(cfg.data_root, "vision_model", "picked-vision")
+
+    def test_not_configured_interactive_choice_number(self):
+        """Picks model by number in interactive mode."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_catalog = (
+            ModelInfo("v1", 1.0, 4, "first"),
+            ModelInfo("v2", 2.0, 4, "second"),
+        )
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch(
+                "lilbee.models.display_vision_picker",
+                return_value=fake_catalog[0],
+            ),
+            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("lilbee.models.pull_with_progress"),
+            mock.patch("lilbee.settings.set_value"),
+            mock.patch("builtins.input", return_value="2"),
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+        assert cfg.vision_model == "v2"
+
+    def test_not_configured_interactive_invalid_input(self):
+        """Invalid input in interactive mode returns without setting model."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch(
+                "lilbee.models.display_vision_picker",
+                return_value=fake_catalog[0],
+            ),
+            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("builtins.input", return_value="abc"),
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    def test_not_configured_interactive_out_of_range(self):
+        """Out-of-range choice in interactive mode returns without setting model."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch(
+                "lilbee.models.display_vision_picker",
+                return_value=fake_catalog[0],
+            ),
+            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("builtins.input", return_value="99"),
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    def test_not_configured_interactive_eof(self):
+        """EOF during picker returns without setting model."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch(
+                "lilbee.models.display_vision_picker",
+                return_value=fake_catalog[0],
+            ),
+            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("builtins.input", side_effect=EOFError),
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    def test_ollama_connection_fails_gracefully(self):
+        """Continues without vision when Ollama is down and no model configured."""
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with mock.patch(
+            "lilbee.cli.chat.list_ollama_models", side_effect=Exception("conn refused")
+        ):
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    def test_non_interactive_pull_fails_gracefully(self):
+        """Non-interactive auto-pick continues without vision when pull fails."""
+        from lilbee.cli.commands import _ensure_vision_model
+        from lilbee.models import ModelInfo
+
+        cfg.vision_model = ""
+        fake_model = ModelInfo("auto-vision", 1.5, 4, "test")
+        with (
+            mock.patch("lilbee.cli.chat.list_ollama_models", return_value=[]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.models.pick_default_vision_model", return_value=fake_model),
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch(
+                "lilbee.models.pull_with_progress",
+                side_effect=Exception("pull failed"),
+            ),
+        ):
+            mock_stdin.isatty.return_value = False
+            _ensure_vision_model()
+        assert cfg.vision_model == ""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_vision_flag_on_sync(self, _sync):
+        """--vision flag is accepted by sync command."""
+        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
+            result = runner.invoke(app, ["sync", "--vision"])
+            assert result.exit_code == 0
+            mock_ensure.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_vision_flag_not_passed_on_sync(self, _sync):
+        """Without --vision, _ensure_vision_model is not called."""
+        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
+            result = runner.invoke(app, ["sync"])
+            assert result.exit_code == 0
+            mock_ensure.assert_not_called()
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_vision_flag_on_add(self, _e, _eb, isolated_env, tmp_path):
+        """--vision flag is accepted by add command."""
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
+            result = runner.invoke(app, ["add", "--vision", str(src)])
+            assert result.exit_code == 0
+            mock_ensure.assert_called_once()
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_vision_flag_on_rebuild(self, _e, _eb):
+        """--vision flag is accepted by rebuild command."""
+        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
+            result = runner.invoke(app, ["rebuild", "--vision"])
+            assert result.exit_code == 0
+            mock_ensure.assert_called_once()

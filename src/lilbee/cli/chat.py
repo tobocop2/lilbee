@@ -18,10 +18,89 @@ from lilbee.config import cfg
 
 _ADD_PREFIX = "/add "
 _MODEL_PREFIX = "/model "
+_VISION_PREFIX = "/vision "
 
 
 class QuitChat(Exception):
     """Raised by /quit to exit the chat loop."""
+
+
+def _pick_from_catalog(
+    catalog: tuple,
+    display_fn: Callable,
+    con: Console,
+    config_attr: str,
+    setting_key: str,
+    label: str,
+) -> None:
+    """Shared interactive picker flow for model/vision catalog selection.
+
+    *display_fn* is called with (ram_gb, free_disk_gb) and returns the recommended ModelInfo.
+    *config_attr* is the cfg attribute to set (e.g. "chat_model" or "vision_model").
+    *setting_key* is the settings.toml key (e.g. "chat_model" or "vision_model").
+    *label* is a human-readable label for messages (e.g. "Switched to model").
+    """
+    from lilbee.models import (
+        get_free_disk_gb,
+        get_system_ram_gb,
+        pull_with_progress,
+        validate_disk_and_pull,
+    )
+
+    ram_gb = get_system_ram_gb()
+    free_disk_gb = get_free_disk_gb(cfg.data_dir)
+    recommended = display_fn(ram_gb, free_disk_gb)
+    default_idx = list(catalog).index(recommended) + 1
+    installed = set(list_ollama_models())
+
+    try:
+        raw = input(f"Choice [{default_idx}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    if not raw:
+        return
+
+    try:
+        choice = int(raw)
+    except ValueError:
+        con.print(f"[red]Enter a number 1-{len(catalog)}.[/red]")
+        return
+
+    if not (1 <= choice <= len(catalog)):
+        con.print(f"[red]Enter a number 1-{len(catalog)}.[/red]")
+        return
+
+    model_info = catalog[choice - 1]
+    if model_info.name not in installed:
+        if config_attr == "chat_model":
+            validate_disk_and_pull(model_info, free_disk_gb)
+        else:
+            pull_with_progress(model_info.name)
+    setattr(cfg, config_attr, model_info.name)
+    settings.set_value(cfg.data_root, setting_key, model_info.name)
+    con.print(f"{label} [bold]{model_info.name}[/bold] (saved)")
+
+
+def _set_named_model(
+    name: str,
+    con: Console,
+    config_attr: str,
+    setting_key: str,
+    label: str,
+) -> None:
+    """Validate and set a named model directly (no picker)."""
+    from lilbee.models import ensure_tag
+
+    name = ensure_tag(name)
+    available = list_ollama_models()
+    if available and name not in available:
+        con.print(f"[red]Unknown model:[/red] {name}")
+        con.print(f"Available: {', '.join(sorted(available))}")
+        return
+    setattr(cfg, config_attr, name)
+    settings.set_value(cfg.data_root, setting_key, name)
+    con.print(f"{label} [bold]{name}[/bold] (saved)")
 
 
 def handle_slash_status(args: str, con: Console) -> None:
@@ -59,58 +138,56 @@ def handle_slash_quit(args: str, con: Console) -> None:
 
 
 def handle_slash_model(args: str, con: Console) -> None:
-    from lilbee.models import (
+    name = args.strip()
+    if name:
+        _set_named_model(name, con, "chat_model", "chat_model", "Switched to model")
+        return
+
+    con.print(f"[bold]Current model:[/bold] {cfg.chat_model}\n")
+    from lilbee.models import MODEL_CATALOG, display_model_picker
+
+    _pick_from_catalog(
         MODEL_CATALOG,
         display_model_picker,
-        get_free_disk_gb,
-        get_system_ram_gb,
-        validate_disk_and_pull,
+        con,
+        config_attr="chat_model",
+        setting_key="chat_model",
+        label="Switched to model",
     )
 
+
+def handle_slash_vision(args: str, con: Console) -> None:
     name = args.strip()
-    if not name:
-        con.print(f"[bold]Current model:[/bold] {cfg.chat_model}\n")
-        ram_gb = get_system_ram_gb()
-        free_disk_gb = get_free_disk_gb(cfg.data_dir)
-        recommended = display_model_picker(ram_gb, free_disk_gb)
-        default_idx = list(MODEL_CATALOG).index(recommended) + 1
-        installed = set(list_ollama_models())
 
-        try:
-            raw = input(f"Choice [{default_idx}]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return
-
-        if not raw:
-            return
-
-        try:
-            choice = int(raw)
-        except ValueError:
-            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
-            return
-
-        if not (1 <= choice <= len(MODEL_CATALOG)):
-            con.print(f"[red]Enter a number 1-{len(MODEL_CATALOG)}.[/red]")
-            return
-
-        model_info = MODEL_CATALOG[choice - 1]
-        if model_info.name in installed:
-            cfg.chat_model = model_info.name
-            settings.set_value(cfg.data_root, "chat_model", model_info.name)
-            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
-        else:
-            validate_disk_and_pull(model_info, free_disk_gb)
-            con.print(f"Switched to model [bold]{model_info.name}[/bold] (saved)")
+    # /vision off — disable vision OCR
+    if name == "off":
+        cfg.vision_model = ""
+        settings.set_value(cfg.data_root, "vision_model", "")
+        con.print("Vision OCR [bold]disabled[/bold] (saved)")
         return
-    available = list_ollama_models()
-    if available and name not in available:
-        con.print(f"[red]Unknown model:[/red] {name}")
-        con.print(f"Available: {', '.join(sorted(available))}")
+
+    # /vision <name> — switch directly
+    if name:
+        _set_named_model(name, con, "vision_model", "vision_model", "Vision model set to")
         return
-    cfg.chat_model = name
-    settings.set_value(cfg.data_root, "chat_model", name)
-    con.print(f"Switched to model [bold]{name}[/bold] (saved)")
+
+    # /vision — show picker
+    current = cfg.vision_model
+    if current:
+        con.print(f"[bold]Current vision model:[/bold] {current}\n")
+    else:
+        con.print("[bold]Vision OCR:[/bold] disabled\n")
+
+    from lilbee.models import VISION_CATALOG, display_vision_picker
+
+    _pick_from_catalog(
+        VISION_CATALOG,
+        display_vision_picker,
+        con,
+        config_attr="vision_model",
+        setting_key="vision_model",
+        label="Vision model set to",
+    )
 
 
 def handle_slash_version(args: str, con: Console) -> None:
@@ -141,6 +218,7 @@ def handle_slash_help(args: str, con: Console) -> None:
     con.print("  /status  — show indexed documents and config")
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
     con.print("  /model [name]  — show or switch chat model")
+    con.print("  /vision [name|off]  — show or switch vision OCR model")
     con.print("  /version — show lilbee version")
     con.print("  /reset   — delete all documents and data")
     con.print("  /help    — show this help")
@@ -151,6 +229,7 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "status": handle_slash_status,
     "add": handle_slash_add,
     "model": handle_slash_model,
+    "vision": handle_slash_vision,
     "version": handle_slash_version,
     "reset": handle_slash_reset,
     "help": handle_slash_help,
@@ -175,7 +254,7 @@ def dispatch_slash(raw_input: str, con: Console) -> bool:
 
 
 def list_ollama_models() -> list[str]:
-    """Return installed Ollama chat model names, excluding embedding models."""
+    """Return installed Ollama model names with explicit tags, excluding embedding models."""
     try:
         import ollama
 
@@ -204,6 +283,15 @@ def make_completer():  # type: ignore[no-untyped-def]
                 for name in list_ollama_models():
                     if name.startswith(prefix):
                         yield Completion(name, start_position=-len(prefix))
+            elif text.startswith(_VISION_PREFIX):
+                from lilbee.models import VISION_CATALOG
+
+                prefix = text[len(_VISION_PREFIX) :]
+                for model in VISION_CATALOG:
+                    if model.name.startswith(prefix):
+                        yield Completion(model.name, start_position=-len(prefix))
+                if "off".startswith(prefix):
+                    yield Completion("off", start_position=-len(prefix))
             elif text.startswith("/"):
                 prefix = text[1:]
                 for cmd in _SLASH_COMMANDS:

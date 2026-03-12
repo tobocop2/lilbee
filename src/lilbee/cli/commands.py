@@ -6,6 +6,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from lilbee import settings
 from lilbee.cli.app import app, apply_overrides, console, data_dir_option, model_option
 from lilbee.cli.helpers import (
     add_paths,
@@ -22,6 +23,121 @@ from lilbee.cli.helpers import (
 from lilbee.config import cfg
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
+
+_vision_option = typer.Option(False, "--vision", help="Enable vision OCR for scanned PDFs.")
+
+
+def _ensure_vision_model() -> None:
+    """Ensure a vision model is configured and available for this run."""
+    if cfg.vision_model:
+        _validate_configured_vision()
+        return
+
+    import sys
+
+    from lilbee.cli.chat import list_ollama_models
+
+    try:
+        installed = set(list_ollama_models())
+    except Exception:
+        console.print("[yellow]Warning: Cannot connect to Ollama. Vision OCR disabled.[/yellow]")
+        return
+
+    if sys.stdin.isatty():
+        _pick_vision_interactive(installed)
+    else:
+        _pick_vision_auto(installed)
+
+
+def _validate_configured_vision() -> None:
+    """Check that a pre-configured vision model is available; pull if needed."""
+    from lilbee.cli.chat import list_ollama_models
+    from lilbee.models import ensure_tag
+
+    tagged = ensure_tag(cfg.vision_model)
+    cfg.vision_model = tagged
+
+    try:
+        installed = set(list_ollama_models())
+    except Exception:
+        # Can't reach Ollama — keep the config and let downstream handle errors
+        return
+
+    if tagged in installed:
+        return
+
+    console.print(f"Vision model '{tagged}' not installed. Pulling...")
+    if not _try_pull(tagged):
+        cfg.vision_model = ""
+
+
+def _pick_vision_interactive(installed: set[str]) -> None:
+    """Interactive vision model picker for TTY sessions."""
+    from lilbee.models import (
+        VISION_CATALOG,
+        display_vision_picker,
+        get_free_disk_gb,
+        get_system_ram_gb,
+    )
+
+    ram_gb = get_system_ram_gb()
+    free_gb = get_free_disk_gb(cfg.data_dir)
+    recommended = display_vision_picker(ram_gb, free_gb)
+    default_idx = list(VISION_CATALOG).index(recommended) + 1
+
+    try:
+        raw = input(f"Choice [{default_idx}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    if not raw:
+        model_info = recommended
+    else:
+        try:
+            choice = int(raw)
+        except ValueError:
+            console.print(f"[red]Enter a number 1-{len(VISION_CATALOG)}.[/red]")
+            return
+        if not (1 <= choice <= len(VISION_CATALOG)):
+            console.print(f"[red]Enter a number 1-{len(VISION_CATALOG)}.[/red]")
+            return
+        model_info = VISION_CATALOG[choice - 1]
+
+    _pull_and_save_vision(model_info.name, installed)
+
+
+def _pick_vision_auto(installed: set[str]) -> None:
+    """Non-interactive vision model auto-selection."""
+    import sys
+
+    from lilbee.models import pick_default_vision_model
+
+    model_info = pick_default_vision_model()
+    sys.stderr.write(f"No vision model configured. Auto-selecting '{model_info.name}'...\n")
+    _pull_and_save_vision(model_info.name, installed)
+
+
+def _try_pull(model_name: str) -> bool:
+    """Attempt to pull a model. Returns True on success, False on failure."""
+    from lilbee.models import pull_with_progress
+
+    try:
+        pull_with_progress(model_name)
+    except Exception as exc:
+        console.print(f"[yellow]Warning: Failed to pull '{model_name}': {exc}[/yellow]")
+        console.print("[yellow]Continuing without vision OCR.[/yellow]")
+        return False
+    return True
+
+
+def _pull_and_save_vision(model_name: str, installed: set[str]) -> None:
+    """Pull if needed and persist vision model choice."""
+    if model_name not in installed and not _try_pull(model_name):
+        return
+
+    cfg.vision_model = model_name
+    settings.set_value(cfg.data_root, "vision_model", model_name)
+
 
 _paths_argument = typer.Argument(
     ...,
@@ -69,9 +185,14 @@ def search(
 
 
 @app.command(name="sync")
-def sync_cmd(data_dir: Path | None = data_dir_option) -> None:
+def sync_cmd(
+    data_dir: Path | None = data_dir_option,
+    vision: bool = _vision_option,
+) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir)
+    if vision:
+        _ensure_vision_model()
     from lilbee.ingest import sync
 
     try:
@@ -89,9 +210,14 @@ def sync_cmd(data_dir: Path | None = data_dir_option) -> None:
 
 
 @app.command()
-def rebuild(data_dir: Path | None = data_dir_option) -> None:
+def rebuild(
+    data_dir: Path | None = data_dir_option,
+    vision: bool = _vision_option,
+) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir)
+    if vision:
+        _ensure_vision_model()
     from lilbee.ingest import sync
 
     try:
@@ -116,9 +242,12 @@ def add(
     paths: list[Path] = _paths_argument,
     data_dir: Path | None = data_dir_option,
     force: bool = _force_option,
+    vision: bool = _vision_option,
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir)
+    if vision:
+        _ensure_vision_model()
     try:
         if cfg.json_mode:
             from lilbee.ingest import sync

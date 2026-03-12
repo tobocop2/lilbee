@@ -11,8 +11,10 @@ from lilbee.cli.chat import (
 )
 from lilbee.cli.commands import CHUNK_PREVIEW_LEN as CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
+    CopyResult,
     auto_sync,
     clean_result,
+    copy_files,
     copy_paths,
     get_version,
     json_output,
@@ -22,6 +24,7 @@ from lilbee.cli.helpers import (
 
 __all__ = [
     "CHUNK_PREVIEW_LEN",
+    "CopyResult",
     "QuitChat",
     "app",
     "apply_overrides",
@@ -29,6 +32,7 @@ __all__ = [
     "chat_loop",
     "clean_result",
     "console",
+    "copy_files",
     "copy_paths",
     "dispatch_slash",
     "get_version",
