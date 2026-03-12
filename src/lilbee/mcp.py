@@ -33,6 +33,7 @@ def lilbee_status() -> dict:
             "data_dir": str(cfg.data_dir),
             "chat_model": cfg.chat_model,
             "embedding_model": cfg.embedding_model,
+            **({"vision_model": cfg.vision_model} if cfg.vision_model else {}),
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}
@@ -100,6 +101,25 @@ async def lilbee_add(
         "errors": errors,
         "sync": sync_result,
     }
+
+
+@mcp.tool()
+def lilbee_init(path: str = "") -> dict:
+    """Initialize a local .lilbee/ knowledge base in a directory.
+
+    Creates .lilbee/ with documents/, data/, and .gitignore.
+    If path is empty, uses the current working directory.
+    """
+    from pathlib import Path
+
+    root = Path(path) / ".lilbee" if path else Path.cwd() / ".lilbee"
+    if root.is_dir():
+        return {"command": "init", "path": str(root), "created": False}
+
+    (root / "documents").mkdir(parents=True)
+    (root / "data").mkdir(parents=True)
+    (root / ".gitignore").write_text("data/\n")
+    return {"command": "init", "path": str(root), "created": True}
 
 
 @mcp.tool()

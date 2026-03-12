@@ -92,6 +92,20 @@ class TestLilbeeStatus:
         assert result["sources"][0]["filename"] == "test.pdf"
         assert result["total_chunks"] == 10
 
+    def test_status_includes_vision_model_when_set(self):
+        from lilbee.mcp import lilbee_status
+
+        cfg.vision_model = "test-vision:latest"
+        result = lilbee_status()
+        assert result["config"]["vision_model"] == "test-vision:latest"
+
+    def test_status_excludes_vision_model_when_empty(self):
+        from lilbee.mcp import lilbee_status
+
+        cfg.vision_model = ""
+        result = lilbee_status()
+        assert "vision_model" not in result["config"]
+
 
 class TestLilbeeSync:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -137,6 +151,35 @@ class TestLilbeeReset:
         assert result["command"] == "reset"
         assert result["deleted_docs"] == 0
         assert result["deleted_data"] == 0
+
+
+class TestLilbeeInit:
+    def test_init_creates_structure(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        result = lilbee_init(str(tmp_path))
+        root = tmp_path / ".lilbee"
+        assert result["command"] == "init"
+        assert result["created"] is True
+        assert root.is_dir()
+        assert (root / "documents").is_dir()
+        assert (root / "data").is_dir()
+        assert (root / ".gitignore").read_text() == "data/\n"
+
+    def test_init_already_exists(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        (tmp_path / ".lilbee").mkdir()
+        result = lilbee_init(str(tmp_path))
+        assert result["created"] is False
+
+    def test_init_default_cwd(self, tmp_path):
+        from lilbee.mcp import lilbee_init
+
+        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = lilbee_init()
+        assert result["created"] is True
+        assert (tmp_path / ".lilbee" / "documents").is_dir()
 
 
 class TestLilbeeAdd:
@@ -212,11 +255,12 @@ class TestLilbeeAdd:
 
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-fake")
+        original_vision = cfg.vision_model
 
         await lilbee_add([str(src)], vision_model="test-vision:latest")
 
         # vision_model should be restored after the call
-        assert getattr(cfg, "vision_model", "") == ""
+        assert cfg.vision_model == original_vision
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
     async def test_add_vision_model_restored_on_error(self, _sync, tmp_path):
@@ -224,11 +268,12 @@ class TestLilbeeAdd:
 
         src = tmp_path / "file.txt"
         src.write_text("content")
+        original_vision = cfg.vision_model
 
         with pytest.raises(RuntimeError, match="boom"):
             await lilbee_add([str(src)], vision_model="test-vision:latest")
 
-        assert getattr(cfg, "vision_model", "") == ""
+        assert cfg.vision_model == original_vision
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, _sync):
