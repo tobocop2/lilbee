@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
-> A local, offline knowledge base. Add documents and code, ask questions grounded in what's actually there.
+> Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Fully offline, powered by Ollama.
 
 ---
 
@@ -18,8 +18,8 @@
 - [Demos](#demos)
 - [Install](#install)
 - [Quick start](#quick-start)
-- [Interactive chat](#interactive-chat)
 - [Agent integration](#agent-integration)
+- [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
 - [Vision OCR (optional)](#vision-ocr-optional)
 - [Configuration](#configuration)
@@ -29,13 +29,17 @@
 
 ## Why lilbee
 
-Index your documents and code into a local knowledge base, then ask questions grounded in what's actually there. Most tools like this only handle code. lilbee handles PDFs, Word docs, epics — and code too, with AST-aware chunking.
+lilbee indexes documents and code into a searchable local knowledge base. Use it standalone — search, ask questions, chat — or plug it into AI coding agents as a retrieval backend via MCP.
 
-- **Documents and code alike** — add anything from a vehicle manual to an entire codebase
+Most tools like this only handle code. lilbee handles PDFs, Word docs, spreadsheets, images (OCR) — and code too, with AST-aware chunking.
+
+- **Standalone knowledge base** — add documents, search, ask questions, or chat interactively with model switching and slash commands
+- **AI agent backend** — MCP server and JSON CLI so coding agents (Claude Code, OpenCode, etc.) can search your indexed docs as context
+- **Per-project databases** — `lilbee init` creates a `.lilbee/` directory (like `.git/`) so each project gets its own isolated index
+- **Documents and code alike** — PDFs, Office docs, spreadsheets, images, ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
 - **Fully offline** — runs on your machine with [Ollama] and LanceDB, no cloud APIs or Docker
-- **Works with AI agents** — MCP server and JSON CLI so agents can search your knowledge base too
 
-Add files (`lilbee add`), then ask questions or search. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
+Add files (`lilbee add`), then search or ask questions. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
 
 ## Demos
 
@@ -44,8 +48,7 @@ Add files (`lilbee add`), then ask questions or search. Once indexed, `search` w
 
 [opencode] + [minimax-m2.5-free][opencode], single prompt, no follow-ups. The [Godot 4.4 XML class reference][godot-docs] (917 files) is indexed in lilbee. The baseline uses [Exa AI][exa] code search instead.
 
-> [!CAUTION]
-> minimax-m2.5-free is a cloud model — retrieved chunks are sent to an external API. Use a local model if your documents are private.
+**⚠️ Caution:** minimax-m2.5-free is a cloud model — retrieved chunks are sent to an external API. Use a local model if your documents are private.
 
 | | API hallucinations | Lines |
 |---|---|---|
@@ -140,6 +143,9 @@ uv run lilbee
 # Check version
 lilbee --version
 
+# Initialize a per-project knowledge base (like git init)
+lilbee init
+
 # Chat with a local LLM (requires Ollama)
 lilbee
 
@@ -163,6 +169,10 @@ lilbee status
 ```
 
 
+## Agent integration
+
+lilbee can serve as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [docs/agent-integration.md](docs/agent-integration.md) for setup and usage.
+
 ## Interactive chat
 
 Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation history, streaming responses, and slash commands:
@@ -178,10 +188,6 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 | `/quit` | Exit chat |
 
 Slash commands and paths tab-complete. A spinner shows while waiting for the first token from the LLM.
-
-## Agent integration
-
-lilbee can serve as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [docs/agent-integration.md](docs/agent-integration.md) for setup and usage.
 
 ## Supported formats
 
@@ -249,13 +255,19 @@ Documents are hashed and synced automatically — add, change, or delete files a
 
 ### Data location
 
-| Platform | Path |
+lilbee uses per-project databases when available, falling back to a global database:
+
+1. **`--data-dir` / `LILBEE_DATA`** — explicit override (highest priority)
+2. **`.lilbee/`** — found by walking up from the current directory (like `.git/`)
+3. **Global** — platform-default location (see below)
+
+Run `lilbee init` to create a `.lilbee/` directory in your project. It contains `documents/`, `data/`, and a `.gitignore` that excludes derived data. When active, all commands operate on the local database only.
+
+| Platform | Global path |
 |----------|------|
 | macOS | `~/Library/Application Support/lilbee/` |
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
-
-Override with `LILBEE_DATA=/path` or `--data-dir`.
 
 ## License
 

@@ -34,16 +34,37 @@ _json_option = typer.Option(
     help="Emit structured JSON output (for agent/script consumption).",
 )
 
+_global_option = typer.Option(
+    False,
+    "--global",
+    "-g",
+    help="Use the global database, ignoring any local .lilbee/ directory.",
+)
+
+
+def _apply_data_root(root: Path) -> None:
+    """Point all cfg data paths at *root*."""
+    cfg.data_root = root
+    cfg.documents_dir = root / "documents"
+    cfg.data_dir = root / "data"
+    cfg.lancedb_dir = root / "data" / "lancedb"
+
 
 def apply_overrides(
     data_dir: Path | None = None,
     model: str | None = None,
+    use_global: bool = False,
 ) -> None:
     """Apply CLI overrides to config before any work begins."""
-    if data_dir is not None:
-        cfg.documents_dir = data_dir / "documents"
-        cfg.data_dir = data_dir / "data"
-        cfg.lancedb_dir = data_dir / "data" / "lancedb"
+    if data_dir is not None and use_global:
+        raise typer.BadParameter("Cannot use --global with --data-dir")
+
+    if use_global:
+        from lilbee.platform import default_data_dir
+
+        _apply_data_root(default_data_dir())
+    elif data_dir is not None:
+        _apply_data_root(data_dir)
 
     if model is not None:
         cfg.chat_model = ensure_tag(model)
@@ -55,6 +76,7 @@ def _default(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     json_output: bool = _json_option,
+    use_global: bool = _global_option,
     show_version: bool = typer.Option(
         False,
         "--version",
@@ -70,7 +92,7 @@ def _default(
 
     cfg.json_mode = json_output
     if ctx.invoked_subcommand is None:
-        apply_overrides(data_dir=data_dir, model=model)
+        apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
