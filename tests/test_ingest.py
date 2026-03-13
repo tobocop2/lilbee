@@ -27,7 +27,7 @@ def isolated_env(tmp_path):
         setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
-def _fake_embed_batch(texts):
+def _fake_embed_batch(texts, **kwargs):
     return [[0.1] * 768 for _ in texts]
 
 
@@ -734,7 +734,9 @@ class TestVisionFallback:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
-        mock_vision.assert_called_once_with(f, "test-vision", quiet=True, timeout=45.0)
+        mock_vision.assert_called_once_with(
+            f, "test-vision", quiet=True, timeout=45.0, on_progress=mock.ANY
+        )
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
         assert result[0]["page_start"] == 1
