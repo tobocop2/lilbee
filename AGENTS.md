@@ -48,7 +48,7 @@ All settings override via environment variables:
 - `LILBEE_CHUNK_OVERLAP` — overlap tokens (default: `100`)
 - `LILBEE_TOP_K` — retrieval result count (default: `5`)
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
-- `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: none)
+- `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 
 CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision-timeout`, and `--log-level`.
