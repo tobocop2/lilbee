@@ -89,7 +89,7 @@ async def lilbee_add(
     if vision_model:
         cfg.vision_model = vision_model  # type: ignore[attr-defined]
     try:
-        sync_result = asdict(await sync(quiet=True))
+        sync_result = asdict(await sync(quiet=True, force_vision=bool(vision_model)))
     finally:
         if vision_model:
             cfg.vision_model = old_vision  # type: ignore[attr-defined]
