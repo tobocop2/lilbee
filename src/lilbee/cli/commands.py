@@ -45,6 +45,13 @@ def _ensure_vision_model() -> None:
         _validate_configured_vision()
         return
 
+    # Restore persisted model from TOML (--vision is explicit even if model was cleared)
+    saved = settings.get(cfg.data_root, "vision_model") or ""
+    if saved:
+        cfg.vision_model = saved
+        _validate_configured_vision()
+        return
+
     import sys
 
     from lilbee.cli.chat import list_ollama_models
@@ -213,7 +220,7 @@ def sync_cmd(
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(quiet=cfg.json_mode))
+        result = asyncio.run(sync(quiet=cfg.json_mode, force_vision=vision))
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -242,7 +249,7 @@ def rebuild(
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode))
+        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode, force_vision=vision))
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -278,10 +285,10 @@ def add(
             from lilbee.ingest import sync
 
             copied = copy_paths(paths, console, force=force)
-            result = asyncio.run(sync(quiet=True))
+            result = asyncio.run(sync(quiet=True, force_vision=vision))
             json_output({"command": "add", "copied": copied, "sync": sync_result_to_json(result)})
             return
-        add_paths(paths, console, force=force)
+        add_paths(paths, console, force=force, force_vision=vision)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})

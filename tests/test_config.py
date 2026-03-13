@@ -106,11 +106,14 @@ class TestPersistedChatModel:
 
     def test_env_var_overrides_config_toml(self):
         # When LILBEE_CHAT_MODEL is set, settings.get must NOT be called for chat_model.
-        # We also set LILBEE_VISION_MODEL to avoid any settings.get call in this test.
+        # We also set LILBEE_VISION_MODEL to avoid settings reads.
         with (
             mock.patch.dict(
                 os.environ,
-                {"LILBEE_CHAT_MODEL": "env-model", "LILBEE_VISION_MODEL": "noop"},
+                {
+                    "LILBEE_CHAT_MODEL": "env-model",
+                    "LILBEE_VISION_MODEL": "noop",
+                },
             ),
             mock.patch("lilbee.settings.get") as mock_get,
         ):
@@ -148,7 +151,10 @@ class TestVisionModelConfig:
             assert c.vision_model == ""
 
     def test_vision_model_env_override(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}):
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
             c = Config.from_env()
             assert c.vision_model == "minicpm-v"
 

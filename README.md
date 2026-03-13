@@ -1,6 +1,6 @@
 # lilbee
 
-> This is an experimental tool and a work in progress. There will be issues with some formats and performance at scale is unknown at this time
+> Beta — feedback and bug reports welcome. [Open an issue](https://github.com/tobocop2/lilbee/issues).
 
 [![PyPI](https://img.shields.io/pypi/v/lilbee)](https://pypi.org/project/lilbee/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -10,20 +10,18 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
-> Local knowledge base that handles both code and documents, with a git-like per-project model. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Everything stays on your machine, powered by Ollama and LanceDB.
+> Local knowledge base that handles both code and documents, with a git-like per-project model. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Supports vision OCR for scanned PDFs. Everything stays on your machine, powered by [Kreuzberg] for text extraction, [Ollama] for embeddings, chat, and vision OCR, and [LanceDB] for vector storage.
 
 ---
 
 - [Why lilbee](#why-lilbee)
 - [Demos](#demos)
 - [Install](#install)
-- [Quick start](#quick-start)
+- [Quick start](#quick-start) · [Full usage guide](docs/usage.md)
 - [Agent integration](#agent-integration)
 - [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
-- [Vision OCR (optional)](#vision-ocr-optional)
-- [Configuration](#configuration)
-- [How it works](#how-it-works)
+
 
 ---
 
@@ -34,14 +32,16 @@ lilbee indexes documents and code into a searchable local knowledge base. Use it
 Most tools like this only handle code. lilbee handles PDFs, Word docs, spreadsheets, images (OCR) — and code too, with AST-aware chunking.
 
 - **Standalone knowledge base** — add documents, search, ask questions, or chat interactively with model switching and slash commands
-- **AI agent backend** — MCP server and JSON CLI so coding agents (Claude Code, OpenCode, etc.) can search your indexed docs as context
+- **AI agent backend** — MCP server and JSON CLI so coding agents can search your indexed docs as context
 - **Per-project databases** — `lilbee init` creates a `.lilbee/` directory (like `.git/`) so each project gets its own isolated index
 - **Documents and code alike** — PDFs, Office docs, spreadsheets, images, ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
-- **Fully offline** — runs on your machine with [Ollama] and LanceDB, no cloud APIs or Docker
+- **Open-source and fully offline** — your documents never leave your machine. Runs with [Ollama] and LanceDB, no cloud APIs or Docker
 
 Add files (`lilbee add`), then search or ask questions. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
 
 ## Demos
+
+> Click the &#9654; arrows below to expand each demo.
 
 <details>
 <summary><b>AI agent</b> — lilbee search vs web search (<a href="docs/benchmarks/godot-level-generator.md">detailed analysis</a>)</summary>
@@ -81,6 +81,15 @@ A scanned 1998 Star Wars: X-Wing Collector's Edition manual indexed with vision 
 ![Vision OCR demo](demos/vision-ocr.gif)
 
 See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md) for model comparisons.
+</details>
+
+<details>
+<summary><b>One-shot question from OCR'd content</b></summary>
+
+The scanned Star Wars: X-Wing Collector's Edition guide, queried with a single `lilbee ask` command — no interactive chat needed.
+
+![Top speed question](demos/top-speed.gif)
+
 </details>
 
 ### Standalone
@@ -132,7 +141,7 @@ Ollama handles inference and uses Metal on macOS or CUDA on Linux/Windows. Witho
 
 - Python 3.11+
 - [Ollama] — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
-- **Optional** (for image OCR): `brew install tesseract` / `apt install tesseract-ocr`
+- **Optional** (for scanned PDF/image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or an Ollama vision model (recommended for better quality — see [vision OCR](docs/usage.md#vision-models))
 
 > **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
 
@@ -152,35 +161,7 @@ uv run lilbee
 
 ## Quick start
 
-```bash
-# Check version
-lilbee --version
-
-# Initialize a per-project knowledge base (like git init)
-lilbee init
-
-# Chat with a local LLM (requires Ollama)
-lilbee
-
-# Add documents to your knowledge base (embedding runs locally — may take
-# a moment per file, longer for large collections)
-lilbee add ~/Documents/manual.pdf ~/notes/
-
-# Ask questions — answers come from your documents via a local LLM
-lilbee ask "What is the recommended oil change interval?"
-
-# Search documents — returns raw chunks, no LLM needed at query time
-lilbee search "oil change interval"
-
-# Remove a document from the knowledge base
-lilbee remove manual.pdf
-
-# Use a different chat model
-lilbee ask "Explain this" --model qwen3
-
-# Check what's indexed
-lilbee status
-```
+See the [usage guide](docs/usage.md).
 
 
 ## Agent integration
@@ -196,6 +177,7 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 | `/status` | Show indexed documents and config |
 | `/add [path]` | Add a file or directory (tab-completes paths) |
 | `/model [name]` | Switch chat model — no args opens an interactive picker; with a name, switches directly (tab-completes installed models) |
+| `/vision [name\|off]` | Switch vision OCR model — no args opens a picker, `off` disables (tab-completes catalog models) |
 | `/version` | Show lilbee version |
 | `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |
@@ -205,9 +187,12 @@ Slash commands and paths tab-complete. A spinner shows while waiting for the fir
 
 ## Supported formats
 
+Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive — Kreuzberg supports additional formats beyond what's listed here.
+
 | Format | Extensions | Requires |
 |--------|-----------|----------|
 | PDF | `.pdf` | — |
+| Scanned PDF | `.pdf` (no extractable text) | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text) or [Ollama] vision model (recommended — preserves tables, headings, and layout as markdown) |
 | Office | `.docx`, `.xlsx`, `.pptx` | — |
 | eBook | `.epub` | — |
 | Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp` | [Tesseract](https://github.com/tesseract-ocr/tesseract) |
@@ -216,75 +201,7 @@ Slash commands and paths tab-complete. A spinner shows while waiting for the fir
 | Text | `.md`, `.txt`, `.html`, `.rst` | — |
 | Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | — |
 
-### Vision OCR (optional)
-
-Scanned PDFs that produce no extractable text can be processed using a local vision model via Ollama. During `sync`, lilbee detects empty PDFs and:
-- **Without a vision model configured:** skips the file and warns you to set one up
-- **With a vision model configured:** rasterizes each page and sends it to the vision model for OCR. This is compute-intensive — expect seconds to tens of seconds per page depending on your hardware and model (see benchmarks below)
-
-**Setup:**
-```bash
-# In chat, use the interactive picker:
-/vision
-
-# Or set directly:
-/vision maternion/LightOnOCR-2
-
-# Or via environment variable:
-export LILBEE_VISION_MODEL=maternion/LightOnOCR-2
-```
-
-**Recommended models:**
-
-| Model | Size | Speed | Quality |
-|-------|------|-------|---------|
-| maternion/LightOnOCR-2 | 1.5 GB | 11.9s/page | Best — clean markdown output |
-| deepseek-ocr | 6.7 GB | 17.4s/page | Excellent accuracy, plain text |
-| glm-ocr | 2.2 GB | 51.7s/page | Good accuracy |
-| minicpm-v | 5.5 GB | 35.6s/page | Decent, slower |
-
-> Benchmarks: Apple M1 Pro, 32 GB RAM, Ollama 0.17.7. See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md).
-
-## Configuration
-
-All settings are configurable via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LILBEE_DATA` | *(platform default)* | Data directory path |
-| `LILBEE_CHAT_MODEL` | `qwen3:8b` | Ollama chat model |
-| `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
-| `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensions |
-| `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
-| `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
-| `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
-| `LILBEE_TOP_K` | `10` | Number of retrieval results |
-| `LILBEE_VISION_MODEL` | *(none)* | Vision model for scanned PDF OCR |
-| `LILBEE_VISION_TIMEOUT` | *(none)* | Per-page vision OCR timeout in seconds |
-| `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
-
-CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, `--vision-timeout`, `--log-level`, and `--version` / `-V` flags.
-
-## How it works
-
-Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. For scanned or image-heavy PDFs, lilbee can rasterize pages to images and run them through a local vision model via Ollama for higher-quality extraction. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
-
-### Data location
-
-lilbee uses per-project databases when available, falling back to a global database:
-
-1. **`--data-dir` / `LILBEE_DATA`** — explicit override (highest priority)
-2. **`.lilbee/`** — found by walking up from the current directory (like `.git/`)
-3. **Global** — platform-default location (see below)
-
-Run `lilbee init` to create a `.lilbee/` directory in your project. It contains `documents/`, `data/`, and a `.gitignore` that excludes derived data. When active, all commands operate on the local database only.
-
-| Platform | Global path |
-|----------|------|
-| macOS | `~/Library/Application Support/lilbee/` |
-| Linux | `~/.local/share/lilbee/` |
-| Windows | `%LOCALAPPDATA%/lilbee/` |
+See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
 
 ## License
 

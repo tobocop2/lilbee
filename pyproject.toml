@@ -1,11 +1,15 @@
 [project]
 name = "lilbee"
-version = "0.4.4"
+version = "0.4.5"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
+keywords = [
+    "knowledge-base", "rag", "ollama", "lancedb", "mcp",
+    "vector-search", "ocr", "pdf", "local-llm", "offline",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -15,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Indexing",
 ]
 dependencies = [
