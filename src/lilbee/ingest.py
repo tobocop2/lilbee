@@ -427,6 +427,8 @@ async def _ingest_file(
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -566,9 +568,9 @@ async def ingest_batch(
     ]
 
     if quiet:
-        await _collect_results(tasks, added, updated, failed)
+        await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
-        await _collect_results_with_progress(tasks, added, updated, failed)
+        await _collect_results_with_progress(tasks, added, updated, failed, on_progress=on_progress)
 
 
 async def _collect_results(
@@ -576,6 +578,8 @@ async def _collect_results(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results without progress display."""
     for fut in asyncio.as_completed(tasks):
@@ -588,6 +592,8 @@ async def _collect_results_with_progress(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results with Rich progress bar."""
     with Progress(

@@ -94,6 +94,30 @@ class TestSync:
         result = await sync(quiet=True)
         assert "quiet.txt" in result.added
 
+    async def test_on_progress_callback_quiet(self, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "cb.txt").write_text("Callback test.")
+        from lilbee.ingest import sync
+
+        events: list[tuple[str, str, int, int]] = []
+        result = await sync(quiet=True, on_progress=lambda *a: events.append(a))
+        assert "cb.txt" in result.added
+        assert len(events) == 1
+        name, status, current, total = events[0]
+        assert name == "cb.txt"
+        assert status == "ingested"
+        assert current == 1
+        assert total == 1
+
+    async def test_on_progress_callback_with_progress_bar(self, _kf, _eb, _e, _vm, isolated_env):
+        (isolated_env / "cb2.txt").write_text("Callback with progress bar.")
+        from lilbee.ingest import sync
+
+        events: list[tuple[str, str, int, int]] = []
+        result = await sync(quiet=False, on_progress=lambda *a: events.append(a))
+        assert "cb2.txt" in result.added
+        assert len(events) == 1
+        assert events[0][1] == "ingested"
+
     async def test_ingest_markdown_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.ingest import sync

@@ -539,6 +539,31 @@ def init() -> None:
     console.print(f"Initialized local knowledge base at {root}")
 
 
+@app.command()
+def serve(
+    host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port (default: 7433)"),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Start the HTTP API server for Obsidian and other clients."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if host is not None:
+        cfg.server_host = host
+    if port is not None:
+        cfg.server_port = port
+
+    import uvicorn
+
+    from lilbee.server import create_app
+
+    uvicorn.run(
+        create_app(),
+        host=cfg.server_host,
+        port=cfg.server_port,
+    )
+
+
 @app.command(name="mcp")
 def mcp_cmd() -> None:
     """Start the MCP server (stdio transport) for agent integration."""
