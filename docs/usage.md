@@ -1,27 +1,16 @@
 # Usage Guide
 
-- [Agent integration](#agent-integration)
 - [Getting started](#getting-started)
 - [Adding documents](#adding-documents)
 - [OCR](#ocr)
 - [Querying](#querying)
 - [Interactive chat](#interactive-chat)
 - [Managing documents](#managing-documents)
+- [Agent integration](#agent-integration)
 - [Data locations](#data-locations)
 - [Environment variables](#environment-variables)
 
 ---
-
-## Agent integration
-
-lilbee works as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [agent-integration.md](agent-integration.md) for MCP setup and JSON CLI reference, and [demos/godot-with-lilbee/](../demos/godot-with-lilbee/) for a real-world example config.
-
-> **WARNING: Private data and cloud agents**
->
-> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the agent uses — including cloud-hosted models. If your knowledge base contains private, confidential, or sensitive documents, verify two things before connecting an agent:
->
-> 1. **Check which database is active** — run `lilbee status` and confirm the data directory is the one you intend the agent to access. Remember, lilbee walks up the directory tree to find `.lilbee/`, so you may be exposing a different project's data than you expect.
-> 2. **Know where your agent sends data** — if the agent uses a cloud-hosted frontier model, your document chunks will leave your machine. Use a local model via Ollama if your documents must stay private.
 
 ## Getting started
 
@@ -92,7 +81,7 @@ Requires [Ollama](https://ollama.com/) with a vision-capable model.
 
 ```bash
 lilbee add report.pdf --vision                # prompts for model if none set
-lilbee add report.pdf --vision-timeout 30     # per-page timeout for slow models
+lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s, 0 = no limit)
 export LILBEE_VISION_MODEL=maternion/LightOnOCR-2  # persist across runs
 ```
 
@@ -156,6 +145,18 @@ Slash commands and paths tab-complete. A spinner shows while waiting for the fir
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee reset` | Factory reset — deletes all documents and data |
 
+## Agent integration
+
+lilbee works as a retrieval backend for AI coding agents via MCP or JSON CLI. See [agent-integration.md](agent-integration.md) for setup and [demos/godot-with-lilbee/](../demos/godot-with-lilbee/) for a real-world example.
+
+> [!CAUTION]
+> **Private data and cloud agents**
+>
+> When an agent queries lilbee, retrieved chunks are sent to whatever LLM the agent uses — including cloud-hosted models. If your knowledge base contains private, confidential, or sensitive documents, verify two things before connecting an agent:
+>
+> 1. **Check which database is active** — run `lilbee status` and confirm the data directory is the one you intend the agent to access. lilbee walks up the directory tree to find `.lilbee/`, so you may be exposing a different project's data than you expect.
+> 2. **Know where your agent sends data** — if the agent uses a cloud-hosted model, your document chunks will leave your machine. Use a local model via Ollama if your documents must stay private.
+
 ## Data locations
 
 lilbee resolves the data directory in this order (highest priority first):
@@ -186,7 +187,7 @@ All settings are configurable via environment variables:
 | `LILBEE_DATA` | *(platform default)* | Data directory path |
 | `LILBEE_CHAT_MODEL` | `qwen3:8b` | Ollama chat model |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision model for PDF OCR — when set, takes precedence over Tesseract |
-| `LILBEE_VISION_TIMEOUT` | *(none)* | Per-page vision OCR timeout in seconds |
+| `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
