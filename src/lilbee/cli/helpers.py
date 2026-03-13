@@ -144,14 +144,16 @@ def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[
     return result.copied
 
 
-def add_paths(paths: list[Path], con: Console, *, force: bool = False) -> None:
+def add_paths(
+    paths: list[Path], con: Console, *, force: bool = False, force_vision: bool = False
+) -> None:
     """Copy *paths* into the knowledge base and sync (human output)."""
     from lilbee.ingest import sync
 
     copied = copy_paths(paths, con, force=force)
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.documents_dir}[/dim]")
 
-    result = asyncio.run(sync())
+    result = asyncio.run(sync(force_vision=force_vision))
     con.print(result)
 
 
