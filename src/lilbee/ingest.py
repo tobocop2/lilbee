@@ -197,7 +197,13 @@ async def _vision_fallback(path: Path, source_name: str, content_type: str) -> l
     """OCR a scanned PDF via vision model, chunk, and embed."""
     from lilbee.vision import extract_pdf_vision
 
-    page_texts = await asyncio.to_thread(extract_pdf_vision, path, cfg.vision_model)
+    page_texts = await asyncio.to_thread(
+        extract_pdf_vision,
+        path,
+        cfg.vision_model,
+        quiet=cfg.json_mode,
+        timeout=cfg.vision_timeout,
+    )
     if not page_texts:
         return []
 

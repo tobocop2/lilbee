@@ -32,6 +32,11 @@ from lilbee.config import cfg
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
 _vision_option = typer.Option(False, "--vision", help="Enable vision OCR for scanned PDFs.")
+_vision_timeout_option = typer.Option(
+    None,
+    "--vision-timeout",
+    help="Per-page timeout in seconds for vision OCR (default: no timeout).",
+)
 
 
 def _ensure_vision_model() -> None:
@@ -197,9 +202,12 @@ def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
     vision: bool = _vision_option,
+    vision_timeout: float | None = _vision_timeout_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if vision_timeout is not None:
+        cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
     from lilbee.ingest import sync
@@ -223,9 +231,12 @@ def rebuild(
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
     vision: bool = _vision_option,
+    vision_timeout: float | None = _vision_timeout_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if vision_timeout is not None:
+        cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
     from lilbee.ingest import sync
@@ -254,9 +265,12 @@ def add(
     use_global: bool = _global_option,
     force: bool = _force_option,
     vision: bool = _vision_option,
+    vision_timeout: float | None = _vision_timeout_option,
 ) -> None:
     """Copy files into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    if vision_timeout is not None:
+        cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
     try:

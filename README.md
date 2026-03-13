@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
-> Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Fully offline, powered by Ollama.
+> Local knowledge base that handles both code and documents, with a git-like per-project model. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Everything stays on your machine, powered by Ollama and LanceDB.
 
 ---
 
@@ -260,13 +260,15 @@ All settings are configurable via environment variables:
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision model for scanned PDF OCR |
+| `LILBEE_VISION_TIMEOUT` | *(none)* | Per-page vision OCR timeout in seconds |
+| `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
 
-CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, and `--version` / `-V` flags.
+CLI also accepts `--model` / `-m`, `--data-dir` / `-d`, `--vision-timeout`, `--log-level`, and `--version` / `-V` flags.
 
 ## How it works
 
-Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
+Documents are hashed and synced automatically — add, change, or delete files and lilbee keeps the index current. [Kreuzberg] extracts text from PDFs, Office docs, images (OCR), etc. For scanned or image-heavy PDFs, lilbee can rasterize pages to images and run them through a local vision model via Ollama for higher-quality extraction. [tree-sitter] chunks code by AST. Chunks are embedded via [Ollama] and stored in [LanceDB]. Queries embed the question, find the closest chunks by vector similarity, and pass them as context to the LLM.
 
 ### Data location
 
