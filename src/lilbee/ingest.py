@@ -193,6 +193,43 @@ def kreuzberg_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
+def kreuzberg_ocr_config() -> object:
+    """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
+    from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
+
+    chunking = ChunkingConfig(
+        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
+        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
+    )
+    return ExtractionConfig(
+        chunking=chunking,
+        pages=PageConfig(extract_pages=True, insert_page_markers=False),
+        ocr=OcrConfig(backend="tesseract"),
+    )
+
+
+async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
+    """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
+    try:
+        from kreuzberg import extract_file
+
+        log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
+        # Suppress Tesseract's "Detected N diacritics" stderr noise at the fd level
+        # (contextlib.redirect_stderr only catches Python's sys.stderr, not subprocess output)
+        old_stderr = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        try:
+            return await extract_file(str(path), config=kreuzberg_ocr_config())
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+            os.close(old_stderr)
+    except Exception:
+        log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
+        return fallback
+
+
 async def _vision_fallback(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
     """OCR a scanned PDF via vision model, chunk, and embed."""
     from lilbee.vision import extract_pdf_vision
@@ -229,24 +266,49 @@ async def _vision_fallback(path: Path, source_name: str, content_type: str) -> l
     ]
 
 
-async def ingest_document(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
-    """Extract and chunk a document via kreuzberg, embed, return records."""
+async def ingest_document(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    force_vision: bool = False,
+) -> list[ChunkRecord]:
+    """Extract and chunk a document via kreuzberg, embed, return records.
+
+    When *force_vision* is True (CLI ``--vision``) or a vision model is
+    configured, Tesseract OCR is skipped and we go straight to the vision
+    model for scanned PDFs.
+    """
     from kreuzberg import extract_file
+
+    use_vision = force_vision or bool(cfg.vision_model)
 
     config = kreuzberg_config(content_type)
     result = await extract_file(str(path), config=config)
 
-    # Vision fallback for scanned PDFs
+    # Scanned PDF fallback chain: Tesseract OCR → vision model
     if content_type == "pdf" and not _has_meaningful_text(result):
-        if not cfg.vision_model:
-            log.warning(
-                "Skipped %s: no extractable text (scanned PDF?). "
-                "Set a vision model with /vision or LILBEE_VISION_MODEL for OCR.",
-                source_name,
-            )
-            return []
-        log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-        return await _vision_fallback(path, source_name, content_type)
+        # When vision is explicitly enabled, skip Tesseract and go straight to vision
+        if not use_vision:
+            result = await _try_tesseract_ocr(path, source_name, result)
+
+        if not _has_meaningful_text(result):
+            if not cfg.vision_model:
+                log.warning(
+                    "Skipped %s: Tesseract OCR produced no usable text. "
+                    "For better results on complex scans, set a vision model "
+                    "with /vision or LILBEE_VISION_MODEL.",
+                    source_name,
+                )
+                return []
+            log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
+            return await _vision_fallback(path, source_name, content_type)
+
+        log.info(
+            "Scanned PDF detected — extracted with Tesseract OCR: %s. "
+            "For structured markdown output (tables, headings), re-add with --vision.",
+            source_name,
+        )
 
     if not result.chunks:
         return []
@@ -321,7 +383,9 @@ async def ingest_structured(path: Path, source_name: str, content_type: str) -> 
     ]
 
 
-async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
+async def _ingest_file(
+    path: Path, source_name: str, content_type: str, *, force_vision: bool = False
+) -> int:
     """Ingest a single file. Returns chunk count."""
     records: list[ChunkRecord]
     if content_type == "code":
@@ -329,11 +393,13 @@ async def _ingest_file(path: Path, source_name: str, content_type: str) -> int:
     elif content_type in _PREPROCESSORS:
         records = await ingest_structured(path, source_name, content_type)
     else:
-        records = await ingest_document(path, source_name, content_type)
+        records = await ingest_document(path, source_name, content_type, force_vision=force_vision)
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
-async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
+async def sync(
+    force_rebuild: bool = False, quiet: bool = False, *, force_vision: bool = False
+) -> SyncResult:
     """Sync documents/ with the vector store.
 
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
@@ -387,7 +453,9 @@ async def sync(force_rebuild: bool = False, quiet: bool = False) -> SyncResult:
     # Ingest files (with optional progress bar)
     if files_to_process:
         embedder.validate_model()
-        await ingest_batch(files_to_process, added, updated, failed, quiet=quiet)
+        await ingest_batch(
+            files_to_process, added, updated, failed, quiet=quiet, force_vision=force_vision
+        )
 
     return SyncResult(
         added=added,
@@ -409,6 +477,7 @@ async def ingest_batch(
     failed: list[str],
     *,
     quiet: bool = False,
+    force_vision: bool = False,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar."""
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
@@ -416,7 +485,9 @@ async def ingest_batch(
     async def _process_one(name: str, path: Path, content_type: str) -> _IngestResult:
         async with semaphore:
             try:
-                chunk_count = await _ingest_file(path, name, content_type)
+                chunk_count = await _ingest_file(
+                    path, name, content_type, force_vision=force_vision
+                )
                 return _IngestResult(name, path, chunk_count, error=None)
             except asyncio.CancelledError:
                 raise

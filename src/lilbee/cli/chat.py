@@ -88,12 +88,14 @@ def _set_named_model(
     config_attr: str,
     setting_key: str,
     label: str,
+    *,
+    exclude_vision: bool = False,
 ) -> None:
     """Validate and set a named model directly (no picker)."""
     from lilbee.models import ensure_tag
 
     name = ensure_tag(name)
-    available = list_ollama_models()
+    available = list_ollama_models(exclude_vision=exclude_vision)
     if available and name not in available:
         con.print(f"[red]Unknown model:[/red] {name}")
         con.print(f"Available: {', '.join(sorted(available))}")
@@ -140,7 +142,9 @@ def handle_slash_quit(args: str, con: Console) -> None:
 def handle_slash_model(args: str, con: Console) -> None:
     name = args.strip()
     if name:
-        _set_named_model(name, con, "chat_model", "chat_model", "Switched to model")
+        _set_named_model(
+            name, con, "chat_model", "chat_model", "Switched to model", exclude_vision=True
+        )
         return
 
     con.print(f"[bold]Current model:[/bold] {cfg.chat_model}\n")
@@ -159,22 +163,19 @@ def handle_slash_model(args: str, con: Console) -> None:
 def handle_slash_vision(args: str, con: Console) -> None:
     name = args.strip()
 
-    # /vision off — disable vision OCR
     if name == "off":
         cfg.vision_model = ""
         settings.set_value(cfg.data_root, "vision_model", "")
         con.print("Vision OCR [bold]disabled[/bold] (saved)")
         return
 
-    # /vision <name> — switch directly
     if name:
         _set_named_model(name, con, "vision_model", "vision_model", "Vision model set to")
         return
 
-    # /vision — show picker
-    current = cfg.vision_model
-    if current:
-        con.print(f"[bold]Current vision model:[/bold] {current}\n")
+    # bare /vision — show status then picker
+    if cfg.vision_model:
+        con.print(f"[bold]Vision OCR:[/bold] {cfg.vision_model}\n")
     else:
         con.print("[bold]Vision OCR:[/bold] disabled\n")
 
@@ -253,15 +254,24 @@ def dispatch_slash(raw_input: str, con: Console) -> bool:
     return True
 
 
-def list_ollama_models() -> list[str]:
-    """Return installed Ollama model names with explicit tags, excluding embedding models."""
+def list_ollama_models(*, exclude_vision: bool = False) -> list[str]:
+    """Return installed Ollama model names with explicit tags, excluding embedding models.
+
+    When *exclude_vision* is True, also filters out known vision catalog models.
+    """
     try:
         import ollama
 
         embed_base = cfg.embedding_model.split(":")[0]
-        return [
+        models = [
             m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
         ]
+        if exclude_vision:
+            from lilbee.models import VISION_CATALOG
+
+            vision_names = {m.name for m in VISION_CATALOG}
+            models = [m for m in models if m not in vision_names]
+        return models
     except Exception:
         return []
 
@@ -280,18 +290,18 @@ def make_completer():  # type: ignore[no-untyped-def]
                 yield from PathCompleter(expanduser=True).get_completions(sub_doc, complete_event)
             elif text.startswith(_MODEL_PREFIX):
                 prefix = text[len(_MODEL_PREFIX) :]
-                for name in list_ollama_models():
+                for name in list_ollama_models(exclude_vision=True):
                     if name.startswith(prefix):
                         yield Completion(name, start_position=-len(prefix))
             elif text.startswith(_VISION_PREFIX):
                 from lilbee.models import VISION_CATALOG
 
                 prefix = text[len(_VISION_PREFIX) :]
+                if "off".startswith(prefix):
+                    yield Completion("off", start_position=-len(prefix))
                 for model in VISION_CATALOG:
                     if model.name.startswith(prefix):
                         yield Completion(model.name, start_position=-len(prefix))
-                if "off".startswith(prefix):
-                    yield Completion("off", start_position=-len(prefix))
             elif text.startswith("/"):
                 prefix = text[1:]
                 for cmd in _SLASH_COMMANDS:
