@@ -1,6 +1,7 @@
 """Tests for the CLI interface using typer's test runner."""
 
 import json
+import logging
 from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -39,7 +40,12 @@ def _skip_model_validation():
 def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
     monkeypatch.delenv("LILBEE_DATA", raising=False)
+    monkeypatch.delenv("LILBEE_LOG_LEVEL", raising=False)
     snapshot = replace(cfg)
+    root = logging.getLogger()
+    old_level = root.level
+    old_handlers = root.handlers[:]
+
     cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
@@ -51,6 +57,8 @@ def isolated_env(tmp_path, monkeypatch):
 
     for f in fields(cfg):
         setattr(cfg, f.name, getattr(snapshot, f.name))
+    root.setLevel(old_level)
+    root.handlers[:] = old_handlers
 
 
 class TestStatus:
@@ -2254,3 +2262,82 @@ class TestEnsureVisionModel:
             result = runner.invoke(app, ["rebuild", "--vision"])
             assert result.exit_code == 0
             mock_ensure.assert_called_once()
+
+
+class TestVisionTimeout:
+    """Tests for --vision-timeout flag on sync, add, rebuild."""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_vision_timeout_on_sync(self, _sync):
+        """--vision-timeout sets cfg.vision_timeout for sync."""
+        with mock.patch("lilbee.cli.commands._ensure_vision_model"):
+            result = runner.invoke(app, ["sync", "--vision", "--vision-timeout=60"])
+        assert result.exit_code == 0
+        assert cfg.vision_timeout == 60.0
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_vision_timeout_on_add(self, _e, _eb, isolated_env, tmp_path):
+        """--vision-timeout sets cfg.vision_timeout for add."""
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        with mock.patch("lilbee.cli.commands._ensure_vision_model"):
+            result = runner.invoke(app, ["add", "--vision", "--vision-timeout=90", str(src)])
+        assert result.exit_code == 0
+        assert cfg.vision_timeout == 90.0
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_vision_timeout_on_rebuild(self, _e, _eb):
+        """--vision-timeout sets cfg.vision_timeout for rebuild."""
+        with mock.patch("lilbee.cli.commands._ensure_vision_model"):
+            result = runner.invoke(app, ["rebuild", "--vision", "--vision-timeout=120"])
+        assert result.exit_code == 0
+        assert cfg.vision_timeout == 120.0
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_no_vision_timeout_leaves_default(self, _sync):
+        """Without --vision-timeout, cfg.vision_timeout stays None."""
+        cfg.vision_timeout = None
+        with mock.patch("lilbee.cli.commands._ensure_vision_model"):
+            result = runner.invoke(app, ["sync", "--vision"])
+        assert result.exit_code == 0
+        assert cfg.vision_timeout is None
+
+
+class TestLogLevel:
+    """Tests for --log-level flag and LILBEE_LOG_LEVEL configuration."""
+
+    def test_log_level_flag_debug(self):
+        """--log-level=DEBUG sets root logger to DEBUG."""
+        result = runner.invoke(app, ["--log-level=DEBUG", "status"])
+        assert result.exit_code == 0
+        assert logging.getLogger().level == logging.DEBUG
+
+    def test_log_level_flag_info(self):
+        """--log-level=INFO sets root logger to INFO."""
+        result = runner.invoke(app, ["--log-level=INFO", "status"])
+        assert result.exit_code == 0
+        assert logging.getLogger().level == logging.INFO
+
+    def test_log_level_env_var(self, monkeypatch):
+        """LILBEE_LOG_LEVEL env var controls log level."""
+        monkeypatch.setenv("LILBEE_LOG_LEVEL", "INFO")
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert logging.getLogger().level == logging.INFO
+
+    def test_flag_overrides_env_var(self, monkeypatch):
+        """--log-level overrides LILBEE_LOG_LEVEL."""
+        monkeypatch.setenv("LILBEE_LOG_LEVEL", "WARNING")
+        result = runner.invoke(app, ["--log-level=DEBUG", "status"])
+        assert result.exit_code == 0
+        assert logging.getLogger().level == logging.DEBUG
+
+    def test_invalid_log_level_defaults_to_warning(self, monkeypatch):
+        """Invalid LILBEE_LOG_LEVEL falls back to WARNING."""
+        monkeypatch.setenv("LILBEE_LOG_LEVEL", "BOGUS")
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert logging.getLogger().level == logging.WARNING

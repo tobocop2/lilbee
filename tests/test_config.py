@@ -3,6 +3,8 @@
 import os
 from unittest import mock
 
+import pytest
+
 from lilbee.config import CHUNKS_TABLE, DEFAULT_IGNORE_DIRS, SOURCES_TABLE, Config
 
 
@@ -164,6 +166,33 @@ class TestVisionModelConfig:
         ):
             c = Config.from_env()
             assert c.vision_model == "maternion/LightOnOCR-2"
+
+
+class TestVisionTimeoutConfig:
+    def test_valid_timeout_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "60.5"}):
+            c = Config.from_env()
+            assert c.vision_timeout == 60.5
+
+    def test_no_timeout_env_returns_none(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_VISION_TIMEOUT"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.vision_timeout is None
+
+    def test_invalid_timeout_warns_and_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "abc"}),
+            caplog.at_level(logging.WARNING, logger="lilbee.config"),
+        ):
+            c = Config.from_env()
+        assert c.vision_timeout is None
+        assert any("Invalid LILBEE_VISION_TIMEOUT" in r.message for r in caplog.records)
 
 
 class TestLocalDotLilbee:
