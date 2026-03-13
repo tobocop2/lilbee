@@ -1,0 +1,359 @@
+/* lilbee Obsidian plugin styles */
+
+.lilbee-document-card {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    padding: var(--size-4-3, 12px);
+    margin-bottom: var(--size-4-2, 8px);
+    background-color: var(--background-primary);
+}
+
+.lilbee-document-card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2, 8px);
+    margin-bottom: var(--size-4-1, 4px);
+}
+
+.lilbee-document-source {
+    color: var(--interactive-accent);
+    font-weight: var(--font-medium, 500);
+    text-decoration: none;
+    cursor: pointer;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lilbee-document-source:hover {
+    text-decoration: underline;
+}
+
+.lilbee-relevance-bar-container {
+    height: 3px;
+    background-color: var(--background-modifier-border);
+    border-radius: 2px;
+    margin-bottom: var(--size-4-2, 8px);
+    overflow: hidden;
+}
+
+.lilbee-relevance-bar {
+    height: 100%;
+    background-color: var(--interactive-accent);
+    border-radius: 2px;
+    min-width: 2px;
+    transition: width 0.2s ease;
+}
+
+.lilbee-content-badge {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    font-weight: var(--font-medium, 500);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.lilbee-excerpt {
+    padding: var(--size-4-1, 4px) 0;
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    line-height: var(--line-height-normal, 1.5);
+}
+
+.lilbee-excerpt p {
+    margin: 0 0 2px;
+}
+
+.lilbee-location {
+    color: var(--text-faint);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-source-chip {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    border: 1px solid var(--background-modifier-border);
+    margin: 2px 2px 0 0;
+    cursor: default;
+}
+
+.lilbee-chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.lilbee-chat-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-bottom: 1px solid var(--background-modifier-border);
+    background-color: var(--background-secondary);
+    flex-shrink: 0;
+}
+
+.lilbee-chat-toolbar button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    padding: 2px var(--size-4-2, 8px);
+    border-radius: var(--radius-s, 4px);
+}
+
+.lilbee-chat-toolbar button:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.lilbee-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--size-4-3, 12px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2, 8px);
+}
+
+.lilbee-chat-message {
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-radius: var(--radius-m, 6px);
+    max-width: 88%;
+    line-height: var(--line-height-normal, 1.5);
+    font-size: var(--font-text-size, 15px);
+    word-break: break-word;
+}
+
+.lilbee-chat-message.user {
+    align-self: flex-end;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.lilbee-chat-message.assistant {
+    align-self: flex-start;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+}
+
+.lilbee-chat-sources {
+    border-top: 1px solid var(--background-modifier-border);
+    padding: var(--size-4-1, 4px) var(--size-4-3, 12px);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-chat-source-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    margin-top: var(--size-4-1, 4px);
+}
+
+.lilbee-chat-input {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: var(--size-4-2, 8px);
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-top: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    flex-shrink: 0;
+}
+
+.lilbee-chat-input textarea {
+    flex: 1;
+    resize: none;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    padding: var(--size-4-2, 8px);
+    font-family: var(--font-interface);
+    font-size: var(--font-text-size, 15px);
+    line-height: var(--line-height-normal, 1.5);
+    min-height: 38px;
+    max-height: 160px;
+    outline: none;
+}
+
+.lilbee-chat-input textarea:focus {
+    border-color: var(--interactive-accent);
+}
+
+.lilbee-chat-input button {
+    flex-shrink: 0;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: var(--radius-m, 6px);
+    cursor: pointer;
+    font-size: var(--font-small, 13px);
+    font-weight: var(--font-medium, 500);
+    line-height: 1;
+}
+
+.lilbee-chat-input button:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.lilbee-chat-input button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.lilbee-modal {
+    padding: var(--size-4-3, 12px);
+}
+
+.lilbee-modal-results {
+    margin-top: var(--size-4-3, 12px);
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.lilbee-search-input {
+    width: 100%;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    font-size: var(--font-text-size, 15px);
+    outline: none;
+    box-sizing: border-box;
+}
+
+.lilbee-search-input:focus {
+    border-color: var(--interactive-accent);
+}
+
+.lilbee-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--size-4-6, 24px);
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    gap: var(--size-4-2, 8px);
+}
+
+.lilbee-loading::before {
+    content: "";
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--background-modifier-border);
+    border-top-color: var(--interactive-accent);
+    border-radius: 50%;
+    animation: lilbee-spin 0.7s linear infinite;
+}
+
+@keyframes lilbee-spin {
+    to { transform: rotate(360deg); }
+}
+
+.lilbee-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--size-4-8, 32px) var(--size-4-4, 16px);
+    color: var(--text-faint);
+    font-size: var(--font-small, 13px);
+    text-align: center;
+}
+
+.lilbee-ask-answer {
+    padding: var(--size-4-3, 12px);
+    color: var(--text-normal);
+    font-size: var(--font-text-size, 15px);
+    line-height: var(--line-height-normal, 1.5);
+    border-radius: var(--radius-m, 6px);
+    background-color: var(--background-secondary);
+    margin-bottom: var(--size-4-2, 8px);
+}
+
+.lilbee-ask-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: var(--size-4-1, 4px) 0;
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-models-container {
+    margin-top: var(--size-4-3, 12px);
+}
+
+.lilbee-model-section {
+    margin-bottom: var(--size-4-6, 24px);
+}
+
+.lilbee-model-section h4 {
+    font-size: var(--font-small, 13px);
+    font-weight: var(--font-semibold, 600);
+    color: var(--text-normal);
+    margin: 0 0 var(--size-4-2, 8px);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.lilbee-model-catalog table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-small, 13px);
+    color: var(--text-normal);
+}
+
+.lilbee-model-catalog table th {
+    text-align: left;
+    font-weight: var(--font-medium, 500);
+    color: var(--text-muted);
+    padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.lilbee-model-catalog table td {
+    padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+    border-bottom: 1px solid var(--background-modifier-border);
+    vertical-align: middle;
+}
+
+.lilbee-model-catalog table tr:last-child td {
+    border-bottom: none;
+}
+
+.lilbee-installed {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--color-green, #2d7a4f);
+    color: var(--text-on-accent, #fff);
+    font-size: var(--font-smallest, 10px);
+    font-weight: var(--font-medium, 500);
+}
+
+.lilbee-pull-progress {
+    display: inline-block;
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    min-width: 2.5em;
+    text-align: right;
+}

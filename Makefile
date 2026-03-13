@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci imports-check check clean install demo build publish
+.PHONY: lint format format-check typecheck test test-ci imports-check check clean install demo build publish plugin-test
 
 lint:
 	uv run ruff check src/ tests/
@@ -37,6 +37,15 @@ build:
 
 publish: build  ## Build and upload to PyPI
 	uv publish
+
+plugin-test:
+	cd plugins/obsidian && npm test
+
+plugin-build:
+	cd plugins/obsidian && npm run build
+
+plugin-dev:
+	cd plugins/obsidian && npm run dev
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage dist/
