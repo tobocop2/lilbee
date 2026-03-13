@@ -718,6 +718,8 @@ class TestVisionFallback:
     async def test_vision_fallback_called_for_empty_pdf(self, _kf, _eb, isolated_env):
         """When PDF extraction is empty and vision_model is set, fall back to vision."""
         cfg.vision_model = "test-vision"
+        cfg.vision_timeout = 45.0
+        cfg.json_mode = True
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
@@ -728,7 +730,7 @@ class TestVisionFallback:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
-        mock_vision.assert_called_once_with(f, "test-vision")
+        mock_vision.assert_called_once_with(f, "test-vision", quiet=True, timeout=45.0)
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
         assert result[0]["page_start"] == 1
