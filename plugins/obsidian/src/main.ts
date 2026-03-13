@@ -1,6 +1,7 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, type TAbstractFile } from "obsidian";
 import { LilbeeClient } from "./api";
-import { ServerManager, vaultPort, type ServerState } from "./server-manager";
+import { OLLAMA_STATE, OllamaDetector, type OllamaState } from "./ollama-detector";
+import { SERVER_STATE, ServerManager, vaultPort, type ServerState } from "./server-manager";
 import { LilbeeSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, SSE_EVENT, type LilbeeSettings, type SSEEvent, type SyncDone } from "./types";
 import { ChatView, VIEW_TYPE_CHAT } from "./views/chat-view";
@@ -9,8 +10,10 @@ import { SearchModal } from "./views/search-modal";
 export default class LilbeePlugin extends Plugin {
     settings: LilbeeSettings = { ...DEFAULT_SETTINGS };
     api: LilbeeClient = new LilbeeClient(DEFAULT_SETTINGS.serverUrl);
+    ollamaDetector: OllamaDetector | null = null;
+    activeModel = "";
+    statusBarEl: HTMLElement | null = null;
     private syncTimeout: ReturnType<typeof setTimeout> | null = null;
-    private statusBarEl: HTMLElement | null = null;
     private autoSyncRefs: { id: string }[] = [];
     private serverManager: ServerManager | null = null;
 
@@ -20,7 +23,7 @@ export default class LilbeePlugin extends Plugin {
 
         // Status bar
         this.statusBarEl = this.addStatusBarItem();
-        this.statusBarEl.setText("lilbee: ready");
+        this.setStatusReady();
 
         // Managed server
         if (this.settings.manageServer) {
@@ -77,6 +80,27 @@ export default class LilbeePlugin extends Plugin {
             },
         });
 
+        // File explorer context menu
+        this.registerEvent(
+            this.app.workspace.on("file-menu" as any, (menu: any, file: TAbstractFile) => {
+                menu.addItem((item: any) => {
+                    item.setTitle("Add to lilbee")
+                        .setIcon("plus-circle")
+                        .onClick(() => this.addToLilbee(file));
+                });
+            }),
+        );
+
+        // Fetch models to populate activeModel
+        this.fetchActiveModel();
+
+        // Ollama detector — runs regardless of manageServer
+        this.ollamaDetector = new OllamaDetector({
+            ollamaUrl: this.settings.ollamaUrl,
+            onStateChange: (state) => this.onOllamaStateChange(state),
+        });
+        this.ollamaDetector.startPolling();
+
         // Auto-sync watcher
         if (this.settings.syncMode === "auto") {
             this.registerAutoSync();
@@ -87,6 +111,7 @@ export default class LilbeePlugin extends Plugin {
         if (this.syncTimeout) {
             clearTimeout(this.syncTimeout);
         }
+        this.ollamaDetector?.stopPolling();
         this.stopManagedServer();
     }
 
@@ -98,11 +123,94 @@ export default class LilbeePlugin extends Plugin {
         await this.saveData(this.settings);
         this.api = new LilbeeClient(this.settings.serverUrl);
         this.updateAutoSync();
+        this.recreateOllamaDetector();
+    }
+
+    private updateStatusBar(text: string): void {
+        if (!this.statusBarEl) return;
+        const model = this.activeModel ? ` (${this.activeModel})` : "";
+        this.statusBarEl.setText(`${text}${model}`);
+    }
+
+    private setStatusReady(): void {
+        this.updateStatusBar("lilbee: ready");
+    }
+
+    fetchActiveModel(): void {
+        this.api.listModels().then((models) => {
+            this.activeModel = models.chat.active;
+            this.setStatusReady();
+        }).catch(() => {});
+    }
+
+    async addToLilbee(file: TAbstractFile): Promise<void> {
+        if (!this.statusBarEl) return;
+        const adapter = this.app.vault.adapter as unknown as { getBasePath(): string };
+        const absolutePath = `${adapter.getBasePath()}/${file.path}`;
+
+        this.updateStatusBar("lilbee: adding...");
+
+        try {
+            let lastEvent: SSEEvent | null = null;
+            for await (const event of this.api.addFiles([absolutePath])) {
+                this.handleProgressEvent(event);
+                lastEvent = event;
+            }
+
+            if (lastEvent?.event === SSE_EVENT.DONE) {
+                const done = lastEvent.data as SyncDone;
+                const parts: string[] = [];
+                if (done.added.length > 0) parts.push(`${done.added.length} added`);
+                if (done.failed.length > 0) parts.push(`${done.failed.length} failed`);
+                if (parts.length > 0) {
+                    new Notice(`lilbee: ${parts.join(", ")}`);
+                }
+            }
+        } catch {
+            new Notice("lilbee: add failed — cannot connect to server");
+        }
+
+        this.setStatusReady();
+    }
+
+    private handleProgressEvent(event: SSEEvent): void {
+        if (!this.statusBarEl) return;
+        switch (event.event) {
+            case SSE_EVENT.FILE_START: {
+                const data = event.data as { file: string; current_file: number; total_files: number };
+                this.updateStatusBar(`lilbee: indexing ${data.current_file}/${data.total_files} — ${data.file}`);
+                break;
+            }
+            case SSE_EVENT.EXTRACT: {
+                const data = event.data as { file: string; page: number; total_pages: number };
+                this.updateStatusBar(`lilbee: extracting ${data.file} (page ${data.page}/${data.total_pages})`);
+                break;
+            }
+            case SSE_EVENT.EMBED: {
+                const data = event.data as { file: string; chunk: number; total_chunks: number };
+                this.updateStatusBar(`lilbee: embedding ${data.file} (${data.chunk}/${data.total_chunks} chunks)`);
+                break;
+            }
+            case SSE_EVENT.PROGRESS: {
+                const data = event.data as { file: string; current: number; total: number };
+                this.updateStatusBar(`lilbee: indexing ${data.current}/${data.total} — ${data.file}`);
+                break;
+            }
+        }
+    }
+
+    private recreateOllamaDetector(): void {
+        this.ollamaDetector?.stopPolling();
+        this.ollamaDetector = new OllamaDetector({
+            ollamaUrl: this.settings.ollamaUrl,
+            onStateChange: (state) => this.onOllamaStateChange(state),
+        });
+        this.ollamaDetector.startPolling();
     }
 
     private startManagedServer(): void {
-        const adapter = this.app.vault.adapter as any;
-        const vaultPath: string = adapter.getBasePath();
+        const adapter = this.app.vault.adapter as unknown as { getBasePath(): string };
+        const vaultPath = adapter.getBasePath();
         const dataDir = `${vaultPath}/.lilbee`;
         const port = vaultPort(vaultPath);
 
@@ -131,20 +239,34 @@ export default class LilbeePlugin extends Plugin {
         await this.serverManager.restart();
     }
 
+    private onOllamaStateChange(state: OllamaState): void {
+        if (!this.statusBarEl) return;
+        if (state === OLLAMA_STATE.UNREACHABLE) {
+            this.updateStatusBar("lilbee: ready (Ollama offline)");
+            new Notice(
+                "Ollama is not running. Sync, ask, and chat require Ollama.\n" +
+                    "Start Ollama or install it from https://ollama.com",
+                0,
+            );
+        } else if (state === OLLAMA_STATE.REACHABLE) {
+            this.setStatusReady();
+        }
+    }
+
     private onServerStateChange(state: ServerState, detail?: string): void {
         if (!this.statusBarEl) return;
         switch (state) {
-            case "stopped":
-                this.statusBarEl.setText("lilbee: stopped");
+            case SERVER_STATE.STOPPED:
+                this.updateStatusBar("lilbee: stopped");
                 break;
-            case "starting":
-                this.statusBarEl.setText("lilbee: starting...");
+            case SERVER_STATE.STARTING:
+                this.updateStatusBar("lilbee: starting...");
                 break;
-            case "ready":
-                this.statusBarEl.setText("lilbee: ready");
+            case SERVER_STATE.READY:
+                this.setStatusReady();
                 break;
-            case "error":
-                this.statusBarEl.setText("lilbee: error");
+            case SERVER_STATE.ERROR:
+                this.updateStatusBar("lilbee: error");
                 new Notice(`lilbee: ${detail ?? "server error"}`);
                 break;
         }
@@ -204,21 +326,19 @@ export default class LilbeePlugin extends Plugin {
 
     async triggerSync(): Promise<void> {
         if (!this.statusBarEl) return;
-        this.statusBarEl.setText("lilbee: syncing...");
+        if (this.ollamaDetector?.state === OLLAMA_STATE.UNREACHABLE) {
+            new Notice(
+                "Cannot sync: Ollama is not running.\n" +
+                    "Start Ollama or install it from https://ollama.com",
+            );
+            return;
+        }
+        this.updateStatusBar("lilbee: syncing...");
 
         try {
             let lastEvent: SSEEvent | null = null;
             for await (const event of this.api.syncStream()) {
-                if (event.event === SSE_EVENT.PROGRESS) {
-                    const data = event.data as {
-                        file: string;
-                        current: number;
-                        total: number;
-                    };
-                    this.statusBarEl.setText(
-                        `lilbee: indexing ${data.current}/${data.total} — ${data.file}`,
-                    );
-                }
+                this.handleProgressEvent(event);
                 lastEvent = event;
             }
 
@@ -237,6 +357,6 @@ export default class LilbeePlugin extends Plugin {
             new Notice("lilbee: sync failed — cannot connect to server");
         }
 
-        this.statusBarEl.setText("lilbee: ready");
+        this.setStatusReady();
     }
 }

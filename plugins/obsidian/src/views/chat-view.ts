@@ -36,6 +36,11 @@ export class ChatView extends ItemView {
 
         // Clear chat button
         const toolbar = container.createDiv({ cls: "lilbee-chat-toolbar" });
+
+        // Model selector
+        const modelSelect = toolbar.createEl("select", { cls: "lilbee-chat-model-select" });
+        this.populateModelSelector(modelSelect);
+
         const clearBtn = toolbar.createEl("button", {
             text: "Clear chat",
             cls: "lilbee-chat-clear",
@@ -72,8 +77,30 @@ export class ChatView extends ItemView {
         });
     }
 
-    async onClose(): Promise<void> {
-        // nothing to clean up
+    private populateModelSelector(selectEl: HTMLElement): void {
+        this.plugin.api.listModels().then((models) => {
+            for (const name of models.chat.installed) {
+                const option = selectEl.createEl("option", { text: name });
+                (option as any).value = name;
+                if (name === models.chat.active) {
+                    (option as any).selected = true;
+                }
+            }
+        }).catch(() => {
+            selectEl.createEl("option", { text: "(offline)" });
+        });
+
+        selectEl.addEventListener("change", () => {
+            const value = (selectEl as any).value;
+            if (value) {
+                this.plugin.api.setChatModel(value).then(() => {
+                    this.plugin.activeModel = value;
+                    this.plugin.fetchActiveModel();
+                }).catch(() => {
+                    new Notice("lilbee: failed to switch model");
+                });
+            }
+        });
     }
 
     private clearChat(): void {

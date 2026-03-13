@@ -35,7 +35,7 @@ describe("DEFAULT_SETTINGS", () => {
 
     it("is a plain object with exactly the expected keys", () => {
         const keys = Object.keys(DEFAULT_SETTINGS).sort();
-        expect(keys).toEqual(["binaryPath", "manageServer", "serverUrl", "syncDebounceMs", "syncMode", "topK"].sort());
+        expect(keys).toEqual(["binaryPath", "manageServer", "ollamaUrl", "serverUrl", "syncDebounceMs", "syncMode", "topK"].sort());
     });
 });
 
@@ -255,6 +255,11 @@ describe("SSE_EVENT constants", () => {
         expect(SSE_EVENT.DONE).toBe("done");
         expect(SSE_EVENT.ERROR).toBe("error");
         expect(SSE_EVENT.PROGRESS).toBe("progress");
+        expect(SSE_EVENT.MESSAGE).toBe("message");
+        expect(SSE_EVENT.FILE_START).toBe("file_start");
+        expect(SSE_EVENT.EXTRACT).toBe("extract");
+        expect(SSE_EVENT.EMBED).toBe("embed");
+        expect(SSE_EVENT.FILE_DONE).toBe("file_done");
     });
 });
 

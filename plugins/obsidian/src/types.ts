@@ -87,6 +87,7 @@ export interface LilbeeSettings {
     syncDebounceMs: number;
     manageServer: boolean;
     binaryPath: string;
+    ollamaUrl: string;
 }
 
 export const DEFAULT_SETTINGS: LilbeeSettings = {
@@ -96,6 +97,7 @@ export const DEFAULT_SETTINGS: LilbeeSettings = {
     syncDebounceMs: 5000,
     manageServer: true,
     binaryPath: "",
+    ollamaUrl: "http://127.0.0.1:11434",
 };
 
 /** SSE event type constants — shared across chat, sync, and model pull streams. */
@@ -105,6 +107,11 @@ export const SSE_EVENT = {
     DONE: "done",
     ERROR: "error",
     PROGRESS: "progress",
+    MESSAGE: "message",
+    FILE_START: "file_start",
+    EXTRACT: "extract",
+    EMBED: "embed",
+    FILE_DONE: "file_done",
 } as const;
 
 export const JSON_HEADERS = { "Content-Type": "application/json" } as const;

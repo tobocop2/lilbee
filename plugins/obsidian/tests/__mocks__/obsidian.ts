@@ -110,6 +110,14 @@ export class MockElement {
     scrollIntoView(_opts?: unknown): void { /* noop */ }
     focus(): void { /* noop */ }
     blur(): void { /* noop */ }
+
+    // Support select element behavior
+    get selectedIndex(): number { return 0; }
+}
+
+export interface TAbstractFile {
+    path: string;
+    name: string;
 }
 
 export class App {
@@ -212,9 +220,11 @@ export class PluginSettingTab {
 
 export class Notice {
     message: string;
+    duration: number | undefined;
     static instances: Notice[] = [];
-    constructor(message: string) {
+    constructor(message: string, duration?: number) {
         this.message = message;
+        this.duration = duration;
         Notice.instances.push(this);
     }
     static clear(): void { Notice.instances = []; }

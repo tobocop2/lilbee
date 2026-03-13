@@ -1,4 +1,4 @@
-import { JSON_HEADERS } from "./types";
+import { JSON_HEADERS, SSE_EVENT } from "./types";
 import type {
     AskResponse,
     DocumentResult,
@@ -84,6 +84,23 @@ export class LilbeeClient {
         yield* this.parseSSE(res);
     }
 
+    async *addFiles(
+        paths: string[],
+        force = false,
+        visionModel?: string,
+    ): AsyncGenerator<SSEEvent> {
+        const body: Record<string, unknown> = { paths, force };
+        if (visionModel) body.vision_model = visionModel;
+        const res = await this.assertOk(
+            await fetch(`${this.baseUrl}/api/add`, {
+                method: "POST",
+                headers: JSON_HEADERS,
+                body: JSON.stringify(body),
+            }),
+        );
+        yield* this.parseSSE(res);
+    }
+
     async *syncStream(forceVision = false): AsyncGenerator<SSEEvent> {
         const res = await this.assertOk(
             await fetch(`${this.baseUrl}/api/sync`, {
@@ -140,7 +157,7 @@ export class LilbeeClient {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let currentEvent = "message";
+        let currentEvent: string = SSE_EVENT.MESSAGE;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -160,7 +177,7 @@ export class LilbeeClient {
                     } catch {
                         yield { event: currentEvent, data: raw };
                     }
-                    currentEvent = "message";
+                    currentEvent = SSE_EVENT.MESSAGE;
                 }
             }
         }

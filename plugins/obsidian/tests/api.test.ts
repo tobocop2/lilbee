@@ -240,6 +240,42 @@ describe("chatStream()", () => {
     });
 });
 
+describe("addFiles()", () => {
+    it("POSTs to /api/add with paths and yields SSE events", async () => {
+        fetchMock.mockResolvedValue(
+            sseResponse(['event: done\ndata: {"added":["a.md"],"updated":[],"removed":[],"failed":[],"unchanged":0}\n\n']),
+        );
+
+        const events = await collect(client.addFiles(["/vault/a.md"]));
+
+        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/add`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths: ["/vault/a.md"], force: false }),
+        });
+        expect(events[0].event).toBe("done");
+    });
+
+    it("includes vision_model when provided", async () => {
+        fetchMock.mockResolvedValue(sseResponse([]));
+
+        await collect(client.addFiles(["/vault/doc.pdf"], true, "llava"));
+
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        expect(body.force).toBe(true);
+        expect(body.vision_model).toBe("llava");
+    });
+
+    it("omits vision_model when not provided", async () => {
+        fetchMock.mockResolvedValue(sseResponse([]));
+
+        await collect(client.addFiles(["/vault/a.md"]));
+
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+        expect(body.vision_model).toBeUndefined();
+    });
+});
+
 describe("syncStream()", () => {
     it("POSTs to /api/sync with force_vision false by default", async () => {
         fetchMock.mockResolvedValue(

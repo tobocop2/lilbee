@@ -3,6 +3,7 @@ import { Notice, WorkspaceLeaf } from "../__mocks__/obsidian";
 import { MockElement } from "../__mocks__/obsidian";
 import { ChatView, VIEW_TYPE_CHAT } from "../../src/views/chat-view";
 import type LilbeePlugin from "../../src/main";
+import { SSE_EVENT } from "../../src/types";
 import type { SSEEvent, Source } from "../../src/types";
 
 function makeLeaf(): WorkspaceLeaf {
@@ -35,8 +36,17 @@ function tick(): Promise<void> {
 
 function makePlugin(): LilbeePlugin {
     return {
-        api: { chatStream: vi.fn() },
+        api: {
+            chatStream: vi.fn(),
+            listModels: vi.fn().mockResolvedValue({
+                chat: { active: "llama3", installed: ["llama3", "phi3"], catalog: [] },
+                vision: { active: "", installed: [], catalog: [] },
+            }),
+            setChatModel: vi.fn().mockResolvedValue({ model: "phi3" }),
+        },
         settings: { topK: 5 },
+        activeModel: "llama3",
+        fetchActiveModel: vi.fn(),
     } as unknown as LilbeePlugin;
 }
 
@@ -78,13 +88,6 @@ describe("ChatView metadata methods", () => {
 
     it("getIcon returns 'message-circle'", () => {
         expect(view.getIcon()).toBe("message-circle");
-    });
-});
-
-describe("ChatView.onClose", () => {
-    it("resolves without error (empty method coverage)", async () => {
-        const view = new ChatView(makeLeaf(), makePlugin());
-        await expect(view.onClose()).resolves.toBeUndefined();
     });
 });
 
@@ -169,7 +172,7 @@ describe("ChatView.onOpen — send button triggers send", () => {
     it("calls chatStream with trimmed text on send button click", async () => {
         Notice.clear();
         const plugin = makePlugin();
-        const { mockFn, done } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn, done } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
@@ -186,7 +189,7 @@ describe("ChatView.onOpen — send button triggers send", () => {
     it("clears textarea value after send", async () => {
         Notice.clear();
         const plugin = makePlugin();
-        const { mockFn } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
@@ -205,7 +208,7 @@ describe("ChatView.onOpen — keydown on textarea", () => {
     it("Enter without Shift triggers send and calls preventDefault", async () => {
         Notice.clear();
         const plugin = makePlugin();
-        const { mockFn, done } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn, done } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
@@ -258,7 +261,7 @@ describe("ChatView.sendMessage — bubble structure", () => {
     it("creates user bubble and assistant bubble", async () => {
         Notice.clear();
         const plugin = makePlugin();
-        const { mockFn, done } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn, done } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
@@ -278,7 +281,7 @@ describe("ChatView.sendMessage — bubble structure", () => {
     it("user bubble contains a <p> with the message text", async () => {
         Notice.clear();
         const plugin = makePlugin();
-        const { mockFn, done } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn, done } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
@@ -303,9 +306,9 @@ describe("ChatView.sendMessage — token streaming", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "token", data: "Hello" },
-            { event: "token", data: " world" },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "Hello" },
+            { event: SSE_EVENT.TOKEN, data: " world" },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -330,9 +333,9 @@ describe("ChatView.sendMessage — sources", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "token", data: "Answer" },
-            { event: "sources", data: [makeSource({ source: "notes.md" })] },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "Answer" },
+            { event: SSE_EVENT.SOURCES, data: [makeSource({ source: "notes.md" })] },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -354,8 +357,8 @@ describe("ChatView.sendMessage — sources", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "sources", data: [makeSource()] },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.SOURCES, data: [makeSource()] },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -382,8 +385,8 @@ describe("ChatView.sendMessage — sources", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "sources", data: [makeSource({ source: "chip-doc.md" })] },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.SOURCES, data: [makeSource({ source: "chip-doc.md" })] },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -407,8 +410,8 @@ describe("ChatView.sendMessage — sources", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "token", data: "Answer" },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "Answer" },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -430,8 +433,8 @@ describe("ChatView.sendMessage — sources", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn: mockFn1, done: done1 } = makeStream([
-            { event: "token", data: "Reply" },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "Reply" },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn1;
         const view = new ChatView(makeLeaf(), plugin);
@@ -445,7 +448,7 @@ describe("ChatView.sendMessage — sources", () => {
         await tick();
 
         // Second send — verify history passed to chatStream includes prior exchange
-        const { mockFn: mockFn2, done: done2 } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn: mockFn2, done: done2 } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn2;
 
         textarea.value = "second question";
@@ -466,7 +469,7 @@ describe("ChatView.sendMessage — error event", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "error", data: "something went wrong" },
+            { event: SSE_EVENT.ERROR, data: "something went wrong" },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -558,8 +561,8 @@ describe("ChatView.clearChat — via toolbar button", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
-            { event: "token", data: "hi" },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "hi" },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn;
         const view = new ChatView(makeLeaf(), plugin);
@@ -584,8 +587,8 @@ describe("ChatView.clearChat — via toolbar button", () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn: mockFn1, done: done1 } = makeStream([
-            { event: "token", data: "hi" },
-            { event: "done", data: {} },
+            { event: SSE_EVENT.TOKEN, data: "hi" },
+            { event: SSE_EVENT.DONE, data: {} },
         ]);
         plugin.api.chatStream = mockFn1;
         const view = new ChatView(makeLeaf(), plugin);
@@ -602,7 +605,7 @@ describe("ChatView.clearChat — via toolbar button", () => {
         container.find("lilbee-chat-clear")!.trigger("click");
 
         // Send another message — history passed to chatStream must be empty
-        const { mockFn: mockFn2, done: done2 } = makeStream([{ event: "done", data: {} }]);
+        const { mockFn: mockFn2, done: done2 } = makeStream([{ event: SSE_EVENT.DONE, data: {} }]);
         plugin.api.chatStream = mockFn2;
         textarea.value = "after clear";
         container.find("lilbee-chat-send")!.trigger("click");
@@ -610,5 +613,96 @@ describe("ChatView.clearChat — via toolbar button", () => {
 
         const historyArg = (mockFn2 as ReturnType<typeof vi.fn>).mock.calls[0][1] as Array<unknown>;
         expect(historyArg).toHaveLength(0);
+    });
+});
+
+describe("ChatView.onOpen — model selector", () => {
+    it("creates a select element with class lilbee-chat-model-select", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select");
+        expect(select).not.toBeNull();
+        expect(select!.tagName).toBe("SELECT");
+    });
+
+    it("populates options from listModels API", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        const options = select.children.filter((c) => c.tagName === "OPTION");
+        expect(options.length).toBe(2);
+        expect(options[0].textContent).toBe("llama3");
+        expect(options[1].textContent).toBe("phi3");
+    });
+
+    it("shows (offline) option when listModels fails", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.listModels = vi.fn().mockRejectedValue(new Error("offline"));
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        const options = select.children.filter((c) => c.tagName === "OPTION");
+        expect(options.some((o) => o.textContent === "(offline)")).toBe(true);
+    });
+
+    it("change event calls setChatModel and updates activeModel", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "phi3";
+        select.trigger("change");
+        await tick();
+
+        expect(plugin.api.setChatModel).toHaveBeenCalledWith("phi3");
+    });
+
+    it("change event shows Notice on setChatModel failure", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.setChatModel = vi.fn().mockRejectedValue(new Error("fail"));
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "bad-model";
+        select.trigger("change");
+        await tick();
+
+        expect(Notice.instances.some((n) => n.message.includes("failed to switch"))).toBe(true);
+    });
+
+    it("change event does nothing when value is empty", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "";
+        select.trigger("change");
+        await tick();
+
+        expect(plugin.api.setChatModel).not.toHaveBeenCalled();
     });
 });
