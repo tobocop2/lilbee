@@ -59,7 +59,7 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
 
     try:
         messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
-        if timeout is not None:
+        if timeout is not None and timeout > 0:
             client = ollama.Client(timeout=timeout)
             response = client.chat(model=model, messages=messages)
         else:

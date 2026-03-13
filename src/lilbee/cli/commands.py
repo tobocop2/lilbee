@@ -35,7 +35,7 @@ _vision_option = typer.Option(False, "--vision", help="Enable vision OCR for sca
 _vision_timeout_option = typer.Option(
     None,
     "--vision-timeout",
-    help="Per-page timeout in seconds for vision OCR (default: no timeout).",
+    help="Per-page timeout in seconds for vision OCR (default: 120, 0 = no limit).",
 )
 
 

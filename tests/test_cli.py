@@ -2299,12 +2299,12 @@ class TestVisionTimeout:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_no_vision_timeout_leaves_default(self, _sync):
-        """Without --vision-timeout, cfg.vision_timeout stays None."""
-        cfg.vision_timeout = None
+        """Without --vision-timeout, cfg.vision_timeout stays at default."""
+        cfg.vision_timeout = 120.0
         with mock.patch("lilbee.cli.commands._ensure_vision_model"):
             result = runner.invoke(app, ["sync", "--vision"])
         assert result.exit_code == 0
-        assert cfg.vision_timeout is None
+        assert cfg.vision_timeout == 120.0
 
 
 class TestLogLevel:
