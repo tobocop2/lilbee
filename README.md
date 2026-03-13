@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
 
-> Local knowledge base that handles both code and documents, with a git-like per-project model. Search, ask questions, or chat — standalone or as a retrieval backend for AI agents via MCP. Supports vision OCR for scanned PDFs. Everything stays on your machine, powered by [Kreuzberg] for text extraction, [Ollama] for embeddings, chat, and vision OCR, and [LanceDB] for vector storage.
+> Chat with your documents locally using Ollama — or plug into AI agents as a retrieval backend via MCP. Indexes PDFs (including scanned via vision OCR), Office docs, spreadsheets, images, and code with a git-like per-project model. Powered by [Kreuzberg] for text extraction, [Ollama] for embeddings and chat, and [LanceDB] for vector storage.
 
 ---
 
@@ -35,7 +35,7 @@ Most tools like this only handle code. lilbee handles PDFs, Word docs, spreadshe
 - **AI agent backend** — MCP server and JSON CLI so coding agents can search your indexed docs as context
 - **Per-project databases** — `lilbee init` creates a `.lilbee/` directory (like `.git/`) so each project gets its own isolated index
 - **Documents and code alike** — PDFs, Office docs, spreadsheets, images, ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
-- **Open-source and fully offline** — your documents never leave your machine. Runs with [Ollama] and LanceDB, no cloud APIs or Docker
+- **Open-source** — runs with [Ollama] and LanceDB, no cloud APIs or Docker required
 
 Add files (`lilbee add`), then search or ask questions. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
 
@@ -124,7 +124,7 @@ Structured JSON output for agents and scripts.
 
 ## Hardware requirements
 
-lilbee runs entirely on your local machine — your hardware is the compute.
+When used standalone, lilbee runs entirely on your machine — chat with your documents privately, no cloud required.
 
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
