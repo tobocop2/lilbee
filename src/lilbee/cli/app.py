@@ -1,6 +1,8 @@
 """App creation, console, and global callback."""
 
+import logging
 import os
+import sys
 from pathlib import Path
 
 import typer
@@ -40,6 +42,12 @@ _global_option = typer.Option(
     "--global",
     "-g",
     help="Use the global database, ignoring any local .lilbee/ directory.",
+)
+
+_log_level_option = typer.Option(
+    None,
+    "--log-level",
+    help="Set log level (DEBUG, INFO, WARNING, ERROR). Overrides LILBEE_LOG_LEVEL.",
 )
 
 
@@ -86,6 +94,7 @@ def _default(
     model: str | None = model_option,
     json_output: bool = _json_option,
     use_global: bool = _global_option,
+    log_level: str | None = _log_level_option,
     show_version: bool = typer.Option(
         False,
         "--version",
@@ -98,6 +107,16 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
+
+    level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
+    if log_level is not None:
+        level_str = log_level.upper()
+    level = getattr(logging, level_str, logging.WARNING)
+    logging.basicConfig(
+        level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+    # basicConfig is a no-op when handlers already exist, so always set level explicitly
+    logging.getLogger().setLevel(level)
 
     cfg.json_mode = json_output
     if ctx.invoked_subcommand is None:

@@ -3,6 +3,8 @@
 import os
 from unittest import mock
 
+import pytest
+
 from lilbee.config import CHUNKS_TABLE, DEFAULT_IGNORE_DIRS, SOURCES_TABLE, Config
 
 
@@ -104,11 +106,14 @@ class TestPersistedChatModel:
 
     def test_env_var_overrides_config_toml(self):
         # When LILBEE_CHAT_MODEL is set, settings.get must NOT be called for chat_model.
-        # We also set LILBEE_VISION_MODEL to avoid any settings.get call in this test.
+        # We also set LILBEE_VISION_MODEL to avoid settings reads.
         with (
             mock.patch.dict(
                 os.environ,
-                {"LILBEE_CHAT_MODEL": "env-model", "LILBEE_VISION_MODEL": "noop"},
+                {
+                    "LILBEE_CHAT_MODEL": "env-model",
+                    "LILBEE_VISION_MODEL": "noop",
+                },
             ),
             mock.patch("lilbee.settings.get") as mock_get,
         ):
@@ -146,7 +151,10 @@ class TestVisionModelConfig:
             assert c.vision_model == ""
 
     def test_vision_model_env_override(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}):
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
             c = Config.from_env()
             assert c.vision_model == "minicpm-v"
 
@@ -164,6 +172,33 @@ class TestVisionModelConfig:
         ):
             c = Config.from_env()
             assert c.vision_model == "maternion/LightOnOCR-2"
+
+
+class TestVisionTimeoutConfig:
+    def test_valid_timeout_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "60.5"}):
+            c = Config.from_env()
+            assert c.vision_timeout == 60.5
+
+    def test_no_timeout_env_returns_none(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_VISION_TIMEOUT"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.vision_timeout is None
+
+    def test_invalid_timeout_warns_and_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "abc"}),
+            caplog.at_level(logging.WARNING, logger="lilbee.config"),
+        ):
+            c = Config.from_env()
+        assert c.vision_timeout is None
+        assert any("Invalid LILBEE_VISION_TIMEOUT" in r.message for r in caplog.records)
 
 
 class TestLocalDotLilbee:
