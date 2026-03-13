@@ -397,8 +397,15 @@ async def _ingest_file(
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
+ProgressCallback = Callable[[str, str, int, int], None]
+
+
 async def sync(
-    force_rebuild: bool = False, quiet: bool = False, *, force_vision: bool = False
+    force_rebuild: bool = False,
+    quiet: bool = False,
+    *,
+    force_vision: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
 
@@ -454,7 +461,13 @@ async def sync(
     if files_to_process:
         embedder.validate_model()
         await ingest_batch(
-            files_to_process, added, updated, failed, quiet=quiet, force_vision=force_vision
+            files_to_process,
+            added,
+            updated,
+            failed,
+            quiet=quiet,
+            force_vision=force_vision,
+            on_progress=on_progress,
         )
 
     return SyncResult(
@@ -478,6 +491,7 @@ async def ingest_batch(
     *,
     quiet: bool = False,
     force_vision: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar."""
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
@@ -499,9 +513,9 @@ async def ingest_batch(
     ]
 
     if quiet:
-        await _collect_results(tasks, added, updated, failed)
+        await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
-        await _collect_results_with_progress(tasks, added, updated, failed)
+        await _collect_results_with_progress(tasks, added, updated, failed, on_progress=on_progress)
 
 
 async def _collect_results(
@@ -509,11 +523,16 @@ async def _collect_results(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
     """Collect task results without progress display."""
-    for fut in asyncio.as_completed(tasks):
+    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
+        if on_progress is not None:
+            progress_status = "failed" if result.error is not None else "ingested"
+            on_progress(result.name, progress_status, completed_count, len(tasks))
 
 
 async def _collect_results_with_progress(
@@ -521,8 +540,11 @@ async def _collect_results_with_progress(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
     """Collect task results with Rich progress bar."""
+    completed_count = 0
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -532,9 +554,13 @@ async def _collect_results_with_progress(
         for fut in asyncio.as_completed(tasks):
             result = await fut
             _apply_result(result, added, updated, failed)
+            completed_count += 1
             desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
             progress.update(ptask, description=desc)
             progress.advance(ptask)
+            if on_progress is not None:
+                progress_status = "failed" if result.error is not None else "ingested"
+                on_progress(result.name, progress_status, completed_count, len(tasks))
 
 
 def _apply_result(

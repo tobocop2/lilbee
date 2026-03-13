@@ -44,6 +44,9 @@ Issues = "https://github.com/tobocop2/lilbee/issues"
 [project.scripts]
 lilbee = "lilbee.cli:app"
 
+[project.optional-dependencies]
+server = ["litestar>=2.0", "uvicorn[standard]>=0.30"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -60,6 +63,8 @@ dev = [
     "pytest-cov",
     "reportlab",
     "ruff>=0.15.4",
+    "litestar>=2.0",
+    "httpx",
 ]
 
 [tool.pytest.ini_options]
