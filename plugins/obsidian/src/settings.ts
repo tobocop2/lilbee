@@ -44,6 +44,42 @@ export class LilbeeSettingTab extends PluginSettingTab {
                     }),
             );
 
+        // Manage server
+        new Setting(containerEl)
+            .setName("Manage server")
+            .setDesc("Start and stop the lilbee server with Obsidian")
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.manageServer).onChange(async (value) => {
+                    this.plugin.settings.manageServer = value;
+                    await this.plugin.saveSettings();
+                    this.display();
+                }),
+            );
+
+        if (this.plugin.settings.manageServer) {
+            new Setting(containerEl)
+                .setName("Binary path")
+                .setDesc("Path to the lilbee binary (leave empty to auto-detect)")
+                .addText((text) =>
+                    text
+                        .setPlaceholder("auto-detect")
+                        .setValue(this.plugin.settings.binaryPath)
+                        .onChange(async (value) => {
+                            this.plugin.settings.binaryPath = value;
+                            await this.plugin.saveSettings();
+                        }),
+                );
+
+            new Setting(containerEl)
+                .setName("Restart server")
+                .setDesc("Restart the managed lilbee server")
+                .addButton((btn) =>
+                    btn.setButtonText("Restart").onClick(async () => {
+                        await this.plugin.restartServer();
+                    }),
+                );
+        }
+
         // Sync mode
         new Setting(containerEl)
             .setName("Sync mode")

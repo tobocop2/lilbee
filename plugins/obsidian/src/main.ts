@@ -1,5 +1,6 @@
 import { Notice, Plugin } from "obsidian";
 import { LilbeeClient } from "./api";
+import { ServerManager, vaultPort, type ServerState } from "./server-manager";
 import { LilbeeSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, SSE_EVENT, type LilbeeSettings, type SSEEvent, type SyncDone } from "./types";
 import { ChatView, VIEW_TYPE_CHAT } from "./views/chat-view";
@@ -11,6 +12,7 @@ export default class LilbeePlugin extends Plugin {
     private syncTimeout: ReturnType<typeof setTimeout> | null = null;
     private statusBarEl: HTMLElement | null = null;
     private autoSyncRefs: { id: string }[] = [];
+    private serverManager: ServerManager | null = null;
 
     async onload(): Promise<void> {
         await this.loadSettings();
@@ -19,6 +21,11 @@ export default class LilbeePlugin extends Plugin {
         // Status bar
         this.statusBarEl = this.addStatusBarItem();
         this.statusBarEl.setText("lilbee: ready");
+
+        // Managed server
+        if (this.settings.manageServer) {
+            this.startManagedServer();
+        }
 
         // Register views
         this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this));
@@ -80,6 +87,7 @@ export default class LilbeePlugin extends Plugin {
         if (this.syncTimeout) {
             clearTimeout(this.syncTimeout);
         }
+        this.stopManagedServer();
     }
 
     async loadSettings(): Promise<void> {
@@ -90,6 +98,56 @@ export default class LilbeePlugin extends Plugin {
         await this.saveData(this.settings);
         this.api = new LilbeeClient(this.settings.serverUrl);
         this.updateAutoSync();
+    }
+
+    private startManagedServer(): void {
+        const adapter = this.app.vault.adapter as any;
+        const vaultPath: string = adapter.getBasePath();
+        const dataDir = `${vaultPath}/.lilbee`;
+        const port = vaultPort(vaultPath);
+
+        this.settings.serverUrl = `http://127.0.0.1:${port}`;
+        this.api = new LilbeeClient(this.settings.serverUrl);
+
+        this.serverManager = new ServerManager({
+            binaryPath: this.settings.binaryPath,
+            dataDir,
+            host: "127.0.0.1",
+            port,
+            onStateChange: (state, detail) => this.onServerStateChange(state, detail),
+        });
+
+        this.serverManager.start().catch(() => {});
+    }
+
+    private stopManagedServer(): void {
+        if (!this.serverManager) return;
+        this.serverManager.stop().catch(() => {});
+        this.serverManager = null;
+    }
+
+    async restartServer(): Promise<void> {
+        if (!this.serverManager) return;
+        await this.serverManager.restart();
+    }
+
+    private onServerStateChange(state: ServerState, detail?: string): void {
+        if (!this.statusBarEl) return;
+        switch (state) {
+            case "stopped":
+                this.statusBarEl.setText("lilbee: stopped");
+                break;
+            case "starting":
+                this.statusBarEl.setText("lilbee: starting...");
+                break;
+            case "ready":
+                this.statusBarEl.setText("lilbee: ready");
+                break;
+            case "error":
+                this.statusBarEl.setText("lilbee: error");
+                new Notice(`lilbee: ${detail ?? "server error"}`);
+                break;
+        }
     }
 
     private updateAutoSync(): void {

@@ -85,6 +85,8 @@ export interface LilbeeSettings {
     topK: number;
     syncMode: "manual" | "auto";
     syncDebounceMs: number;
+    manageServer: boolean;
+    binaryPath: string;
 }
 
 export const DEFAULT_SETTINGS: LilbeeSettings = {
@@ -92,6 +94,8 @@ export const DEFAULT_SETTINGS: LilbeeSettings = {
     topK: 5,
     syncMode: "manual",
     syncDebounceMs: 5000,
+    manageServer: true,
+    binaryPath: "",
 };
 
 /** SSE event type constants — shared across chat, sync, and model pull streams. */

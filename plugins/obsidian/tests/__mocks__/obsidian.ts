@@ -122,6 +122,9 @@ export class App {
     };
     vault = {
         on: vi.fn().mockReturnValue({ id: "mock-vault-event" }),
+        adapter: {
+            getBasePath: vi.fn().mockReturnValue("/test/vault"),
+        },
     };
 }
 
@@ -240,6 +243,10 @@ export class Setting {
         cb(new MockButtonComponent());
         return this;
     }
+    addToggle(cb: (toggle: MockToggleComponent) => void): this {
+        cb(new MockToggleComponent());
+        return this;
+    }
 }
 
 class MockTextComponent {
@@ -266,6 +273,13 @@ class MockDropdownComponent {
     setValue(_v: string): this { return this; }
     onChange(cb: (v: string) => void): this { this._onChange = cb; return this; }
     triggerChange(v: string): void { this._onChange?.(v); }
+}
+
+class MockToggleComponent {
+    private _onChange: ((v: boolean) => void) | null = null;
+    setValue(_v: boolean): this { return this; }
+    onChange(cb: (v: boolean) => void): this { this._onChange = cb; return this; }
+    triggerChange(v: boolean): void { this._onChange?.(v); }
 }
 
 class MockButtonComponent {

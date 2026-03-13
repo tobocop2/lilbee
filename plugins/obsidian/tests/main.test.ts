@@ -13,7 +13,18 @@ vi.mock("../src/api", () => ({
         pullModel: vi.fn(),
         setChatModel: vi.fn(),
         setVisionModel: vi.fn(),
+        health: vi.fn(),
     })),
+}));
+
+vi.mock("../src/server-manager", () => ({
+    ServerManager: vi.fn().mockImplementation(() => ({
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        restart: vi.fn().mockResolvedValue(undefined),
+        state: "stopped",
+    })),
+    vaultPort: vi.fn().mockReturnValue(7500),
 }));
 
 // We also need to mock the views to avoid loading heavy deps
@@ -530,6 +541,139 @@ describe("LilbeePlugin", () => {
             // Trigger the callback from the first vault.on call
             vaultOnCalls[0][1]();
             expect(debouncedSpy).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe("managed server", () => {
+        it("onload() with manageServer: true creates ServerManager and starts it", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+
+            expect(ServerManager).toHaveBeenCalled();
+            const instance = (ServerManager as ReturnType<typeof vi.fn>).mock.results[0].value;
+            expect(instance.start).toHaveBeenCalled();
+        });
+
+        it("onload() with manageServer: false skips ServerManager", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: false });
+            (ServerManager as ReturnType<typeof vi.fn>).mockClear();
+            await plugin.onload();
+
+            expect(ServerManager).not.toHaveBeenCalled();
+        });
+
+        it("onunload() stops managed server", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+
+            const instance = (ServerManager as ReturnType<typeof vi.fn>).mock.results[0].value;
+            plugin.onunload();
+
+            expect(instance.stop).toHaveBeenCalled();
+        });
+
+        it("onunload() does not crash when no server manager", async () => {
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: false });
+            await plugin.onload();
+            expect(() => plugin.onunload()).not.toThrow();
+        });
+
+        it("status bar updates per server state", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            let onStateChange: (state: string, detail?: string) => void = () => {};
+            (ServerManager as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
+                onStateChange = opts.onStateChange;
+                return {
+                    start: vi.fn().mockResolvedValue(undefined),
+                    stop: vi.fn().mockResolvedValue(undefined),
+                    restart: vi.fn().mockResolvedValue(undefined),
+                    state: "stopped",
+                };
+            });
+
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+
+            onStateChange("starting");
+            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: starting...");
+
+            onStateChange("ready");
+            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
+
+            onStateChange("error", "port in use");
+            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: error");
+            expect(Notice.instances.some((n) => n.message.includes("port in use"))).toBe(true);
+
+            onStateChange("stopped");
+            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: stopped");
+        });
+
+        it("error Notice uses default message when detail is undefined", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            let onStateChange: (state: string, detail?: string) => void = () => {};
+            (ServerManager as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
+                onStateChange = opts.onStateChange;
+                return {
+                    start: vi.fn().mockResolvedValue(undefined),
+                    stop: vi.fn().mockResolvedValue(undefined),
+                    restart: vi.fn().mockResolvedValue(undefined),
+                    state: "stopped",
+                };
+            });
+
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+
+            onStateChange("error");
+            expect(Notice.instances.some((n) => n.message.includes("server error"))).toBe(true);
+        });
+
+        it("restartServer() calls serverManager.restart()", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+
+            const instance = (ServerManager as ReturnType<typeof vi.fn>).mock.results[0].value;
+            await plugin.restartServer();
+            expect(instance.restart).toHaveBeenCalled();
+        });
+
+        it("restartServer() no-ops when no server manager", async () => {
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: false });
+            await plugin.onload();
+            await expect(plugin.restartServer()).resolves.not.toThrow();
+        });
+
+        it("onServerStateChange no-ops when statusBarEl is null", async () => {
+            const { ServerManager } = await import("../src/server-manager");
+            let onStateChange: (state: string, detail?: string) => void = () => {};
+            (ServerManager as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
+                onStateChange = opts.onStateChange;
+                return {
+                    start: vi.fn().mockResolvedValue(undefined),
+                    stop: vi.fn().mockResolvedValue(undefined),
+                    restart: vi.fn().mockResolvedValue(undefined),
+                    state: "stopped",
+                };
+            });
+
+            const plugin = await createPlugin();
+            plugin.loadData = vi.fn().mockResolvedValue({ manageServer: true });
+            await plugin.onload();
+            (plugin as any).statusBarEl = null;
+
+            expect(() => onStateChange("error", "test")).not.toThrow();
         });
     });
 });

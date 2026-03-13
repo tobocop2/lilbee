@@ -19,6 +19,11 @@ export class LilbeeClient {
         return res;
     }
 
+    async health(): Promise<{ status: string; version: string }> {
+        const res = await this.assertOk(await fetch(`${this.baseUrl}/api/health`));
+        return res.json();
+    }
+
     async status(): Promise<StatusResponse> {
         const res = await this.assertOk(await fetch(`${this.baseUrl}/api/status`));
         return res.json();

@@ -35,7 +35,7 @@ describe("DEFAULT_SETTINGS", () => {
 
     it("is a plain object with exactly the expected keys", () => {
         const keys = Object.keys(DEFAULT_SETTINGS).sort();
-        expect(keys).toEqual(["serverUrl", "syncDebounceMs", "syncMode", "topK"].sort());
+        expect(keys).toEqual(["binaryPath", "manageServer", "serverUrl", "syncDebounceMs", "syncMode", "topK"].sort());
     });
 });
 

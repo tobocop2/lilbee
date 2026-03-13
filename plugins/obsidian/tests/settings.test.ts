@@ -14,7 +14,8 @@ function makePlugin(overrides: Partial<LilbeeSettings> = {}) {
         pullModel: vi.fn(),
     };
     const saveSettings = vi.fn().mockResolvedValue(undefined);
-    return { settings, api, saveSettings } as unknown as InstanceType<typeof import("../src/main").default>;
+    const restartServer = vi.fn().mockResolvedValue(undefined);
+    return { settings, api, saveSettings, restartServer } as unknown as InstanceType<typeof import("../src/main").default>;
 }
 
 function makeTab(plugin: ReturnType<typeof makePlugin>) {
@@ -48,12 +49,14 @@ function makeModelsResponse(): ModelsResponse {
 type TextOnChange = (v: string) => Promise<void>;
 type SliderOnChange = (v: number) => Promise<void>;
 type DropdownOnChange = (v: string) => Promise<void>;
+type ToggleOnChange = (v: boolean) => Promise<void>;
 type ButtonOnClick = () => Promise<void>;
 
 interface Captured {
     textOnChanges: TextOnChange[];
     sliderOnChanges: SliderOnChange[];
     dropdownOnChanges: DropdownOnChange[];
+    toggleOnChanges: ToggleOnChange[];
     buttonOnClicks: ButtonOnClick[];
 }
 
@@ -61,11 +64,13 @@ function captureSettingCallbacks(fn: () => void): Captured {
     const textOnChanges: TextOnChange[] = [];
     const sliderOnChanges: SliderOnChange[] = [];
     const dropdownOnChanges: DropdownOnChange[] = [];
+    const toggleOnChanges: ToggleOnChange[] = [];
     const buttonOnClicks: ButtonOnClick[] = [];
 
     const origAddText = Setting.prototype.addText;
     const origAddSlider = Setting.prototype.addSlider;
     const origAddDropdown = Setting.prototype.addDropdown;
+    const origAddToggle = (Setting.prototype as any).addToggle;
     const origAddButton = Setting.prototype.addButton;
 
     Setting.prototype.addText = function (cb: (text: any) => void) {
@@ -100,6 +105,15 @@ function captureSettingCallbacks(fn: () => void): Captured {
         return this;
     };
 
+    (Setting.prototype as any).addToggle = function (cb: (toggle: any) => void) {
+        const fakeToggle = {
+            setValue: () => fakeToggle,
+            onChange: (handler: ToggleOnChange) => { toggleOnChanges.push(handler); return fakeToggle; },
+        };
+        cb(fakeToggle);
+        return this;
+    };
+
     Setting.prototype.addButton = function (cb: (btn: any) => void) {
         const fakeBtn = {
             setButtonText: () => fakeBtn,
@@ -115,10 +129,11 @@ function captureSettingCallbacks(fn: () => void): Captured {
         Setting.prototype.addText = origAddText;
         Setting.prototype.addSlider = origAddSlider;
         Setting.prototype.addDropdown = origAddDropdown;
+        (Setting.prototype as any).addToggle = origAddToggle;
         Setting.prototype.addButton = origAddButton;
     }
 
-    return { textOnChanges, sliderOnChanges, dropdownOnChanges, buttonOnClicks };
+    return { textOnChanges, sliderOnChanges, dropdownOnChanges, toggleOnChanges, buttonOnClicks };
 }
 
 // Similarly capture dropdown options so we can inspect them
@@ -188,8 +203,8 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
-            // In auto mode we expect 2 text fields: serverUrl + syncDebounce
-            expect(textOnChanges.length).toBe(2);
+            // manageServer=true (default): serverUrl + binaryPath + syncDebounce = 3
+            expect(textOnChanges.length).toBe(3);
         });
 
         it("does NOT show sync-debounce when syncMode is 'manual'", () => {
@@ -197,8 +212,52 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
-            // In manual mode we expect only 1 text field: serverUrl
-            expect(textOnChanges.length).toBe(1);
+            // manageServer=true (default): serverUrl + binaryPath = 2
+            expect(textOnChanges.length).toBe(2);
+        });
+    });
+
+    describe("manageServer toggle onChange", () => {
+        it("updates manageServer, saves, and re-renders display", async () => {
+            const plugin = makePlugin({ manageServer: false });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+
+            const { toggleOnChanges } = captureSettingCallbacks(() => tab.display());
+            const displaySpy = vi.spyOn(tab, "display").mockImplementation(() => {});
+
+            await toggleOnChanges[0](true);
+
+            expect(plugin.settings.manageServer).toBe(true);
+            expect(plugin.saveSettings).toHaveBeenCalled();
+            expect(displaySpy).toHaveBeenCalled();
+        });
+    });
+
+    describe("binaryPath setting onChange", () => {
+        it("updates binaryPath and calls saveSettings", async () => {
+            const plugin = makePlugin({ manageServer: true });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+            const { textOnChanges } = captureSettingCallbacks(() => tab.display());
+
+            // textOnChanges[0] = serverUrl, textOnChanges[1] = binaryPath
+            await textOnChanges[1]("/usr/local/bin/lilbee");
+            expect(plugin.settings.binaryPath).toBe("/usr/local/bin/lilbee");
+            expect(plugin.saveSettings).toHaveBeenCalled();
+        });
+    });
+
+    describe("restart server button", () => {
+        it("onClick calls restartServer", async () => {
+            const plugin = makePlugin({ manageServer: true });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+            const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
+
+            // buttonOnClicks[0] = restart, buttonOnClicks[1] = refresh models
+            await buttonOnClicks[0]();
+            expect(plugin.restartServer).toHaveBeenCalled();
         });
     });
 
@@ -252,14 +311,17 @@ describe("LilbeeSettingTab", () => {
     });
 
     describe("syncDebounce text onChange", () => {
+        // With manageServer=true (default) + syncMode=auto, text fields are:
+        // [0] serverUrl, [1] binaryPath, [2] syncDebounce
+        const DEBOUNCE_IDX = 2;
+
         it("updates syncDebounceMs for valid positive number", async () => {
             const plugin = makePlugin({ syncMode: "auto" });
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
 
-            // Second text onChange is syncDebounce
-            await textOnChanges[1]("3000");
+            await textOnChanges[DEBOUNCE_IDX]("3000");
             expect(plugin.settings.syncDebounceMs).toBe(3000);
             expect(plugin.saveSettings).toHaveBeenCalled();
         });
@@ -271,7 +333,7 @@ describe("LilbeeSettingTab", () => {
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
 
             plugin.settings.syncDebounceMs = 999;
-            await textOnChanges[1]("0");
+            await textOnChanges[DEBOUNCE_IDX]("0");
             expect(plugin.settings.syncDebounceMs).toBe(0);
             expect(plugin.saveSettings).toHaveBeenCalled();
         });
@@ -283,7 +345,7 @@ describe("LilbeeSettingTab", () => {
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
 
             const original = plugin.settings.syncDebounceMs;
-            await textOnChanges[1]("not-a-number");
+            await textOnChanges[DEBOUNCE_IDX]("not-a-number");
             expect(plugin.settings.syncDebounceMs).toBe(original);
             expect(plugin.saveSettings).not.toHaveBeenCalled();
         });
@@ -295,7 +357,7 @@ describe("LilbeeSettingTab", () => {
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
 
             const original = plugin.settings.syncDebounceMs;
-            await textOnChanges[1]("-100");
+            await textOnChanges[DEBOUNCE_IDX]("-100");
             expect(plugin.settings.syncDebounceMs).toBe(original);
             expect(plugin.saveSettings).not.toHaveBeenCalled();
         });
@@ -308,8 +370,9 @@ describe("LilbeeSettingTab", () => {
             const tab = makeTab(plugin);
             const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
 
-            expect(buttonOnClicks.length).toBe(1);
-            await expect(buttonOnClicks[0]()).resolves.not.toThrow();
+            // manageServer=true (default): Restart button [0] + Refresh button [1]
+            expect(buttonOnClicks.length).toBe(2);
+            await expect(buttonOnClicks[1]()).resolves.not.toThrow();
         });
     });
 

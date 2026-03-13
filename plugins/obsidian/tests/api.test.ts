@@ -58,6 +58,18 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+describe("health()", () => {
+    it("calls GET /api/health and returns the parsed response", async () => {
+        const data = { status: "ok", version: "1.0.0" };
+        fetchMock.mockResolvedValue(jsonResponse(data));
+
+        const result = await client.health();
+
+        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/health`);
+        expect(result).toEqual(data);
+    });
+});
+
 describe("status()", () => {
     it("calls GET /api/status and returns the parsed response", async () => {
         const data = {
