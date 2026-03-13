@@ -180,16 +180,23 @@ class TestVisionTimeoutConfig:
             c = Config.from_env()
             assert c.vision_timeout == 60.5
 
-    def test_no_timeout_env_returns_none(self) -> None:
+    def test_no_timeout_env_returns_default(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "LILBEE_VISION_TIMEOUT"}
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch("lilbee.settings.get", return_value=None),
         ):
             c = Config.from_env()
-            assert c.vision_timeout is None
+            assert c.vision_timeout == 120.0
 
-    def test_invalid_timeout_warns_and_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_zero_timeout_means_no_limit(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "0"}):
+            c = Config.from_env()
+            assert c.vision_timeout == 0
+
+    def test_invalid_timeout_warns_and_returns_default(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         import logging
 
         with (
@@ -197,7 +204,7 @@ class TestVisionTimeoutConfig:
             caplog.at_level(logging.WARNING, logger="lilbee.config"),
         ):
             c = Config.from_env()
-        assert c.vision_timeout is None
+        assert c.vision_timeout == 120.0
         assert any("Invalid LILBEE_VISION_TIMEOUT" in r.message for r in caplog.records)
 
 

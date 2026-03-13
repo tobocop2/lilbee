@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.4.5"
+version = "0.4.6"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
