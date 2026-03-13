@@ -859,7 +859,7 @@ class TestTesseractOcrMiddleTier:
     async def test_tesseract_ocr_fails_falls_through_to_vision(self, mock_kf, _eb, isolated_env):
         """When Tesseract OCR also yields < 50 chars, fall through to vision."""
         cfg.vision_model = "test-vision"
-        cfg.vision_timeout = None
+        cfg.vision_timeout = 120.0
         cfg.json_mode = False
         empty = _make_empty_result()
         # Called twice: initial extraction + Tesseract OCR (both empty)
@@ -915,7 +915,7 @@ class TestTesseractOcrMiddleTier:
     async def test_vision_explicit_skips_tesseract(self, mock_kf, _eb, isolated_env):
         """When force_vision=True, Tesseract OCR tier is skipped entirely."""
         cfg.vision_model = "test-vision"
-        cfg.vision_timeout = None
+        cfg.vision_timeout = 120.0
         cfg.json_mode = False
         empty = _make_empty_result()
         mock_kf.return_value = empty
@@ -953,7 +953,7 @@ class TestTesseractOcrMiddleTier:
     async def test_configured_vision_model_skips_tesseract(self, mock_kf, _eb, isolated_env):
         """With vision_model set, Tesseract is skipped — vision takes precedence."""
         cfg.vision_model = "test-vision"
-        cfg.vision_timeout = None
+        cfg.vision_timeout = 120.0
         cfg.json_mode = False
         empty = _make_empty_result()
         mock_kf.return_value = empty

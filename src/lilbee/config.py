@@ -48,7 +48,7 @@ class Config:
     system_prompt: str
     ignore_dirs: frozenset[str]
     vision_model: str = ""
-    vision_timeout: float | None = None  # seconds per page, None = no timeout
+    vision_timeout: float = 120.0  # seconds per page
     json_mode: bool = False
 
     @classmethod
@@ -84,14 +84,14 @@ class Config:
 
         vision_timeout_raw = os.environ.get("LILBEE_VISION_TIMEOUT", "").strip()
         try:
-            vision_timeout: float | None = float(vision_timeout_raw) if vision_timeout_raw else None
+            vision_timeout: float = float(vision_timeout_raw) if vision_timeout_raw else 120.0
         except ValueError:
             import logging
 
             logging.getLogger(__name__).warning(
                 "Invalid LILBEE_VISION_TIMEOUT=%r, ignoring", vision_timeout_raw
             )
-            vision_timeout = None
+            vision_timeout = 120.0
 
         extra = env("IGNORE", "")
         ignore_dirs = DEFAULT_IGNORE_DIRS | frozenset(
