@@ -201,12 +201,11 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
     task = asyncio.create_task(run_sync())
     while not task.done() or not queue.empty():
         try:
-            event = await asyncio.wait_for(queue.get(), timeout=0.1)
-            if event is None:
-                break
-            yield event
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
         except TimeoutError:
             continue
+        if item is not None:
+            yield item
     result = task.result()
     yield sse_event("done", asdict(result))  # type: ignore[call-overload]
 
@@ -255,7 +254,10 @@ async def _run_add(
     queue.put_nowait(None)  # sentinel
 
 
-async def add_files(data: dict[str, Any]) -> tuple[list[str], asyncio.Queue[str | None], asyncio.Task[None]]:
+AddResult = tuple[list[str], asyncio.Queue[str | None], asyncio.Task[None]]
+
+
+async def add_files(data: dict[str, Any]) -> AddResult:
     """Validate and start the add-files operation.
 
     Returns (paths, queue, task) for the Litestar adapter to stream.

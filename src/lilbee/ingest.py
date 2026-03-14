@@ -427,8 +427,6 @@ async def _ingest_file(
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
-
-
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,

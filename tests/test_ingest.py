@@ -98,25 +98,28 @@ class TestSync:
         (isolated_env / "cb.txt").write_text("Callback test.")
         from lilbee.ingest import sync
 
-        events: list[tuple[str, str, int, int]] = []
-        result = await sync(quiet=True, on_progress=lambda *a: events.append(a))
+        events: list[tuple[str, dict]] = []
+        result = await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
         assert "cb.txt" in result.added
-        assert len(events) == 1
-        name, status, current, total = events[0]
-        assert name == "cb.txt"
-        assert status == "ingested"
-        assert current == 1
-        assert total == 1
+        event_types = [t for t, _ in events]
+        assert "file_start" in event_types
+        assert "file_done" in event_types
+        assert "done" in event_types
+        file_done = next(d for t, d in events if t == "file_done")
+        assert file_done["file"] == "cb.txt"
+        assert file_done["status"] == "ok"
 
     async def test_on_progress_callback_with_progress_bar(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "cb2.txt").write_text("Callback with progress bar.")
         from lilbee.ingest import sync
 
-        events: list[tuple[str, str, int, int]] = []
-        result = await sync(quiet=False, on_progress=lambda *a: events.append(a))
+        events: list[tuple[str, dict]] = []
+        result = await sync(quiet=False, on_progress=lambda t, d: events.append((t, d)))
         assert "cb2.txt" in result.added
-        assert len(events) == 1
-        assert events[0][1] == "ingested"
+        event_types = [t for t, _ in events]
+        assert "file_done" in event_types
+        file_done = next(d for t, d in events if t == "file_done")
+        assert file_done["status"] == "ok"
 
     async def test_ingest_markdown_file(self, _kf, _eb, _e, _vm, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")

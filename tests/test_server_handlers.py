@@ -248,17 +248,19 @@ class TestSyncStream:
             force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
         ):
             if on_progress:
-                on_progress("a.txt", "ingested", 1, 1)
+                on_progress("file_done", {"file": "a.txt", "status": "ok", "chunks": 3})
+                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
-        assert len(events) >= 1
-        # Last event should be "done"
-        done_events = [e for e in events if e.startswith("event: done")]
-        assert len(done_events) == 1
-        done_data = json.loads(done_events[0].split("data: ")[1].strip())
+        non_empty = [e for e in events if e]
+        # Last event should be "done" (from sync_stream itself, after sync finishes)
+        done_events = [e for e in non_empty if e.startswith("event: done")]
+        assert len(done_events) >= 1
+        last_done = done_events[-1]
+        done_data = json.loads(last_done.split("data: ")[1].strip())
         assert "a.txt" in done_data["added"]
 
     async def test_yields_progress_events(self):
@@ -268,17 +270,19 @@ class TestSyncStream:
             force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
         ):
             if on_progress:
-                on_progress("b.txt", "ingested", 1, 1)
+                on_progress("file_start", {"file": "b.txt", "total_files": 1, "current_file": 1})
+                on_progress("file_done", {"file": "b.txt", "status": "ok", "chunks": 2})
+                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
-        progress_events = [e for e in events if e.startswith("event: progress")]
-        assert len(progress_events) >= 1
-        data = json.loads(progress_events[0].split("data: ")[1].strip())
+        non_empty = [e for e in events if e]
+        file_start_events = [e for e in non_empty if e.startswith("event: file_start")]
+        assert len(file_start_events) >= 1
+        data = json.loads(file_start_events[0].split("data: ")[1].strip())
         assert data["file"] == "b.txt"
-        assert data["status"] == "ingested"
 
     async def test_timeout_continue_when_no_progress(self):
         """Sync with no progress events exercises the TimeoutError continue branch."""
