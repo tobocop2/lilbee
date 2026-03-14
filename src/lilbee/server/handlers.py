@@ -284,6 +284,7 @@ async def list_models() -> dict[str, Any]:
     from lilbee.models import MODEL_CATALOG, VISION_CATALOG
 
     installed = set(list_ollama_models())
+    chat_installed = set(list_ollama_models(exclude_vision=True))
     vision_names = {v.name for v in VISION_CATALOG}
     return {
         "chat": {
@@ -298,7 +299,7 @@ async def list_models() -> dict[str, Any]:
                 }
                 for m in MODEL_CATALOG
             ],
-            "installed": sorted(installed),
+            "installed": sorted(chat_installed),
         },
         "vision": {
             "active": cfg.vision_model,
