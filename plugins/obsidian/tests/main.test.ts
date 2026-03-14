@@ -19,19 +19,6 @@ vi.mock("../src/api", () => ({
     })),
 }));
 
-vi.mock("../src/health-detector", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../src/health-detector")>();
-    return {
-        ...actual,
-        HealthDetector: vi.fn().mockImplementation(() => ({
-            startPolling: vi.fn(),
-            stopPolling: vi.fn(),
-            check: vi.fn().mockResolvedValue("unknown"),
-            state: "unknown",
-        })),
-    };
-});
-
 // We also need to mock the views to avoid loading heavy deps
 vi.mock("../src/views/chat-view", () => ({
     VIEW_TYPE_CHAT: "lilbee-chat",
@@ -474,7 +461,7 @@ describe("LilbeePlugin", () => {
             expect(Notice.instances.length).toBe(0);
         });
 
-        it("shows error Notice on API error and runs health check", async () => {
+        it("shows error Notice on API error", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
@@ -482,14 +469,9 @@ describe("LilbeePlugin", () => {
                 throw new Error("connection refused");
             });
 
-            const serverCheck = vi.spyOn(plugin.serverDetector!, "check").mockResolvedValue("unreachable");
-            const ollamaCheck = vi.spyOn(plugin.ollamaDetector!, "check").mockResolvedValue("unreachable");
-
             await plugin.triggerSync();
 
             expect(Notice.instances.some((n) => n.message.includes("sync failed"))).toBe(true);
-            expect(serverCheck).toHaveBeenCalled();
-            expect(ollamaCheck).toHaveBeenCalled();
         });
 
         it("returns early when statusBarEl is null", async () => {
@@ -607,195 +589,6 @@ describe("LilbeePlugin", () => {
         });
     });
 
-    describe("health detectors", () => {
-        it("onload creates two HealthDetectors and checks once on startup", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            expect(HealthDetector).toHaveBeenCalledTimes(2);
-            const instances = (HealthDetector as ReturnType<typeof vi.fn>).mock.results;
-            expect(instances[0].value.check).toHaveBeenCalledTimes(1);
-            expect(instances[1].value.check).toHaveBeenCalledTimes(1);
-        });
-
-        it("onOllamaStateChange('unreachable') updates status bar and shows Notice", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            // Second detector is Ollama (index 1)
-            onStateChanges[1]("unreachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready (Ollama offline)");
-            expect(Notice.instances.some((n) => n.message.includes("Ollama is not running"))).toBe(true);
-        });
-
-        it("onOllamaStateChange('reachable') restores status bar to ready", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            onStateChanges[1]("reachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
-        });
-
-        it("onOllamaStateChange no-ops when statusBarEl is null", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-            (plugin as any).statusBarEl = null;
-
-            expect(() => onStateChanges[1]("unreachable")).not.toThrow();
-        });
-
-        it("onServerHealthChange('unreachable') updates status bar and shows Notice", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            // First detector is server (index 0)
-            onStateChanges[0]("unreachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: server offline");
-            expect(Notice.instances.some((n) => n.message.includes("lilbee server is not running"))).toBe(true);
-        });
-
-        it("onServerHealthChange('reachable') restores status bar to ready", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            onStateChanges[0]("reachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
-        });
-
-        it("onServerHealthChange no-ops when statusBarEl is null", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-            (plugin as any).statusBarEl = null;
-
-            expect(() => onStateChanges[0]("unreachable")).not.toThrow();
-        });
-
-        it("saveSettings recreates both detectors", async () => {
-            const { HealthDetector } = await import("../src/health-detector");
-            const onStateChanges: Array<(state: string) => void> = [];
-            (HealthDetector as ReturnType<typeof vi.fn>).mockImplementation((opts: any) => {
-                onStateChanges.push(opts.onStateChange);
-                return {
-                    check: vi.fn().mockResolvedValue("unknown"),
-                    state: "unknown",
-                };
-            });
-
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            const callsBefore = (HealthDetector as ReturnType<typeof vi.fn>).mock.calls.length;
-            const oldServer = (HealthDetector as ReturnType<typeof vi.fn>).mock.results[0].value;
-            const oldOllama = (HealthDetector as ReturnType<typeof vi.fn>).mock.results[1].value;
-
-            plugin.settings.ollamaUrl = "http://remote:11434";
-            await plugin.saveSettings();
-
-            // Old detectors are simply replaced (no polling to stop)
-            const callsAfter = (HealthDetector as ReturnType<typeof vi.fn>).mock.calls.length;
-            expect(callsAfter).toBe(callsBefore + 2);
-
-            // Verify new detector callbacks work
-            const latestServerChange = onStateChanges[onStateChanges.length - 2];
-            latestServerChange("reachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
-
-            const latestOllamaChange = onStateChanges[onStateChanges.length - 1];
-            latestOllamaChange("reachable");
-            expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
-        });
-
-        it("triggerSync checks health on failure", async () => {
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            plugin.api.syncStream = vi.fn().mockImplementation(() => {
-                throw new Error("connection refused");
-            });
-
-            const serverCheck = vi.spyOn(plugin.serverDetector!, "check").mockResolvedValue("unreachable");
-            const ollamaCheck = vi.spyOn(plugin.ollamaDetector!, "check").mockResolvedValue("unreachable");
-
-            await plugin.triggerSync();
-
-            expect(Notice.instances.some((n) => n.message.includes("sync failed"))).toBe(true);
-            expect(serverCheck).toHaveBeenCalled();
-            expect(ollamaCheck).toHaveBeenCalled();
-        });
-
-        it("triggerSync proceeds normally when server is up", async () => {
-            const plugin = await createPlugin();
-            await plugin.onload();
-
-            async function* noEvents() {}
-            plugin.api.syncStream = vi.fn().mockReturnValue(noEvents());
-
-            await plugin.triggerSync();
-            expect(plugin.api.syncStream).toHaveBeenCalled();
-        });
-    });
-
     describe("file-menu integration", () => {
         it("registers file-menu event on load", async () => {
             const plugin = await createPlugin();
@@ -863,7 +656,7 @@ describe("LilbeePlugin", () => {
             expect(Notice.instances.some((n) => n.message.includes("1 added"))).toBe(true);
         });
 
-        it("addToLilbee shows error Notice and checks health on API failure", async () => {
+        it("addToLilbee shows error Notice on API failure", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
@@ -871,14 +664,9 @@ describe("LilbeePlugin", () => {
                 throw new Error("connection refused");
             });
 
-            const serverCheck = vi.spyOn(plugin.serverDetector!, "check").mockResolvedValue("unreachable");
-            const ollamaCheck = vi.spyOn(plugin.ollamaDetector!, "check").mockResolvedValue("unreachable");
-
             await (plugin as any).addToLilbee({ path: "test.md", name: "test.md" });
 
             expect(Notice.instances.some((n) => n.message.includes("add failed"))).toBe(true);
-            expect(serverCheck).toHaveBeenCalled();
-            expect(ollamaCheck).toHaveBeenCalled();
         });
 
         it("addToLilbee returns early when statusBarEl is null", async () => {

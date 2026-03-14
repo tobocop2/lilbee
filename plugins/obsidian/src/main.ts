@@ -1,6 +1,5 @@
 import { Notice, Plugin, type TAbstractFile } from "obsidian";
 import { LilbeeClient } from "./api";
-import { HEALTH_STATE, HealthDetector, type HealthState } from "./health-detector";
 import { LilbeeSettingTab } from "./settings";
 import { DEFAULT_SETTINGS, SSE_EVENT, type LilbeeSettings, type SSEEvent, type SyncDone } from "./types";
 import { ChatView, VIEW_TYPE_CHAT } from "./views/chat-view";
@@ -9,8 +8,6 @@ import { SearchModal } from "./views/search-modal";
 export default class LilbeePlugin extends Plugin {
     settings: LilbeeSettings = { ...DEFAULT_SETTINGS };
     api: LilbeeClient = new LilbeeClient(DEFAULT_SETTINGS.serverUrl);
-    ollamaDetector: HealthDetector | null = null;
-    serverDetector: HealthDetector | null = null;
     activeModel = "";
     activeVisionModel = "";
     statusBarEl: HTMLElement | null = null;
@@ -111,19 +108,6 @@ export default class LilbeePlugin extends Plugin {
         // Fetch models to populate activeModel
         this.fetchActiveModel();
 
-        // Health detectors — check once on startup, then only on operation failure
-        this.serverDetector = new HealthDetector({
-            url: `${this.settings.serverUrl}/api/health`,
-            onStateChange: (state) => this.onServerHealthChange(state),
-        });
-        void this.serverDetector.check();
-
-        this.ollamaDetector = new HealthDetector({
-            url: this.settings.ollamaUrl,
-            onStateChange: (state) => this.onOllamaStateChange(state),
-        });
-        void this.ollamaDetector.check();
-
         // Auto-sync watcher
         if (this.settings.syncMode === "auto") {
             this.registerAutoSync();
@@ -144,7 +128,6 @@ export default class LilbeePlugin extends Plugin {
         await this.saveData(this.settings);
         this.api = new LilbeeClient(this.settings.serverUrl);
         this.updateAutoSync();
-        this.recreateDetectors();
     }
 
     private updateStatusBar(text: string): void {
@@ -202,7 +185,6 @@ export default class LilbeePlugin extends Plugin {
         } catch (err) {
             const msg = err instanceof Error ? err.message : "cannot connect to server";
             new Notice(`lilbee: add failed — ${msg}`);
-            await this.checkHealthOnError();
             return;
         }
 
@@ -232,47 +214,6 @@ export default class LilbeePlugin extends Plugin {
                 this.updateStatusBar(`lilbee: indexing ${data.current}/${data.total} — ${data.file}`);
                 break;
             }
-        }
-    }
-
-    private recreateDetectors(): void {
-        this.serverDetector = new HealthDetector({
-            url: `${this.settings.serverUrl}/api/health`,
-            onStateChange: (state) => this.onServerHealthChange(state),
-        });
-
-        this.ollamaDetector = new HealthDetector({
-            url: this.settings.ollamaUrl,
-            onStateChange: (state) => this.onOllamaStateChange(state),
-        });
-    }
-
-    /** Run after an operation fails to update status bar if server/ollama went down. */
-    private async checkHealthOnError(): Promise<void> {
-        await this.serverDetector?.check();
-        await this.ollamaDetector?.check();
-    }
-
-    private onOllamaStateChange(state: HealthState): void {
-        if (!this.statusBarEl) return;
-        if (state === HEALTH_STATE.UNREACHABLE) {
-            this.updateStatusBar("lilbee: ready (Ollama offline)");
-            new Notice(
-                "Ollama is not running. Sync, ask, and chat require Ollama.\n" +
-                    "Start Ollama or install it from https://ollama.com",
-            );
-        } else if (state === HEALTH_STATE.REACHABLE) {
-            this.setStatusReady();
-        }
-    }
-
-    private onServerHealthChange(state: HealthState): void {
-        if (!this.statusBarEl) return;
-        if (state === HEALTH_STATE.UNREACHABLE) {
-            this.updateStatusBar("lilbee: server offline");
-            new Notice("lilbee server is not running. Start it with: lilbee serve");
-        } else if (state === HEALTH_STATE.REACHABLE) {
-            this.setStatusReady();
         }
     }
 
@@ -349,7 +290,6 @@ export default class LilbeePlugin extends Plugin {
             }
         } catch {
             new Notice("lilbee: sync failed — cannot connect to server");
-            await this.checkHealthOnError();
             return;
         }
 

@@ -368,3 +368,6 @@
     min-width: 2.5em;
     text-align: right;
 }
+
+.lilbee-health-ok { color: var(--text-success); }
+.lilbee-health-error { color: var(--text-error); }

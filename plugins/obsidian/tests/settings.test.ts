@@ -1,11 +1,11 @@
-import { vi, describe, it, expect, beforeEach } from "vitest";
+import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import { App, Notice, Setting } from "obsidian";
 import { MockElement } from "./__mocks__/obsidian";
 import { LilbeeSettingTab } from "../src/settings";
 import type { LilbeeSettings, ModelsResponse } from "../src/types";
 import { DEFAULT_SETTINGS, SSE_EVENT } from "../src/types";
 
-function makePlugin(overrides: Partial<LilbeeSettings> = {}, detectorStates: { ollama?: string; server?: string } = {}) {
+function makePlugin(overrides: Partial<LilbeeSettings> = {}) {
     const settings: LilbeeSettings = { ...DEFAULT_SETTINGS, ...overrides };
     const api = {
         listModels: vi.fn(),
@@ -14,11 +14,9 @@ function makePlugin(overrides: Partial<LilbeeSettings> = {}, detectorStates: { o
         pullModel: vi.fn(),
     };
     const saveSettings = vi.fn().mockResolvedValue(undefined);
-    const ollamaDetector = { state: detectorStates.ollama ?? "unknown" };
-    const serverDetector = { state: detectorStates.server ?? "unknown" };
     const statusBarEl = { setText: vi.fn(), textContent: "" };
     const fetchActiveModel = vi.fn();
-    return { settings, api, saveSettings, ollamaDetector, serverDetector, statusBarEl, fetchActiveModel } as unknown as InstanceType<typeof import("../src/main").default>;
+    return { settings, api, saveSettings, statusBarEl, fetchActiveModel } as unknown as InstanceType<typeof import("../src/main").default>;
 }
 
 function makeTab(plugin: ReturnType<typeof makePlugin>) {
@@ -326,50 +324,6 @@ describe("LilbeeSettingTab", () => {
         });
     });
 
-    describe("Ollama warning banner", () => {
-        it("shows warning when Ollama is unreachable", () => {
-            const plugin = makePlugin({}, { ollama: "unreachable" });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            tab.display();
-            const warning = tab.containerEl.find("lilbee-ollama-warning");
-            expect(warning).not.toBeNull();
-            const paragraphs = warning!.children.filter((c) => c.tagName === "P");
-            expect(paragraphs.some((p) => p.textContent.includes("Ollama is not running"))).toBe(true);
-        });
-
-        it("does NOT show warning when Ollama is reachable", () => {
-            const plugin = makePlugin({}, { ollama: "reachable" });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            tab.display();
-            const warning = tab.containerEl.find("lilbee-ollama-warning");
-            expect(warning).toBeNull();
-        });
-    });
-
-    describe("Server warning banner", () => {
-        it("shows warning when server is unreachable", () => {
-            const plugin = makePlugin({}, { server: "unreachable" });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            tab.display();
-            const warning = tab.containerEl.find("lilbee-server-warning");
-            expect(warning).not.toBeNull();
-            const paragraphs = warning!.children.filter((c) => c.tagName === "P");
-            expect(paragraphs.some((p) => p.textContent.includes("lilbee server is not running"))).toBe(true);
-        });
-
-        it("does NOT show warning when server is reachable", () => {
-            const plugin = makePlugin({}, { server: "reachable" });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            tab.display();
-            const warning = tab.containerEl.find("lilbee-server-warning");
-            expect(warning).toBeNull();
-        });
-    });
-
     describe("Refresh models button", () => {
         it("onClick calls loadModels with the models container", async () => {
             const plugin = makePlugin();
@@ -377,9 +331,10 @@ describe("LilbeeSettingTab", () => {
             const tab = makeTab(plugin);
             const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
 
-            // Only Refresh button now (no Restart button)
-            expect(buttonOnClicks.length).toBe(1);
-            await expect(buttonOnClicks[0]()).resolves.not.toThrow();
+            // Server Test + Ollama Test + Refresh = 3
+            expect(buttonOnClicks.length).toBe(3);
+            // Refresh is the last button
+            await expect(buttonOnClicks[2]()).resolves.not.toThrow();
         });
     });
 
@@ -817,6 +772,157 @@ describe("LilbeeSettingTab", () => {
             tab.containerEl.children.push(modelsContainer);
 
             await expect(clickHandler()).resolves.not.toThrow();
+        });
+    });
+
+    describe("checkEndpoint()", () => {
+        let origFetch: typeof globalThis.fetch;
+
+        beforeEach(() => {
+            origFetch = globalThis.fetch;
+        });
+
+        afterEach(() => {
+            globalThis.fetch = origFetch;
+        });
+
+        it("shows reachable when fetch returns ok response", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const statusEl = new MockElement("span") as unknown as HTMLSpanElement;
+
+            await tab.checkEndpoint("http://localhost:7433/api/health", statusEl);
+
+            expect((statusEl as unknown as MockElement).textContent).toContain("reachable");
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-ok")).toBe(true);
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-error")).toBe(false);
+        });
+
+        it("shows error status when fetch returns non-ok response", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const statusEl = new MockElement("span") as unknown as HTMLSpanElement;
+
+            await tab.checkEndpoint("http://localhost:7433/api/health", statusEl);
+
+            expect((statusEl as unknown as MockElement).textContent).toContain("500");
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-error")).toBe(true);
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-ok")).toBe(false);
+        });
+
+        it("shows not reachable when fetch throws", async () => {
+            globalThis.fetch = vi.fn().mockRejectedValue(new Error("network error"));
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const statusEl = new MockElement("span") as unknown as HTMLSpanElement;
+
+            await tab.checkEndpoint("http://localhost:7433/api/health", statusEl);
+
+            expect((statusEl as unknown as MockElement).textContent).toContain("not reachable");
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-error")).toBe(true);
+        });
+
+        it("shows checking... initially then updates", async () => {
+            let resolvePromise: (v: { ok: boolean; status: number }) => void;
+            const pending = new Promise<{ ok: boolean; status: number }>((r) => { resolvePromise = r; });
+            globalThis.fetch = vi.fn().mockReturnValue(pending);
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const statusEl = new MockElement("span") as unknown as HTMLSpanElement;
+
+            const promise = tab.checkEndpoint("http://localhost:7433/api/health", statusEl);
+
+            expect((statusEl as unknown as MockElement).textContent).toBe("checking...");
+
+            resolvePromise!({ ok: true, status: 200 });
+            await promise;
+
+            expect((statusEl as unknown as MockElement).textContent).toContain("reachable");
+        });
+
+        it("clears previous health classes before checking", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const statusEl = new MockElement("span") as unknown as HTMLSpanElement;
+            (statusEl as unknown as MockElement).classList.add("lilbee-health-error");
+
+            await tab.checkEndpoint("http://localhost:7433/api/health", statusEl);
+
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-error")).toBe(false);
+            expect((statusEl as unknown as MockElement).classList.contains("lilbee-health-ok")).toBe(true);
+        });
+    });
+
+    describe("display() auto-checks endpoints", () => {
+        let origFetch: typeof globalThis.fetch;
+
+        beforeEach(() => {
+            origFetch = globalThis.fetch;
+        });
+
+        afterEach(() => {
+            globalThis.fetch = origFetch;
+        });
+
+        it("auto-checks both endpoints on display", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+            const plugin = makePlugin();
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+
+            tab.display();
+
+            // Wait for async checks to complete
+            await new Promise((r) => setTimeout(r, 0));
+
+            expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+            expect(globalThis.fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/health"),
+                expect.objectContaining({ signal: expect.any(AbortSignal) }),
+            );
+        });
+
+        it("Test button calls checkEndpoint", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+            const plugin = makePlugin();
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+
+            const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
+
+            // Wait for auto-checks
+            await new Promise((r) => setTimeout(r, 0));
+            (globalThis.fetch as ReturnType<typeof vi.fn>).mockClear();
+
+            // buttonOnClicks[0] = server Test, buttonOnClicks[1] = ollama Test
+            await buttonOnClicks[0]();
+
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+            expect(globalThis.fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/health"),
+                expect.objectContaining({ signal: expect.any(AbortSignal) }),
+            );
+        });
+
+        it("Ollama Test button calls checkEndpoint", async () => {
+            globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+            const plugin = makePlugin();
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+
+            const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
+
+            // Wait for auto-checks
+            await new Promise((r) => setTimeout(r, 0));
+            (globalThis.fetch as ReturnType<typeof vi.fn>).mockClear();
+
+            // buttonOnClicks[1] = ollama Test button
+            await buttonOnClicks[1]();
+
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         });
     });
 });

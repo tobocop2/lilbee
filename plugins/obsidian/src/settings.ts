@@ -1,8 +1,9 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import { HEALTH_STATE } from "./health-detector";
 import type LilbeePlugin from "./main";
 import { SSE_EVENT } from "./types";
 import type { ModelInfo, ModelsResponse, PullProgress } from "./types";
+
+const CHECK_TIMEOUT_MS = 5000;
 
 export class LilbeeSettingTab extends PluginSettingTab {
     plugin: LilbeePlugin;
@@ -16,27 +17,8 @@ export class LilbeeSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        // Server warning banner
-        if (this.plugin.serverDetector?.state === HEALTH_STATE.UNREACHABLE) {
-            const warning = containerEl.createDiv({ cls: "lilbee-server-warning" });
-            warning.createEl("p", {
-                text: "lilbee server is not running. Start it with: lilbee serve",
-            });
-        }
-
-        // Ollama warning banner
-        if (this.plugin.ollamaDetector?.state === HEALTH_STATE.UNREACHABLE) {
-            const warning = containerEl.createDiv({ cls: "lilbee-ollama-warning" });
-            warning.createEl("p", {
-                text: "Ollama is not running. Sync, ask, and chat will not work.",
-            });
-            warning.createEl("p", {
-                text: "Start Ollama or install it from ollama.com",
-            });
-        }
-
         // Connection settings
-        new Setting(containerEl)
+        const serverSetting = new Setting(containerEl)
             .setName("Server URL")
             .setDesc("Address of the lilbee HTTP server")
             .addText((text) =>
@@ -49,7 +31,16 @@ export class LilbeeSettingTab extends PluginSettingTab {
                     }),
             );
 
-        new Setting(containerEl)
+        const serverStatusEl = (serverSetting as any)._el.createEl("span", { cls: "lilbee-health-status" });
+        void this.checkEndpoint(`${this.plugin.settings.serverUrl}/api/health`, serverStatusEl);
+
+        serverSetting.addButton((btn) =>
+            btn.setButtonText("Test").onClick(async () => {
+                await this.checkEndpoint(`${this.plugin.settings.serverUrl}/api/health`, serverStatusEl);
+            }),
+        );
+
+        const ollamaSetting = new Setting(containerEl)
             .setName("Ollama URL")
             .setDesc("Address of the Ollama server")
             .addText((text) =>
@@ -61,6 +52,15 @@ export class LilbeeSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                     }),
             );
+
+        const ollamaStatusEl = (ollamaSetting as any)._el.createEl("span", { cls: "lilbee-health-status" });
+        void this.checkEndpoint(this.plugin.settings.ollamaUrl, ollamaStatusEl);
+
+        ollamaSetting.addButton((btn) =>
+            btn.setButtonText("Test").onClick(async () => {
+                await this.checkEndpoint(this.plugin.settings.ollamaUrl, ollamaStatusEl);
+            }),
+        );
 
         // Models section
         containerEl.createEl("h3", { text: "Models" });
@@ -128,6 +128,22 @@ export class LilbeeSettingTab extends PluginSettingTab {
                             }
                         }),
                 );
+        }
+    }
+
+    async checkEndpoint(url: string, statusEl: HTMLSpanElement): Promise<void> {
+        statusEl.setText("checking...");
+        statusEl.classList.remove("lilbee-health-ok", "lilbee-health-error");
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeout);
+            statusEl.setText(response.ok ? " \u2713 reachable" : ` \u2717 ${response.status}`);
+            statusEl.classList.add(response.ok ? "lilbee-health-ok" : "lilbee-health-error");
+        } catch {
+            statusEl.setText(" \u2717 not reachable");
+            statusEl.classList.add("lilbee-health-error");
         }
     }
 

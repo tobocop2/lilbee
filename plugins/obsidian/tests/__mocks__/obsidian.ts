@@ -12,7 +12,7 @@ export class MockElement {
     tagName: string;
     textContent: string = "";
     children: MockElement[] = [];
-    classList: { list: string[]; add: (cls: string) => void; remove: (cls: string) => void; contains: (cls: string) => boolean };
+    classList: { list: string[]; add: (...classes: string[]) => void; remove: (...classes: string[]) => void; contains: (cls: string) => boolean };
     style: Record<string, string> = {};
     attributes: Record<string, string> = {};
     _listeners: Record<string, Function[]> = {};
@@ -26,8 +26,8 @@ export class MockElement {
         const list: string[] = [];
         this.classList = {
             list,
-            add: (cls: string) => { if (!list.includes(cls)) list.push(cls); },
-            remove: (cls: string) => { const i = list.indexOf(cls); if (i >= 0) list.splice(i, 1); },
+            add: (...classes: string[]) => { for (const cls of classes) { if (!list.includes(cls)) list.push(cls); } },
+            remove: (...classes: string[]) => { for (const cls of classes) { const i = list.indexOf(cls); if (i >= 0) list.splice(i, 1); } },
             contains: (cls: string) => list.includes(cls),
         };
     }
@@ -70,6 +70,12 @@ export class MockElement {
 
     addClass(cls: string): void {
         cls.split(" ").forEach(c => this.classList.add(c));
+    }
+
+    removeClass(...classes: string[]): void {
+        for (const cls of classes) {
+            this.classList.remove(cls);
+        }
     }
 
     addEventListener(event: string, handler: Function): void {
