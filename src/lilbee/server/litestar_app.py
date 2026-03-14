@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from litestar import Litestar, get, post, put
 from litestar.config.cors import CORSConfig
+from litestar.exceptions import ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.server import handlers
+from lilbee.server.handlers import _sse_generator
 
 
 @get("/api/health")
@@ -73,6 +76,22 @@ async def sync_route(data: dict[str, Any] | None = None) -> Stream:
     )
 
 
+@post("/api/add")
+async def add_route(data: dict[str, Any]) -> Stream:
+    """Add files to the knowledge base with streaming SSE progress."""
+    try:
+        _paths, queue, task = await handlers.add_files(data)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+
+    async def _stream() -> AsyncGenerator[bytes, None]:
+        async for chunk in _sse_generator(queue):
+            yield chunk
+        await task
+
+    return Stream(_stream(), media_type="text/event-stream", status_code=201)
+
+
 @get("/api/models")
 async def models_list_route() -> dict[str, Any]:
     return await handlers.list_models()
@@ -114,6 +133,7 @@ def create_app() -> Litestar:
             chat_route,
             chat_stream_route,
             sync_route,
+            add_route,
             models_list_route,
             models_pull_route,
             models_set_chat_route,

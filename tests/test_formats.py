@@ -33,7 +33,7 @@ def isolated_env(tmp_path):
         setattr(cfg, f.name, getattr(snapshot, f.name))
 
 
-def _fake_embed_batch(texts):
+def _fake_embed_batch(texts, **kwargs):
     return [[0.1] * 768 for _ in texts]
 
 

@@ -6,14 +6,53 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
+
+from lilbee.progress import DetailedProgressCallback
+
+log = logging.getLogger(__name__)
+
+MAX_ADD_FILES = 100
 
 
 def sse_event(event: str, data: Any) -> str:
     """Format a single Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCallback:
+    """Return a progress callback that serializes events into an asyncio queue.
+
+    Safe to call from both the event loop thread (async code) and worker
+    threads (``asyncio.to_thread`` / ``run_in_executor``).
+    """
+    loop = asyncio.get_event_loop()
+
+    def _callback(event_type: str, data: dict[str, Any]) -> None:
+        payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            queue.put_nowait(payload)
+        else:
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+
+    return _callback
+
+
+async def _sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
+    """Yield SSE-formatted bytes from a queue until sentinel (None) is received."""
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        yield item.encode()
 
 
 async def health() -> dict[str, str]:
@@ -153,28 +192,89 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
     """Trigger sync, yield SSE progress events, then done event."""
     from lilbee.ingest import sync
 
-    queue: asyncio.Queue[str] = asyncio.Queue()
-
-    def on_progress(name: str, status_str: str, current: int, total: int) -> None:
-        queue.put_nowait(
-            sse_event(
-                "progress",
-                {"file": name, "status": status_str, "current": current, "total": total},
-            )
-        )
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    callback = _make_sse_callback(queue)
 
     async def run_sync() -> object:
-        return await sync(quiet=True, on_progress=on_progress, force_vision=force_vision)
+        return await sync(quiet=True, on_progress=callback, force_vision=force_vision)
 
     task = asyncio.create_task(run_sync())
     while not task.done() or not queue.empty():
         try:
-            event = await asyncio.wait_for(queue.get(), timeout=0.1)
-            yield event
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
         except TimeoutError:
             continue
+        if item is not None:
+            yield item
     result = task.result()
     yield sse_event("done", asdict(result))  # type: ignore[call-overload]
+
+
+async def _run_add(
+    paths: list[str],
+    force: bool,
+    vision_model: str,
+    queue: asyncio.Queue[str | None],
+) -> None:
+    """Copy files and sync, pushing SSE events to the queue."""
+    from lilbee.cli.helpers import copy_files
+    from lilbee.config import cfg
+    from lilbee.ingest import sync
+
+    callback = _make_sse_callback(queue)
+
+    errors: list[str] = []
+    valid: list[Path] = []
+    for p_str in paths:
+        p = Path(p_str)
+        if not p.exists():
+            errors.append(p_str)
+        else:
+            valid.append(p)
+
+    copy_result = copy_files(valid, force=force)
+
+    old_vision = cfg.vision_model
+    if vision_model:
+        cfg.vision_model = vision_model
+    try:
+        sync_result = await sync(quiet=True, force_vision=bool(vision_model), on_progress=callback)
+    finally:
+        if vision_model:
+            cfg.vision_model = old_vision
+
+    summary = {
+        "copied": copy_result.copied,
+        "skipped": copy_result.skipped,
+        "errors": errors,
+        "sync": asdict(sync_result),
+    }
+    payload = f"event: summary\ndata: {json.dumps(summary)}\n\n"
+    queue.put_nowait(payload)
+    queue.put_nowait(None)  # sentinel
+
+
+AddResult = tuple[list[str], asyncio.Queue[str | None], asyncio.Task[None]]
+
+
+async def add_files(data: dict[str, Any]) -> AddResult:
+    """Validate and start the add-files operation.
+
+    Returns (paths, queue, task) for the Litestar adapter to stream.
+    Raises ValueError on validation failure.
+    """
+    paths = data.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("'paths' must be a non-empty list of strings")
+    if len(paths) > MAX_ADD_FILES:
+        raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
+
+    force = bool(data.get("force", False))
+    vision_model = str(data.get("vision_model", "") or "")
+
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    task = asyncio.create_task(_run_add(paths, force, vision_model, queue))
+    return paths, queue, task
 
 
 async def list_models() -> dict[str, Any]:
