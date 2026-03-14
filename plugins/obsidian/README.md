@@ -6,9 +6,13 @@ The plugin manages its own `.lilbee/` database inside your vault and starts/stop
 
 ## Demo
 
+<details>
+<summary><b>Scanned PDF → vision OCR → chat</b></summary>
+
 Attaching a scanned 1998 Star Wars: X-Wing Collector's Edition manual (PDF with no extractable text), indexing it with vision OCR via [LightOnOCR-2](https://ollama.com/maternion/LightOnOCR-2), and chatting about the dev team credits — entirely local.
 
 ![Obsidian chat demo](demos/obsidian-chat.gif)
+</details>
 
 ---
 
