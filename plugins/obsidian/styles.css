@@ -98,6 +98,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: var(--size-4-1, 4px);
     padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
     border-bottom: 1px solid var(--background-modifier-border);
     background-color: var(--background-secondary);
@@ -117,6 +118,56 @@
 .lilbee-chat-toolbar button:hover {
     background-color: var(--background-modifier-hover);
     color: var(--text-normal);
+}
+
+.lilbee-connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background-color: var(--text-faint);
+    margin-right: auto;
+}
+
+.lilbee-connection-dot.connected {
+    background-color: var(--color-green, #2d7a4f);
+}
+
+.lilbee-connection-dot.disconnected {
+    background-color: var(--color-red, #e93147);
+}
+
+.lilbee-progress-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.lilbee-progress-label {
+    font-size: var(--font-smallest, 10px);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.lilbee-progress-bar-container {
+    height: 3px;
+    background-color: var(--background-modifier-border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.lilbee-progress-bar {
+    height: 100%;
+    background-color: var(--interactive-accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s ease;
 }
 
 .lilbee-chat-messages {
@@ -206,7 +257,25 @@
     border-color: var(--interactive-accent);
 }
 
-.lilbee-chat-input button {
+.lilbee-chat-add-file {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: var(--size-4-1, 4px);
+    border-radius: var(--radius-s, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.lilbee-chat-add-file:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.lilbee-chat-send {
     flex-shrink: 0;
     padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
     background-color: var(--interactive-accent);
@@ -219,13 +288,18 @@
     line-height: 1;
 }
 
-.lilbee-chat-input button:hover {
+.lilbee-chat-send:hover {
     background-color: var(--interactive-accent-hover);
 }
 
-.lilbee-chat-input button:disabled {
+.lilbee-chat-send:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+.lilbee-chat-error {
+    color: var(--text-error);
+    font-style: italic;
 }
 
 .lilbee-modal {

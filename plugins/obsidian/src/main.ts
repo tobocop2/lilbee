@@ -11,6 +11,7 @@ export default class LilbeePlugin extends Plugin {
     activeModel = "";
     activeVisionModel = "";
     statusBarEl: HTMLElement | null = null;
+    onProgress: ((event: SSEEvent) => void) | null = null;
     private syncTimeout: ReturnType<typeof setTimeout> | null = null;
     private autoSyncRefs: { id: string }[] = [];
 
@@ -163,17 +164,24 @@ export default class LilbeePlugin extends Plugin {
         await this.runAdd([absolutePath]);
     }
 
+    private emitProgress(event: SSEEvent): void {
+        if (this.onProgress) {
+            this.onProgress(event);
+        }
+    }
+
     private async runAdd(paths: string[]): Promise<void> {
         this.updateStatusBar("lilbee: adding...");
 
         try {
             let lastEvent: SSEEvent | null = null;
             for await (const event of this.api.addFiles(paths, false, this.activeVisionModel || undefined)) {
-                this.handleProgressEvent(event);
+                this.emitProgress(event);
                 lastEvent = event;
             }
 
             if (lastEvent?.event === SSE_EVENT.DONE) {
+                this.emitProgress(lastEvent);
                 const done = lastEvent.data as SyncDone;
                 const parts: string[] = [];
                 if (done.added.length > 0) parts.push(`${done.added.length} added`);
@@ -189,32 +197,6 @@ export default class LilbeePlugin extends Plugin {
         }
 
         this.setStatusReady();
-    }
-
-    private handleProgressEvent(event: SSEEvent): void {
-        if (!this.statusBarEl) return;
-        switch (event.event) {
-            case SSE_EVENT.FILE_START: {
-                const data = event.data as { file: string; current_file: number; total_files: number };
-                this.updateStatusBar(`lilbee: indexing ${data.current_file}/${data.total_files} — ${data.file}`);
-                break;
-            }
-            case SSE_EVENT.EXTRACT: {
-                const data = event.data as { file: string; page: number; total_pages: number };
-                this.updateStatusBar(`lilbee: extracting ${data.file} (page ${data.page}/${data.total_pages})`);
-                break;
-            }
-            case SSE_EVENT.EMBED: {
-                const data = event.data as { file: string; chunk: number; total_chunks: number };
-                this.updateStatusBar(`lilbee: embedding ${data.file} (${data.chunk}/${data.total_chunks} chunks)`);
-                break;
-            }
-            case SSE_EVENT.PROGRESS: {
-                const data = event.data as { file: string; current: number; total: number };
-                this.updateStatusBar(`lilbee: indexing ${data.current}/${data.total} — ${data.file}`);
-                break;
-            }
-        }
     }
 
     private updateAutoSync(): void {
@@ -273,11 +255,12 @@ export default class LilbeePlugin extends Plugin {
         try {
             let lastEvent: SSEEvent | null = null;
             for await (const event of this.api.syncStream(!!this.activeVisionModel)) {
-                this.handleProgressEvent(event);
+                this.emitProgress(event);
                 lastEvent = event;
             }
 
             if (lastEvent?.event === SSE_EVENT.DONE) {
+                this.emitProgress(lastEvent);
                 const done = lastEvent.data as SyncDone;
                 const parts: string[] = [];
                 if (done.added.length > 0) parts.push(`${done.added.length} added`);

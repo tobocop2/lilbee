@@ -65,7 +65,10 @@ describe("health()", () => {
 
         const result = await client.health();
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/health`);
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/health`,
+            expect.objectContaining({}),
+        );
         expect(result).toEqual(data);
     });
 });
@@ -81,7 +84,10 @@ describe("status()", () => {
 
         const result = await client.status();
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/status`);
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/status`,
+            expect.objectContaining({}),
+        );
         expect(result).toEqual(data);
     });
 });
@@ -123,11 +129,14 @@ describe("ask()", () => {
 
         const result = await client.ask("What is the answer?");
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/ask`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: "What is the answer?", top_k: 0 }),
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/ask`,
+            expect.objectContaining({
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question: "What is the answer?", top_k: 0 }),
+            }),
+        );
         expect(result).toEqual(data);
     });
 
@@ -187,11 +196,14 @@ describe("chat()", () => {
 
         const result = await client.chat("follow-up", history, 5);
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/chat`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: "follow-up", history, top_k: 5 }),
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/chat`,
+            expect.objectContaining({
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question: "follow-up", history, top_k: 5 }),
+            }),
+        );
         expect(result).toEqual(data);
     });
 
@@ -310,7 +322,10 @@ describe("listModels()", () => {
 
         const result = await client.listModels();
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/models`);
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/models`,
+            expect.objectContaining({}),
+        );
         expect(result).toEqual(data);
     });
 });
@@ -338,11 +353,14 @@ describe("setChatModel()", () => {
 
         const result = await client.setChatModel("mistral");
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/models/chat`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "mistral" }),
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/models/chat`,
+            expect.objectContaining({
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "mistral" }),
+            }),
+        );
         expect(result).toEqual({ model: "mistral" });
     });
 });
@@ -353,11 +371,14 @@ describe("setVisionModel()", () => {
 
         const result = await client.setVisionModel("llava");
 
-        expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/api/models/vision`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "llava" }),
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            `${BASE_URL}/api/models/vision`,
+            expect.objectContaining({
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "llava" }),
+            }),
+        );
         expect(result).toEqual({ model: "llava" });
     });
 });
@@ -508,6 +529,57 @@ describe("parseSSE — edge cases", () => {
         } as unknown as Response);
 
         await expect(collect(client.syncStream())).rejects.toThrow("Response body is null");
+    });
+});
+
+describe("fetchWithRetry()", () => {
+    it("retries on network error and succeeds on second attempt", async () => {
+        const data = { status: "ok" };
+        fetchMock
+            .mockRejectedValueOnce(new Error("connection refused"))
+            .mockResolvedValueOnce(jsonResponse(data));
+
+        const result = await client.health();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(result).toEqual(data);
+    });
+
+    it("throws after all retries exhausted on network error", async () => {
+        fetchMock.mockRejectedValue(new Error("connection refused"));
+
+        await expect(client.health()).rejects.toThrow("connection refused");
+        expect(fetchMock).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+    });
+
+    it("does NOT retry on HTTP error (4xx/5xx)", async () => {
+        fetchMock.mockResolvedValue({
+            ok: false,
+            status: 422,
+            text: () => Promise.resolve("Validation error"),
+        } as unknown as Response);
+
+        await expect(client.health()).rejects.toThrow("Server responded 422");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips timeout for SSE stream requests", async () => {
+        fetchMock.mockResolvedValue(sseResponse(["event: done\ndata: {}\n\n"]));
+
+        const events = await collect(client.syncStream());
+
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(init.signal).toBeUndefined();
+        expect(events).toHaveLength(1);
+    });
+
+    it("includes AbortSignal for non-stream requests", async () => {
+        fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
+
+        await client.health();
+
+        const init = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(init.signal).toBeInstanceOf(AbortSignal);
     });
 });
 

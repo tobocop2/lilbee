@@ -52,10 +52,12 @@ function makePlugin(): LilbeePlugin {
                 vision: { active: "", installed: [], catalog: [] },
             }),
             setChatModel: vi.fn().mockResolvedValue({ model: "phi3" }),
+            health: vi.fn().mockResolvedValue({ status: "ok", version: "1.0.0" }),
         },
         settings: { topK: 5 },
         activeModel: "llama3",
         fetchActiveModel: vi.fn(),
+        onProgress: null,
     } as unknown as LilbeePlugin;
 }
 
@@ -126,11 +128,23 @@ describe("ChatView.onOpen — DOM structure", () => {
         expect(clearBtn!.textContent).toBe("Clear chat");
     });
 
-    it("creates an add-file button inside the toolbar", () => {
-        const addBtn = container.find("lilbee-chat-add-file");
+    it("creates a paperclip add-file button inside the input area", () => {
+        const inputArea = container.find("lilbee-chat-input");
+        const addBtn = inputArea!.find("lilbee-chat-add-file");
         expect(addBtn).not.toBeNull();
         expect(addBtn!.tagName).toBe("BUTTON");
-        expect(addBtn!.textContent).toBe("+ Add file");
+        expect(addBtn!.attributes["data-icon"]).toBe("paperclip");
+    });
+
+    it("creates a connection dot in the toolbar", () => {
+        const dot = container.find("lilbee-connection-dot");
+        expect(dot).not.toBeNull();
+    });
+
+    it("creates a progress banner (hidden by default)", () => {
+        const banner = container.find("lilbee-progress-banner");
+        expect(banner).not.toBeNull();
+        expect(banner!.style.display).toBe("none");
     });
 
     it("creates a messages div with class 'lilbee-chat-messages'", () => {
@@ -481,7 +495,7 @@ describe("ChatView.sendMessage — sources", () => {
 });
 
 describe("ChatView.sendMessage — error event", () => {
-    it("shows a Notice when error event is received", async () => {
+    it("shows a Notice and renders error inline when error event is received", async () => {
         Notice.clear();
         const plugin = makePlugin();
         const { mockFn, done } = makeStream([
@@ -491,6 +505,7 @@ describe("ChatView.sendMessage — error event", () => {
         const view = new ChatView(makeLeaf(), plugin);
         await view.onOpen();
         const container = view.containerEl.children[1] as unknown as MockElement;
+        const messagesEl = container.find("lilbee-chat-messages")!;
         const textarea = container.find("lilbee-chat-textarea")!;
         textarea.value = "error question";
 
@@ -499,37 +514,15 @@ describe("ChatView.sendMessage — error event", () => {
         await tick();
 
         expect(Notice.instances[0].message).toBe("lilbee: something went wrong");
+        const assistantBubble = messagesEl.children[1];
+        const textEl = assistantBubble.find("lilbee-chat-content");
+        expect(textEl!.textContent).toBe("something went wrong");
+        expect(textEl!.classList.contains("lilbee-chat-error")).toBe(true);
     });
 });
 
 describe("ChatView.sendMessage — API throws", () => {
-    it("shows connection error Notice when chatStream throws", async () => {
-        Notice.clear();
-        const plugin = makePlugin();
-        let resolveThrown!: () => void;
-        const thrown = new Promise<void>((r) => { resolveThrown = r; });
-        plugin.api.chatStream = vi.fn().mockReturnValue(
-            (async function* () {
-                resolveThrown();
-                throw new Error("network");
-            })(),
-        );
-        const view = new ChatView(makeLeaf(), plugin);
-        await view.onOpen();
-        const container = view.containerEl.children[1] as unknown as MockElement;
-        const textarea = container.find("lilbee-chat-textarea")!;
-        textarea.value = "throw question";
-
-        container.find("lilbee-chat-send")!.trigger("click");
-        await thrown;
-        await tick();
-
-        expect(Notice.instances[0].message).toBe(
-            "lilbee: chat error — cannot connect to server",
-        );
-    });
-
-    it("sets assistant text to error message when chatStream throws", async () => {
+    it("sets assistant text to unavailable message and adds error class when chatStream throws", async () => {
         Notice.clear();
         const plugin = makePlugin();
         let resolveThrown!: () => void;
@@ -553,7 +546,8 @@ describe("ChatView.sendMessage — API throws", () => {
 
         const assistantBubble = messagesEl.children[1];
         const textEl = assistantBubble.find("lilbee-chat-content");
-        expect(textEl!.textContent).toBe("Error: could not connect to the lilbee server.");
+        expect(textEl!.textContent).toBe("Server unavailable — retries exhausted. Is lilbee running?");
+        expect(textEl!.classList.contains("lilbee-chat-error")).toBe(true);
     });
 });
 
@@ -847,6 +841,230 @@ describe("VaultFilePickerModal", () => {
         const file = { path: "test.md", name: "test.md" } as any;
         modal.onChooseItem(file, undefined);
         expect((plugin as any).addToLilbee).toHaveBeenCalledWith(file);
+    });
+});
+
+describe("ChatView — connection dot", () => {
+    it("sets connected class when health succeeds", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const dot = container.find("lilbee-connection-dot")!;
+        expect(dot.classList.contains("connected")).toBe(true);
+    });
+
+    it("sets disconnected class when health fails", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.health = vi.fn().mockRejectedValue(new Error("offline"));
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const dot = container.find("lilbee-connection-dot")!;
+        expect(dot.classList.contains("disconnected")).toBe(true);
+    });
+
+    it("updates to connected on successful chat stream", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.health = vi.fn().mockRejectedValue(new Error("offline"));
+        const { mockFn, done } = makeStream([
+            { event: SSE_EVENT.TOKEN, data: "hi" },
+            { event: SSE_EVENT.DONE, data: {} },
+        ]);
+        plugin.api.chatStream = mockFn;
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const textarea = container.find("lilbee-chat-textarea")!;
+        textarea.value = "test";
+
+        container.find("lilbee-chat-send")!.trigger("click");
+        await done;
+        await tick();
+
+        const dot = container.find("lilbee-connection-dot")!;
+        expect(dot.classList.contains("connected")).toBe(true);
+    });
+
+    it("updates to disconnected on chat stream failure", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        let resolveThrown!: () => void;
+        const thrown = new Promise<void>((r) => { resolveThrown = r; });
+        plugin.api.chatStream = vi.fn().mockReturnValue(
+            (async function* () {
+                resolveThrown();
+                throw new Error("network");
+            })(),
+        );
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const textarea = container.find("lilbee-chat-textarea")!;
+        textarea.value = "test";
+
+        container.find("lilbee-chat-send")!.trigger("click");
+        await thrown;
+        await tick();
+
+        const dot = container.find("lilbee-connection-dot")!;
+        expect(dot.classList.contains("disconnected")).toBe(true);
+    });
+});
+
+describe("ChatView — progress banner", () => {
+    it("handleProgress shows banner on file_start event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const banner = container.find("lilbee-progress-banner")!;
+
+        view.handleProgress({
+            event: SSE_EVENT.FILE_START,
+            data: { file: "paper.pdf", current_file: 3, total_files: 10 },
+        });
+
+        expect(banner.style.display).toBe("");
+        const label = container.find("lilbee-progress-label")!;
+        expect(label.textContent).toContain("3/10");
+        expect(label.textContent).toContain("paper.pdf");
+    });
+
+    it("handleProgress shows banner on extract event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        view.handleProgress({
+            event: SSE_EVENT.EXTRACT,
+            data: { file: "paper.pdf", page: 5, total_pages: 50 },
+        });
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const label = container.find("lilbee-progress-label")!;
+        expect(label.textContent).toContain("Extracting");
+        expect(label.textContent).toContain("page 5/50");
+    });
+
+    it("handleProgress shows banner on embed event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        view.handleProgress({
+            event: SSE_EVENT.EMBED,
+            data: { file: "paper.pdf", chunk: 30, total_chunks: 100 },
+        });
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const label = container.find("lilbee-progress-label")!;
+        expect(label.textContent).toContain("Embedding");
+        expect(label.textContent).toContain("30/100");
+    });
+
+    it("handleProgress shows banner on progress event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        view.handleProgress({
+            event: SSE_EVENT.PROGRESS,
+            data: { file: "notes.md", current: 2, total: 5 },
+        });
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const label = container.find("lilbee-progress-label")!;
+        expect(label.textContent).toContain("2/5");
+        expect(label.textContent).toContain("notes.md");
+    });
+
+    it("handleProgress hides banner on done event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        // Show first
+        view.handleProgress({
+            event: SSE_EVENT.FILE_START,
+            data: { file: "a.md", current_file: 1, total_files: 1 },
+        });
+        // Then complete
+        view.handleProgress({
+            event: SSE_EVENT.DONE,
+            data: {},
+        });
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const banner = container.find("lilbee-progress-banner")!;
+        expect(banner.style.display).toBe("none");
+    });
+
+    it("handleProgress no-ops when progressBanner is null (before onOpen)", () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        // Do NOT call onOpen
+
+        expect(() => {
+            view.handleProgress({
+                event: SSE_EVENT.FILE_START,
+                data: { file: "x", current_file: 1, total_files: 1 },
+            });
+        }).not.toThrow();
+    });
+});
+
+describe("ChatView.onClose", () => {
+    it("clears onProgress callback", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        expect(plugin.onProgress).not.toBeNull();
+
+        await (view as any).onClose();
+
+        expect(plugin.onProgress).toBeNull();
+    });
+});
+
+describe("ChatView — onProgress registration", () => {
+    it("registers onProgress callback on open that forwards to handleProgress", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        expect(plugin.onProgress).toBeTypeOf("function");
+
+        // Call through the registered callback
+        plugin.onProgress!({
+            event: SSE_EVENT.FILE_START,
+            data: { file: "test.md", current_file: 1, total_files: 2 },
+        });
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const label = container.find("lilbee-progress-label")!;
+        expect(label.textContent).toContain("1/2");
     });
 });
 

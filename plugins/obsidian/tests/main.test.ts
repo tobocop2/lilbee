@@ -382,16 +382,12 @@ describe("LilbeePlugin", () => {
             expect((plugin as any).statusBarEl?.textContent).toBe("lilbee: ready");
         });
 
-        it("updates status bar text for progress events", async () => {
+        it("emits progress events to onProgress callback", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
-            const statusTexts: string[] = [];
-            const origSetText = (plugin as any).statusBarEl!.setText.bind((plugin as any).statusBarEl);
-            (plugin as any).statusBarEl!.setText = (text: string) => {
-                statusTexts.push(text);
-                origSetText(text);
-            };
+            const progressEvents: any[] = [];
+            plugin.onProgress = (event) => progressEvents.push(event);
 
             async function* withProgress() {
                 yield { event: SSE_EVENT.PROGRESS, data: { file: "notes.md", current: 1, total: 5 } };
@@ -400,7 +396,7 @@ describe("LilbeePlugin", () => {
 
             await plugin.triggerSync();
 
-            expect(statusTexts.some((t) => t.includes("1/5") && t.includes("notes.md"))).toBe(true);
+            expect(progressEvents.some((e) => e.event === SSE_EVENT.PROGRESS)).toBe(true);
         });
 
         it("shows Notice with all stats when done event has populated arrays", async () => {
@@ -851,17 +847,13 @@ describe("LilbeePlugin", () => {
         });
     });
 
-    describe("granular progress events", () => {
-        it("file_start updates status bar with file-level progress", async () => {
+    describe("progress event forwarding", () => {
+        it("file_start event is forwarded to onProgress callback", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
-            const statusTexts: string[] = [];
-            const origSetText = (plugin as any).statusBarEl!.setText.bind((plugin as any).statusBarEl);
-            (plugin as any).statusBarEl!.setText = (text: string) => {
-                statusTexts.push(text);
-                origSetText(text);
-            };
+            const events: any[] = [];
+            plugin.onProgress = (e) => events.push(e);
 
             async function* withFileStart() {
                 yield { event: SSE_EVENT.FILE_START, data: { file: "paper.pdf", current_file: 3, total_files: 10 } };
@@ -870,19 +862,15 @@ describe("LilbeePlugin", () => {
 
             await plugin.triggerSync();
 
-            expect(statusTexts.some((t) => t.includes("3/10") && t.includes("paper.pdf"))).toBe(true);
+            expect(events.some((e) => e.event === SSE_EVENT.FILE_START)).toBe(true);
         });
 
-        it("extract updates status bar with page-level progress", async () => {
+        it("extract event is forwarded to onProgress callback", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
-            const statusTexts: string[] = [];
-            const origSetText = (plugin as any).statusBarEl!.setText.bind((plugin as any).statusBarEl);
-            (plugin as any).statusBarEl!.setText = (text: string) => {
-                statusTexts.push(text);
-                origSetText(text);
-            };
+            const events: any[] = [];
+            plugin.onProgress = (e) => events.push(e);
 
             async function* withExtract() {
                 yield { event: SSE_EVENT.EXTRACT, data: { file: "paper.pdf", page: 5, total_pages: 50 } };
@@ -891,19 +879,15 @@ describe("LilbeePlugin", () => {
 
             await plugin.triggerSync();
 
-            expect(statusTexts.some((t) => t.includes("extracting") && t.includes("page 5/50"))).toBe(true);
+            expect(events.some((e) => e.event === SSE_EVENT.EXTRACT)).toBe(true);
         });
 
-        it("embed updates status bar with chunk-level progress", async () => {
+        it("embed event is forwarded to onProgress callback", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
 
-            const statusTexts: string[] = [];
-            const origSetText = (plugin as any).statusBarEl!.setText.bind((plugin as any).statusBarEl);
-            (plugin as any).statusBarEl!.setText = (text: string) => {
-                statusTexts.push(text);
-                origSetText(text);
-            };
+            const events: any[] = [];
+            plugin.onProgress = (e) => events.push(e);
 
             async function* withEmbed() {
                 yield { event: SSE_EVENT.EMBED, data: { file: "paper.pdf", chunk: 30, total_chunks: 100 } };
@@ -912,17 +896,40 @@ describe("LilbeePlugin", () => {
 
             await plugin.triggerSync();
 
-            expect(statusTexts.some((t) => t.includes("embedding") && t.includes("30/100"))).toBe(true);
+            expect(events.some((e) => e.event === SSE_EVENT.EMBED)).toBe(true);
         });
 
-        it("handleProgressEvent no-ops when statusBarEl is null", async () => {
+        it("emitProgress no-ops when onProgress is null", async () => {
             const plugin = await createPlugin();
             await plugin.onload();
-            (plugin as any).statusBarEl = null;
+            plugin.onProgress = null;
 
-            expect(() => {
-                (plugin as any).handleProgressEvent({ event: SSE_EVENT.FILE_START, data: { file: "x", current_file: 1, total_files: 1 } });
-            }).not.toThrow();
+            async function* withFileStart() {
+                yield { event: SSE_EVENT.FILE_START, data: { file: "x", current_file: 1, total_files: 1 } };
+            }
+            plugin.api.syncStream = vi.fn().mockReturnValue(withFileStart());
+
+            await expect(plugin.triggerSync()).resolves.not.toThrow();
+        });
+
+        it("done event is forwarded to onProgress from runAdd", async () => {
+            const plugin = await createPlugin();
+            await plugin.onload();
+
+            const events: any[] = [];
+            plugin.onProgress = (e) => events.push(e);
+
+            async function* withDone() {
+                yield {
+                    event: SSE_EVENT.DONE,
+                    data: { added: ["a.md"], updated: [], removed: [], failed: [], unchanged: 0 },
+                };
+            }
+            plugin.api.addFiles = vi.fn().mockReturnValue(withDone());
+
+            await (plugin as any).addToLilbee({ path: "test.md", name: "test.md" });
+
+            expect(events.some((e) => e.event === SSE_EVENT.DONE)).toBe(true);
         });
     });
 
