@@ -7,9 +7,11 @@ The plugin manages its own `.lilbee/` database inside your vault and starts/stop
 ## Demo
 
 <details>
-<summary><b>Scanned PDF → vision OCR → chat</b></summary>
+<summary><b>Scanned PDF → vision OCR → chat</b> (click to expand)</summary>
 
 Attaching a scanned 1998 Star Wars: X-Wing Collector's Edition manual (PDF with no extractable text), indexing it with vision OCR via [LightOnOCR-2](https://ollama.com/maternion/LightOnOCR-2), and chatting about the dev team credits — entirely local.
+
+> **Note:** Recording sped up 5.5x. Real time was ~4 minutes on an M1 Pro with 32 GB RAM. Most of that is vision OCR extracting each page of the scanned PDF.
 
 ![Obsidian chat demo](demos/obsidian-chat.gif)
 </details>
