@@ -35,13 +35,21 @@ async def search_route(
 
 @post("/api/ask")
 async def ask_route(data: dict[str, Any]) -> dict[str, Any]:
-    return await handlers.ask(question=data["question"], top_k=data.get("top_k", 0))
+    return await handlers.ask(
+        question=data["question"],
+        top_k=data.get("top_k", 0),
+        options=data.get("options"),
+    )
 
 
 @post("/api/ask/stream")
 async def ask_stream_route(data: dict[str, Any]) -> Stream:
     return Stream(
-        handlers.ask_stream(question=data["question"], top_k=data.get("top_k", 0)),
+        handlers.ask_stream(
+            question=data["question"],
+            top_k=data.get("top_k", 0),
+            options=data.get("options"),
+        ),
         media_type="text/event-stream",
     )
 
@@ -52,6 +60,7 @@ async def chat_route(data: dict[str, Any]) -> dict[str, Any]:
         question=data["question"],
         history=data.get("history", []),
         top_k=data.get("top_k", 0),
+        options=data.get("options"),
     )
 
 
@@ -62,6 +71,7 @@ async def chat_stream_route(data: dict[str, Any]) -> Stream:
             question=data["question"],
             history=data.get("history", []),
             top_k=data.get("top_k", 0),
+            options=data.get("options"),
         ),
         media_type="text/event-stream",
     )

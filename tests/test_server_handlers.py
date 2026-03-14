@@ -177,7 +177,7 @@ class TestChat:
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
         assert result["answer"] == "ok"
-        mock_ask.assert_called_once_with("follow up", top_k=0, history=history)
+        mock_ask.assert_called_once_with("follow up", top_k=0, history=history, options=None)
 
 
 class TestChatStream:

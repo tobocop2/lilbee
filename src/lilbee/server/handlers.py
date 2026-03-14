@@ -79,19 +79,25 @@ async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     return to_dicts(grouped)
 
 
-async def ask(question: str, top_k: int = 0) -> dict[str, Any]:
+async def ask(
+    question: str, top_k: int = 0, options: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """One-shot RAG answer. Returns {answer, sources[]}."""
     from lilbee.cli.helpers import clean_result
+    from lilbee.config import cfg
     from lilbee.query import ask_raw
 
-    result = ask_raw(question, top_k=top_k)
+    opts = cfg.generation_options(**options) if options else None
+    result = ask_raw(question, top_k=top_k, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
     }
 
 
-async def ask_stream(question: str, top_k: int = 0) -> AsyncGenerator[str, None]:
+async def ask_stream(
+    question: str, top_k: int = 0, options: dict[str, Any] | None = None
+) -> AsyncGenerator[str, None]:
     """Yield SSE events: token, sources, done."""
     yield ""  # force generator
     from lilbee.cli.helpers import clean_result
@@ -113,12 +119,15 @@ async def ask_stream(question: str, top_k: int = 0) -> AsyncGenerator[str, None]
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[dict[str, str]] = [{"role": "system", "content": cfg.system_prompt}]
     messages.append({"role": "user", "content": prompt})
+    opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
     try:
         import ollama as ollama_client
 
         stream = await asyncio.to_thread(
-            lambda: ollama_client.chat(model=cfg.chat_model, messages=messages, stream=True)
+            lambda: ollama_client.chat(
+                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+            )
         )
         for chunk in stream:
             token = chunk.message.content
@@ -132,12 +141,19 @@ async def ask_stream(question: str, top_k: int = 0) -> AsyncGenerator[str, None]
     yield sse_event("done", {})
 
 
-async def chat(question: str, history: list[dict[str, str]], top_k: int = 0) -> dict[str, Any]:
+async def chat(
+    question: str,
+    history: list[dict[str, str]],
+    top_k: int = 0,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Chat with history. Returns {answer, sources[]}."""
     from lilbee.cli.helpers import clean_result
+    from lilbee.config import cfg
     from lilbee.query import ask_raw
 
-    result = ask_raw(question, top_k=top_k, history=history)
+    opts = cfg.generation_options(**options) if options else None
+    result = ask_raw(question, top_k=top_k, history=history, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -145,7 +161,10 @@ async def chat(question: str, history: list[dict[str, str]], top_k: int = 0) -> 
 
 
 async def chat_stream(
-    question: str, history: list[dict[str, str]], top_k: int = 0
+    question: str,
+    history: list[dict[str, str]],
+    top_k: int = 0,
+    options: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
     yield ""  # force generator
@@ -169,12 +188,15 @@ async def chat_stream(
     messages: list[dict[str, str]] = [{"role": "system", "content": cfg.system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
+    opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
     try:
         import ollama as ollama_client
 
         stream = await asyncio.to_thread(
-            lambda: ollama_client.chat(model=cfg.chat_model, messages=messages, stream=True)
+            lambda: ollama_client.chat(
+                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+            )
         )
         for chunk in stream:
             token = chunk.message.content
