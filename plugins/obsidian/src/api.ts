@@ -206,7 +206,8 @@ export class LilbeeClient {
             buffer += decoder.decode(value, { stream: true });
 
             const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
+            // split() always returns at least one element, so pop() is never undefined
+            buffer = lines.pop()!;
 
             for (const line of lines) {
                 if (line.startsWith("event:")) {

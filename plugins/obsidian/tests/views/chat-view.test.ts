@@ -1273,3 +1273,59 @@ describe("ChatView.onOpen — add file button opens menu", () => {
         expect(Notice.instances.some((n) => n.message.includes("could not open file picker"))).toBe(true);
     });
 });
+
+describe("ChatView — branch coverage for guards", () => {
+    it("setConnectionStatus does nothing when connectionDot is null (before onOpen)", () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        // connectionDot is null before onOpen — call via health rejection path
+        plugin.api.health = vi.fn().mockRejectedValue(new Error("offline"));
+        // Force populateModelSelector to not crash
+        plugin.api.listModels = vi.fn().mockRejectedValue(new Error("offline"));
+        // Trigger onOpen which calls pingHealth → setConnectionStatus
+        // But first null out the internal dot by accessing private field
+        (view as any).connectionDot = null;
+        expect(() => (view as any).setConnectionStatus(true)).not.toThrow();
+        expect(() => (view as any).setConnectionStatus(false)).not.toThrow();
+    });
+
+    it("scheduleRender dedup: second call while pending is a no-op", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+
+        // Block rAF so renderPending stays true between tokens
+        let rafCallbacks: FrameRequestCallback[] = [];
+        const origRAF = globalThis.requestAnimationFrame;
+        globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+            rafCallbacks.push(cb);
+            return 0;
+        };
+
+        const { mockFn, done } = makeStream([
+            { event: SSE_EVENT.TOKEN, data: { token: "a" } },
+            { event: SSE_EVENT.TOKEN, data: { token: "b" } },
+            { event: SSE_EVENT.DONE, data: {} },
+        ]);
+        plugin.api.chatStream = mockFn;
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const textarea = container.find("lilbee-chat-textarea")!;
+        textarea.value = "test dedup";
+        container.find("lilbee-chat-send")!.trigger("click");
+        await done;
+
+        // Only one rAF callback should be queued despite two TOKEN events
+        // (the second scheduleRender hits the renderPending guard)
+        expect(rafCallbacks.length).toBe(1);
+
+        // Flush the rAF
+        for (const cb of rafCallbacks) cb(0);
+        rafCallbacks = [];
+        await tick();
+
+        globalThis.requestAnimationFrame = origRAF;
+    });
+});
