@@ -12,6 +12,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
+from lilbee.progress import DetailedProgressCallback, noop_callback
+
 log = logging.getLogger(__name__)
 
 _OCR_PROMPT = (
@@ -95,12 +97,17 @@ def _make_progress(name: str, total: int, quiet: bool) -> tuple[AbstractContextM
 
 
 def extract_pdf_vision(
-    path: Path, model: str, *, quiet: bool = False, timeout: float | None = None
+    path: Path,
+    model: str,
+    *,
+    quiet: bool = False,
+    timeout: float | None = None,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[tuple[int, str]]:
     """Extract text from a PDF using vision model OCR.
 
     Returns a list of (1-based page number, text) tuples for pages that
-    produced non-empty text.
+    produced non-empty text. Fires ``extract`` progress events per page.
     """
     total = pdf_page_count(path)
     if total == 0:
@@ -112,6 +119,10 @@ def extract_pdf_vision(
 
     with progress_ctx:
         for i, png in rasterize_pdf(path):
+            on_progress(
+                "extract",
+                {"file": path.name, "page": i + 1, "total_pages": total},
+            )
             log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
             text = extract_page_text(png, model, timeout=timeout)
             if text is None:

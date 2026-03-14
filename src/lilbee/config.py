@@ -49,6 +49,8 @@ class Config:
     ignore_dirs: frozenset[str]
     vision_model: str = ""
     vision_timeout: float = 120.0  # seconds per page
+    server_host: str = "127.0.0.1"
+    server_port: int = 7433
     json_mode: bool = False
 
     @classmethod
@@ -121,6 +123,8 @@ class Config:
             ignore_dirs=ignore_dirs,
             vision_model=vision_model,
             vision_timeout=vision_timeout,
+            server_host=env("SERVER_HOST", "127.0.0.1"),
+            server_port=env_int("SERVER_PORT", 7433),
         )
 
 
