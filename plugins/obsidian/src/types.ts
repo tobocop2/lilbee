@@ -108,6 +108,7 @@ export const SSE_EVENT = {
     EXTRACT: "extract",
     EMBED: "embed",
     FILE_DONE: "file_done",
+    PULL: "pull",
 } as const;
 
 export const JSON_HEADERS = { "Content-Type": "application/json" } as const;

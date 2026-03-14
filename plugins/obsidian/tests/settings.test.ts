@@ -1,7 +1,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import { App, Notice, Setting } from "obsidian";
 import { MockElement } from "./__mocks__/obsidian";
-import { LilbeeSettingTab, buildModelOptions, SEPARATOR_KEY, SEPARATOR_LABEL } from "../src/settings";
+import { LilbeeSettingTab, buildModelOptions, deduplicateLatest, SEPARATOR_KEY, SEPARATOR_LABEL } from "../src/settings";
 import type { LilbeeSettings, ModelCatalog, ModelsResponse } from "../src/types";
 import { DEFAULT_SETTINGS, SSE_EVENT } from "../src/types";
 
@@ -1022,7 +1022,7 @@ describe("LilbeeSettingTab", () => {
 
             await dropdownOnChanges[0]("phi3");
             expect(plugin.onProgress).toHaveBeenCalledWith(
-                expect.objectContaining({ event: SSE_EVENT.PROGRESS }),
+                expect.objectContaining({ event: SSE_EVENT.PULL }),
             );
         });
 
@@ -1094,7 +1094,7 @@ describe("LilbeeSettingTab", () => {
             await dropdownOnChanges[0]("phi3");
             // Only the done event should be called, not progress
             const progressCalls = (plugin.onProgress as ReturnType<typeof vi.fn>).mock.calls.filter(
-                (c: any[]) => c[0].event === SSE_EVENT.PROGRESS,
+                (c: any[]) => c[0].event === SSE_EVENT.PULL,
             );
             expect(progressCalls.length).toBe(0);
         });
@@ -1252,5 +1252,49 @@ describe("buildModelOptions()", () => {
         const catalog: ModelCatalog = { active: "", catalog: [], installed: [] };
         const options = buildModelOptions(catalog, "chat");
         expect(Object.keys(options).length).toBe(0);
+    });
+
+    it("deduplicates :latest when a specific tag exists", () => {
+        const catalog: ModelCatalog = {
+            active: "mistral:7b",
+            catalog: [],
+            installed: ["mistral:latest", "mistral:7b", "llama3:latest"],
+        };
+        const options = buildModelOptions(catalog, "chat");
+        const keys = Object.keys(options);
+        expect(keys).toContain("mistral:7b");
+        expect(keys).not.toContain("mistral:latest");
+        // llama3:latest has no specific tag sibling, so it stays
+        expect(keys).toContain("llama3:latest");
+    });
+});
+
+describe("deduplicateLatest()", () => {
+    it("removes :latest when a more specific tag exists", () => {
+        const result = deduplicateLatest(["mistral:latest", "mistral:7b"]);
+        expect(result).toEqual(["mistral:7b"]);
+    });
+
+    it("keeps :latest when no specific tag exists", () => {
+        const result = deduplicateLatest(["llama3:latest"]);
+        expect(result).toEqual(["llama3:latest"]);
+    });
+
+    it("handles models without tags", () => {
+        const result = deduplicateLatest(["phi3", "phi3:latest"]);
+        expect(result).toEqual(["phi3"]);
+    });
+
+    it("handles empty list", () => {
+        expect(deduplicateLatest([])).toEqual([]);
+    });
+
+    it("handles multiple model families", () => {
+        const result = deduplicateLatest([
+            "mistral:latest", "mistral:7b",
+            "llama3:latest", "llama3:8b",
+            "phi3:latest",
+        ]);
+        expect(result).toEqual(["mistral:7b", "llama3:8b", "phi3:latest"]);
     });
 });

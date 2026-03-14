@@ -52,6 +52,11 @@ const PROGRESS_EXTRACTORS: Record<string, (data: any) => ProgressInfo> = {
         current: d.current,
         total: d.total,
     }),
+    [SSE_EVENT.PULL]: (d) => ({
+        label: `Pulling ${d.model} — ${Math.round((d.current / d.total) * 100)}%`,
+        current: d.current,
+        total: d.total,
+    }),
 };
 
 function extractString(data: unknown, field: string): string {
@@ -232,18 +237,16 @@ export class ChatView extends ItemView {
                     if (event.event === SSE_EVENT.PROGRESS) {
                         const data = event.data as { completed: number; total: number };
                         if (data.total > 0) {
-                            this.handleProgress({
-                                event: SSE_EVENT.PROGRESS,
-                                data: {
-                                    label: `Pulling ${model.name}`,
-                                    current: data.completed,
-                                    total: data.total,
-                                },
-                            });
+                            const pct = Math.round((data.completed / data.total) * 100);
+                            this.showProgress(
+                                `Pulling ${model.name} — ${pct}%`,
+                                data.completed,
+                                data.total,
+                            );
                         }
                     }
                 }
-                this.handleProgress({ event: SSE_EVENT.DONE, data: {} });
+                this.hideProgress();
                 await this.plugin.api.setChatModel(model.name);
                 this.plugin.activeModel = model.name;
                 this.plugin.fetchActiveModel();
@@ -251,7 +254,7 @@ export class ChatView extends ItemView {
                 this.refreshModelSelector(selectEl);
             } catch {
                 new Notice(`Failed to pull ${model.name}`);
-                this.handleProgress({ event: SSE_EVENT.DONE, data: {} });
+                this.hideProgress();
             }
         })();
     }
@@ -399,11 +402,8 @@ export class ChatView extends ItemView {
     }
 
     handleProgress(event: SSEEvent): void {
-        if (!this.progressBanner || !this.progressLabel || !this.progressBar) return;
-
         if (event.event === SSE_EVENT.DONE) {
-            this.progressBanner.style.display = "none";
-            this.progressBar.style.width = "0%";
+            this.hideProgress();
             return;
         }
 
@@ -411,9 +411,20 @@ export class ChatView extends ItemView {
         if (!extractor) return;
 
         const info = extractor(event.data);
+        this.showProgress(info.label, info.current, info.total);
+    }
+
+    showProgress(label: string, current: number, total: number): void {
+        if (!this.progressBanner || !this.progressLabel || !this.progressBar) return;
         this.progressBanner.style.display = "";
-        this.progressLabel.textContent = info.label;
-        this.progressBar.style.width = `${Math.round((info.current / info.total) * 100)}%`;
+        this.progressLabel.textContent = label;
+        this.progressBar.style.width = `${Math.round((current / total) * 100)}%`;
+    }
+
+    hideProgress(): void {
+        if (!this.progressBanner || !this.progressBar) return;
+        this.progressBanner.style.display = "none";
+        this.progressBar.style.width = "0%";
     }
 
     private renderSources(container: HTMLElement, sources: Source[]): void {

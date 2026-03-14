@@ -8,6 +8,22 @@ const CLS_MODELS_CONTAINER = "lilbee-models-container";
 const SEPARATOR_KEY = "__separator__";
 const SEPARATOR_LABEL = "\u2500\u2500 Other... \u2500\u2500";
 
+/**
+ * Remove `:latest` entries when a more specific tag of the same model exists.
+ * e.g. if both `mistral:latest` and `mistral:7b` are present, drop `mistral:latest`.
+ */
+export function deduplicateLatest(models: string[]): string[] {
+    const bases = new Set(
+        models
+            .filter((m) => !m.endsWith(":latest"))
+            .map((m) => m.split(":")[0]),
+    );
+    return models.filter((m) => {
+        if (!m.endsWith(":latest")) return true;
+        return !bases.has(m.split(":")[0]);
+    });
+}
+
 export function buildModelOptions(
     catalog: ModelCatalog,
     type: "chat" | "vision",
@@ -24,9 +40,9 @@ export function buildModelOptions(
         options[model.name] = `${model.name}${suffix}`;
     }
 
-    const otherInstalled = catalog.installed
-        .filter((name) => !catalogNames.has(name))
-        .sort();
+    const otherInstalled = deduplicateLatest(
+        catalog.installed.filter((name) => !catalogNames.has(name)),
+    ).sort();
 
     if (otherInstalled.length > 0) {
         options[SEPARATOR_KEY] = SEPARATOR_LABEL;
@@ -283,9 +299,9 @@ export class LilbeeSettingTab extends PluginSettingTab {
                         const pct = Math.round((data.completed / data.total) * 100);
                         if (this.plugin.onProgress) {
                             this.plugin.onProgress({
-                                event: SSE_EVENT.PROGRESS,
+                                event: SSE_EVENT.PULL,
                                 data: {
-                                    label: `Pulling ${model.name}`,
+                                    model: model.name,
                                     current: data.completed,
                                     total: data.total,
                                 },

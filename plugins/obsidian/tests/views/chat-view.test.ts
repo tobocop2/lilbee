@@ -1172,6 +1172,40 @@ describe("ChatView — progress banner", () => {
 
         expect(banner.style.display).toBe("none");
     });
+
+    it("handleProgress shows pull-specific label on pull event", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const banner = container.find("lilbee-progress-banner")!;
+        const label = container.find("lilbee-progress-label")!;
+
+        view.handleProgress({
+            event: SSE_EVENT.PULL,
+            data: { model: "mistral", current: 50, total: 100 },
+        });
+
+        expect(banner.style.display).toBe("");
+        expect(label.textContent).toBe("Pulling mistral — 50%");
+    });
+
+    it("showProgress no-ops when progressBanner is null", () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        // Before onOpen, banner elements are null
+        expect(() => view.showProgress("test", 1, 2)).not.toThrow();
+    });
+
+    it("hideProgress no-ops when progressBanner is null", () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        expect(() => view.hideProgress()).not.toThrow();
+    });
 });
 
 describe("ChatView.onClose", () => {
