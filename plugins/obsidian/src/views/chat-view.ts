@@ -24,6 +24,42 @@ export const electronDialog = {
 
 export const VIEW_TYPE_CHAT = "lilbee-chat";
 
+interface ProgressInfo {
+    label: string;
+    current: number;
+    total: number;
+}
+
+const PROGRESS_EXTRACTORS: Record<string, (data: any) => ProgressInfo> = {
+    [SSE_EVENT.FILE_START]: (d) => ({
+        label: `Indexing ${d.current_file}/${d.total_files} — ${d.file}`,
+        current: d.current_file,
+        total: d.total_files,
+    }),
+    [SSE_EVENT.EXTRACT]: (d) => ({
+        label: `Extracting ${d.file} (page ${d.page}/${d.total_pages})`,
+        current: d.page,
+        total: d.total_pages,
+    }),
+    [SSE_EVENT.EMBED]: (d) => ({
+        label: `Embedding ${d.file} (${d.chunk}/${d.total_chunks} chunks)`,
+        current: d.chunk,
+        total: d.total_chunks,
+    }),
+    [SSE_EVENT.PROGRESS]: (d) => ({
+        label: `Indexing ${d.current}/${d.total} — ${d.file}`,
+        current: d.current,
+        total: d.total,
+    }),
+};
+
+function extractString(data: unknown, field: string): string {
+    if (typeof data === "object" && data !== null && field in data) {
+        return String((data as Record<string, unknown>)[field]);
+    }
+    return String(data);
+}
+
 export class ChatView extends ItemView {
     private plugin: LilbeePlugin;
     private history: Message[] = [];
@@ -57,14 +93,29 @@ export class ChatView extends ItemView {
         container.empty();
         container.addClass("lilbee-chat-container");
 
+        this.createToolbar(container);
+        this.createProgressBanner(container);
+        this.messagesEl = container.createDiv({ cls: "lilbee-chat-messages" });
+        this.createInputArea(container);
+
+        this.plugin.onProgress = (event) => this.handleProgress(event);
+    }
+
+    async onClose(): Promise<void> {
+        if (this.plugin.onProgress) {
+            this.plugin.onProgress = null;
+        }
+    }
+
+    private createToolbar(container: HTMLElement): void {
         const toolbar = container.createDiv({ cls: "lilbee-chat-toolbar" });
 
-        // Connection status dot
         this.connectionDot = toolbar.createDiv({ cls: "lilbee-connection-dot" });
         this.pingHealth();
 
-        // Model selector
-        const modelSelect = toolbar.createEl("select", { cls: "lilbee-chat-model-select" });
+        const modelSelect = toolbar.createEl("select", {
+            cls: "lilbee-chat-model-select",
+        }) as HTMLSelectElement;
         this.populateModelSelector(modelSelect);
 
         const clearBtn = toolbar.createEl("button", {
@@ -72,24 +123,20 @@ export class ChatView extends ItemView {
             cls: "lilbee-chat-clear",
         });
         clearBtn.addEventListener("click", () => this.clearChat());
+    }
 
-        // Progress banner (hidden by default)
+    private createProgressBanner(container: HTMLElement): void {
         this.progressBanner = container.createDiv({ cls: "lilbee-progress-banner" });
         this.progressBanner.style.display = "none";
         this.progressLabel = this.progressBanner.createDiv({ cls: "lilbee-progress-label" });
         const barContainer = this.progressBanner.createDiv({ cls: "lilbee-progress-bar-container" });
         this.progressBar = barContainer.createDiv({ cls: "lilbee-progress-bar" });
+    }
 
-        // Messages list
-        this.messagesEl = container.createDiv({ cls: "lilbee-chat-messages" });
-
-        // Input area
+    private createInputArea(container: HTMLElement): void {
         const inputArea = container.createDiv({ cls: "lilbee-chat-input" });
 
-        // Paperclip add-file button
-        const addBtn = inputArea.createEl("button", {
-            cls: "lilbee-chat-add-file",
-        });
+        const addBtn = inputArea.createEl("button", { cls: "lilbee-chat-add-file" });
         addBtn.setAttribute("aria-label", "Add file");
         setIcon(addBtn, "paperclip");
         addBtn.addEventListener("click", (e) => this.openFilePicker(e));
@@ -117,15 +164,6 @@ export class ChatView extends ItemView {
                 handleSend();
             }
         });
-
-        // Register for progress events from the plugin
-        this.plugin.onProgress = (event) => this.handleProgress(event);
-    }
-
-    async onClose(): Promise<void> {
-        if (this.plugin.onProgress) {
-            this.plugin.onProgress = null;
-        }
     }
 
     private pingHealth(): void {
@@ -142,13 +180,13 @@ export class ChatView extends ItemView {
         this.connectionDot.addClass(connected ? "connected" : "disconnected");
     }
 
-    private populateModelSelector(selectEl: HTMLElement): void {
+    private populateModelSelector(selectEl: HTMLSelectElement): void {
         this.plugin.api.listModels().then((models) => {
             for (const name of models.chat.installed) {
                 const option = selectEl.createEl("option", { text: name });
-                (option as any).value = name;
+                (option as HTMLOptionElement).value = name;
                 if (name === models.chat.active) {
-                    (option as any).selected = true;
+                    (option as HTMLOptionElement).selected = true;
                 }
             }
             this.setConnectionStatus(true);
@@ -158,15 +196,13 @@ export class ChatView extends ItemView {
         });
 
         selectEl.addEventListener("change", () => {
-            const value = (selectEl as any).value;
-            if (value) {
-                this.plugin.api.setChatModel(value).then(() => {
-                    this.plugin.activeModel = value;
-                    this.plugin.fetchActiveModel();
-                }).catch(() => {
-                    new Notice("lilbee: failed to switch model");
-                });
-            }
+            if (!selectEl.value) return;
+            this.plugin.api.setChatModel(selectEl.value).then(() => {
+                this.plugin.activeModel = selectEl.value;
+                this.plugin.fetchActiveModel();
+            }).catch(() => {
+                new Notice("lilbee: failed to switch model");
+            });
         });
     }
 
@@ -180,41 +216,34 @@ export class ChatView extends ItemView {
         this.sending = true;
         if (this.sendBtn) this.sendBtn.disabled = true;
 
-        // Render user bubble
-        const userBubble = this.messagesEl.createDiv({
-            cls: "lilbee-chat-message user",
-        });
+        const userBubble = this.messagesEl.createDiv({ cls: "lilbee-chat-message user" });
         userBubble.createEl("p", { text });
-
-        // Push to history
         this.history.push({ role: "user", content: text });
 
-        // Render assistant bubble with loading spinner
-        const assistantBubble = this.messagesEl.createDiv({
-            cls: "lilbee-chat-message assistant",
-        });
+        const assistantBubble = this.messagesEl.createDiv({ cls: "lilbee-chat-message assistant" });
         const spinner = assistantBubble.createDiv({ cls: "lilbee-loading" });
         spinner.textContent = "Thinking...";
         const textEl = assistantBubble.createDiv({ cls: "lilbee-chat-content" });
         textEl.style.display = "none";
-        if (this.messagesEl) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 
-        let fullContent = "";
-        const sources: Source[] = [];
-        let renderPending = false;
+        const state = { fullContent: "", sources: [] as Source[], renderPending: false };
+
+        const revealContent = (): void => {
+            if (spinner.parentElement) spinner.remove();
+            textEl.style.display = "";
+        };
 
         const scrollToBottom = (): void => {
-            if (this.messagesEl) {
-                this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
-            }
+            if (this.messagesEl) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
         };
 
         const scheduleRender = (): void => {
-            if (renderPending) return;
-            renderPending = true;
+            if (state.renderPending) return;
+            state.renderPending = true;
             requestAnimationFrame(() => {
-                renderPending = false;
-                void this.renderMarkdown(textEl, fullContent).then(scrollToBottom);
+                state.renderPending = false;
+                void this.renderMarkdown(textEl, state.fullContent).then(scrollToBottom);
             });
         };
 
@@ -225,47 +254,52 @@ export class ChatView extends ItemView {
                 this.plugin.settings.topK,
             )) {
                 this.setConnectionStatus(true);
-                if (event.event === SSE_EVENT.TOKEN) {
-                    if (spinner.parentElement) spinner.remove();
-                    textEl.style.display = "";
-                    const raw = event.data;
-                    const token = typeof raw === "object" && raw !== null && "token" in raw
-                        ? String((raw as Record<string, unknown>).token)
-                        : String(raw);
-                    fullContent += token;
-                    scheduleRender();
-                } else if (event.event === SSE_EVENT.SOURCES) {
-                    const data = event.data as Source[];
-                    sources.push(...data);
-                } else if (event.event === SSE_EVENT.DONE) {
-                    if (spinner.parentElement) spinner.remove();
-                    textEl.style.display = "";
-                    await this.renderMarkdown(textEl, fullContent);
-                    if (sources.length > 0) {
-                        this.renderSources(assistantBubble, sources);
-                    }
-                    this.history.push({ role: "assistant", content: fullContent });
-                } else if (event.event === SSE_EVENT.ERROR) {
-                    const errData = event.data;
-                    const errMsg = typeof errData === "object" && errData !== null && "message" in errData
-                        ? String((errData as Record<string, unknown>).message)
-                        : String(errData);
-                    if (spinner.parentElement) spinner.remove();
-                    textEl.style.display = "";
-                    textEl.textContent = errMsg;
-                    textEl.addClass("lilbee-chat-error");
-                    new Notice(`lilbee: ${errMsg}`);
-                }
+                this.handleStreamEvent(event, textEl, assistantBubble, state, revealContent, scheduleRender);
             }
         } catch {
-            if (spinner.parentElement) spinner.remove();
-            textEl.style.display = "";
+            revealContent();
             this.setConnectionStatus(false);
             textEl.textContent = "Server unavailable — retries exhausted. Is lilbee running?";
             textEl.addClass("lilbee-chat-error");
         } finally {
             this.sending = false;
             if (this.sendBtn) this.sendBtn.disabled = false;
+        }
+    }
+
+    private handleStreamEvent(
+        event: SSEEvent,
+        textEl: HTMLElement,
+        assistantBubble: HTMLElement,
+        state: { fullContent: string; sources: Source[] },
+        revealContent: () => void,
+        scheduleRender: () => void,
+    ): void {
+        switch (event.event) {
+            case SSE_EVENT.TOKEN: {
+                revealContent();
+                state.fullContent += extractString(event.data, "token");
+                scheduleRender();
+                break;
+            }
+            case SSE_EVENT.SOURCES:
+                state.sources.push(...(event.data as Source[]));
+                break;
+            case SSE_EVENT.DONE: {
+                revealContent();
+                void this.renderMarkdown(textEl, state.fullContent);
+                if (state.sources.length > 0) this.renderSources(assistantBubble, state.sources);
+                this.history.push({ role: "assistant", content: state.fullContent });
+                break;
+            }
+            case SSE_EVENT.ERROR: {
+                const errMsg = extractString(event.data, "message");
+                revealContent();
+                textEl.textContent = errMsg;
+                textEl.addClass("lilbee-chat-error");
+                new Notice(`lilbee: ${errMsg}`);
+                break;
+            }
         }
     }
 
@@ -312,44 +346,19 @@ export class ChatView extends ItemView {
     handleProgress(event: SSEEvent): void {
         if (!this.progressBanner || !this.progressLabel || !this.progressBar) return;
 
-        switch (event.event) {
-            case SSE_EVENT.FILE_START: {
-                const data = event.data as { file: string; current_file: number; total_files: number };
-                this.progressBanner.style.display = "";
-                this.progressLabel.textContent = `Indexing ${data.current_file}/${data.total_files} — ${data.file}`;
-                const pct = Math.round((data.current_file / data.total_files) * 100);
-                this.progressBar.style.width = `${pct}%`;
-                break;
-            }
-            case SSE_EVENT.EXTRACT: {
-                const data = event.data as { file: string; page: number; total_pages: number };
-                this.progressBanner.style.display = "";
-                this.progressLabel.textContent = `Extracting ${data.file} (page ${data.page}/${data.total_pages})`;
-                const pct = Math.round((data.page / data.total_pages) * 100);
-                this.progressBar.style.width = `${pct}%`;
-                break;
-            }
-            case SSE_EVENT.EMBED: {
-                const data = event.data as { file: string; chunk: number; total_chunks: number };
-                this.progressBanner.style.display = "";
-                this.progressLabel.textContent = `Embedding ${data.file} (${data.chunk}/${data.total_chunks} chunks)`;
-                const pct = Math.round((data.chunk / data.total_chunks) * 100);
-                this.progressBar.style.width = `${pct}%`;
-                break;
-            }
-            case SSE_EVENT.PROGRESS: {
-                const data = event.data as { file: string; current: number; total: number };
-                this.progressBanner.style.display = "";
-                this.progressLabel.textContent = `Indexing ${data.current}/${data.total} — ${data.file}`;
-                const pct = Math.round((data.current / data.total) * 100);
-                this.progressBar.style.width = `${pct}%`;
-                break;
-            }
-            case SSE_EVENT.DONE:
-                this.progressBanner.style.display = "none";
-                this.progressBar.style.width = "0%";
-                break;
+        if (event.event === SSE_EVENT.DONE) {
+            this.progressBanner.style.display = "none";
+            this.progressBar.style.width = "0%";
+            return;
         }
+
+        const extractor = PROGRESS_EXTRACTORS[event.event];
+        if (!extractor) return;
+
+        const info = extractor(event.data);
+        this.progressBanner.style.display = "";
+        this.progressLabel.textContent = info.label;
+        this.progressBar.style.width = `${Math.round((info.current / info.total) * 100)}%`;
     }
 
     private renderSources(container: HTMLElement, sources: Source[]): void {

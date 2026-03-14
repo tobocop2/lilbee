@@ -1021,7 +1021,6 @@ describe("ChatView — progress banner", () => {
         Notice.clear();
         const plugin = makePlugin();
         const view = new ChatView(makeLeaf(), plugin);
-        // Do NOT call onOpen
 
         expect(() => {
             view.handleProgress({
@@ -1029,6 +1028,20 @@ describe("ChatView — progress banner", () => {
                 data: { file: "x", current_file: 1, total_files: 1 },
             });
         }).not.toThrow();
+    });
+
+    it("handleProgress ignores unknown event types", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const banner = container.find("lilbee-progress-banner")!;
+
+        view.handleProgress({ event: "unknown_event", data: {} });
+
+        expect(banner.style.display).toBe("none");
     });
 });
 

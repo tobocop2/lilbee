@@ -311,8 +311,10 @@ export class Notice {
 
 export class Setting {
     private _el: MockElement;
+    settingEl: MockElement;
     constructor(el: MockElement) {
         this._el = el;
+        this.settingEl = el;
     }
     setName(_name: string): this { return this; }
     setDesc(_desc: string): this { return this; }
