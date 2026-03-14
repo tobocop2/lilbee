@@ -261,6 +261,58 @@ class TestSseGenerator:
         assert chunks[0] == b"event: test\ndata: {}\n\n"
 
 
+class TestOptionsPassthrough:
+    """Verify generation options are extracted from request body and passed through."""
+
+    async def test_ask_passes_options(self, isolated_env):
+        from lilbee.server.litestar_app import create_app
+
+        with (
+            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.store.search", return_value=[]),
+        ):
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/ask",
+                    json={"question": "test", "options": {"temperature": 0.3}},
+                )
+            assert resp.status_code == 201
+            body = resp.json()
+            assert "answer" in body
+
+    async def test_chat_passes_options(self, isolated_env):
+        from lilbee.server.litestar_app import create_app
+
+        with (
+            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.store.search", return_value=[]),
+        ):
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/chat",
+                    json={
+                        "question": "test",
+                        "history": [],
+                        "options": {"seed": 42},
+                    },
+                )
+            assert resp.status_code == 201
+            body = resp.json()
+            assert "answer" in body
+
+    async def test_ask_without_options(self, isolated_env):
+        """Request without options field still works."""
+        from lilbee.server.litestar_app import create_app
+
+        with (
+            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.store.search", return_value=[]),
+        ):
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post("/api/ask", json={"question": "test"})
+            assert resp.status_code == 201
+
+
 class TestCreateApp:
     def test_app_has_add_route(self):
         """The Litestar app registers the /api/add route."""

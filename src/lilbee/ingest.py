@@ -427,9 +427,6 @@ async def _ingest_file(
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
-ProgressCallback = Callable[[str, str, int, int], None]
-
-
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -586,9 +583,16 @@ async def _collect_results(
     for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
-        if on_progress is not None:
-            progress_status = "failed" if result.error is not None else "ingested"
-            on_progress(result.name, progress_status, completed_count, len(tasks))
+        progress_status = "failed" if result.error is not None else "ingested"
+        on_progress(
+            "batch_progress",
+            {
+                "file": result.name,
+                "status": progress_status,
+                "current": completed_count,
+                "total": len(tasks),
+            },
+        )
 
 
 async def _collect_results_with_progress(
@@ -600,23 +604,28 @@ async def _collect_results_with_progress(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results with Rich progress bar."""
-    completed_count = 0
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
         transient=True,
     ) as progress:
         ptask = progress.add_task("Ingesting documents...", total=len(tasks))
-        for fut in asyncio.as_completed(tasks):
+        for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
             result = await fut
             _apply_result(result, added, updated, failed)
-            completed_count += 1
             desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
             progress.update(ptask, description=desc)
             progress.advance(ptask)
-            if on_progress is not None:
-                progress_status = "failed" if result.error is not None else "ingested"
-                on_progress(result.name, progress_status, completed_count, len(tasks))
+            progress_status = "failed" if result.error is not None else "ingested"
+            on_progress(
+                "batch_progress",
+                {
+                    "file": result.name,
+                    "status": progress_status,
+                    "current": completed_count,
+                    "total": len(tasks),
+                },
+            )
 
 
 def _apply_result(
