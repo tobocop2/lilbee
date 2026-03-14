@@ -107,6 +107,14 @@ export class MockElement {
         return null;
     }
 
+    remove(): void {
+        if (this.parentElement) {
+            const idx = this.parentElement.children.indexOf(this);
+            if (idx >= 0) this.parentElement.children.splice(idx, 1);
+            this.parentElement = null;
+        }
+    }
+
     scrollIntoView(_opts?: unknown): void { /* noop */ }
     focus(): void { /* noop */ }
     blur(): void { /* noop */ }
@@ -127,13 +135,21 @@ export class App {
         getRightLeaf: vi.fn().mockReturnValue(null),
         revealLeaf: vi.fn(),
         on: vi.fn().mockReturnValue({ id: "mock-event" }),
+        getActiveFile: vi.fn().mockReturnValue(null),
     };
     vault = {
         on: vi.fn().mockReturnValue({ id: "mock-vault-event" }),
         adapter: {
             getBasePath: vi.fn().mockReturnValue("/test/vault"),
         },
+        getFiles: vi.fn().mockReturnValue([]),
     };
+}
+
+export interface TFile {
+    path: string;
+    name: string;
+    parent: { path: string; name: string } | null;
 }
 
 export class Modal {
@@ -149,6 +165,40 @@ export class Modal {
     close(): void { this.onClose(); }
     onOpen(): void { /* override */ }
     onClose(): void { /* override */ }
+}
+
+export class FuzzySuggestModal<T> {
+    app: App;
+
+    constructor(app: App) {
+        this.app = app;
+    }
+
+    setPlaceholder(_text: string): void { /* noop */ }
+    open(): void { /* noop */ }
+    close(): void { /* noop */ }
+    getItems(): T[] { return []; }
+    getItemText(_item: T): string { return ""; }
+    onChooseItem(_item: T, _evt: unknown): void { /* override */ }
+}
+
+class MockMenuItem {
+    setTitle(_title: string): this { return this; }
+    setIcon(_icon: string): this { return this; }
+    onClick(cb: () => void): this { cb(); return this; }
+}
+
+export class Menu {
+    private _items: MockMenuItem[] = [];
+
+    addItem(cb: (item: MockMenuItem) => void): this {
+        const item = new MockMenuItem();
+        cb(item);
+        this._items.push(item);
+        return this;
+    }
+
+    showAtMouseEvent(_event: unknown): void { /* noop */ }
 }
 
 export class ItemView {
@@ -217,6 +267,20 @@ export class PluginSettingTab {
     display(): void { /* override */ }
     hide(): void { /* noop */ }
 }
+
+export const MarkdownRenderer = {
+    async render(
+        _app: App,
+        markdown: string,
+        el: MockElement,
+        _sourcePath: string,
+        _component: unknown,
+    ): Promise<void> {
+        el.empty();
+        el.textContent = markdown;
+        el.createEl("p", { text: markdown });
+    },
+};
 
 export class Notice {
     message: string;

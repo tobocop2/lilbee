@@ -19,14 +19,16 @@ From the repo root: `make plugin-build`, `make plugin-test`, `make plugin-dev`.
 
 ```
 src/
-  main.ts           # Plugin entry: lifecycle, commands, auto-sync
-  types.ts          # All interfaces + DEFAULT_SETTINGS
-  api.ts            # LilbeeClient — typed HTTP client with SSE streaming
-  settings.ts       # Settings tab + model management UI
+  main.ts            # Plugin entry: lifecycle, commands, auto-sync
+  types.ts           # All interfaces + DEFAULT_SETTINGS + SSE_EVENT constants
+  api.ts             # LilbeeClient — typed HTTP client with SSE streaming
+  settings.ts        # Settings tab + model management UI
+  ollama-detector.ts # Polls Ollama endpoint, emits state changes
+  server-manager.ts  # Spawns/stops managed lilbee server process
   views/
-    results.ts      # Render helpers: document cards, source chips
-    search-modal.ts # Search/ask modal (Modal)
-    chat-view.ts    # Chat sidebar (ItemView)
+    results.ts       # Render helpers: document cards, source chips
+    search-modal.ts  # Search/ask modal (Modal)
+    chat-view.ts     # Chat sidebar (ItemView)
 ```
 
 **Key design decisions:**
@@ -41,7 +43,7 @@ src/
 - **No `any`** — define interfaces in `types.ts`; use `unknown` + cast at SSE boundaries only.
 - **Null guards** — always check container elements exist before manipulating DOM.
 - **Error handling** — wrap all API calls in try/catch, show `new Notice(message)` on failure.
-- **Constants** — named constants for magic numbers (`MAX_EXCERPT_CHARS`, `SEARCH_DEBOUNCE_MS`). Use `as const` objects for string literal sets (`SSE_EVENT`, `JSON_HEADERS`).
+- **Constants** — named constants for magic numbers (`MAX_EXCERPT_CHARS`, `SEARCH_DEBOUNCE_MS`). Use `as const` objects for string literal sets (`SSE_EVENT`, `JSON_HEADERS`, `SERVER_STATE`, `OLLAMA_STATE`). Never compare against raw string literals when a constant exists.
 - **Obsidian DOM helpers** — use `createDiv()`, `createEl()`, `setText()`, `addClass()`. No `innerHTML`.
 - **Import order** — obsidian imports first, then local modules.
 - **Strict TypeScript** — `noImplicitAny`, `strictNullChecks` enabled in tsconfig.
@@ -49,16 +51,24 @@ src/
 ## TypeScript Best Practices
 
 ### Const Assertions for String Unions
-Use `as const` objects for string literal sets shared across modules. Prefer this over enums:
+Use `as const satisfies` objects for string literal sets shared across modules. Prefer this over enums:
 ```typescript
+// Paired type + constant pattern for state machines
+export type ServerState = "stopped" | "starting" | "ready" | "error";
+export const SERVER_STATE = {
+    STOPPED: "stopped",
+    STARTING: "starting",
+    READY: "ready",
+    ERROR: "error",
+} as const satisfies Record<string, ServerState>;
+
+// Plain const assertion for event registries
 export const SSE_EVENT = {
     TOKEN: "token",
     DONE: "done",
 } as const;
-
-// Type: "token" | "done"
-type SSEEventType = (typeof SSE_EVENT)[keyof typeof SSE_EVENT];
 ```
+Always use the constant (`SERVER_STATE.READY`) in comparisons, never the raw string (`"ready"`).
 
 ### Discriminated Unions
 Model state transitions with discriminated unions, not boolean flags:
@@ -80,7 +90,11 @@ type StreamEvent =
 
 ### Exports
 - Export only what other modules need. Keep helpers and internal functions unexported.
-- Exception: export for testing is acceptable but should be noted with a comment.
+- Exception: export for testing is acceptable (e.g. `findBinary`, `ensureDataDir`, `node` in server-manager.ts).
+
+### No Dead Code
+- Don't leave empty lifecycle overrides (e.g. `onClose() {}`) — remove them entirely.
+- Delete unused imports, variables, and functions rather than commenting them out.
 
 ### Null Handling
 - Prefer `T | null` over `T | undefined` for data model fields (matches Python server).
@@ -141,8 +155,20 @@ expect(Notice.instances.map(n => n.message)).toContain("expected message");
 - Access private methods via `(instance as any).method()` when needed.
 - Call `Notice.clear()` in `beforeEach`.
 
+### Mocking Modules with Constants
+When a module exports both classes/functions AND `as const` objects, use `importOriginal` to preserve the constants:
+```typescript
+vi.mock("../src/ollama-detector", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../src/ollama-detector")>();
+    return {
+        ...actual,  // preserves OLLAMA_STATE, OllamaState type
+        OllamaDetector: vi.fn().mockImplementation(() => ({ ... })),
+    };
+});
+```
+
 ### What NOT to Mock
-- Don't mock `types.ts` — use real interfaces.
+- Don't mock `types.ts` — use real interfaces and constants.
 - Don't mock between view modules — let `renderDocumentResult` run for real in search-modal tests.
 
 ## Obsidian API Notes

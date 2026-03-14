@@ -85,8 +85,6 @@ export interface LilbeeSettings {
     topK: number;
     syncMode: "manual" | "auto";
     syncDebounceMs: number;
-    manageServer: boolean;
-    binaryPath: string;
     ollamaUrl: string;
 }
 
@@ -95,8 +93,6 @@ export const DEFAULT_SETTINGS: LilbeeSettings = {
     topK: 5,
     syncMode: "manual",
     syncDebounceMs: 5000,
-    manageServer: true,
-    binaryPath: "",
     ollamaUrl: "http://127.0.0.1:11434",
 };
 

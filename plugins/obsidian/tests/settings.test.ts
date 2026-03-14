@@ -5,7 +5,7 @@ import { LilbeeSettingTab } from "../src/settings";
 import type { LilbeeSettings, ModelsResponse } from "../src/types";
 import { DEFAULT_SETTINGS, SSE_EVENT } from "../src/types";
 
-function makePlugin(overrides: Partial<LilbeeSettings> = {}, ollamaState: string = "unknown") {
+function makePlugin(overrides: Partial<LilbeeSettings> = {}, detectorStates: { ollama?: string; server?: string } = {}) {
     const settings: LilbeeSettings = { ...DEFAULT_SETTINGS, ...overrides };
     const api = {
         listModels: vi.fn(),
@@ -14,11 +14,11 @@ function makePlugin(overrides: Partial<LilbeeSettings> = {}, ollamaState: string
         pullModel: vi.fn(),
     };
     const saveSettings = vi.fn().mockResolvedValue(undefined);
-    const restartServer = vi.fn().mockResolvedValue(undefined);
-    const ollamaDetector = { state: ollamaState };
+    const ollamaDetector = { state: detectorStates.ollama ?? "unknown" };
+    const serverDetector = { state: detectorStates.server ?? "unknown" };
     const statusBarEl = { setText: vi.fn(), textContent: "" };
     const fetchActiveModel = vi.fn();
-    return { settings, api, saveSettings, restartServer, ollamaDetector, statusBarEl, fetchActiveModel } as unknown as InstanceType<typeof import("../src/main").default>;
+    return { settings, api, saveSettings, ollamaDetector, serverDetector, statusBarEl, fetchActiveModel } as unknown as InstanceType<typeof import("../src/main").default>;
 }
 
 function makeTab(plugin: ReturnType<typeof makePlugin>) {
@@ -45,9 +45,6 @@ function makeModelsResponse(): ModelsResponse {
         },
     };
 }
-
-// Intercept Setting component callbacks by spying on the prototype methods.
-// Each call returns `this`, so we collect the captured onChange handlers in order.
 
 type TextOnChange = (v: string) => Promise<void>;
 type SliderOnChange = (v: number) => Promise<void>;
@@ -139,7 +136,6 @@ function captureSettingCallbacks(fn: () => void): Captured {
     return { textOnChanges, sliderOnChanges, dropdownOnChanges, toggleOnChanges, buttonOnClicks };
 }
 
-// Similarly capture dropdown options so we can inspect them
 function captureDropdownOptions(fn: () => void): Array<Record<string, string>> {
     const allOptions: Array<Record<string, string>> = [];
     const origAddDropdown = Setting.prototype.addDropdown;
@@ -206,8 +202,8 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
-            // manageServer=true (default): serverUrl + ollamaUrl + binaryPath + syncDebounce = 4
-            expect(textOnChanges.length).toBe(4);
+            // serverUrl + ollamaUrl + syncDebounce = 3
+            expect(textOnChanges.length).toBe(3);
         });
 
         it("does NOT show sync-debounce when syncMode is 'manual'", () => {
@@ -215,52 +211,8 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
-            // manageServer=true (default): serverUrl + ollamaUrl + binaryPath = 3
-            expect(textOnChanges.length).toBe(3);
-        });
-    });
-
-    describe("manageServer toggle onChange", () => {
-        it("updates manageServer, saves, and re-renders display", async () => {
-            const plugin = makePlugin({ manageServer: false });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-
-            const { toggleOnChanges } = captureSettingCallbacks(() => tab.display());
-            const displaySpy = vi.spyOn(tab, "display").mockImplementation(() => {});
-
-            await toggleOnChanges[0](true);
-
-            expect(plugin.settings.manageServer).toBe(true);
-            expect(plugin.saveSettings).toHaveBeenCalled();
-            expect(displaySpy).toHaveBeenCalled();
-        });
-    });
-
-    describe("binaryPath setting onChange", () => {
-        it("updates binaryPath and calls saveSettings", async () => {
-            const plugin = makePlugin({ manageServer: true });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            const { textOnChanges } = captureSettingCallbacks(() => tab.display());
-
-            // textOnChanges[0] = serverUrl, textOnChanges[1] = ollamaUrl, textOnChanges[2] = binaryPath
-            await textOnChanges[2]("/usr/local/bin/lilbee");
-            expect(plugin.settings.binaryPath).toBe("/usr/local/bin/lilbee");
-            expect(plugin.saveSettings).toHaveBeenCalled();
-        });
-    });
-
-    describe("restart server button", () => {
-        it("onClick calls restartServer", async () => {
-            const plugin = makePlugin({ manageServer: true });
-            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
-            const tab = makeTab(plugin);
-            const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
-
-            // buttonOnClicks[0] = refresh models, buttonOnClicks[1] = restart server
-            await buttonOnClicks[1]();
-            expect(plugin.restartServer).toHaveBeenCalled();
+            // serverUrl + ollamaUrl = 2
+            expect(textOnChanges.length).toBe(2);
         });
     });
 
@@ -271,7 +223,6 @@ describe("LilbeeSettingTab", () => {
             const tab = makeTab(plugin);
             const { textOnChanges } = captureSettingCallbacks(() => tab.display());
 
-            // First text onChange is serverUrl
             await textOnChanges[0]("http://localhost:9999");
             expect(plugin.settings.serverUrl).toBe("http://localhost:9999");
             expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
@@ -297,14 +248,9 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
 
-            // Capture the syncMode dropdown onChange; the onChange calls this.display() so we
-            // need to prevent infinite recursion by mocking display on subsequent calls.
             const { dropdownOnChanges } = captureSettingCallbacks(() => tab.display());
-
-            // After the first display(), spy on display to count re-render calls
             const displaySpy = vi.spyOn(tab, "display").mockImplementation(() => {});
 
-            // First dropdown onChange is the syncMode setting
             await dropdownOnChanges[0]("auto");
 
             expect(plugin.settings.syncMode).toBe("auto");
@@ -314,9 +260,9 @@ describe("LilbeeSettingTab", () => {
     });
 
     describe("syncDebounce text onChange", () => {
-        // With manageServer=true (default) + syncMode=auto, text fields are:
-        // [0] serverUrl, [1] ollamaUrl, [2] binaryPath, [3] syncDebounce
-        const DEBOUNCE_IDX = 3;
+        // With syncMode=auto, text fields are:
+        // [0] serverUrl, [1] ollamaUrl, [2] syncDebounce
+        const DEBOUNCE_IDX = 2;
 
         it("updates syncDebounceMs for valid positive number", async () => {
             const plugin = makePlugin({ syncMode: "auto" });
@@ -382,7 +328,7 @@ describe("LilbeeSettingTab", () => {
 
     describe("Ollama warning banner", () => {
         it("shows warning when Ollama is unreachable", () => {
-            const plugin = makePlugin({}, "unreachable");
+            const plugin = makePlugin({}, { ollama: "unreachable" });
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             tab.display();
@@ -393,11 +339,33 @@ describe("LilbeeSettingTab", () => {
         });
 
         it("does NOT show warning when Ollama is reachable", () => {
-            const plugin = makePlugin({}, "reachable");
+            const plugin = makePlugin({}, { ollama: "reachable" });
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
             const tab = makeTab(plugin);
             tab.display();
             const warning = tab.containerEl.find("lilbee-ollama-warning");
+            expect(warning).toBeNull();
+        });
+    });
+
+    describe("Server warning banner", () => {
+        it("shows warning when server is unreachable", () => {
+            const plugin = makePlugin({}, { server: "unreachable" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+            tab.display();
+            const warning = tab.containerEl.find("lilbee-server-warning");
+            expect(warning).not.toBeNull();
+            const paragraphs = warning!.children.filter((c) => c.tagName === "P");
+            expect(paragraphs.some((p) => p.textContent.includes("lilbee server is not running"))).toBe(true);
+        });
+
+        it("does NOT show warning when server is reachable", () => {
+            const plugin = makePlugin({}, { server: "reachable" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+            const tab = makeTab(plugin);
+            tab.display();
+            const warning = tab.containerEl.find("lilbee-server-warning");
             expect(warning).toBeNull();
         });
     });
@@ -409,8 +377,8 @@ describe("LilbeeSettingTab", () => {
             const tab = makeTab(plugin);
             const { buttonOnClicks } = captureSettingCallbacks(() => tab.display());
 
-            // manageServer=true (default): Refresh button [0] + Restart button [1]
-            expect(buttonOnClicks.length).toBe(2);
+            // Only Refresh button now (no Restart button)
+            expect(buttonOnClicks.length).toBe(1);
             await expect(buttonOnClicks[0]()).resolves.not.toThrow();
         });
     });
@@ -452,7 +420,6 @@ describe("LilbeeSettingTab", () => {
             });
 
             expect(allOptions.length).toBeGreaterThan(0);
-            // The first dropdown is the active model selector
             expect("" in allOptions[0]).toBe(false);
         });
 
@@ -533,7 +500,6 @@ describe("LilbeeSettingTab", () => {
             const tab = makeTab(plugin);
             const container = new MockElement("div") as unknown as HTMLElement;
             (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
-            // Verify a table exists somewhere in the section
             function findTag(el: MockElement, tag: string): MockElement | null {
                 if (el.tagName === tag.toUpperCase()) return el;
                 for (const child of el.children) {
@@ -550,7 +516,6 @@ describe("LilbeeSettingTab", () => {
             const plugin = makePlugin();
             const tab = makeTab(plugin);
             const container = new MockElement("div") as unknown as HTMLElement;
-            // Just verify it doesn't throw with a non-empty active field
             expect(() => {
                 (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
             }).not.toThrow();
@@ -560,7 +525,6 @@ describe("LilbeeSettingTab", () => {
             const plugin = makePlugin();
             const tab = makeTab(plugin);
             const container = new MockElement("div") as unknown as HTMLElement;
-            // vision catalog has active: ""
             expect(() => {
                 (tab as any).renderModelSection(container, "Vision Model", makeModelsResponse().vision, "vision");
             }).not.toThrow();
@@ -582,7 +546,7 @@ describe("LilbeeSettingTab", () => {
             const plugin = makePlugin();
             const tab = makeTab(plugin);
             const table = new MockElement("table") as unknown as HTMLTableElement;
-            const model = makeModelsResponse().chat.catalog[0]; // llama3, installed: true
+            const model = makeModelsResponse().chat.catalog[0];
             (tab as any).renderCatalogRow(table, model, "chat");
             const row = (table as unknown as MockElement).children[0];
             const actionCell = row.children[3];
@@ -595,7 +559,7 @@ describe("LilbeeSettingTab", () => {
             const plugin = makePlugin();
             const tab = makeTab(plugin);
             const table = new MockElement("table") as unknown as HTMLTableElement;
-            const model = makeModelsResponse().chat.catalog[1]; // phi3, installed: false
+            const model = makeModelsResponse().chat.catalog[1];
             (tab as any).renderCatalogRow(table, model, "chat");
             const row = (table as unknown as MockElement).children[0];
             const actionCell = row.children[3];
@@ -624,8 +588,6 @@ describe("LilbeeSettingTab", () => {
             actionCell: MockElement;
         }
 
-        // Instead of trigger (which doesn't await async handlers), we capture the
-        // click handler function via addEventListener and call it directly.
         async function setupPullButton(
             plugin: ReturnType<typeof makePlugin>,
             type: "chat" | "vision" = "chat",
@@ -748,7 +710,6 @@ describe("LilbeeSettingTab", () => {
             (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
 
             const { clickHandler } = await setupPullButton(plugin, "chat");
-            // Do NOT attach a modelsContainer — querySelector returns null
 
             await expect(clickHandler()).resolves.not.toThrow();
             expect(Notice.instances.some((n) => n.message.includes("pulled"))).toBe(true);
@@ -766,9 +727,6 @@ describe("LilbeeSettingTab", () => {
 
             const { tab, clickHandler } = await setupPullButton(plugin, "chat");
 
-            // In the node test environment HTMLElement does not exist globally. We define
-            // it as an alias for MockElement so that querySelector can return a MockElement
-            // that satisfies `instanceof HTMLElement`, and loadModels can call .empty() etc.
             Object.defineProperty(globalThis, "HTMLElement", { value: MockElement, configurable: true, writable: true });
             const fakeContainer = new MockElement("div");
             tab.containerEl.querySelector = vi.fn().mockReturnValue(fakeContainer);
@@ -777,7 +735,6 @@ describe("LilbeeSettingTab", () => {
 
             expect(plugin.api.listModels).toHaveBeenCalled();
 
-            // Cleanup the global stub
             // @ts-expect-error removing test-only global
             delete (globalThis as any).HTMLElement;
         });

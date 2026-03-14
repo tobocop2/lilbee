@@ -46,11 +46,12 @@ The plugin manages its own `.lilbee/` database inside your vault and starts/stop
 
 ## Quick start
 
-1. Install the plugin (copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/lilbee/`)
-2. Enable "lilbee" in Obsidian's community plugins settings
-3. The plugin initializes `.lilbee/` in your vault root and starts the server automatically
-4. Run **"lilbee: Sync vault"** from the command palette (`Ctrl/Cmd + P`) to index your vault
-5. Run **"lilbee: Search knowledge base"** and start typing
+1. Install and start **[Ollama](https://ollama.com)** (`ollama serve`)
+2. Install the plugin (copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/lilbee/`)
+3. Enable "lilbee" in Obsidian's community plugins settings
+4. The plugin initializes `.lilbee/` in your vault root and starts the server automatically
+5. Run **"lilbee: Sync vault"** from the command palette (`Ctrl/Cmd + P`) to index your vault
+6. Run **"lilbee: Search knowledge base"** and start typing
 
 That's it. The status bar shows server state: `starting...` → `ready`.
 
@@ -116,6 +117,7 @@ Open Settings → Community plugins → lilbee to configure the plugin.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Server URL** | `http://127.0.0.1:7433` | Address of the lilbee HTTP server. Auto-computed when "Manage server" is on. |
+| **Ollama URL** | `http://127.0.0.1:11434` | Address of the Ollama server. Change this if Ollama runs on a different host or port. |
 | **Results count** | 5 | Number of search results to return (1–20). |
 | **Sync mode** | Manual | `Manual` — sync only via the command palette. `Auto` — watch for file create/modify/delete/rename and sync automatically after a debounce delay. |
 | **Sync debounce** | 5000 | Delay in milliseconds before auto-sync triggers after a file change. Only shown when sync mode is "Auto". |
@@ -211,6 +213,7 @@ See the [lilbee agent integration docs](https://github.com/tobocop2/lilbee/blob/
 
 | Problem | Solution |
 |---------|----------|
+| Status bar shows "lilbee: ready (Ollama offline)" | Ollama is not running or unreachable. Start Ollama (`ollama serve`) or check the Ollama URL in settings. The plugin auto-detects Ollama every 30 seconds. |
 | Status bar shows "lilbee: error" | Check that Ollama is running (`ollama serve`). Click the status bar or check Obsidian's developer console for details. |
 | "lilbee not found" notice | Install lilbee (`pip install lilbee`) or set the binary path in settings. |
 | Search returns no results | Run "lilbee: Sync vault" first to index your documents. |

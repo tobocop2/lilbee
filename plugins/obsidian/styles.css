@@ -135,6 +135,13 @@
     line-height: var(--line-height-normal, 1.5);
     font-size: var(--font-text-size, 15px);
     word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.lilbee-chat-message p {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .lilbee-chat-message.user {
@@ -147,6 +154,10 @@
     align-self: flex-start;
     background-color: var(--background-secondary);
     color: var(--text-normal);
+}
+
+.lilbee-chat-content {
+    white-space: normal;
 }
 
 .lilbee-chat-sources {
