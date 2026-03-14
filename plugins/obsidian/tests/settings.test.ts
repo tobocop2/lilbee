@@ -1,8 +1,8 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
 import { App, Notice, Setting } from "obsidian";
 import { MockElement } from "./__mocks__/obsidian";
-import { LilbeeSettingTab } from "../src/settings";
-import type { LilbeeSettings, ModelsResponse } from "../src/types";
+import { LilbeeSettingTab, buildModelOptions, SEPARATOR_KEY, SEPARATOR_LABEL } from "../src/settings";
+import type { LilbeeSettings, ModelCatalog, ModelsResponse } from "../src/types";
 import { DEFAULT_SETTINGS, SSE_EVENT } from "../src/types";
 
 function makePlugin(overrides: Partial<LilbeeSettings> = {}) {
@@ -392,9 +392,9 @@ describe("LilbeeSettingTab", () => {
             expect(allOptions[0][""]).toBe("Disabled");
         });
 
-        it("active chat model onChange calls setChatModel and shows Notice", async () => {
+        it("active chat model onChange calls setChatModel and shows Notice for installed model", async () => {
             const plugin = makePlugin();
-            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "llama3" });
             const tab = makeTab(plugin);
             const container = new MockElement("div") as unknown as HTMLElement;
 
@@ -402,19 +402,24 @@ describe("LilbeeSettingTab", () => {
                 (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
             });
 
-            await dropdownOnChanges[0]("phi3");
-            expect(plugin.api.setChatModel).toHaveBeenCalledWith("phi3");
-            expect(Notice.instances.some((n) => n.message.includes("phi3"))).toBe(true);
+            await dropdownOnChanges[0]("llama3");
+            expect(plugin.api.setChatModel).toHaveBeenCalledWith("llama3");
+            expect(Notice.instances.some((n) => n.message.includes("llama3"))).toBe(true);
         });
 
-        it("active vision model onChange calls setVisionModel and shows Notice", async () => {
+        it("active vision model onChange calls setVisionModel and shows Notice for installed model", async () => {
             const plugin = makePlugin();
             (plugin.api.setVisionModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "llava" });
             const tab = makeTab(plugin);
             const container = new MockElement("div") as unknown as HTMLElement;
 
+            const vision = {
+                ...makeModelsResponse().vision,
+                installed: ["llava"],
+                catalog: [{ ...makeModelsResponse().vision.catalog[0], installed: true }],
+            };
             const { dropdownOnChanges } = captureSettingCallbacks(() => {
-                (tab as any).renderModelSection(container, "Vision Model", makeModelsResponse().vision, "vision");
+                (tab as any).renderModelSection(container, "Vision Model", vision, "vision");
             });
 
             await dropdownOnChanges[0]("llava");
@@ -436,7 +441,7 @@ describe("LilbeeSettingTab", () => {
             expect(Notice.instances.some((n) => n.message.includes("disabled"))).toBe(true);
         });
 
-        it("active model onChange shows failure Notice on API error", async () => {
+        it("active model onChange shows failure Notice on API error for installed model", async () => {
             const plugin = makePlugin();
             (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("fail"));
             const tab = makeTab(plugin);
@@ -446,7 +451,8 @@ describe("LilbeeSettingTab", () => {
                 (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
             });
 
-            await dropdownOnChanges[0]("phi3");
+            // llama3 is installed, so it goes through the direct set path
+            await dropdownOnChanges[0]("llama3");
             expect(Notice.instances.some((n) => n.message.includes("Failed to set"))).toBe(true);
         });
 
@@ -924,5 +930,327 @@ describe("LilbeeSettingTab", () => {
 
             expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         });
+    });
+
+    describe("separator key handling", () => {
+        it("dropdown onChange ignores separator key selection", async () => {
+            const plugin = makePlugin();
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0](SEPARATOR_KEY);
+            expect(plugin.api.setChatModel).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("auto-pull via dropdown", () => {
+        it("selecting uninstalled catalog model triggers auto-pull", async () => {
+            const plugin = makePlugin();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 50, total: 100 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            const modelsContainer = new MockElement("div");
+            modelsContainer.classList.add("lilbee-models-container");
+            tab.containerEl.children.push(modelsContainer);
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            // phi3 is uninstalled in catalog, should trigger auto-pull
+            await dropdownOnChanges[0]("phi3");
+            expect(plugin.api.pullModel).toHaveBeenCalledWith("phi3");
+            expect(plugin.api.setChatModel).toHaveBeenCalledWith("phi3");
+            expect(Notice.instances.some((n) => n.message.includes("pulled and activated"))).toBe(true);
+        });
+
+        it("auto-pull failure shows failure notice and sends done event", async () => {
+            const plugin = makePlugin();
+            (plugin as any).onProgress = vi.fn();
+
+            async function* failingPull(): AsyncGenerator<never> {
+                throw new Error("network");
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(failingPull());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0]("phi3");
+            expect(Notice.instances.some((n) => n.message.includes("Failed to pull"))).toBe(true);
+            expect(plugin.onProgress).toHaveBeenCalledWith(
+                expect.objectContaining({ event: SSE_EVENT.DONE }),
+            );
+        });
+
+        it("auto-pull sends progress to onProgress callback", async () => {
+            const plugin = makePlugin();
+            (plugin as any).onProgress = vi.fn();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 75, total: 100 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0]("phi3");
+            expect(plugin.onProgress).toHaveBeenCalledWith(
+                expect.objectContaining({ event: SSE_EVENT.PROGRESS }),
+            );
+        });
+
+        it("auto-pull for vision type calls setVisionModel", async () => {
+            const plugin = makePlugin();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setVisionModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "llava" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Vision Model", makeModelsResponse().vision, "vision");
+            });
+
+            await dropdownOnChanges[0]("llava");
+            expect(plugin.api.setVisionModel).toHaveBeenCalledWith("llava");
+        });
+
+        it("auto-pull updates status bar text", async () => {
+            const plugin = makePlugin();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 60, total: 100 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0]("phi3");
+            expect(plugin.statusBarEl!.setText).toHaveBeenCalledWith("lilbee: pulling phi3 — 60%");
+        });
+
+        it("auto-pull with total=0 does not send progress", async () => {
+            const plugin = makePlugin();
+            (plugin as any).onProgress = vi.fn();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 0, total: 0 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0]("phi3");
+            // Only the done event should be called, not progress
+            const progressCalls = (plugin.onProgress as ReturnType<typeof vi.fn>).mock.calls.filter(
+                (c: any[]) => c[0].event === SSE_EVENT.PROGRESS,
+            );
+            expect(progressCalls.length).toBe(0);
+        });
+
+        it("auto-pull without statusBarEl does not crash", async () => {
+            const plugin = makePlugin();
+            (plugin as any).statusBarEl = null;
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 50, total: 100 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await expect(dropdownOnChanges[0]("phi3")).resolves.not.toThrow();
+        });
+
+        it("auto-pull without onProgress does not crash", async () => {
+            const plugin = makePlugin();
+            (plugin as any).onProgress = null;
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.PROGRESS, data: { model: "phi3", status: "pulling", completed: 50, total: 100 } };
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(null);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await expect(dropdownOnChanges[0]("phi3")).resolves.not.toThrow();
+        });
+
+        it("auto-pull reloads models container when found", async () => {
+            const plugin = makePlugin();
+
+            async function* fakePull() {
+                yield { event: SSE_EVENT.DONE, data: {} };
+            }
+            (plugin.api.pullModel as ReturnType<typeof vi.fn>).mockReturnValue(fakePull());
+            (plugin.api.setChatModel as ReturnType<typeof vi.fn>).mockResolvedValue({ model: "phi3" });
+            (plugin.api.listModels as ReturnType<typeof vi.fn>).mockResolvedValue(makeModelsResponse());
+
+            const tab = makeTab(plugin);
+            const container = new MockElement("div") as unknown as HTMLElement;
+
+            Object.defineProperty(globalThis, "HTMLElement", { value: MockElement, configurable: true, writable: true });
+            const fakeModelsContainer = new MockElement("div");
+            tab.containerEl.querySelector = vi.fn().mockReturnValue(fakeModelsContainer);
+
+            const { dropdownOnChanges } = captureSettingCallbacks(() => {
+                (tab as any).renderModelSection(container, "Chat Model", makeModelsResponse().chat, "chat");
+            });
+
+            await dropdownOnChanges[0]("phi3");
+            // listModels called once during auto-pull reload
+            expect(plugin.api.listModels).toHaveBeenCalled();
+
+            // @ts-expect-error removing test-only global
+            delete (globalThis as any).HTMLElement;
+        });
+    });
+});
+
+describe("buildModelOptions()", () => {
+    it("chat: catalog models first, then separator, then other installed", () => {
+        const catalog: ModelCatalog = {
+            active: "llama3",
+            catalog: [
+                { name: "llama3", size_gb: 4.7, min_ram_gb: 8, description: "Meta Llama 3", installed: true },
+                { name: "phi3", size_gb: 2.3, min_ram_gb: 4, description: "Microsoft Phi-3", installed: false },
+            ],
+            installed: ["llama3", "custom-model"],
+        };
+        const options = buildModelOptions(catalog, "chat");
+        const keys = Object.keys(options);
+        expect(keys).toEqual(["llama3", "phi3", SEPARATOR_KEY, "custom-model"]);
+        expect(options["llama3"]).toBe("llama3");
+        expect(options["phi3"]).toBe("phi3 (not installed)");
+        expect(options[SEPARATOR_KEY]).toBe(SEPARATOR_LABEL);
+        expect(options["custom-model"]).toBe("custom-model");
+    });
+
+    it("vision: includes Disabled option first", () => {
+        const catalog: ModelCatalog = {
+            active: "",
+            catalog: [
+                { name: "llava", size_gb: 4.5, min_ram_gb: 8, description: "LLaVA", installed: false },
+            ],
+            installed: [],
+        };
+        const options = buildModelOptions(catalog, "vision");
+        const keys = Object.keys(options);
+        expect(keys[0]).toBe("");
+        expect(options[""]).toBe("Disabled");
+    });
+
+    it("no separator when all installed models are in catalog", () => {
+        const catalog: ModelCatalog = {
+            active: "llama3",
+            catalog: [
+                { name: "llama3", size_gb: 4.7, min_ram_gb: 8, description: "Meta", installed: true },
+            ],
+            installed: ["llama3"],
+        };
+        const options = buildModelOptions(catalog, "chat");
+        expect(SEPARATOR_KEY in options).toBe(false);
+    });
+
+    it("sorts catalog models alphabetically", () => {
+        const catalog: ModelCatalog = {
+            active: "zeta",
+            catalog: [
+                { name: "zeta", size_gb: 1, min_ram_gb: 2, description: "Z", installed: true },
+                { name: "alpha", size_gb: 1, min_ram_gb: 2, description: "A", installed: true },
+            ],
+            installed: ["zeta", "alpha"],
+        };
+        const options = buildModelOptions(catalog, "chat");
+        const keys = Object.keys(options);
+        expect(keys[0]).toBe("alpha");
+        expect(keys[1]).toBe("zeta");
+    });
+
+    it("sorts other installed models alphabetically", () => {
+        const catalog: ModelCatalog = {
+            active: "foo",
+            catalog: [],
+            installed: ["zoo", "bar", "foo"],
+        };
+        const options = buildModelOptions(catalog, "chat");
+        const keys = Object.keys(options);
+        // separator then bar, foo, zoo
+        expect(keys).toEqual([SEPARATOR_KEY, "bar", "foo", "zoo"]);
+    });
+
+    it("empty catalog and empty installed returns empty for chat", () => {
+        const catalog: ModelCatalog = { active: "", catalog: [], installed: [] };
+        const options = buildModelOptions(catalog, "chat");
+        expect(Object.keys(options).length).toBe(0);
     });
 });

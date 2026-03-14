@@ -1,8 +1,9 @@
 import { FuzzySuggestModal, ItemView, MarkdownRenderer, Menu, Notice, setIcon, type TFile, WorkspaceLeaf } from "obsidian";
 import type LilbeePlugin from "../main";
 import { SSE_EVENT } from "../types";
-import type { Message, Source, SSEEvent } from "../types";
+import type { Message, ModelCatalog, Source, SSEEvent } from "../types";
 import { renderSourceChip } from "./results";
+import { buildModelOptions, SEPARATOR_KEY } from "../settings";
 
 interface OpenDialogResult {
     canceled: boolean;
@@ -180,12 +181,19 @@ export class ChatView extends ItemView {
         this.connectionDot.addClass(connected ? "connected" : "disconnected");
     }
 
+    private chatCatalog: ModelCatalog | null = null;
+
     private populateModelSelector(selectEl: HTMLSelectElement): void {
         this.plugin.api.listModels().then((models) => {
-            for (const name of models.chat.installed) {
-                const option = selectEl.createEl("option", { text: name });
-                (option as HTMLOptionElement).value = name;
-                if (name === models.chat.active) {
+            this.chatCatalog = models.chat;
+            const options = buildModelOptions(models.chat, "chat");
+            for (const [value, label] of Object.entries(options)) {
+                const option = selectEl.createEl("option", { text: label });
+                (option as HTMLOptionElement).value = value;
+                if (value === SEPARATOR_KEY) {
+                    (option as HTMLOptionElement).disabled = true;
+                }
+                if (value === models.chat.active) {
                     (option as HTMLOptionElement).selected = true;
                 }
             }
@@ -196,7 +204,14 @@ export class ChatView extends ItemView {
         });
 
         selectEl.addEventListener("change", () => {
-            if (!selectEl.value) return;
+            if (!selectEl.value || selectEl.value === SEPARATOR_KEY) return;
+            const uninstalled = this.chatCatalog?.catalog.find(
+                (m) => m.name === selectEl.value && !m.installed,
+            );
+            if (uninstalled) {
+                this.autoPullAndSetChat(uninstalled, selectEl);
+                return;
+            }
             this.plugin.api.setChatModel(selectEl.value).then(() => {
                 this.plugin.activeModel = selectEl.value;
                 this.plugin.fetchActiveModel();
@@ -204,6 +219,46 @@ export class ChatView extends ItemView {
                 new Notice("lilbee: failed to switch model");
             });
         });
+    }
+
+    private autoPullAndSetChat(
+        model: { name: string },
+        selectEl: HTMLSelectElement,
+    ): void {
+        new Notice(`Pulling ${model.name}...`);
+        (async () => {
+            try {
+                for await (const event of this.plugin.api.pullModel(model.name)) {
+                    if (event.event === SSE_EVENT.PROGRESS) {
+                        const data = event.data as { completed: number; total: number };
+                        if (data.total > 0) {
+                            this.handleProgress({
+                                event: SSE_EVENT.PROGRESS,
+                                data: {
+                                    label: `Pulling ${model.name}`,
+                                    current: data.completed,
+                                    total: data.total,
+                                },
+                            });
+                        }
+                    }
+                }
+                this.handleProgress({ event: SSE_EVENT.DONE, data: {} });
+                await this.plugin.api.setChatModel(model.name);
+                this.plugin.activeModel = model.name;
+                this.plugin.fetchActiveModel();
+                new Notice(`Model ${model.name} pulled and activated`);
+                this.refreshModelSelector(selectEl);
+            } catch {
+                new Notice(`Failed to pull ${model.name}`);
+                this.handleProgress({ event: SSE_EVENT.DONE, data: {} });
+            }
+        })();
+    }
+
+    private refreshModelSelector(selectEl: HTMLSelectElement): void {
+        selectEl.empty();
+        this.populateModelSelector(selectEl);
     }
 
     private clearChat(): void {

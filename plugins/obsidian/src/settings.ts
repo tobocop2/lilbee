@@ -1,10 +1,44 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type LilbeePlugin from "./main";
 import { SSE_EVENT } from "./types";
-import type { ModelInfo, ModelsResponse, PullProgress } from "./types";
+import type { ModelCatalog, ModelInfo, ModelsResponse, PullProgress } from "./types";
 
 const CHECK_TIMEOUT_MS = 5000;
 const CLS_MODELS_CONTAINER = "lilbee-models-container";
+const SEPARATOR_KEY = "__separator__";
+const SEPARATOR_LABEL = "\u2500\u2500 Other... \u2500\u2500";
+
+export function buildModelOptions(
+    catalog: ModelCatalog,
+    type: "chat" | "vision",
+): Record<string, string> {
+    const options: Record<string, string> = {};
+    if (type === "vision") {
+        options[""] = "Disabled";
+    }
+
+    const catalogNames = new Set(catalog.catalog.map((m) => m.name));
+    const sortedCatalog = [...catalog.catalog].sort((a, b) => a.name.localeCompare(b.name));
+    for (const model of sortedCatalog) {
+        const suffix = model.installed ? "" : " (not installed)";
+        options[model.name] = `${model.name}${suffix}`;
+    }
+
+    const otherInstalled = catalog.installed
+        .filter((name) => !catalogNames.has(name))
+        .sort();
+
+    if (otherInstalled.length > 0) {
+        options[SEPARATOR_KEY] = SEPARATOR_LABEL;
+        for (const name of otherInstalled) {
+            options[name] = name;
+        }
+    }
+
+    return options;
+}
+
+export { SEPARATOR_KEY, SEPARATOR_LABEL };
 
 export class LilbeeSettingTab extends PluginSettingTab {
     plugin: LilbeePlugin;
@@ -184,29 +218,15 @@ export class LilbeeSettingTab extends PluginSettingTab {
             .setName(`Active ${type} model`)
             .setDesc(catalog.active || (type === "vision" ? "Disabled" : "Not set"));
 
-        const options: Record<string, string> = {};
-        if (type === "vision") {
-            options[""] = "Disabled";
-        }
-        for (const name of catalog.installed) {
-            options[name] = name;
-        }
+        const options = buildModelOptions(catalog, type);
 
         activeSetting.addDropdown((dropdown) =>
             dropdown
                 .addOptions(options)
                 .setValue(catalog.active)
                 .onChange(async (value) => {
-                    try {
-                        if (type === "chat") {
-                            await this.plugin.api.setChatModel(value);
-                        } else {
-                            await this.plugin.api.setVisionModel(value);
-                        }
-                        new Notice(`${label} set to ${value || "disabled"}`);
-                    } catch {
-                        new Notice(`Failed to set ${type} model`);
-                    }
+                    if (value === SEPARATOR_KEY) return;
+                    await this.handleModelChange(value, catalog, label, type, container);
                 }),
         );
 
@@ -220,6 +240,84 @@ export class LilbeeSettingTab extends PluginSettingTab {
 
         for (const model of catalog.catalog) {
             this.renderCatalogRow(table, model, type);
+        }
+    }
+
+    private async handleModelChange(
+        value: string,
+        catalog: ModelCatalog,
+        label: string,
+        type: "chat" | "vision",
+        container: HTMLElement,
+    ): Promise<void> {
+        const uninstalledCatalogModel = catalog.catalog.find(
+            (m) => m.name === value && !m.installed,
+        );
+        if (uninstalledCatalogModel) {
+            await this.autoPullAndSet(uninstalledCatalogModel, type, container);
+            return;
+        }
+        try {
+            if (type === "chat") {
+                await this.plugin.api.setChatModel(value);
+            } else {
+                await this.plugin.api.setVisionModel(value);
+            }
+            new Notice(`${label} set to ${value || "disabled"}`);
+        } catch {
+            new Notice(`Failed to set ${type} model`);
+        }
+    }
+
+    private async autoPullAndSet(
+        model: ModelInfo,
+        type: "chat" | "vision",
+        container: HTMLElement,
+    ): Promise<void> {
+        new Notice(`Pulling ${model.name}...`);
+        try {
+            for await (const event of this.plugin.api.pullModel(model.name)) {
+                if (event.event === SSE_EVENT.PROGRESS) {
+                    const data = event.data as PullProgress;
+                    if (data.total > 0) {
+                        const pct = Math.round((data.completed / data.total) * 100);
+                        if (this.plugin.onProgress) {
+                            this.plugin.onProgress({
+                                event: SSE_EVENT.PROGRESS,
+                                data: {
+                                    label: `Pulling ${model.name}`,
+                                    current: data.completed,
+                                    total: data.total,
+                                },
+                            });
+                        }
+                        if (this.plugin.statusBarEl) {
+                            this.plugin.statusBarEl.setText(
+                                `lilbee: pulling ${model.name} — ${pct}%`,
+                            );
+                        }
+                    }
+                }
+            }
+            if (this.plugin.onProgress) {
+                this.plugin.onProgress({ event: SSE_EVENT.DONE, data: {} });
+            }
+            if (type === "chat") {
+                await this.plugin.api.setChatModel(model.name);
+            } else {
+                await this.plugin.api.setVisionModel(model.name);
+            }
+            new Notice(`Model ${model.name} pulled and activated`);
+            this.plugin.fetchActiveModel();
+            const modelsContainer = this.containerEl.querySelector(`.${CLS_MODELS_CONTAINER}`);
+            if (modelsContainer instanceof HTMLElement) {
+                await this.loadModels(modelsContainer);
+            }
+        } catch {
+            new Notice(`Failed to pull ${model.name}`);
+            if (this.plugin.onProgress) {
+                this.plugin.onProgress({ event: SSE_EVENT.DONE, data: {} });
+            }
         }
     }
 

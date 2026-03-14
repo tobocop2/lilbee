@@ -52,6 +52,7 @@ function makePlugin(): LilbeePlugin {
                 vision: { active: "", installed: [], catalog: [] },
             }),
             setChatModel: vi.fn().mockResolvedValue({ model: "phi3" }),
+            pullModel: vi.fn(),
             health: vi.fn().mockResolvedValue({ status: "ok", version: "1.0.0" }),
         },
         settings: { topK: 5 },
@@ -638,7 +639,7 @@ describe("ChatView.onOpen — model selector", () => {
         expect(select!.tagName).toBe("SELECT");
     });
 
-    it("populates options from listModels API", async () => {
+    it("populates options from listModels API with catalog+Other pattern", async () => {
         Notice.clear();
         const plugin = makePlugin();
         const view = new ChatView(makeLeaf(), plugin);
@@ -648,9 +649,11 @@ describe("ChatView.onOpen — model selector", () => {
         const container = view.containerEl.children[1] as unknown as MockElement;
         const select = container.find("lilbee-chat-model-select")!;
         const options = select.children.filter((c) => c.tagName === "OPTION");
-        expect(options.length).toBe(2);
-        expect(options[0].textContent).toBe("llama3");
-        expect(options[1].textContent).toBe("phi3");
+        // With empty catalog, all installed go under separator: separator + llama3 + phi3
+        expect(options.length).toBe(3);
+        expect(options[0].disabled).toBe(true); // separator
+        expect(options[1].textContent).toBe("llama3");
+        expect(options[2].textContent).toBe("phi3");
     });
 
     it("shows (offline) option when listModels fails", async () => {
@@ -714,6 +717,132 @@ describe("ChatView.onOpen — model selector", () => {
         await tick();
 
         expect(plugin.api.setChatModel).not.toHaveBeenCalled();
+    });
+
+    it("change event does nothing when value is separator key", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "__separator__";
+        select.trigger("change");
+        await tick();
+
+        expect(plugin.api.setChatModel).not.toHaveBeenCalled();
+    });
+
+    it("selecting uninstalled catalog model triggers auto-pull with progress", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.listModels = vi.fn().mockResolvedValue({
+            chat: {
+                active: "llama3",
+                installed: ["llama3"],
+                catalog: [
+                    { name: "llama3", size_gb: 4.7, min_ram_gb: 8, description: "Meta", installed: true },
+                    { name: "phi3", size_gb: 2.3, min_ram_gb: 4, description: "MS", installed: false },
+                ],
+            },
+            vision: { active: "", installed: [], catalog: [] },
+        });
+
+        async function* fakePull() {
+            yield { event: "progress", data: { completed: 50, total: 100 } };
+            yield { event: "done", data: {} };
+        }
+        plugin.api.pullModel = vi.fn().mockReturnValue(fakePull());
+        plugin.api.setChatModel = vi.fn().mockResolvedValue({ model: "phi3" });
+
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "phi3";
+        select.trigger("change");
+        await tick();
+        // Allow async IIFE to complete
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(plugin.api.pullModel).toHaveBeenCalledWith("phi3");
+        expect(plugin.api.setChatModel).toHaveBeenCalledWith("phi3");
+        expect(Notice.instances.some((n) => n.message.includes("pulled and activated"))).toBe(true);
+    });
+
+    it("auto-pull failure shows failure notice", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.listModels = vi.fn().mockResolvedValue({
+            chat: {
+                active: "llama3",
+                installed: ["llama3"],
+                catalog: [
+                    { name: "llama3", size_gb: 4.7, min_ram_gb: 8, description: "Meta", installed: true },
+                    { name: "phi3", size_gb: 2.3, min_ram_gb: 4, description: "MS", installed: false },
+                ],
+            },
+            vision: { active: "", installed: [], catalog: [] },
+        });
+
+        async function* failingPull(): AsyncGenerator<never> {
+            throw new Error("network");
+        }
+        plugin.api.pullModel = vi.fn().mockReturnValue(failingPull());
+
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "phi3";
+        select.trigger("change");
+        await tick();
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(Notice.instances.some((n) => n.message.includes("Failed to pull"))).toBe(true);
+    });
+
+    it("auto-pull with total=0 does not send progress", async () => {
+        Notice.clear();
+        const plugin = makePlugin();
+        plugin.api.listModels = vi.fn().mockResolvedValue({
+            chat: {
+                active: "llama3",
+                installed: ["llama3"],
+                catalog: [
+                    { name: "llama3", size_gb: 4.7, min_ram_gb: 8, description: "Meta", installed: true },
+                    { name: "phi3", size_gb: 2.3, min_ram_gb: 4, description: "MS", installed: false },
+                ],
+            },
+            vision: { active: "", installed: [], catalog: [] },
+        });
+
+        async function* fakePull() {
+            yield { event: "progress", data: { completed: 0, total: 0 } };
+            yield { event: "done", data: {} };
+        }
+        plugin.api.pullModel = vi.fn().mockReturnValue(fakePull());
+        plugin.api.setChatModel = vi.fn().mockResolvedValue({ model: "phi3" });
+
+        const view = new ChatView(makeLeaf(), plugin);
+        await view.onOpen();
+        await tick();
+
+        const container = view.containerEl.children[1] as unknown as MockElement;
+        const select = container.find("lilbee-chat-model-select")!;
+        (select as any).value = "phi3";
+        select.trigger("change");
+        await tick();
+        await new Promise((r) => setTimeout(r, 50));
+
+        // Should still succeed without crashing
+        expect(plugin.api.setChatModel).toHaveBeenCalledWith("phi3");
     });
 });
 
