@@ -580,9 +580,19 @@ async def _collect_results(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results without progress display."""
-    for fut in asyncio.as_completed(tasks):
+    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
+        progress_status = "failed" if result.error is not None else "ingested"
+        on_progress(
+            "batch_progress",
+            {
+                "file": result.name,
+                "status": progress_status,
+                "current": completed_count,
+                "total": len(tasks),
+            },
+        )
 
 
 async def _collect_results_with_progress(
@@ -600,12 +610,22 @@ async def _collect_results_with_progress(
         transient=True,
     ) as progress:
         ptask = progress.add_task("Ingesting documents...", total=len(tasks))
-        for fut in asyncio.as_completed(tasks):
+        for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
             result = await fut
             _apply_result(result, added, updated, failed)
             desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
             progress.update(ptask, description=desc)
             progress.advance(ptask)
+            progress_status = "failed" if result.error is not None else "ingested"
+            on_progress(
+                "batch_progress",
+                {
+                    "file": result.name,
+                    "status": progress_status,
+                    "current": completed_count,
+                    "total": len(tasks),
+                },
+            )
 
 
 def _apply_result(

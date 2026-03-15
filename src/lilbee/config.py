@@ -6,9 +6,10 @@ All settings can be overridden via environment variables prefixed with LILBEE_.
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_int
+from lilbee.platform import default_data_dir, env, env_float, env_int, env_int_optional
 
 DEFAULT_IGNORE_DIRS = frozenset(
     {
@@ -52,6 +53,29 @@ class Config:
     server_host: str = "127.0.0.1"
     server_port: int = 7433
     json_mode: bool = False
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k_sampling: int | None = None
+    repeat_penalty: float | None = None
+    num_ctx: int | None = None
+    seed: int | None = None
+
+    def generation_options(self, **overrides: Any) -> dict[str, Any]:
+        """Build Ollama generation options from config fields and overrides.
+
+        Remaps ``top_k_sampling`` to Ollama's ``top_k`` key.
+        Filters out ``None`` values so Ollama uses its model defaults.
+        """
+        mapping: dict[str, Any] = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k_sampling,
+            "repeat_penalty": self.repeat_penalty,
+            "num_ctx": self.num_ctx,
+            "seed": self.seed,
+        }
+        mapping.update(overrides)
+        return {k: v for k, v in mapping.items() if v is not None}
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -125,6 +149,12 @@ class Config:
             vision_timeout=vision_timeout,
             server_host=env("SERVER_HOST", "127.0.0.1"),
             server_port=env_int("SERVER_PORT", 7433),
+            temperature=env_float("TEMPERATURE"),
+            top_p=env_float("TOP_P"),
+            top_k_sampling=env_int_optional("TOP_K_SAMPLING"),
+            repeat_penalty=env_float("REPEAT_PENALTY"),
+            num_ctx=env_int_optional("NUM_CTX"),
+            seed=env_int_optional("SEED"),
         )
 
 

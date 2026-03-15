@@ -428,6 +428,32 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert cfg.data_root == default_data_dir()
 
+    def test_generation_option_overrides(self):
+        from lilbee.cli import apply_overrides
+
+        apply_overrides(
+            temperature=0.3,
+            top_p=0.95,
+            top_k_sampling=40,
+            repeat_penalty=1.1,
+            num_ctx=4096,
+            seed=42,
+        )
+        assert cfg.temperature == 0.3
+        assert cfg.top_p == 0.95
+        assert cfg.top_k_sampling == 40
+        assert cfg.repeat_penalty == 1.1
+        assert cfg.num_ctx == 4096
+        assert cfg.seed == 42
+
+    def test_generation_option_none_is_noop(self):
+        from lilbee.cli import apply_overrides
+
+        cfg.temperature = 0.7
+        apply_overrides(temperature=None)
+        assert cfg.temperature == 0.7
+        cfg.temperature = None
+
 
 class TestGlobalFlag:
     """Tests for the --global / -g CLI flag."""

@@ -29,6 +29,36 @@ class TestHelpers:
         with mock.patch.dict(os.environ, {"LILBEE_NONEXISTENT": "99"}):
             assert env_int("NONEXISTENT", 42) == 99
 
+    def test_env_float_returns_default_none(self):
+        from lilbee.platform import env_float
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert env_float("NONEXISTENT") is None
+
+    def test_env_float_returns_default_value(self):
+        from lilbee.platform import env_float
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert env_float("NONEXISTENT", 0.5) == 0.5
+
+    def test_env_float_returns_override(self):
+        from lilbee.platform import env_float
+
+        with mock.patch.dict(os.environ, {"LILBEE_TEMP": "0.7"}):
+            assert env_float("TEMP") == 0.7
+
+    def test_env_int_optional_returns_none(self):
+        from lilbee.platform import env_int_optional
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert env_int_optional("NONEXISTENT") is None
+
+    def test_env_int_optional_returns_value(self):
+        from lilbee.platform import env_int_optional
+
+        with mock.patch.dict(os.environ, {"LILBEE_SEED": "42"}):
+            assert env_int_optional("SEED") == 42
+
     def test_default_data_dir_darwin(self):
         from lilbee.platform import default_data_dir
 
