@@ -153,6 +153,7 @@ async def ask_stream(
                 break
             yield event
     except (asyncio.CancelledError, GeneratorExit):
+        log.info("Stream cancelled by client")
         cancel.set()
         return
 
@@ -244,6 +245,7 @@ async def chat_stream(
                 break
             yield event
     except (asyncio.CancelledError, GeneratorExit):
+        log.info("Stream cancelled by client")
         cancel.set()
         return
 
