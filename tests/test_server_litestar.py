@@ -103,7 +103,7 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "meaning?"})
         assert resp.status_code == 201
         assert resp.json()["answer"] == "42"
-        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0)
+        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0, options=None)
 
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -113,7 +113,7 @@ class TestAskRoute:
     def test_forwards_top_k(self, mock_ask, client):
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
         assert resp.status_code == 201
-        mock_ask.assert_awaited_once_with(question="q", top_k=10)
+        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
 
 
 class TestAskStreamRoute:
@@ -136,7 +136,7 @@ class TestChatRoute:
         history = [{"role": "user", "content": "hi"}]
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
-        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0)
+        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0, options=None)
 
     @mock.patch(
         "lilbee.server.handlers.chat",
@@ -145,7 +145,7 @@ class TestChatRoute:
     )
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
-        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0)
+        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0, options=None)
 
 
 class TestChatStreamRoute:

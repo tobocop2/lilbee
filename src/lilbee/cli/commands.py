@@ -14,6 +14,12 @@ from lilbee.cli.app import (
     console,
     data_dir_option,
     model_option,
+    num_ctx_option,
+    repeat_penalty_option,
+    seed_option,
+    temperature_option,
+    top_k_sampling_option,
+    top_p_option,
 )
 from lilbee.cli.helpers import (
     add_paths,
@@ -396,9 +402,25 @@ def ask(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = _global_option,
+    temperature: float | None = temperature_option,
+    top_p: float | None = top_p_option,
+    top_k_sampling: int | None = top_k_sampling_option,
+    repeat_penalty: float | None = repeat_penalty_option,
+    num_ctx: int | None = num_ctx_option,
+    seed: int | None = seed_option,
 ) -> None:
     """Ask a one-shot question (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    apply_overrides(
+        data_dir=data_dir,
+        model=model,
+        use_global=use_global,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_sampling=top_k_sampling,
+        repeat_penalty=repeat_penalty,
+        num_ctx=num_ctx,
+        seed=seed,
+    )
 
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
@@ -440,9 +462,25 @@ def chat(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = _global_option,
+    temperature: float | None = temperature_option,
+    top_p: float | None = top_p_option,
+    top_k_sampling: int | None = top_k_sampling_option,
+    repeat_penalty: float | None = repeat_penalty_option,
+    num_ctx: int | None = num_ctx_option,
+    seed: int | None = seed_option,
 ) -> None:
     """Interactive chat loop (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    apply_overrides(
+        data_dir=data_dir,
+        model=model,
+        use_global=use_global,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_sampling=top_k_sampling,
+        repeat_penalty=repeat_penalty,
+        num_ctx=num_ctx,
+        seed=seed,
+    )
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
 

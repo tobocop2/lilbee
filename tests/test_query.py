@@ -280,6 +280,79 @@ class TestAskStream:
         assert all(t != "" for t in non_source_tokens if t.strip())
 
 
+class TestGenerationOptions:
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_raw_passes_options(self, _embed, _search, mock_chat):
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+        from lilbee.query import ask_raw
+
+        opts = {"temperature": 0.3, "seed": 42}
+        ask_raw("q", options=opts)
+        assert mock_chat.call_args[1]["options"] == opts
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_raw_defaults_to_cfg_options(self, _embed, _search, mock_chat):
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+        from lilbee.config import cfg
+        from lilbee.query import ask_raw
+
+        cfg.temperature = 0.7
+        cfg.seed = None
+        cfg.top_p = None
+        cfg.top_k_sampling = None
+        cfg.repeat_penalty = None
+        cfg.num_ctx = None
+        try:
+            ask_raw("q")
+            assert mock_chat.call_args[1]["options"] == {"temperature": 0.7}
+        finally:
+            cfg.temperature = None
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_stream_passes_options(self, _embed, _search, mock_chat):
+        mock_chat.return_value = iter([mock.MagicMock(message=mock.MagicMock(content="token"))])
+        from lilbee.query import ask_stream
+
+        opts = {"temperature": 0.1}
+        list(ask_stream("q", options=opts))
+        assert mock_chat.call_args[1]["options"] == opts
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_passes_options_through(self, _embed, _search, mock_chat):
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+        from lilbee.query import ask
+
+        opts = {"num_ctx": 4096}
+        ask("q", options=opts)
+        assert mock_chat.call_args[1]["options"] == opts
+
+    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_ask_raw_empty_options_passes_none(self, _embed, _search, mock_chat):
+        """When cfg has no generation options set, passes None to ollama."""
+        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+        from lilbee.config import cfg
+        from lilbee.query import ask_raw
+
+        cfg.temperature = None
+        cfg.top_p = None
+        cfg.top_k_sampling = None
+        cfg.repeat_penalty = None
+        cfg.num_ctx = None
+        cfg.seed = None
+        ask_raw("q")
+        assert mock_chat.call_args[1]["options"] is None
+
+
 class TestAskStreamError:
     @mock.patch("ollama.chat")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])

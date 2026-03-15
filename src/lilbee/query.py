@@ -2,6 +2,7 @@
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import Any
 
 import ollama
 
@@ -75,7 +76,12 @@ class AskResult:
     sources: list[dict]
 
 
-def ask_raw(question: str, top_k: int = 0, history: list[dict] | None = None) -> AskResult:
+def ask_raw(
+    question: str,
+    top_k: int = 0,
+    history: list[dict] | None = None,
+    options: dict[str, Any] | None = None,
+) -> AskResult:
     """One-shot question returning structured answer + raw sources."""
     results = search_context(question, top_k=top_k)
     if not results:
@@ -93,8 +99,9 @@ def ask_raw(question: str, top_k: int = 0, history: list[dict] | None = None) ->
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
+    opts = options if options is not None else cfg.generation_options()
     try:
-        response = ollama.chat(model=cfg.chat_model, messages=messages)
+        response = ollama.chat(model=cfg.chat_model, messages=messages, options=opts or None)
     except ollama.ResponseError as exc:
         raise RuntimeError(
             f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
@@ -102,9 +109,14 @@ def ask_raw(question: str, top_k: int = 0, history: list[dict] | None = None) ->
     return AskResult(answer=response.message.content or "", sources=results)
 
 
-def ask(question: str, top_k: int = 0, history: list[dict] | None = None) -> str:
+def ask(
+    question: str,
+    top_k: int = 0,
+    history: list[dict] | None = None,
+    options: dict[str, Any] | None = None,
+) -> str:
     """One-shot question: returns full answer with source citations."""
-    result = ask_raw(question, top_k=top_k, history=history)
+    result = ask_raw(question, top_k=top_k, history=history, options=options)
     if not result.sources:
         return result.answer
     citations = deduplicate_sources(result.sources)
@@ -112,7 +124,10 @@ def ask(question: str, top_k: int = 0, history: list[dict] | None = None) -> str
 
 
 def ask_stream(
-    question: str, top_k: int = 0, history: list[dict] | None = None
+    question: str,
+    top_k: int = 0,
+    history: list[dict] | None = None,
+    options: dict[str, Any] | None = None,
 ) -> Generator[str, None, None]:
     """Streaming question: yields answer tokens, then source citations."""
     results = search_context(question, top_k=top_k)
@@ -129,11 +144,13 @@ def ask_stream(
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
+    opts = options if options is not None else cfg.generation_options()
     try:
         stream = ollama.chat(
             model=cfg.chat_model,
             messages=messages,
             stream=True,
+            options=opts or None,
         )
     except ollama.ResponseError as exc:
         raise RuntimeError(
