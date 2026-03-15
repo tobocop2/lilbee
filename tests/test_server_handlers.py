@@ -1,6 +1,7 @@
 """Tests for the framework-agnostic server handlers."""
 
 import json
+import logging
 from dataclasses import fields, replace
 from unittest.mock import MagicMock, patch
 
@@ -207,6 +208,47 @@ class TestAskStream:
         assert not any("second" in e for e in non_empty)
 
     @patch("lilbee.query.search_context")
+    async def test_cancel_logs_message(self, mock_search, caplog):
+        """Closing the generator mid-stream logs a cancellation message."""
+        import threading
+
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        barrier = threading.Event()
+
+        def blocking_chat(**kwargs):
+            chunk1 = MagicMock()
+            chunk1.message.content = "first"
+            yield chunk1
+            barrier.wait(timeout=2)
+            chunk2 = MagicMock()
+            chunk2.message.content = "second"
+            yield chunk2
+
+        with (
+            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
+            patch("ollama.chat", side_effect=blocking_chat),
+        ):
+            gen = handlers.ask_stream("question")
+            async for event in gen:
+                if event and "first" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        assert any("Stream cancelled by client" in r.message for r in caplog.records)
+
+    @patch("lilbee.query.search_context")
     async def test_skips_empty_tokens(self, mock_search):
         """Chunks with empty content are not emitted."""
         mock_search.return_value = [
@@ -344,6 +386,47 @@ class TestChatStream:
         non_empty = [e for e in events if e]
         assert any("first" in e for e in non_empty)
         assert not any("second" in e for e in non_empty)
+
+    @patch("lilbee.query.search_context")
+    async def test_cancel_logs_message(self, mock_search, caplog):
+        """Closing the chat_stream generator mid-stream logs a cancellation message."""
+        import threading
+
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        barrier = threading.Event()
+
+        def blocking_chat(**kwargs):
+            chunk1 = MagicMock()
+            chunk1.message.content = "first"
+            yield chunk1
+            barrier.wait(timeout=2)
+            chunk2 = MagicMock()
+            chunk2.message.content = "second"
+            yield chunk2
+
+        with (
+            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
+            patch("ollama.chat", side_effect=blocking_chat),
+        ):
+            gen = handlers.chat_stream("question", [])
+            async for event in gen:
+                if event and "first" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        assert any("Stream cancelled by client" in r.message for r in caplog.records)
 
     @patch("lilbee.query.search_context")
     async def test_skips_empty_tokens(self, mock_search):
