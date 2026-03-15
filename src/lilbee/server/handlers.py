@@ -7,6 +7,7 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from pathlib import Path
@@ -121,20 +122,42 @@ async def ask_stream(
     messages.append({"role": "user", "content": prompt})
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
-    try:
-        import ollama as ollama_client
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    cancel = threading.Event()
+    error_holder: list[str] = []
 
-        stream = await asyncio.to_thread(
-            lambda: ollama_client.chat(
+    def _generate() -> None:
+        try:
+            import ollama as ollama_client
+
+            stream = ollama_client.chat(
                 model=cfg.chat_model, messages=messages, stream=True, options=opts or None
             )
-        )
-        for chunk in stream:
-            token = chunk.message.content
-            if token:
-                yield sse_event("token", {"token": token})
-    except Exception as exc:
-        yield sse_event("error", {"message": str(exc)})
+            for chunk in stream:
+                if cancel.is_set():
+                    break
+                token = chunk.message.content
+                if token:
+                    queue.put_nowait(sse_event("token", {"token": token}))
+        except Exception as exc:
+            error_holder.append(str(exc))
+        finally:
+            queue.put_nowait(None)
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _generate)
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+    except (asyncio.CancelledError, GeneratorExit):
+        cancel.set()
+        return
+
+    if error_holder:
+        yield sse_event("error", {"message": error_holder[0]})
         return
 
     yield sse_event("sources", [clean_result(s) for s in results])
@@ -190,20 +213,42 @@ async def chat_stream(
     messages.append({"role": "user", "content": prompt})
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
-    try:
-        import ollama as ollama_client
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    cancel = threading.Event()
+    error_holder: list[str] = []
 
-        stream = await asyncio.to_thread(
-            lambda: ollama_client.chat(
+    def _generate() -> None:
+        try:
+            import ollama as ollama_client
+
+            stream = ollama_client.chat(
                 model=cfg.chat_model, messages=messages, stream=True, options=opts or None
             )
-        )
-        for chunk in stream:
-            token = chunk.message.content
-            if token:
-                yield sse_event("token", {"token": token})
-    except Exception as exc:
-        yield sse_event("error", {"message": str(exc)})
+            for chunk in stream:
+                if cancel.is_set():
+                    break
+                token = chunk.message.content
+                if token:
+                    queue.put_nowait(sse_event("token", {"token": token}))
+        except Exception as exc:
+            error_holder.append(str(exc))
+        finally:
+            queue.put_nowait(None)
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _generate)
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+    except (asyncio.CancelledError, GeneratorExit):
+        cancel.set()
+        return
+
+    if error_holder:
+        yield sse_event("error", {"message": error_holder[0]})
         return
 
     yield sse_event("sources", [clean_result(s) for s in results])
@@ -338,39 +383,6 @@ async def list_models() -> dict[str, Any]:
             "installed": sorted(m for m in installed if m in vision_names),
         },
     }
-
-
-async def pull_model(model: str) -> AsyncGenerator[str, None]:
-    """Pull an Ollama model, yielding SSE progress events."""
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-    def _pull() -> None:
-        import ollama as ollama_client
-
-        for event in ollama_client.pull(model, stream=True):
-            total = event.total or 0
-            completed = event.completed or 0
-            queue.put_nowait(
-                sse_event(
-                    "progress",
-                    {
-                        "model": model,
-                        "status": event.status or "",
-                        "total": total,
-                        "completed": completed,
-                    },
-                )
-            )
-        queue.put_nowait(None)  # sentinel
-
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _pull)
-    while True:
-        event = await queue.get()
-        if event is None:
-            break
-        yield event
-    yield sse_event("done", {"model": model})
 
 
 async def set_chat_model(model: str) -> dict[str, str]:
