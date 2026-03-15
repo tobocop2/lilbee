@@ -107,14 +107,6 @@ async def models_list_route() -> dict[str, Any]:
     return await handlers.list_models()
 
 
-@post("/api/models/pull")
-async def models_pull_route(data: dict[str, Any]) -> Stream:
-    return Stream(
-        handlers.pull_model(model=data["model"]),
-        media_type="text/event-stream",
-    )
-
-
 @put("/api/models/chat")
 async def models_set_chat_route(data: dict[str, Any]) -> dict[str, str]:
     return await handlers.set_chat_model(model=data["model"])
@@ -145,7 +137,6 @@ def create_app() -> Litestar:
             sync_route,
             add_route,
             models_list_route,
-            models_pull_route,
             models_set_chat_route,
             models_set_vision_route,
         ],

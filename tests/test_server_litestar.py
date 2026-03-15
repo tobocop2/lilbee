@@ -191,15 +191,6 @@ class TestModelsListRoute:
         assert "chat" in resp.json()
 
 
-class TestModelsPullRoute:
-    @mock.patch("lilbee.server.handlers.pull_model")
-    def test_returns_sse(self, mock_pull, client):
-        mock_pull.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        resp = client.post("/api/models/pull", json={"model": "llama3:8b"})
-        assert resp.status_code == 201
-        assert b"event: done" in resp.content
-
-
 class TestModelsSetChatRoute:
     @mock.patch(
         "lilbee.server.handlers.set_chat_model",

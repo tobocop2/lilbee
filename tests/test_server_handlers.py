@@ -131,9 +131,8 @@ class TestAskStream:
         ]
         mock_chunk = MagicMock()
         mock_chunk.message.content = "answer"
-        mock_stream = [mock_chunk]
 
-        with patch("lilbee.server.handlers.asyncio.to_thread", return_value=mock_stream):
+        with patch("ollama.chat", return_value=[mock_chunk]):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -157,15 +156,83 @@ class TestAskStream:
             }
         ]
 
-        with patch(
-            "lilbee.server.handlers.asyncio.to_thread", side_effect=RuntimeError("model missing")
-        ):
+        with patch("ollama.chat", side_effect=RuntimeError("model missing")):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
         assert "model missing" in error_events[0]
+
+    @patch("lilbee.query.search_context")
+    async def test_cancel_sets_cancel_event(self, mock_search):
+        """Closing the generator mid-stream signals the thread to stop."""
+        import threading
+
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        barrier = threading.Event()
+
+        def blocking_chat(**kwargs):
+            chunk1 = MagicMock()
+            chunk1.message.content = "first"
+            yield chunk1
+            barrier.wait(timeout=2)
+            chunk2 = MagicMock()
+            chunk2.message.content = "second"
+            yield chunk2
+
+        with patch("ollama.chat", side_effect=blocking_chat):
+            gen = handlers.ask_stream("question")
+            events = []
+            async for event in gen:
+                events.append(event)
+                if event and "first" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        non_empty = [e for e in events if e]
+        assert any("first" in e for e in non_empty)
+        assert not any("second" in e for e in non_empty)
+
+    @patch("lilbee.query.search_context")
+    async def test_skips_empty_tokens(self, mock_search):
+        """Chunks with empty content are not emitted."""
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        empty_chunk = MagicMock()
+        empty_chunk.message.content = ""
+        real_chunk = MagicMock()
+        real_chunk.message.content = "answer"
+
+        with patch("ollama.chat", return_value=[empty_chunk, real_chunk]):
+            events = [e async for e in handlers.ask_stream("question")]
+
+        non_empty = [e for e in events if e]
+        token_events = [e for e in non_empty if e.startswith("event: token")]
+        assert len(token_events) == 1
+        assert "answer" in token_events[0]
 
 
 class TestChat:
@@ -205,7 +272,7 @@ class TestChatStream:
         mock_chunk.message.content = "reply"
         mock_stream = [mock_chunk]
 
-        with patch("lilbee.server.handlers.asyncio.to_thread", return_value=mock_stream):
+        with patch("ollama.chat", return_value=mock_stream):
             history = [{"role": "user", "content": "hi"}]
             events = [e async for e in handlers.chat_stream("follow up", history)]
 
@@ -228,16 +295,83 @@ class TestChatStream:
                 "line_end": 0,
             }
         ]
-        with patch(
-            "lilbee.server.handlers.asyncio.to_thread",
-            side_effect=ConnectionError("ollama down"),
-        ):
+        with patch("ollama.chat", side_effect=ConnectionError("ollama down")):
             events = [e async for e in handlers.chat_stream("q", [])]
 
         non_empty = [e for e in events if e]
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
         assert "ollama down" in error_events[0]
+
+    @patch("lilbee.query.search_context")
+    async def test_cancel_sets_cancel_event(self, mock_search):
+        """Closing the chat_stream generator mid-stream signals the thread to stop."""
+        import threading
+
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        barrier = threading.Event()
+
+        def blocking_chat(**kwargs):
+            chunk1 = MagicMock()
+            chunk1.message.content = "first"
+            yield chunk1
+            barrier.wait(timeout=2)
+            chunk2 = MagicMock()
+            chunk2.message.content = "second"
+            yield chunk2
+
+        with patch("ollama.chat", side_effect=blocking_chat):
+            gen = handlers.chat_stream("question", [])
+            events = []
+            async for event in gen:
+                events.append(event)
+                if event and "first" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        non_empty = [e for e in events if e]
+        assert any("first" in e for e in non_empty)
+        assert not any("second" in e for e in non_empty)
+
+    @patch("lilbee.query.search_context")
+    async def test_skips_empty_tokens(self, mock_search):
+        """Chunks with empty content are not emitted."""
+        mock_search.return_value = [
+            {
+                "source": "a.pdf",
+                "content_type": "pdf",
+                "chunk": "text",
+                "_distance": 0.1,
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+            }
+        ]
+        empty_chunk = MagicMock()
+        empty_chunk.message.content = ""
+        real_chunk = MagicMock()
+        real_chunk.message.content = "reply"
+
+        with patch("ollama.chat", return_value=[empty_chunk, real_chunk]):
+            events = [e async for e in handlers.chat_stream("question", [])]
+
+        non_empty = [e for e in events if e]
+        token_events = [e for e in non_empty if e.startswith("event: token")]
+        assert len(token_events) == 1
+        assert "reply" in token_events[0]
 
 
 class TestSyncStream:
@@ -328,27 +462,6 @@ class TestListModels:
 
         mistral_entry = next(m for m in catalog if m["name"] == "mistral:7b")
         assert mistral_entry["installed"] is False
-
-
-class TestPullModel:
-    async def test_yields_progress_and_done(self):
-        mock_event = MagicMock()
-        mock_event.status = "downloading"
-        mock_event.total = 1000
-        mock_event.completed = 500
-
-        with patch("ollama.pull", return_value=[mock_event]):
-            events = [e async for e in handlers.pull_model("test:latest")]
-
-        non_empty = [e for e in events if e]
-        progress_events = [e for e in non_empty if e.startswith("event: progress")]
-        done_events = [e for e in non_empty if e.startswith("event: done")]
-        assert len(progress_events) >= 1
-        assert len(done_events) == 1
-
-        data = json.loads(progress_events[0].split("data: ")[1].strip())
-        assert data["model"] == "test:latest"
-        assert data["completed"] == 500
 
 
 class TestSetChatModel:

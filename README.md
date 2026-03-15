@@ -9,6 +9,8 @@
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/lilbee)](https://pypi.org/project/lilbee/)
+[![Typed](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 > Chat with your documents locally using Ollama — or plug into AI agents as a retrieval backend via MCP. Indexes PDFs (including scanned via vision OCR), Office docs, spreadsheets, images, and code with a git-like per-project model. Powered by [Kreuzberg] for text extraction, [Ollama] for embeddings and chat, and [LanceDB] for vector storage.
 
