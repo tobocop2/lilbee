@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
 ]
 dependencies = [
     "ollama",
@@ -34,6 +35,8 @@ dependencies = [
     "mcp>=1.26.0",
     "pypdfium2>=5.6.0",
     "pillow>=11.3.0",
+    "litestar>=2.0",
+    "uvicorn>=0.30",
 ]
 
 [project.urls]
@@ -60,6 +63,7 @@ dev = [
     "pytest-cov",
     "reportlab",
     "ruff>=0.15.4",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]

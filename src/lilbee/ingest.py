@@ -5,10 +5,11 @@ import hashlib
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
+from pydantic import BaseModel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from lilbee import embedder, store
@@ -17,6 +18,15 @@ from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
 from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
+from lilbee.progress import (
+    BatchProgressEvent,
+    DetailedProgressCallback,
+    EventType,
+    FileDoneEvent,
+    FileStartEvent,
+    SyncDoneEvent,
+    noop_callback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,15 +62,14 @@ class ChunkRecord(TypedDict):
     vector: list[float]
 
 
-@dataclass
-class SyncResult:
+class SyncResult(BaseModel):
     """Summary of a sync operation."""
 
-    added: list[str] = field(default_factory=list)
-    updated: list[str] = field(default_factory=list)
-    removed: list[str] = field(default_factory=list)
+    added: list[str] = []
+    updated: list[str] = []
+    removed: list[str] = []
     unchanged: int = 0
-    failed: list[str] = field(default_factory=list)
+    failed: list[str] = []
 
     def __str__(self) -> str:
         lines = [
@@ -74,7 +83,11 @@ class SyncResult:
             lines.append(f"  [red]{f}[/red]")
         return "\n".join(lines)
 
-    __repr__ = __str__
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def __rich__(self) -> str:
+        return self.__str__()
 
 
 @dataclass
@@ -230,7 +243,12 @@ async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> 
         return fallback
 
 
-async def _vision_fallback(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+async def _vision_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[ChunkRecord]:
     """OCR a scanned PDF via vision model, chunk, and embed."""
     from lilbee.vision import extract_pdf_vision
 
@@ -240,6 +258,7 @@ async def _vision_fallback(path: Path, source_name: str, content_type: str) -> l
         cfg.vision_model,
         quiet=cfg.json_mode,
         timeout=cfg.vision_timeout,
+        on_progress=on_progress,
     )
     if not page_texts:
         return []
@@ -249,7 +268,9 @@ async def _vision_fallback(path: Path, source_name: str, content_type: str) -> l
         return []
 
     texts = [c for _, c in all_chunks]
-    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
+    vectors = await asyncio.to_thread(
+        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+    )
     return [
         ChunkRecord(
             source=source_name,
@@ -272,6 +293,7 @@ async def ingest_document(
     content_type: str,
     *,
     force_vision: bool = False,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document via kreuzberg, embed, return records.
 
@@ -302,7 +324,7 @@ async def ingest_document(
                 )
                 return []
             log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-            return await _vision_fallback(path, source_name, content_type)
+            return await _vision_fallback(path, source_name, content_type, on_progress)
 
         log.info(
             "Scanned PDF detected — extracted with Tesseract OCR: %s. "
@@ -314,7 +336,9 @@ async def ingest_document(
         return []
 
     texts = [chunk.content for chunk in result.chunks]
-    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
+    vectors = await asyncio.to_thread(
+        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+    )
 
     return [
         ChunkRecord(
@@ -332,14 +356,18 @@ async def ingest_document(
     ]
 
 
-def ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
+def ingest_code_sync(
+    path: Path,
+    source_name: str,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[ChunkRecord]:
     """Parse code with tree-sitter, chunk, embed, and return store-ready records."""
     code_chunks: list[CodeChunk] = chunk_code(path)
     if not code_chunks:
         return []
 
     texts = [cc.chunk for cc in code_chunks]
-    vectors = embedder.embed_batch(texts)
+    vectors = embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
 
     return [
         ChunkRecord(
@@ -357,7 +385,12 @@ def ingest_code_sync(path: Path, source_name: str) -> list[ChunkRecord]:
     ]
 
 
-async def ingest_structured(path: Path, source_name: str, content_type: str) -> list[ChunkRecord]:
+async def ingest_structured(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[ChunkRecord]:
     """Preprocess a structured file, chunk, embed, and return store-ready records."""
     preprocessor = _PREPROCESSORS[content_type]
     text = await asyncio.to_thread(preprocessor, path)
@@ -366,7 +399,9 @@ async def ingest_structured(path: Path, source_name: str, content_type: str) -> 
     texts = chunk_text(text)
     if not texts:
         return []
-    vectors = await asyncio.to_thread(embedder.embed_batch, texts)
+    vectors = await asyncio.to_thread(
+        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+    )
     return [
         ChunkRecord(
             source=source_name,
@@ -384,21 +419,32 @@ async def ingest_structured(path: Path, source_name: str, content_type: str) -> 
 
 
 async def _ingest_file(
-    path: Path, source_name: str, content_type: str, *, force_vision: bool = False
+    path: Path,
+    source_name: str,
+    content_type: str,
+    *,
+    force_vision: bool = False,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> int:
     """Ingest a single file. Returns chunk count."""
     records: list[ChunkRecord]
     if content_type == "code":
-        records = await asyncio.to_thread(ingest_code_sync, path, source_name)
+        records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
     elif content_type in _PREPROCESSORS:
-        records = await ingest_structured(path, source_name, content_type)
+        records = await ingest_structured(path, source_name, content_type, on_progress)
     else:
-        records = await ingest_document(path, source_name, content_type, force_vision=force_vision)
+        records = await ingest_document(
+            path, source_name, content_type, force_vision=force_vision, on_progress=on_progress
+        )
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
 async def sync(
-    force_rebuild: bool = False, quiet: bool = False, *, force_vision: bool = False
+    force_rebuild: bool = False,
+    quiet: bool = False,
+    *,
+    force_vision: bool = False,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
 
@@ -454,16 +500,32 @@ async def sync(
     if files_to_process:
         embedder.validate_model()
         await ingest_batch(
-            files_to_process, added, updated, failed, quiet=quiet, force_vision=force_vision
+            files_to_process,
+            added,
+            updated,
+            failed,
+            quiet=quiet,
+            force_vision=force_vision,
+            on_progress=on_progress,
         )
 
-    return SyncResult(
+    result = SyncResult(
         added=added,
         updated=updated,
         removed=removed,
         unchanged=unchanged,
         failed=failed,
     )
+    on_progress(
+        EventType.DONE,
+        SyncDoneEvent(
+            added=len(result.added),
+            updated=len(result.updated),
+            removed=len(result.removed),
+            failed=len(result.failed),
+        ).model_dump(),
+    )
+    return result
 
 
 # Limit concurrent ingestion to avoid overwhelming I/O
@@ -478,30 +540,49 @@ async def ingest_batch(
     *,
     quiet: bool = False,
     force_vision: bool = False,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar."""
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    total_files = len(files_to_process)
 
-    async def _process_one(name: str, path: Path, content_type: str) -> _IngestResult:
+    async def _process_one(
+        name: str, path: Path, content_type: str, file_index: int
+    ) -> _IngestResult:
         async with semaphore:
+            on_progress(
+                EventType.FILE_START,
+                FileStartEvent(
+                    file=name, total_files=total_files, current_file=file_index
+                ).model_dump(),
+            )
             try:
                 chunk_count = await _ingest_file(
-                    path, name, content_type, force_vision=force_vision
+                    path, name, content_type, force_vision=force_vision, on_progress=on_progress
+                )
+                on_progress(
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file=name, status="ok", chunks=chunk_count).model_dump(),
                 )
                 return _IngestResult(name, path, chunk_count, error=None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                on_progress(
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file=name, status="error", chunks=0).model_dump(),
+                )
                 return _IngestResult(name, path, 0, error=exc)
 
     tasks = [
-        asyncio.ensure_future(_process_one(name, path, ct)) for name, path, ct in files_to_process
+        asyncio.ensure_future(_process_one(name, path, ct, idx))
+        for idx, (name, path, ct) in enumerate(files_to_process, 1)
     ]
 
     if quiet:
-        await _collect_results(tasks, added, updated, failed)
+        await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
-        await _collect_results_with_progress(tasks, added, updated, failed)
+        await _collect_results_with_progress(tasks, added, updated, failed, on_progress=on_progress)
 
 
 async def _collect_results(
@@ -509,11 +590,23 @@ async def _collect_results(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results without progress display."""
-    for fut in asyncio.as_completed(tasks):
+    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
+        progress_status = "failed" if result.error is not None else "ingested"
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=result.name,
+                status=progress_status,
+                current=completed_count,
+                total=len(tasks),
+            ).model_dump(),
+        )
 
 
 async def _collect_results_with_progress(
@@ -521,6 +614,8 @@ async def _collect_results_with_progress(
     added: list[str],
     updated: list[str],
     failed: list[str],
+    *,
+    on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
     """Collect task results with Rich progress bar."""
     with Progress(
@@ -529,12 +624,22 @@ async def _collect_results_with_progress(
         transient=True,
     ) as progress:
         ptask = progress.add_task("Ingesting documents...", total=len(tasks))
-        for fut in asyncio.as_completed(tasks):
+        for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
             result = await fut
             _apply_result(result, added, updated, failed)
             desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
             progress.update(ptask, description=desc)
             progress.advance(ptask)
+            progress_status = "failed" if result.error is not None else "ingested"
+            on_progress(
+                EventType.BATCH_PROGRESS,
+                BatchProgressEvent(
+                    file=result.name,
+                    status=progress_status,
+                    current=completed_count,
+                    total=len(tasks),
+                ).model_dump(),
+            )
 
 
 def _apply_result(
