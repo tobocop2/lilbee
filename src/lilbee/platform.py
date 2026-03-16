@@ -18,6 +18,22 @@ def env_int(key: str, default: int) -> int:
     return int(raw)
 
 
+def env_float(key: str, default: float | None = None) -> float | None:
+    """Read a LILBEE_<key> environment variable as float with fallback."""
+    raw = os.environ.get(f"LILBEE_{key}")
+    if raw is None:
+        return default
+    return float(raw)
+
+
+def env_int_optional(key: str) -> int | None:
+    """Read a LILBEE_<key> environment variable as optional int."""
+    raw = os.environ.get(f"LILBEE_{key}")
+    if raw is None:
+        return None
+    return int(raw)
+
+
 def default_data_dir() -> Path:
     """Return platform-appropriate data directory.
 

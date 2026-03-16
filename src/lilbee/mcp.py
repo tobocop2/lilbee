@@ -1,9 +1,14 @@
 """MCP server exposing lilbee as tools for AI agents."""
 
-from dataclasses import asdict
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
+
+if TYPE_CHECKING:
+    from lilbee.store import SearchChunk
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
 
@@ -48,7 +53,7 @@ async def lilbee_sync() -> dict:
     """Sync documents directory with the vector store."""
     from lilbee.ingest import sync
 
-    return asdict(await sync(quiet=True))
+    return (await sync(quiet=True)).model_dump()
 
 
 @mcp.tool()
@@ -85,14 +90,14 @@ async def lilbee_add(
 
     copy_result = copy_files(valid, force=force)
 
-    old_vision = getattr(cfg, "vision_model", "")
+    old_vision = cfg.vision_model
     if vision_model:
-        cfg.vision_model = vision_model  # type: ignore[attr-defined]
+        cfg.vision_model = vision_model
     try:
-        sync_result = asdict(await sync(quiet=True, force_vision=bool(vision_model)))
+        sync_result = (await sync(quiet=True, force_vision=bool(vision_model))).model_dump()
     finally:
         if vision_model:
-            cfg.vision_model = old_vision  # type: ignore[attr-defined]
+            cfg.vision_model = old_vision
 
     return {
         "command": "add",
@@ -110,8 +115,6 @@ def lilbee_init(path: str = "") -> dict:
     Creates .lilbee/ with documents/, data/, and .gitignore.
     If path is empty, uses the current working directory.
     """
-    from pathlib import Path
-
     root = Path(path) / ".lilbee" if path else Path.cwd() / ".lilbee"
     if root.is_dir():
         return {"command": "init", "path": str(root), "created": False}
@@ -130,10 +133,10 @@ def lilbee_reset() -> dict:
     """
     from lilbee.cli import perform_reset
 
-    return perform_reset()
+    return perform_reset().model_dump()
 
 
-def clean(result: dict) -> dict:
+def clean(result: SearchChunk) -> dict[str, object]:
     """Strip vector field and rename _distance for output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}
     if "_distance" in cleaned:

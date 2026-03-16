@@ -57,3 +57,25 @@ class TestSetValue:
         settings.set_value(tmp_path, "chat_model", "llama3")
         settings.set_value(tmp_path, "chat_model", "mistral")
         assert settings.get(tmp_path, "chat_model") == "mistral"
+
+
+class TestDeleteValue:
+    def test_delete_existing_key(self, tmp_path):
+        settings.set_value(tmp_path, "temperature", "0.5")
+        settings.delete_value(tmp_path, "temperature")
+        assert settings.get(tmp_path, "temperature") is None
+
+    def test_delete_preserves_other_keys(self, tmp_path):
+        settings.set_value(tmp_path, "chat_model", "llama3")
+        settings.set_value(tmp_path, "temperature", "0.5")
+        settings.delete_value(tmp_path, "temperature")
+        assert settings.get(tmp_path, "chat_model") == "llama3"
+
+    def test_delete_missing_key_is_noop(self, tmp_path):
+        settings.set_value(tmp_path, "chat_model", "llama3")
+        settings.delete_value(tmp_path, "nonexistent")
+        assert settings.get(tmp_path, "chat_model") == "llama3"
+
+    def test_delete_from_empty_file(self, tmp_path):
+        settings.delete_value(tmp_path, "anything")
+        assert settings.load(tmp_path) == {}

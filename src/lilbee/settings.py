@@ -35,3 +35,10 @@ def set_value(data_root: Path, key: str, value: str) -> None:
     current = load(data_root)
     current[key] = value
     save(data_root, current)
+
+
+def delete_value(data_root: Path, key: str) -> None:
+    """Remove a key from config.toml. No-op if key doesn't exist."""
+    current = load(data_root)
+    current.pop(key, None)
+    save(data_root, current)

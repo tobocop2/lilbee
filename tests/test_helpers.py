@@ -1,6 +1,5 @@
 """Tests for CLI helper functions."""
 
-from dataclasses import fields, replace
 from unittest import mock
 
 import pytest
@@ -13,7 +12,7 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all helper tests."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
@@ -22,8 +21,8 @@ def isolated_env(tmp_path):
 
     yield tmp_path
 
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
 
 
 class TestCopyFiles:

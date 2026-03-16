@@ -134,7 +134,7 @@ class TestPersistedChatModel:
         env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.settings.get", side_effect=Exception("bad toml")),
+            mock.patch("lilbee.settings.get", side_effect=ValueError("bad toml")),
         ):
             c = Config.from_env()
             assert c.chat_model == "qwen3:8b"
@@ -246,6 +246,72 @@ class TestLocalDotLilbee:
             c = Config.from_env()
             assert c.data_root.name == "lilbee"
             assert c.data_root.name != ".lilbee"
+
+
+class TestGenerationOptions:
+    def test_empty_when_all_none(self):
+        c = Config.from_env()
+        c.temperature = None
+        c.top_p = None
+        c.top_k_sampling = None
+        c.repeat_penalty = None
+        c.num_ctx = None
+        c.seed = None
+        assert c.generation_options() == {}
+
+    def test_includes_set_values(self):
+        c = Config.from_env()
+        c.temperature = 0.3
+        c.seed = 42
+        c.top_p = None
+        c.top_k_sampling = None
+        c.repeat_penalty = None
+        c.num_ctx = None
+        opts = c.generation_options()
+        assert opts == {"temperature": 0.3, "seed": 42}
+
+    def test_remaps_top_k_sampling(self):
+        c = Config.from_env()
+        c.temperature = None
+        c.top_p = None
+        c.top_k_sampling = 40
+        c.repeat_penalty = None
+        c.num_ctx = None
+        c.seed = None
+        opts = c.generation_options()
+        assert opts == {"top_k": 40}
+        assert "top_k_sampling" not in opts
+
+    def test_overrides_merge(self):
+        c = Config.from_env()
+        c.temperature = 0.5
+        c.top_p = None
+        c.top_k_sampling = None
+        c.repeat_penalty = None
+        c.num_ctx = None
+        c.seed = None
+        opts = c.generation_options(temperature=0.9, num_ctx=4096)
+        assert opts == {"temperature": 0.9, "num_ctx": 4096}
+
+    def test_env_var_wiring(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "LILBEE_TEMPERATURE": "0.3",
+                "LILBEE_TOP_P": "0.95",
+                "LILBEE_TOP_K_SAMPLING": "40",
+                "LILBEE_REPEAT_PENALTY": "1.1",
+                "LILBEE_NUM_CTX": "4096",
+                "LILBEE_SEED": "123",
+            },
+        ):
+            c = Config.from_env()
+            assert c.temperature == 0.3
+            assert c.top_p == 0.95
+            assert c.top_k_sampling == 40
+            assert c.repeat_penalty == 1.1
+            assert c.num_ctx == 4096
+            assert c.seed == 123
 
 
 class TestIgnoreDirs:

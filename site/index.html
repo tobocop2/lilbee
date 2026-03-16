@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lilbee — chat with your documents locally, or plug into AI agents via MCP</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --gold: #f5a623;
+    --gold-dim: #c4841d;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --code-bg: #1a1a1a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .hero {
+    text-align: center;
+    padding: 4rem 2rem 2rem;
+    max-width: 700px;
+  }
+  .logo {
+    font-size: 4rem;
+    margin-bottom: 0.5rem;
+  }
+  h1 {
+    font-size: 2.5rem;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    color: var(--gold);
+    text-transform: uppercase;
+  }
+  .tagline {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    margin-top: 0.5rem;
+    font-weight: 400;
+  }
+  .honeycomb {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    margin: 2rem 0;
+  }
+  .hex {
+    width: 12px;
+    height: 12px;
+    background: var(--gold-dim);
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    opacity: 0.6;
+  }
+  .hex:nth-child(odd) { opacity: 0.3; }
+  .hex:nth-child(3) { opacity: 1; background: var(--gold); }
+
+  .links {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    max-width: 700px;
+    width: 100%;
+    padding: 0 2rem;
+    margin: 1rem 0 2rem;
+  }
+  .links a {
+    display: block;
+    padding: 1.2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .links a:hover {
+    border-color: var(--gold);
+    color: var(--gold);
+  }
+  .links .label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 0.3rem;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .features {
+    max-width: 700px;
+    width: 100%;
+    padding: 0 2rem;
+    margin-bottom: 2rem;
+  }
+  .features ul {
+    list-style: none;
+    display: grid;
+    gap: 0.6rem;
+  }
+  .features li {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    padding-left: 1.2rem;
+    position: relative;
+  }
+  .features li::before {
+    content: "\25B8";
+    position: absolute;
+    left: 0;
+    color: var(--gold-dim);
+  }
+
+  .install {
+    max-width: 700px;
+    width: 100%;
+    padding: 0 2rem;
+    margin-bottom: 3rem;
+  }
+  .install code {
+    display: block;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1rem 1.2rem;
+    font-size: 0.85rem;
+    color: var(--gold);
+    overflow-x: auto;
+  }
+
+  footer {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    border-top: 1px solid var(--border);
+    width: 100%;
+    margin-top: auto;
+  }
+  footer a { color: var(--gold-dim); text-decoration: none; }
+  footer a:hover { color: var(--gold); }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="logo">&#x1F41D;</div>
+  <h1>lilbee</h1>
+  <p class="tagline">chat with your documents locally, or plug into AI agents via MCP</p>
+</div>
+
+<div class="honeycomb">
+  <div class="hex"></div>
+  <div class="hex"></div>
+  <div class="hex"></div>
+  <div class="hex"></div>
+  <div class="hex"></div>
+</div>
+
+<div class="links">
+  <a href="https://github.com/tobocop2/lilbee">
+    GitHub
+    <span class="label">Source code</span>
+  </a>
+  <a href="https://pypi.org/project/lilbee/">
+    PyPI
+    <span class="label">pip install lilbee</span>
+  </a>
+  <a href="api/">
+    API Reference
+    <span class="label">OpenAPI / Redoc</span>
+  </a>
+  <a href="coverage/">
+    Coverage
+    <span class="label">100% test coverage</span>
+  </a>
+</div>
+
+<div class="features">
+  <ul>
+    <li>Chat with documents locally using Ollama</li>
+    <li>MCP server + JSON CLI for AI agent integration</li>
+    <li>HTTP REST API with streaming SSE</li>
+    <li>PDFs, Office docs, images (vision OCR), 150+ code languages</li>
+    <li>Per-project databases (git-like .lilbee/ model)</li>
+    <li>AST-aware code chunking via tree-sitter</li>
+    <li>No cloud APIs, no Docker — fully local</li>
+  </ul>
+</div>
+
+<div class="install">
+  <code>pip install lilbee</code>
+</div>
+
+<footer>
+  <a href="https://github.com/tobocop2/lilbee">lilbee</a> &mdash; MIT License
+</footer>
+
+</body>
+</html>
