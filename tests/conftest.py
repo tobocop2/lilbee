@@ -3,7 +3,6 @@
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -36,14 +35,14 @@ requires_models = pytest.mark.skipif(
 @contextmanager
 def patched_lilbee_dirs(db_dir: Path, documents_dir: Path) -> Generator[None, None, None]:
     """Temporarily patch lilbee config to use the given directories."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
     cfg.lancedb_dir = db_dir
     cfg.documents_dir = documents_dir
     try:
         yield
     finally:
-        for f in fields(cfg):
-            setattr(cfg, f.name, getattr(snapshot, f.name))
+        for name in type(cfg).model_fields:
+            setattr(cfg, name, getattr(snapshot, name))
 
 
 def copy_fixtures_to(subdir: str, dest: Path) -> None:

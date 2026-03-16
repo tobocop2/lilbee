@@ -1,6 +1,5 @@
 """Tests for the MCP server tools."""
 
-from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -8,12 +7,22 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.ingest import SyncResult
+from lilbee.mcp import (
+    clean,
+    lilbee_add,
+    lilbee_init,
+    lilbee_reset,
+    lilbee_search,
+    lilbee_status,
+    lilbee_sync,
+    main,
+)
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
@@ -22,8 +31,8 @@ def isolated_env(tmp_path):
 
     yield tmp_path
 
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
 
 
 @pytest.fixture(autouse=True)
@@ -38,15 +47,11 @@ _SYNC_NOOP = SyncResult()
 
 class TestClean:
     def test_strips_vector(self):
-        from lilbee.mcp import clean
-
         result = clean({"source": "a.pdf", "vector": [0.1], "chunk": "hi"})
         assert "vector" not in result
         assert result["source"] == "a.pdf"
 
     def test_renames_distance(self):
-        from lilbee.mcp import clean
-
         result = clean({"_distance": 0.42, "chunk": "hi"})
         assert result["distance"] == 0.42
         assert "_distance" not in result
@@ -55,8 +60,6 @@ class TestClean:
 class TestLilbeeSearch:
     @mock.patch("lilbee.query.search_context")
     def test_returnscleaned_results(self, mock_search):
-        from lilbee.mcp import lilbee_search
-
         mock_search.return_value = [
             {"source": "doc.pdf", "chunk": "content", "_distance": 0.3, "vector": [0.1] * 768},
         ]
@@ -68,22 +71,17 @@ class TestLilbeeSearch:
 
     @mock.patch("lilbee.query.search_context", return_value=[])
     def test_empty_results(self, _search):
-        from lilbee.mcp import lilbee_search
-
         assert lilbee_search("nothing") == []
 
 
 class TestLilbeeStatus:
     def test_empty_status(self):
-        from lilbee.mcp import lilbee_status
-
         result = lilbee_status()
         assert "config" in result
         assert result["sources"] == []
         assert result["total_chunks"] == 0
 
     def test_with_sources(self):
-        from lilbee.mcp import lilbee_status
         from lilbee.store import upsert_source
 
         upsert_source("test.pdf", "abc123", 10)
@@ -93,15 +91,11 @@ class TestLilbeeStatus:
         assert result["total_chunks"] == 10
 
     def test_status_includes_vision_model_when_set(self):
-        from lilbee.mcp import lilbee_status
-
         cfg.vision_model = "test-vision:latest"
         result = lilbee_status()
         assert result["config"]["vision_model"] == "test-vision:latest"
 
     def test_status_excludes_vision_model_when_empty(self):
-        from lilbee.mcp import lilbee_status
-
         cfg.vision_model = ""
         result = lilbee_status()
         assert "vision_model" not in result["config"]
@@ -110,8 +104,6 @@ class TestLilbeeStatus:
 class TestLilbeeSync:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_empty(self, _sync):
-        from lilbee.mcp import lilbee_sync
-
         result = await lilbee_sync()
         assert result["added"] == []
         assert result["unchanged"] == 0
@@ -122,8 +114,6 @@ class TestLilbeeSync:
         return_value=SyncResult(added=["test.txt"]),
     )
     async def test_sync_with_file(self, _sync):
-        from lilbee.mcp import lilbee_sync
-
         (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = await lilbee_sync()
         assert "test.txt" in result["added"]
@@ -131,8 +121,6 @@ class TestLilbeeSync:
 
 class TestLilbeeReset:
     def test_reset_clears_everything(self):
-        from lilbee.mcp import lilbee_reset
-
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "doc.txt").write_text("content")
         (cfg.data_dir / "db_file").write_text("data")
@@ -145,8 +133,6 @@ class TestLilbeeReset:
         assert list(cfg.data_dir.iterdir()) == []
 
     def test_reset_empty_dirs(self):
-        from lilbee.mcp import lilbee_reset
-
         result = lilbee_reset()
         assert result["command"] == "reset"
         assert result["deleted_docs"] == 0
@@ -155,8 +141,6 @@ class TestLilbeeReset:
 
 class TestLilbeeInit:
     def test_init_creates_structure(self, tmp_path):
-        from lilbee.mcp import lilbee_init
-
         result = lilbee_init(str(tmp_path))
         root = tmp_path / ".lilbee"
         assert result["command"] == "init"
@@ -167,15 +151,11 @@ class TestLilbeeInit:
         assert (root / ".gitignore").read_text() == "data/\n"
 
     def test_init_already_exists(self, tmp_path):
-        from lilbee.mcp import lilbee_init
-
         (tmp_path / ".lilbee").mkdir()
         result = lilbee_init(str(tmp_path))
         assert result["created"] is False
 
     def test_init_default_cwd(self, tmp_path):
-        from lilbee.mcp import lilbee_init
-
         with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
             result = lilbee_init()
         assert result["created"] is True
@@ -185,8 +165,6 @@ class TestLilbeeInit:
 class TestLilbeeAdd:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         src = tmp_path / "test.txt"
         src.write_text("hello world")
 
@@ -201,8 +179,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_path(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         result = await lilbee_add(["/no/such/path.txt"])
 
         assert "/no/such/path.txt" in result["errors"]
@@ -210,8 +186,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
         src.write_text("new")
@@ -224,8 +198,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_with_force(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
         src.write_text("new")
@@ -238,8 +210,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_directory(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
         (src_dir / "a.txt").write_text("a")
@@ -251,8 +221,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_with_vision_model(self, mock_sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-fake")
         original_vision = cfg.vision_model
@@ -264,8 +232,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
     async def test_add_vision_model_restored_on_error(self, _sync, tmp_path):
-        from lilbee.mcp import lilbee_add
-
         src = tmp_path / "file.txt"
         src.write_text("content")
         original_vision = cfg.vision_model
@@ -277,8 +243,6 @@ class TestLilbeeAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, _sync):
-        from lilbee.mcp import lilbee_add
-
         result = await lilbee_add([])
 
         assert result["copied"] == []
@@ -289,8 +253,6 @@ class TestLilbeeAdd:
 class TestMain:
     @mock.patch("lilbee.mcp.mcp")
     def test_main_calls_run(self, mock_mcp):
-        from lilbee.mcp import main
-
         main()
         mock_mcp.run.assert_called_once()
 

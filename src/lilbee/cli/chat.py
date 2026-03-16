@@ -1,10 +1,16 @@
 """Chat loop, slash-command dispatch, and tab completion."""
 
+from __future__ import annotations
+
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
 from rich.console import Console
+from rich.table import Table
 
 from lilbee import settings
 from lilbee.cli.helpers import (
@@ -16,9 +22,37 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 
+if TYPE_CHECKING:
+    from lilbee.query import ChatMessage
+
 _ADD_PREFIX = "/add "
 _MODEL_PREFIX = "/model "
 _VISION_PREFIX = "/vision "
+_SET_PREFIX = "/set "
+
+
+@dataclass(frozen=True)
+class _SettingDef:
+    """Metadata for an interactive setting."""
+
+    cfg_attr: str
+    type: type
+    nullable: bool
+
+
+_SETTINGS_MAP: dict[str, _SettingDef] = {
+    "chat_model": _SettingDef("chat_model", str, nullable=False),
+    "vision_model": _SettingDef("vision_model", str, nullable=True),
+    "embedding_model": _SettingDef("embedding_model", str, nullable=False),
+    "top_k": _SettingDef("top_k", int, nullable=False),
+    "temperature": _SettingDef("temperature", float, nullable=True),
+    "top_p": _SettingDef("top_p", float, nullable=True),
+    "top_k_sampling": _SettingDef("top_k_sampling", int, nullable=True),
+    "repeat_penalty": _SettingDef("repeat_penalty", float, nullable=True),
+    "num_ctx": _SettingDef("num_ctx", int, nullable=True),
+    "seed": _SettingDef("seed", int, nullable=True),
+    "system_prompt": _SettingDef("system_prompt", str, nullable=False),
+}
 
 
 class QuitChat(Exception):
@@ -209,9 +243,97 @@ def handle_slash_reset(args: str, con: Console) -> None:
         return
     result = perform_reset()
     con.print(
-        f"Reset complete: {result['deleted_docs']} document(s), "
-        f"{result['deleted_data']} data item(s) deleted."
+        f"Reset complete: {result.deleted_docs} document(s), "
+        f"{result.deleted_data} data item(s) deleted."
     )
+
+
+def _get_model_defaults() -> dict[str, str]:
+    """Fetch generation parameter defaults from Ollama for the current chat model."""
+    _OLLAMA_TO_SETTING = {"top_k": "top_k_sampling"}
+    try:
+        import ollama
+
+        resp = ollama.show(cfg.chat_model)
+        defaults: dict[str, str] = {}
+        for line in (resp.parameters or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                key = _OLLAMA_TO_SETTING.get(parts[0], parts[0])
+                if key in _SETTINGS_MAP:
+                    defaults[key] = parts[1]
+        return defaults
+    except (ollama.ResponseError, ConnectionError, OSError):
+        return {}
+
+
+def _format_setting_value(value: object, model_default: str | None = None) -> str:
+    """Format a setting value for display."""
+    if value is None or value == "":
+        if model_default is not None:
+            return f"[dim](model default: {model_default})[/dim]"
+        return "[dim](not set)[/dim]"
+    if isinstance(value, str) and len(value) > 60:
+        return f"[dim]({len(value)} chars)[/dim]"
+    return str(value)
+
+
+def handle_slash_settings(args: str, con: Console) -> None:
+    defaults = _get_model_defaults()
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    for name, defn in _SETTINGS_MAP.items():
+        value = getattr(cfg, defn.cfg_attr)
+        table.add_row(
+            f"[bold]{name}[/bold]",
+            _format_setting_value(value, defaults.get(name)),
+        )
+    con.print(table)
+
+
+def handle_slash_set(args: str, con: Console) -> None:
+    parts = args.strip().split(None, 1)
+    if not parts:
+        con.print("Usage: /set <param> [value]  — try /settings to see all params")
+        return
+
+    name = parts[0]
+    defn = _SETTINGS_MAP.get(name)
+    if defn is None:
+        con.print(f"[red]Unknown setting:[/red] {name}")
+        con.print(f"Available: {', '.join(_SETTINGS_MAP)}")
+        return
+
+    if len(parts) == 1:
+        value = getattr(cfg, defn.cfg_attr)
+        con.print(f"{name} = {_format_setting_value(value)}")
+        return
+
+    raw_value = parts[1]
+
+    if raw_value.lower() in ("off", "none", "default"):
+        if not defn.nullable:
+            con.print(f"[red]{name} cannot be cleared[/red]")
+            return
+        setattr(cfg, defn.cfg_attr, "" if defn.type is str else None)
+        settings.delete_value(cfg.data_root, name)
+        con.print(f"{name} cleared (saved)")
+        return
+
+    try:
+        parsed = defn.type(raw_value)
+    except (ValueError, TypeError):
+        con.print(f"[red]Invalid {defn.type.__name__}:[/red] {raw_value}")
+        return
+
+    try:
+        setattr(cfg, defn.cfg_attr, parsed)
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"]
+        con.print(f"[red]{name}: {msg}[/red]")
+        return
+
+    settings.set_value(cfg.data_root, name, str(parsed))
+    con.print(f"{name} = {parsed} (saved)")
 
 
 def handle_slash_help(args: str, con: Console) -> None:
@@ -220,6 +342,8 @@ def handle_slash_help(args: str, con: Console) -> None:
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
     con.print("  /model [name]  — show or switch chat model")
     con.print("  /vision [name|off]  — show or switch vision OCR model")
+    con.print("  /settings  — show all generation settings")
+    con.print("  /set <param> [value]  — change a setting (tab-completes param names)")
     con.print("  /version — show lilbee version")
     con.print("  /reset   — delete all documents and data")
     con.print("  /help    — show this help")
@@ -231,6 +355,8 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "add": handle_slash_add,
     "model": handle_slash_model,
     "vision": handle_slash_vision,
+    "settings": handle_slash_settings,
+    "set": handle_slash_set,
     "version": handle_slash_version,
     "reset": handle_slash_reset,
     "help": handle_slash_help,
@@ -272,7 +398,7 @@ def list_ollama_models(*, exclude_vision: bool = False) -> list[str]:
             vision_names = {m.name for m in VISION_CATALOG}
             models = [m for m in models if m not in vision_names]
         return models
-    except Exception:
+    except (ConnectionError, OSError):
         return []
 
 
@@ -291,6 +417,11 @@ def make_completer():  # type: ignore[no-untyped-def]
             elif text.startswith(_MODEL_PREFIX):
                 prefix = text[len(_MODEL_PREFIX) :]
                 for name in list_ollama_models(exclude_vision=True):
+                    if name.startswith(prefix):
+                        yield Completion(name, start_position=-len(prefix))
+            elif text.startswith(_SET_PREFIX):
+                prefix = text[len(_SET_PREFIX) :]
+                for name in _SETTINGS_MAP:
                     if name.startswith(prefix):
                         yield Completion(name, start_position=-len(prefix))
             elif text.startswith(_VISION_PREFIX):
@@ -314,7 +445,7 @@ def make_completer():  # type: ignore[no-untyped-def]
 def chat_loop(con: Console) -> None:
     """Interactive REPL with slash-command support."""
     con.print("[bold]lilbee chat[/bold] — type /help for commands\n")
-    history: list[dict] = []
+    history: list[ChatMessage] = []
 
     _prompt_fn: Callable[[], str] | None = None
     if sys.stdin.isatty():

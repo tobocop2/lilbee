@@ -14,6 +14,12 @@ from lilbee.cli.app import (
     console,
     data_dir_option,
     model_option,
+    num_ctx_option,
+    repeat_penalty_option,
+    seed_option,
+    temperature_option,
+    top_k_sampling_option,
+    top_p_option,
 )
 from lilbee.cli.helpers import (
     add_paths,
@@ -396,9 +402,25 @@ def ask(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = _global_option,
+    temperature: float | None = temperature_option,
+    top_p: float | None = top_p_option,
+    top_k_sampling: int | None = top_k_sampling_option,
+    repeat_penalty: float | None = repeat_penalty_option,
+    num_ctx: int | None = num_ctx_option,
+    seed: int | None = seed_option,
 ) -> None:
     """Ask a one-shot question (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    apply_overrides(
+        data_dir=data_dir,
+        model=model,
+        use_global=use_global,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_sampling=top_k_sampling,
+        repeat_penalty=repeat_penalty,
+        num_ctx=num_ctx,
+        seed=seed,
+    )
 
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
@@ -440,9 +462,25 @@ def chat(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
     use_global: bool = _global_option,
+    temperature: float | None = temperature_option,
+    top_p: float | None = top_p_option,
+    top_k_sampling: int | None = top_k_sampling_option,
+    repeat_penalty: float | None = repeat_penalty_option,
+    num_ctx: int | None = num_ctx_option,
+    seed: int | None = seed_option,
 ) -> None:
     """Interactive chat loop (auto-syncs first)."""
-    apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
+    apply_overrides(
+        data_dir=data_dir,
+        model=model,
+        use_global=use_global,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_sampling=top_k_sampling,
+        repeat_penalty=repeat_penalty,
+        num_ctx=num_ctx,
+        seed=seed,
+    )
     from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
 
@@ -472,7 +510,7 @@ def status(
     """Show indexed documents, paths, and chunk counts."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if cfg.json_mode:
-        json_output(gather_status())
+        json_output(gather_status().model_dump(exclude_none=True))
         return
     render_status(console)
 
@@ -505,12 +543,12 @@ def reset(
     result = perform_reset()
 
     if cfg.json_mode:
-        json_output(result)
+        json_output(result.model_dump())
         return
 
     console.print(
-        f"Reset complete: {result['deleted_docs']} document(s), "
-        f"{result['deleted_data']} data item(s) deleted."
+        f"Reset complete: {result.deleted_docs} document(s), "
+        f"{result.deleted_data} data item(s) deleted."
     )
 
 
@@ -537,6 +575,35 @@ def init() -> None:
         json_output({"command": "init", "path": str(root), "created": True})
         return
     console.print(f"Initialized local knowledge base at {root}")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port (default: 7433)"),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Start the HTTP API server for Obsidian and other clients."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    if host is not None:
+        cfg.server_host = host
+    if port is not None:
+        cfg.server_port = port
+
+    import logging
+
+    import uvicorn
+
+    from lilbee.server import create_app
+
+    logging.getLogger("asyncio").setLevel(logging.ERROR)
+
+    uvicorn.run(
+        create_app(),
+        host=cfg.server_host,
+        port=cfg.server_port,
+    )
 
 
 @app.command(name="mcp")
