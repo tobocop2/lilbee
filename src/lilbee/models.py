@@ -86,7 +86,7 @@ def get_system_ram_gb() -> float:
             pages = os.sysconf("SC_PHYS_PAGES")
             page_size = os.sysconf("SC_PAGE_SIZE")
             return (pages * page_size) / (1024**3)
-    except Exception:
+    except (OSError, AttributeError, ValueError):
         log.debug("RAM detection failed, falling back to 8.0 GB")
         return 8.0
 

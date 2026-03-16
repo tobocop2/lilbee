@@ -67,13 +67,7 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
-      - name: Upload coverage HTML
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: htmlcov/
-
-  deploy-coverage:
+  deploy-pages:
     needs: test
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -84,6 +78,34 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build dev portal (coverage + API docs)
+        run: make docs-site
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/
+
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v4
@@ -121,3 +143,4 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_CHAT_MODEL: mistral
+

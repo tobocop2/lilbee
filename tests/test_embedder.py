@@ -133,11 +133,10 @@ class TestValidateVector:
         with pytest.raises(ValueError, match="dimension mismatch"):
             embed("test")
 
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf")])
     @mock.patch("ollama.embed")
-    def test_embed_nan_raises(self, mock_ollama):
-        import math
-
-        mock_ollama.return_value = mock.MagicMock(embeddings=[[math.nan] + [0.1] * 767])
+    def test_embed_invalid_value_raises(self, mock_ollama, bad_value):
+        mock_ollama.return_value = mock.MagicMock(embeddings=[[bad_value] + [0.1] * 767])
         from lilbee.embedder import embed
 
         with pytest.raises(ValueError, match="invalid value"):
@@ -150,16 +149,6 @@ class TestValidateVector:
 
         with pytest.raises(ValueError, match="dimension mismatch"):
             embed_batch(["test"])
-
-    @mock.patch("ollama.embed")
-    def test_embed_inf_raises(self, mock_ollama):
-        import math
-
-        mock_ollama.return_value = mock.MagicMock(embeddings=[[math.inf] + [0.1] * 767])
-        from lilbee.embedder import embed
-
-        with pytest.raises(ValueError, match="invalid value"):
-            embed("test")
 
 
 class TestValidateModel:

@@ -9,6 +9,7 @@ import ollama
 
 from lilbee.config import cfg
 from lilbee.models import pull_with_progress
+from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
 
 log = logging.getLogger(__name__)
 
@@ -70,10 +71,19 @@ def embed(text: str) -> list[float]:
     return result
 
 
-def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed multiple texts with adaptive batching, return list of vectors."""
+def embed_batch(
+    texts: list[str],
+    *,
+    source: str = "",
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[list[float]]:
+    """Embed multiple texts with adaptive batching, return list of vectors.
+
+    Fires ``embed`` progress events per batch when *on_progress* is provided.
+    """
     if not texts:
         return []
+    total_chunks = len(texts)
     vectors: list[list[float]] = []
     batch: list[str] = []
     batch_chars = 0
@@ -83,6 +93,10 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         if batch and batch_chars + chunk_len > MAX_BATCH_CHARS:
             response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
             vectors.extend(response.embeddings)
+            on_progress(
+                EventType.EMBED,
+                {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+            )
             batch = []
             batch_chars = 0
         batch.append(truncated)
@@ -90,6 +104,10 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     if batch:
         response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
         vectors.extend(response.embeddings)
+        on_progress(
+            EventType.EMBED,
+            {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+        )
     for vec in vectors:
         validate_vector(vec)
     return vectors
