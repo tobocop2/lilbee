@@ -167,6 +167,7 @@ def stream_response(
 
     stream = ask_stream(question, history=history)
     response_parts: list[str] = []
+    cancelled = False
 
     try:
         # Show a spinner while waiting for the first token from the LLM.
@@ -180,13 +181,20 @@ def stream_response(
         for token in stream:
             con.print(token, end="")
             response_parts.append(token)
+    except KeyboardInterrupt:
+        cancelled = True
+        stream.close()
+        con.print("\n[dim](stopped)[/dim]")
     except RuntimeError as exc:
         con.print(f"\n[red]Error:[/red] {exc}")
         return
 
-    con.print("\n")
-    history.append({"role": "user", "content": question})
-    history.append({"role": "assistant", "content": "".join(response_parts)})
+    if not cancelled:
+        con.print("\n")
+    full = "".join(response_parts)
+    if full:
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": full})
 
 
 def perform_reset() -> dict:

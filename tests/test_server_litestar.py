@@ -1,6 +1,5 @@
 """Tests for the Litestar HTTP adapter."""
 
-from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -13,15 +12,15 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all adapter tests."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
     cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     yield tmp_path
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
 
 
 @pytest.fixture()

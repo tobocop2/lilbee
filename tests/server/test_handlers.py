@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -18,15 +17,15 @@ from lilbee.server.handlers import MAX_ADD_FILES
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path: Path):
     """Redirect config paths to temp dir for every test."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
     docs = tmp_path / "documents"
     docs.mkdir()
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     yield docs
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
 
 
 def _fake_embed_batch(texts: list[str], **kwargs: Any) -> list[list[float]]:

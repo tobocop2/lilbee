@@ -4,9 +4,10 @@ All settings can be overridden via environment variables prefixed with LILBEE_.
 """
 
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
 from lilbee.platform import default_data_dir, env, env_float, env_int, env_int_optional
@@ -30,9 +31,10 @@ CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
 
 
-@dataclass
-class Config:
+class Config(BaseModel):
     """Runtime configuration — one singleton instance, mutated by CLI overrides."""
+
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
     data_root: Path
     documents_dir: Path
@@ -40,24 +42,24 @@ class Config:
     lancedb_dir: Path
     chat_model: str
     embedding_model: str
-    embedding_dim: int
-    chunk_size: int
-    chunk_overlap: int
-    max_embed_chars: int
-    top_k: int
-    max_distance: float
+    embedding_dim: int = Field(ge=1)
+    chunk_size: int = Field(ge=1)
+    chunk_overlap: int = Field(ge=0)
+    max_embed_chars: int = Field(ge=1)
+    top_k: int = Field(ge=1)
+    max_distance: float = Field(ge=0.0)
     system_prompt: str
     ignore_dirs: frozenset[str]
     vision_model: str = ""
-    vision_timeout: float = 120.0  # seconds per page
+    vision_timeout: float = Field(default=120.0, ge=0.0)
     server_host: str = "127.0.0.1"
-    server_port: int = 7433
+    server_port: int = Field(default=7433, ge=1, le=65535)
     json_mode: bool = False
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k_sampling: int | None = None
-    repeat_penalty: float | None = None
-    num_ctx: int | None = None
+    temperature: float | None = Field(default=None, ge=0.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k_sampling: int | None = Field(default=None, ge=1)
+    repeat_penalty: float | None = Field(default=None, ge=0.0)
+    num_ctx: int | None = Field(default=None, ge=1)
     seed: int | None = None
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:

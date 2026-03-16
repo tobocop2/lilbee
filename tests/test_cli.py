@@ -2,7 +2,6 @@
 
 import json
 import logging
-from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -41,7 +40,7 @@ def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
     monkeypatch.delenv("LILBEE_DATA", raising=False)
     monkeypatch.delenv("LILBEE_LOG_LEVEL", raising=False)
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
     root = logging.getLogger()
     old_level = root.level
     old_handlers = root.handlers[:]
@@ -55,8 +54,8 @@ def isolated_env(tmp_path, monkeypatch):
 
     yield tmp_path
 
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
     root.setLevel(old_level)
     root.handlers[:] = old_handlers
 
@@ -1140,7 +1139,9 @@ class TestLilbeeCompleter:
 
     def test_slash_s_narrows(self):
         results = self._complete("/s")
-        assert results == ["/status"]
+        assert "/status" in results
+        assert "/settings" in results
+        assert "/set" in results
 
     def test_add_path_delegates(self):
         results = self._complete("/add /")
