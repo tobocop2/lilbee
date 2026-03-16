@@ -5,10 +5,26 @@ from datetime import UTC, datetime
 
 import lancedb
 import pyarrow as pa
+from typing_extensions import TypedDict
 
 from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, cfg
 
 log = logging.getLogger(__name__)
+
+
+class SearchChunk(TypedDict):
+    """A search result row from LanceDB — chunk fields plus distance."""
+
+    source: str
+    content_type: str
+    page_start: int
+    page_end: int
+    line_start: int
+    line_end: int
+    chunk: str
+    chunk_index: int
+    vector: list[float]
+    _distance: float
 
 
 def _chunks_schema() -> pa.Schema:
@@ -100,7 +116,7 @@ def search(
     query_vector: list[float],
     top_k: int | None = None,
     max_distance: float | None = None,
-) -> list[dict]:
+) -> list[SearchChunk]:
     """Search for similar chunks by vector similarity.
 
     Results with distance > max_distance are filtered out.
@@ -113,19 +129,19 @@ def search(
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    results: list[dict] = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+    results: list[SearchChunk] = table.search(query_vector).metric("cosine").limit(top_k).to_list()
     if max_distance > 0:
-        results = [r for r in results if r.get("_distance", float("inf")) <= max_distance]
+        results = [r for r in results if r["_distance"] <= max_distance]
     return results
 
 
-def get_chunks_by_source(source: str) -> list[dict]:
+def get_chunks_by_source(source: str) -> list[SearchChunk]:
     """Return all chunks for a given source file."""
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
     escaped = _escape_sql_string(source)
-    rows: list[dict] = table.search().where(f"source = '{escaped}'").to_list()
+    rows: list[SearchChunk] = table.search().where(f"source = '{escaped}'").to_list()
     return rows
 
 

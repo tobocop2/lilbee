@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from lilbee.progress import DetailedProgressCallback, noop_callback
+from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ def extract_pdf_vision(
     with progress_ctx:
         for i, png in rasterize_pdf(path):
             on_progress(
-                "extract",
+                EventType.EXTRACT,
                 {"file": path.name, "page": i + 1, "total_pages": total},
             )
             log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)

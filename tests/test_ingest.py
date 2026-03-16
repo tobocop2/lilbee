@@ -389,41 +389,25 @@ class TestDiscoverFiles:
 
         assert discover_files() == {}
 
-    def test_skips_hidden_directories(self, isolated_env):
+    @pytest.mark.parametrize(
+        "ignored_dir, child_file",
+        [
+            (".git", "config.txt"),
+            ("node_modules", "pkg.txt"),
+            ("__pycache__", "mod.py"),
+        ],
+    )
+    def test_skips_ignored_directories(self, ignored_dir, child_file, isolated_env):
         from lilbee.ingest import discover_files
 
-        hidden = isolated_env / ".git"
-        hidden.mkdir()
-        (hidden / "config.txt").write_text("git config")
+        d = isolated_env / ignored_dir
+        d.mkdir()
+        (d / child_file).write_text("content")
         (isolated_env / "visible.txt").write_text("visible")
 
         found = discover_files()
         assert "visible.txt" in found
-        assert not any(".git" in name for name in found)
-
-    def test_skips_node_modules(self, isolated_env):
-        from lilbee.ingest import discover_files
-
-        nm = isolated_env / "node_modules"
-        nm.mkdir()
-        (nm / "pkg.txt").write_text("npm package")
-        (isolated_env / "app.txt").write_text("app code")
-
-        found = discover_files()
-        assert "app.txt" in found
-        assert not any("node_modules" in name for name in found)
-
-    def test_skips_pycache(self, isolated_env):
-        from lilbee.ingest import discover_files
-
-        pc = isolated_env / "__pycache__"
-        pc.mkdir()
-        (pc / "mod.py").write_text("cached")
-        (isolated_env / "main.py").write_text("def main(): pass")
-
-        found = discover_files()
-        assert "main.py" in found
-        assert not any("__pycache__" in name for name in found)
+        assert not any(ignored_dir in name for name in found)
 
     def test_skips_custom_ignore_via_env(self, isolated_env):
         from lilbee.ingest import discover_files
@@ -441,31 +425,25 @@ class TestDiscoverFiles:
 
 
 class TestClassifyFile:
-    def test_pdf(self):
+    @pytest.mark.parametrize(
+        "filename, expected",
+        [
+            ("doc.pdf", "pdf"),
+            ("f.md", "text"),
+            ("f.txt", "text"),
+            ("f.html", "text"),
+            ("f.rst", "text"),
+            ("f.py", "code"),
+            ("f.js", "code"),
+            ("f.go", "code"),
+            ("f.zip", None),
+            ("f.exe", None),
+        ],
+    )
+    def test_classify(self, filename, expected):
         from lilbee.ingest import classify_file
 
-        assert classify_file(Path("doc.pdf")) == "pdf"
-
-    def test_text_types(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("f.md")) == "text"
-        assert classify_file(Path("f.txt")) == "text"
-        assert classify_file(Path("f.html")) == "text"
-        assert classify_file(Path("f.rst")) == "text"
-
-    def test_code_types(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("f.py")) == "code"
-        assert classify_file(Path("f.js")) == "code"
-        assert classify_file(Path("f.go")) == "code"
-
-    def test_unsupported(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("f.zip")) is None
-        assert classify_file(Path("f.exe")) is None
+        assert classify_file(Path(filename)) == expected
 
 
 class TestFileHash:
@@ -559,34 +537,28 @@ class TestSyncResultStr:
 
 
 class TestClassifyNewFormats:
-    def test_office_formats(self):
+    @pytest.mark.parametrize(
+        "filename, expected",
+        [
+            ("doc.docx", "docx"),
+            ("sheet.xlsx", "xlsx"),
+            ("slides.pptx", "pptx"),
+            ("book.epub", "epub"),
+            ("photo.png", "image"),
+            ("photo.jpg", "image"),
+            ("photo.jpeg", "image"),
+            ("scan.tiff", "image"),
+            ("scan.tif", "image"),
+            ("img.bmp", "image"),
+            ("img.webp", "image"),
+            ("data.csv", "data"),
+            ("data.tsv", "data"),
+        ],
+    )
+    def test_classify(self, filename, expected):
         from lilbee.ingest import classify_file
 
-        assert classify_file(Path("doc.docx")) == "docx"
-        assert classify_file(Path("sheet.xlsx")) == "xlsx"
-        assert classify_file(Path("slides.pptx")) == "pptx"
-
-    def test_epub(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("book.epub")) == "epub"
-
-    def test_image_formats(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("photo.png")) == "image"
-        assert classify_file(Path("photo.jpg")) == "image"
-        assert classify_file(Path("photo.jpeg")) == "image"
-        assert classify_file(Path("scan.tiff")) == "image"
-        assert classify_file(Path("scan.tif")) == "image"
-        assert classify_file(Path("img.bmp")) == "image"
-        assert classify_file(Path("img.webp")) == "image"
-
-    def test_data_formats(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("data.csv")) == "data"
-        assert classify_file(Path("data.tsv")) == "data"
+        assert classify_file(Path(filename)) == expected
 
 
 class TestDiscoverNewFormats:
@@ -635,35 +607,21 @@ class TestKreuzbergConfig:
 
 
 class TestClassifyStructuredFormats:
-    def test_xml_classified_as_xml(self):
+    @pytest.mark.parametrize(
+        "filename, expected",
+        [
+            ("data.xml", "xml"),
+            ("data.json", "json"),
+            ("data.jsonl", "json"),
+            ("config.yaml", "text"),
+            ("config.yml", "text"),
+            ("data.csv", "data"),
+        ],
+    )
+    def test_classify(self, filename, expected):
         from lilbee.ingest import classify_file
 
-        assert classify_file(Path("data.xml")) == "xml"
-
-    def test_json_classified_as_json(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("data.json")) == "json"
-
-    def test_jsonl_classified_as_json(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("data.jsonl")) == "json"
-
-    def test_yaml_classified_as_text(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("config.yaml")) == "text"
-
-    def test_yml_classified_as_text(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("config.yml")) == "text"
-
-    def test_csv_still_classified_as_data(self):
-        from lilbee.ingest import classify_file
-
-        assert classify_file(Path("data.csv")) == "data"
+        assert classify_file(Path(filename)) == expected
 
 
 def _fake_preprocess(path: Path) -> str:

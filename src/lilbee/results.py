@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from pydantic import BaseModel
+
+from lilbee.store import SearchChunk
 
 
-@dataclass
-class Excerpt:
+class Excerpt(BaseModel):
     content: str
     page_start: int | None
     page_end: int | None
@@ -13,8 +14,7 @@ class Excerpt:
     relevance: float  # 0.0-1.0 (1 = best match)
 
 
-@dataclass
-class DocumentResult:
+class DocumentResult(BaseModel):
     source: str
     content_type: str
     excerpts: list[Excerpt]
@@ -25,22 +25,22 @@ def _zero_to_none(val: int) -> int | None:
     return None if val == 0 else val
 
 
-def _to_excerpt(chunk: dict[str, object]) -> Excerpt:
-    distance = float(chunk["_distance"])  # type: ignore[arg-type]
+def _to_excerpt(chunk: SearchChunk) -> Excerpt:
+    distance = float(chunk["_distance"])
     relevance = 1.0 / (1.0 + distance)
     return Excerpt(
         content=str(chunk["chunk"]),
-        page_start=_zero_to_none(int(chunk["page_start"])),  # type: ignore[call-overload]
-        page_end=_zero_to_none(int(chunk["page_end"])),  # type: ignore[call-overload]
-        line_start=_zero_to_none(int(chunk["line_start"])),  # type: ignore[call-overload]
-        line_end=_zero_to_none(int(chunk["line_end"])),  # type: ignore[call-overload]
+        page_start=_zero_to_none(chunk["page_start"]),
+        page_end=_zero_to_none(chunk["page_end"]),
+        line_start=_zero_to_none(chunk["line_start"]),
+        line_end=_zero_to_none(chunk["line_end"]),
         relevance=relevance,
     )
 
 
-def group(chunks: list[dict[str, object]]) -> list[DocumentResult]:
+def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group raw LanceDB chunks into document-centric results."""
-    by_source: dict[str, list[dict[str, object]]] = {}
+    by_source: dict[str, list[SearchChunk]] = {}
     for chunk in chunks:
         source = str(chunk["source"])
         by_source.setdefault(source, []).append(chunk)
@@ -67,4 +67,4 @@ def group(chunks: list[dict[str, object]]) -> list[DocumentResult]:
 
 def to_dicts(results: list[DocumentResult]) -> list[dict[str, object]]:
     """Serialize DocumentResults to JSON-safe dicts."""
-    return [asdict(r) for r in results]
+    return [r.model_dump() for r in results]

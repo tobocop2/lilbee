@@ -510,7 +510,7 @@ def status(
     """Show indexed documents, paths, and chunk counts."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if cfg.json_mode:
-        json_output(gather_status())
+        json_output(gather_status().model_dump(exclude_none=True))
         return
     render_status(console)
 
@@ -543,12 +543,12 @@ def reset(
     result = perform_reset()
 
     if cfg.json_mode:
-        json_output(result)
+        json_output(result.model_dump())
         return
 
     console.print(
-        f"Reset complete: {result['deleted_docs']} document(s), "
-        f"{result['deleted_data']} data item(s) deleted."
+        f"Reset complete: {result.deleted_docs} document(s), "
+        f"{result.deleted_data} data item(s) deleted."
     )
 
 

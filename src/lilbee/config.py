@@ -3,6 +3,7 @@
 All settings can be overridden via environment variables prefixed with LILBEE_.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
 from lilbee.platform import default_data_dir, env, env_float, env_int, env_int_optional
+
+log = logging.getLogger(__name__)
 
 DEFAULT_IGNORE_DIRS = frozenset(
     {
@@ -82,44 +85,10 @@ class Config(BaseModel):
     @classmethod
     def from_env(cls) -> "Config":
         """Build config from environment variables and settings file."""
-        data_env = env("DATA", "")
-        data_root = Path(data_env) if data_env else default_data_dir()
-
-        if not data_env:
-            from lilbee.platform import find_local_root
-
-            local = find_local_root()
-            if local is not None:
-                data_root = local
-
-        chat_model = env("CHAT_MODEL", "qwen3:8b")
-        if "LILBEE_CHAT_MODEL" not in os.environ:
-            try:
-                saved = settings.get(data_root, "chat_model")
-            except Exception:
-                saved = None
-            if saved:
-                chat_model = saved
-
-        vision_model_env = os.environ.get("LILBEE_VISION_MODEL", "").strip()
-        if vision_model_env:
-            vision_model: str = vision_model_env
-        else:
-            try:
-                vision_model = settings.get(data_root, "vision_model") or ""
-            except Exception:
-                vision_model = ""
-
-        vision_timeout_raw = os.environ.get("LILBEE_VISION_TIMEOUT", "").strip()
-        try:
-            vision_timeout: float = float(vision_timeout_raw) if vision_timeout_raw else 120.0
-        except ValueError:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Invalid LILBEE_VISION_TIMEOUT=%r, ignoring", vision_timeout_raw
-            )
-            vision_timeout = 120.0
+        data_root = _resolve_data_root()
+        chat_model = _load_chat_model(data_root)
+        vision_model = _load_vision_model(data_root)
+        vision_timeout = _parse_vision_timeout()
 
         extra = env("IGNORE", "")
         ignore_dirs = DEFAULT_IGNORE_DIRS | frozenset(
@@ -158,6 +127,57 @@ class Config(BaseModel):
             num_ctx=env_int_optional("NUM_CTX"),
             seed=env_int_optional("SEED"),
         )
+
+
+def _resolve_data_root() -> Path:
+    """Determine the data root: LILBEE_DATA env > local .lilbee/ > platform default."""
+    data_env = env("DATA", "")
+    if data_env:
+        return Path(data_env)
+
+    from lilbee.platform import find_local_root
+
+    local = find_local_root()
+    if local is not None:
+        return local
+
+    return default_data_dir()
+
+
+def _load_chat_model(data_root: Path) -> str:
+    """Resolve chat model: LILBEE_CHAT_MODEL env > persisted setting > default."""
+    chat_model = env("CHAT_MODEL", "qwen3:8b")
+    if "LILBEE_CHAT_MODEL" not in os.environ:
+        try:
+            saved = settings.get(data_root, "chat_model")
+        except (ValueError, OSError):
+            saved = None
+        if saved:
+            chat_model = saved
+    return chat_model
+
+
+def _load_vision_model(data_root: Path) -> str:
+    """Resolve vision model: LILBEE_VISION_MODEL env > persisted setting > empty."""
+    vision_model_env = os.environ.get("LILBEE_VISION_MODEL", "").strip()
+    if vision_model_env:
+        return vision_model_env
+    try:
+        return settings.get(data_root, "vision_model") or ""
+    except (ValueError, OSError):
+        return ""
+
+
+def _parse_vision_timeout() -> float:
+    """Parse LILBEE_VISION_TIMEOUT env var, returning default on invalid input."""
+    raw = os.environ.get("LILBEE_VISION_TIMEOUT", "").strip()
+    if not raw:
+        return 120.0
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("Invalid LILBEE_VISION_TIMEOUT=%r, ignoring", raw)
+        return 120.0
 
 
 cfg = Config.from_env()

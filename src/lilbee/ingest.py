@@ -5,10 +5,11 @@ import hashlib
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
+from pydantic import BaseModel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from lilbee import embedder, store
@@ -17,7 +18,15 @@ from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
 from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
-from lilbee.progress import DetailedProgressCallback, noop_callback
+from lilbee.progress import (
+    BatchProgressEvent,
+    DetailedProgressCallback,
+    EventType,
+    FileDoneEvent,
+    FileStartEvent,
+    SyncDoneEvent,
+    noop_callback,
+)
 
 log = logging.getLogger(__name__)
 
@@ -53,15 +62,14 @@ class ChunkRecord(TypedDict):
     vector: list[float]
 
 
-@dataclass
-class SyncResult:
+class SyncResult(BaseModel):
     """Summary of a sync operation."""
 
-    added: list[str] = field(default_factory=list)
-    updated: list[str] = field(default_factory=list)
-    removed: list[str] = field(default_factory=list)
+    added: list[str] = []
+    updated: list[str] = []
+    removed: list[str] = []
     unchanged: int = 0
-    failed: list[str] = field(default_factory=list)
+    failed: list[str] = []
 
     def __str__(self) -> str:
         lines = [
@@ -75,7 +83,11 @@ class SyncResult:
             lines.append(f"  [red]{f}[/red]")
         return "\n".join(lines)
 
-    __repr__ = __str__
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def __rich__(self) -> str:
+        return self.__str__()
 
 
 @dataclass
@@ -505,13 +517,13 @@ async def sync(
         failed=failed,
     )
     on_progress(
-        "done",
-        {
-            "added": len(result.added),
-            "updated": len(result.updated),
-            "removed": len(result.removed),
-            "failed": len(result.failed),
-        },
+        EventType.DONE,
+        SyncDoneEvent(
+            added=len(result.added),
+            updated=len(result.updated),
+            removed=len(result.removed),
+            failed=len(result.failed),
+        ).model_dump(),
     )
     return result
 
@@ -539,24 +551,26 @@ async def ingest_batch(
     ) -> _IngestResult:
         async with semaphore:
             on_progress(
-                "file_start",
-                {"file": name, "total_files": total_files, "current_file": file_index},
+                EventType.FILE_START,
+                FileStartEvent(
+                    file=name, total_files=total_files, current_file=file_index
+                ).model_dump(),
             )
             try:
                 chunk_count = await _ingest_file(
                     path, name, content_type, force_vision=force_vision, on_progress=on_progress
                 )
                 on_progress(
-                    "file_done",
-                    {"file": name, "status": "ok", "chunks": chunk_count},
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file=name, status="ok", chunks=chunk_count).model_dump(),
                 )
                 return _IngestResult(name, path, chunk_count, error=None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 on_progress(
-                    "file_done",
-                    {"file": name, "status": "error", "chunks": 0},
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file=name, status="error", chunks=0).model_dump(),
                 )
                 return _IngestResult(name, path, 0, error=exc)
 
@@ -585,13 +599,13 @@ async def _collect_results(
         _apply_result(result, added, updated, failed)
         progress_status = "failed" if result.error is not None else "ingested"
         on_progress(
-            "batch_progress",
-            {
-                "file": result.name,
-                "status": progress_status,
-                "current": completed_count,
-                "total": len(tasks),
-            },
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=result.name,
+                status=progress_status,
+                current=completed_count,
+                total=len(tasks),
+            ).model_dump(),
         )
 
 
@@ -618,13 +632,13 @@ async def _collect_results_with_progress(
             progress.advance(ptask)
             progress_status = "failed" if result.error is not None else "ingested"
             on_progress(
-                "batch_progress",
-                {
-                    "file": result.name,
-                    "status": progress_status,
-                    "current": completed_count,
-                    "total": len(tasks),
-                },
+                EventType.BATCH_PROGRESS,
+                BatchProgressEvent(
+                    file=result.name,
+                    status=progress_status,
+                    current=completed_count,
+                    total=len(tasks),
+                ).model_dump(),
             )
 
 

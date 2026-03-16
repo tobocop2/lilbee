@@ -1200,7 +1200,7 @@ class TestListOllamaModels:
             assert list_ollama_models() == ["llama3:latest"]
 
     def test_returns_empty_on_error(self):
-        with mock.patch("ollama.list", side_effect=Exception("not running")):
+        with mock.patch("ollama.list", side_effect=ConnectionError("not running")):
             assert list_ollama_models() == []
 
     def test_excludes_embedding_model(self):
@@ -1862,7 +1862,20 @@ class TestAskJson:
 
         mock_ask_raw.return_value = AskResult(
             answer="5 quarts",
-            sources=[{"source": "manual.pdf", "_distance": 0.3, "vector": [0.1], "chunk": "oil"}],
+            sources=[
+                {
+                    "source": "manual.pdf",
+                    "content_type": "pdf",
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "oil",
+                    "chunk_index": 0,
+                    "_distance": 0.3,
+                    "vector": [0.1],
+                }
+            ],
         )
         result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
         assert result.exit_code == 0

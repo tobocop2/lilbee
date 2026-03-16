@@ -1,9 +1,12 @@
 """Chat loop, slash-command dispatch, and tab completion."""
 
+from __future__ import annotations
+
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 from rich.console import Console
@@ -18,6 +21,9 @@ from lilbee.cli.helpers import (
     stream_response,
 )
 from lilbee.config import cfg
+
+if TYPE_CHECKING:
+    from lilbee.query import ChatMessage
 
 _ADD_PREFIX = "/add "
 _MODEL_PREFIX = "/model "
@@ -237,8 +243,8 @@ def handle_slash_reset(args: str, con: Console) -> None:
         return
     result = perform_reset()
     con.print(
-        f"Reset complete: {result['deleted_docs']} document(s), "
-        f"{result['deleted_data']} data item(s) deleted."
+        f"Reset complete: {result.deleted_docs} document(s), "
+        f"{result.deleted_data} data item(s) deleted."
     )
 
 
@@ -257,7 +263,7 @@ def _get_model_defaults() -> dict[str, str]:
                 if key in _SETTINGS_MAP:
                     defaults[key] = parts[1]
         return defaults
-    except Exception:
+    except (ollama.ResponseError, ConnectionError, OSError):
         return {}
 
 
@@ -392,7 +398,7 @@ def list_ollama_models(*, exclude_vision: bool = False) -> list[str]:
             vision_names = {m.name for m in VISION_CATALOG}
             models = [m for m in models if m not in vision_names]
         return models
-    except Exception:
+    except (ConnectionError, OSError):
         return []
 
 
@@ -439,7 +445,7 @@ def make_completer():  # type: ignore[no-untyped-def]
 def chat_loop(con: Console) -> None:
     """Interactive REPL with slash-command support."""
     con.print("[bold]lilbee chat[/bold] — type /help for commands\n")
-    history: list[dict] = []
+    history: list[ChatMessage] = []
 
     _prompt_fn: Callable[[], str] | None = None
     if sys.stdin.isatty():
