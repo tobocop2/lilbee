@@ -3,207 +3,161 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lilbee — chat with your documents locally, or plug into AI agents via MCP</title>
+<title>lilbee — local knowledge base for your documents</title>
 <style>
   :root {
-    --bg: #0a0a0a;
-    --surface: #141414;
-    --border: #2a2a2a;
-    --gold: #f5a623;
-    --gold-dim: #c4841d;
-    --text: #e0e0e0;
-    --text-dim: #888;
-    --code-bg: #1a1a1a;
+    --bg: #0a0800;
+    --amber: #ffb000;
+    --dim: #996a00;
+    --faint: #4d3500;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Courier New', monospace;
     background: var(--bg);
-    color: var(--text);
+    color: var(--amber);
     min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-  .hero {
-    text-align: center;
-    padding: 4rem 2rem 2rem;
-    max-width: 700px;
-  }
-  .logo {
-    font-size: 4rem;
-    margin-bottom: 0.5rem;
-  }
-  h1 {
-    font-size: 2.5rem;
-    font-weight: 900;
-    letter-spacing: -0.02em;
-    color: var(--gold);
-    text-transform: uppercase;
-  }
-  .tagline {
-    font-size: 1.1rem;
-    color: var(--text-dim);
-    margin-top: 0.5rem;
-    font-weight: 400;
-  }
-  .honeycomb {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: center;
-    margin: 2rem 0;
-  }
-  .hex {
-    width: 12px;
-    height: 12px;
-    background: var(--gold-dim);
-    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-    opacity: 0.6;
-  }
-  .hex:nth-child(odd) { opacity: 0.3; }
-  .hex:nth-child(3) { opacity: 1; background: var(--gold); }
-
-  .links {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
-    max-width: 700px;
-    width: 100%;
-    padding: 0 2rem;
-    margin: 1rem 0 2rem;
-  }
-  .links a {
-    display: block;
-    padding: 1.2rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text);
-    text-decoration: none;
-    font-size: 0.9rem;
-    font-weight: 600;
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .links a:hover {
-    border-color: var(--gold);
-    color: var(--gold);
-  }
-  .links .label {
-    display: block;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    margin-top: 0.3rem;
-    font-weight: 400;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .features {
-    max-width: 700px;
-    width: 100%;
-    padding: 0 2rem;
-    margin-bottom: 2rem;
-  }
-  .features ul {
-    list-style: none;
-    display: grid;
-    gap: 0.6rem;
-  }
-  .features li {
-    font-size: 0.85rem;
-    color: var(--text-dim);
-    padding-left: 1.2rem;
-    position: relative;
-  }
-  .features li::before {
-    content: "\25B8";
-    position: absolute;
-    left: 0;
-    color: var(--gold-dim);
-  }
-
-  .install {
-    max-width: 700px;
-    width: 100%;
-    padding: 0 2rem;
-    margin-bottom: 3rem;
-  }
-  .install code {
-    display: block;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    padding: 1rem 1.2rem;
-    font-size: 0.85rem;
-    color: var(--gold);
-    overflow-x: auto;
-  }
-
-  footer {
     padding: 2rem;
-    text-align: center;
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    border-top: 1px solid var(--border);
-    width: 100%;
-    margin-top: auto;
+    font-size: 14px;
+    line-height: 1.4;
   }
-  footer a { color: var(--gold-dim); text-decoration: none; }
-  footer a:hover { color: var(--gold); }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.12) 2px,
+      rgba(0, 0, 0, 0.12) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+  pre { font: inherit; white-space: pre; }
+  a { color: var(--amber); text-decoration: none; }
+  a:hover { text-shadow: 0 0 8px rgba(255, 176, 0, 0.5); }
+  .dim { color: var(--dim); }
+  .faint { color: var(--faint); }
+  .cursor {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.1em;
+    background: var(--amber);
+    vertical-align: text-bottom;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  h1 {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+  }
+
+  .layout {
+    display: flex;
+    gap: 3rem;
+    align-items: flex-start;
+  }
+  .main { flex: 0 1 auto; min-width: 0; }
+  .bee-art {
+    flex: 0 0 auto;
+    font-size: 7px;
+    line-height: 1.1;
+    color: var(--dim);
+    text-shadow: 0 0 4px rgba(255, 176, 0, 0.15);
+    user-select: none;
+    padding-top: 1rem;
+  }
+
+  @media (max-width: 900px) {
+    .bee-art { display: none; }
+  }
 </style>
 </head>
 <body>
+<h1>lilbee</h1>
+<div class="layout">
+<div class="main"><pre>
+888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888
 
-<div class="hero">
-  <div class="logo">&#x1F41D;</div>
-  <h1>lilbee</h1>
-  <p class="tagline">chat with your documents locally, or plug into AI agents via MCP</p>
+<span class="dim">a knowledge base — local or agent-ready</span>
+
+<span class="faint">════════════════════════════════════════════</span>
+
+ <a href="https://github.com/tobocop2/lilbee">[1] GitHub</a> <span class="faint">··············</span> <span class="dim">source code</span>
+ <a href="https://pypi.org/project/lilbee/">[2] PyPI</a> <span class="faint">················</span> <span class="dim">package</span>
+ <a href="api/">[3] API docs</a> <span class="faint">············</span> <span class="dim">OpenAPI / Redoc</span>
+ <a href="coverage/">[4] Coverage</a> <span class="faint">············</span> <span class="dim">100% tested</span>
+
+<span class="faint">──── built with lilbee ─────────────────────</span>
+
+ <a href="https://github.com/tobocop2/obsidian-lilbee">Obsidian Plugin</a> <span class="faint">········</span> <span class="dim">chat, search, sync your vault</span>
+
+<span class="faint">════════════════════════════════════════════</span>
+
+ <span class="dim">&gt;</span> local document chat via Ollama
+ <span class="dim">&gt;</span> MCP server + JSON CLI for agents
+ <span class="dim">&gt;</span> REST API with streaming SSE
+ <span class="dim">&gt;</span> PDFs, Office docs, images, 150+ code langs
+ <span class="dim">&gt;</span> per-project databases (.lilbee/)
+ <span class="dim">&gt;</span> AST-aware code chunking via tree-sitter
+ <span class="dim">&gt;</span> no cloud, no Docker — fully local
+
+ <span class="faint">$</span> pip install lilbee<span class="cursor"></span>
+
+<span class="faint">════════════════════════════════════════════</span>
+ <span class="faint"><a href="https://github.com/tobocop2/lilbee">lilbee</a> — MIT License</span>
+</pre></div>
+<aside class="bee-art" aria-hidden="true"><pre>
+     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z
+</pre></aside>
 </div>
-
-<div class="honeycomb">
-  <div class="hex"></div>
-  <div class="hex"></div>
-  <div class="hex"></div>
-  <div class="hex"></div>
-  <div class="hex"></div>
-</div>
-
-<div class="links">
-  <a href="https://github.com/tobocop2/lilbee">
-    GitHub
-    <span class="label">Source code</span>
-  </a>
-  <a href="https://pypi.org/project/lilbee/">
-    PyPI
-    <span class="label">pip install lilbee</span>
-  </a>
-  <a href="api/">
-    API Reference
-    <span class="label">OpenAPI / Redoc</span>
-  </a>
-  <a href="coverage/">
-    Coverage
-    <span class="label">100% test coverage</span>
-  </a>
-</div>
-
-<div class="features">
-  <ul>
-    <li>Chat with documents locally using Ollama</li>
-    <li>MCP server + JSON CLI for AI agent integration</li>
-    <li>HTTP REST API with streaming SSE</li>
-    <li>PDFs, Office docs, images (vision OCR), 150+ code languages</li>
-    <li>Per-project databases (git-like .lilbee/ model)</li>
-    <li>AST-aware code chunking via tree-sitter</li>
-    <li>No cloud APIs, no Docker — fully local</li>
-  </ul>
-</div>
-
-<div class="install">
-  <code>pip install lilbee</code>
-</div>
-
-<footer>
-  <a href="https://github.com/tobocop2/lilbee">lilbee</a> &mdash; MIT License
-</footer>
-
 </body>
 </html>
