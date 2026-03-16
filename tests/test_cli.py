@@ -2,7 +2,6 @@
 
 import json
 import logging
-from dataclasses import fields, replace
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -41,7 +40,7 @@ def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
     monkeypatch.delenv("LILBEE_DATA", raising=False)
     monkeypatch.delenv("LILBEE_LOG_LEVEL", raising=False)
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
     root = logging.getLogger()
     old_level = root.level
     old_handlers = root.handlers[:]
@@ -55,8 +54,8 @@ def isolated_env(tmp_path, monkeypatch):
 
     yield tmp_path
 
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
     root.setLevel(old_level)
     root.handlers[:] = old_handlers
 
@@ -427,6 +426,32 @@ class TestApplyOverrides:
         monkeypatch.setenv("LILBEE_DATA", "/tmp/should-be-ignored")
         apply_overrides(use_global=True)
         assert cfg.data_root == default_data_dir()
+
+    def test_generation_option_overrides(self):
+        from lilbee.cli import apply_overrides
+
+        apply_overrides(
+            temperature=0.3,
+            top_p=0.95,
+            top_k_sampling=40,
+            repeat_penalty=1.1,
+            num_ctx=4096,
+            seed=42,
+        )
+        assert cfg.temperature == 0.3
+        assert cfg.top_p == 0.95
+        assert cfg.top_k_sampling == 40
+        assert cfg.repeat_penalty == 1.1
+        assert cfg.num_ctx == 4096
+        assert cfg.seed == 42
+
+    def test_generation_option_none_is_noop(self):
+        from lilbee.cli import apply_overrides
+
+        cfg.temperature = 0.7
+        apply_overrides(temperature=None)
+        assert cfg.temperature == 0.7
+        cfg.temperature = None
 
 
 class TestGlobalFlag:
@@ -1114,7 +1139,9 @@ class TestLilbeeCompleter:
 
     def test_slash_s_narrows(self):
         results = self._complete("/s")
-        assert results == ["/status"]
+        assert "/status" in results
+        assert "/settings" in results
+        assert "/set" in results
 
     def test_add_path_delegates(self):
         results = self._complete("/add /")
@@ -1173,7 +1200,7 @@ class TestListOllamaModels:
             assert list_ollama_models() == ["llama3:latest"]
 
     def test_returns_empty_on_error(self):
-        with mock.patch("ollama.list", side_effect=Exception("not running")):
+        with mock.patch("ollama.list", side_effect=ConnectionError("not running")):
             assert list_ollama_models() == []
 
     def test_excludes_embedding_model(self):
@@ -1835,7 +1862,20 @@ class TestAskJson:
 
         mock_ask_raw.return_value = AskResult(
             answer="5 quarts",
-            sources=[{"source": "manual.pdf", "_distance": 0.3, "vector": [0.1], "chunk": "oil"}],
+            sources=[
+                {
+                    "source": "manual.pdf",
+                    "content_type": "pdf",
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "oil",
+                    "chunk_index": 0,
+                    "_distance": 0.3,
+                    "vector": [0.1],
+                }
+            ],
         )
         result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
         assert result.exit_code == 0

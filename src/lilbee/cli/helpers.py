@@ -1,17 +1,103 @@
 """Shared helper functions for CLI commands and slash commands."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import shutil
-from dataclasses import asdict, dataclass, field
+from collections.abc import Generator
+from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from rich.console import Console
+from pydantic import BaseModel
+from rich.console import Console, RenderableType
 from rich.table import Table
 
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+
+if TYPE_CHECKING:
+    from lilbee.query import ChatMessage
+    from lilbee.store import SearchChunk
+
+
+class ResetResult(BaseModel):
+    """Result of a full knowledge base reset."""
+
+    command: str = "reset"
+    deleted_docs: int
+    deleted_data: int
+    documents_dir: str
+    data_dir: str
+
+
+class StatusConfig(BaseModel):
+    """Configuration section of a status response."""
+
+    documents_dir: str
+    data_dir: str
+    chat_model: str
+    embedding_model: str
+    vision_model: str | None = None
+
+
+class SourceInfo(BaseModel):
+    """A single indexed source in a status response."""
+
+    filename: str
+    file_hash: str
+    chunk_count: int
+    ingested_at: str
+
+
+class StatusResult(BaseModel):
+    """Full status response for the knowledge base."""
+
+    command: str = "status"
+    config: StatusConfig
+    sources: list[SourceInfo]
+    total_chunks: int
+
+    def __rich_console__(
+        self, console: Console, options: object
+    ) -> Generator[RenderableType, None, None]:
+        yield f"[bold]Documents:[/bold]  {self.config.documents_dir}"
+        yield f"[bold]Database:[/bold]   {self.config.data_dir}"
+        yield f"[bold]Chat model:[/bold] {self.config.chat_model}"
+        yield f"[bold]Embeddings:[/bold] {self.config.embedding_model}"
+        if self.config.vision_model:
+            yield f"[bold]Vision OCR:[/bold] {self.config.vision_model}"
+        yield ""
+
+        if not self.sources:
+            yield (
+                "No documents indexed. Drop files into the documents directory "
+                "and run 'lilbee sync'."
+            )
+            return
+
+        table = Table(title="Indexed Documents")
+        table.add_column("File", style="cyan")
+        table.add_column("Hash", style="dim", max_width=12)
+        table.add_column("Chunks", justify="right")
+        table.add_column("Ingested", style="dim")
+        for s in self.sources:
+            table.add_row(s.filename, s.file_hash, str(s.chunk_count), s.ingested_at)
+        yield table
+        yield (
+            f"\n[bold]{len(self.sources)}[/bold] documents, [bold]{self.total_chunks}[/bold] chunks"
+        )
+
+
+def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
+    """Ignore callback for shutil.copytree — filters ignored directories."""
+    return {
+        name
+        for name in contents
+        if (Path(directory) / name).is_dir() and is_ignored_dir(name, cfg.ignore_dirs)
+    }
 
 
 def get_version() -> str:
@@ -24,7 +110,7 @@ def json_output(data: dict) -> None:
     print(json.dumps(data))
 
 
-def clean_result(result: dict) -> dict:
+def clean_result(result: SearchChunk) -> dict:
     """Strip vector field and rename _distance for JSON output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}
     if "_distance" in cleaned:
@@ -32,72 +118,37 @@ def clean_result(result: dict) -> dict:
     return cleaned
 
 
-def gather_status() -> dict:
-    """Collect status data as a plain dict (shared by human + JSON output)."""
+def gather_status() -> StatusResult:
+    """Collect status data as a typed model (shared by human + JSON output)."""
     from lilbee.store import get_sources
 
     sources = get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
-    return {
-        "command": "status",
-        "config": {
-            "documents_dir": str(cfg.documents_dir),
-            "data_dir": str(cfg.data_dir),
-            "chat_model": cfg.chat_model,
-            "embedding_model": cfg.embedding_model,
-            **({"vision_model": cfg.vision_model} if cfg.vision_model else {}),
-        },
-        "sources": [
-            {
-                "filename": s["filename"],
-                "file_hash": s["file_hash"][:12],
-                "chunk_count": s["chunk_count"],
-                "ingested_at": s["ingested_at"][:19],
-            }
+    return StatusResult(
+        config=StatusConfig(
+            documents_dir=str(cfg.documents_dir),
+            data_dir=str(cfg.data_dir),
+            chat_model=cfg.chat_model,
+            embedding_model=cfg.embedding_model,
+            vision_model=cfg.vision_model or None,
+        ),
+        sources=[
+            SourceInfo(
+                filename=s["filename"],
+                file_hash=s["file_hash"][:12],
+                chunk_count=s["chunk_count"],
+                ingested_at=s["ingested_at"][:19],
+            )
             for s in sorted_sources
         ],
-        "total_chunks": total_chunks,
-    }
+        total_chunks=total_chunks,
+    )
 
 
 def render_status(con: Console) -> None:
     """Print status info (documents, paths, chunk counts)."""
-    data = gather_status()
-    conf = data["config"]
-    con.print(f"[bold]Documents:[/bold]  {conf['documents_dir']}")
-    con.print(f"[bold]Database:[/bold]   {conf['data_dir']}")
-    con.print(f"[bold]Chat model:[/bold] {conf['chat_model']}")
-    con.print(f"[bold]Embeddings:[/bold] {conf['embedding_model']}")
-    if "vision_model" in conf:
-        con.print(f"[bold]Vision OCR:[/bold] {conf['vision_model']}")
-    con.print()
-
-    if not data["sources"]:
-        con.print(
-            "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
-        )
-        return
-
-    table = Table(title="Indexed Documents")
-    table.add_column("File", style="cyan")
-    table.add_column("Hash", style="dim", max_width=12)
-    table.add_column("Chunks", justify="right")
-    table.add_column("Ingested", style="dim")
-
-    for s in data["sources"]:
-        table.add_row(
-            s["filename"],
-            s["file_hash"],
-            str(s["chunk_count"]),
-            s["ingested_at"],
-        )
-
-    con.print(table)
-    con.print(
-        f"\n[bold]{len(data['sources'])}[/bold] documents, "
-        f"[bold]{data['total_chunks']}[/bold] chunks"
-    )
+    con.print(gather_status())
 
 
 @dataclass
@@ -118,15 +169,7 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
             result.skipped.append(p.name)
             continue
         if p.is_dir():
-
-            def ignore_dirs(directory: str, contents: list[str]) -> set[str]:
-                return {
-                    name
-                    for name in contents
-                    if (Path(directory) / name).is_dir() and is_ignored_dir(name, cfg.ignore_dirs)
-                }
-
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=ignore_dirs)
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore)
         else:
             shutil.copy2(p, dest)
         result.copied.append(p.name)
@@ -159,7 +202,7 @@ def add_paths(
 
 def stream_response(
     question: str,
-    history: list[dict],
+    history: list[ChatMessage],
     con: Console,
 ) -> None:
     """Stream an LLM answer and append the exchange to *history*."""
@@ -167,6 +210,7 @@ def stream_response(
 
     stream = ask_stream(question, history=history)
     response_parts: list[str] = []
+    cancelled = False
 
     try:
         # Show a spinner while waiting for the first token from the LLM.
@@ -180,16 +224,23 @@ def stream_response(
         for token in stream:
             con.print(token, end="")
             response_parts.append(token)
+    except KeyboardInterrupt:
+        cancelled = True
+        stream.close()
+        con.print("\n[dim](stopped)[/dim]")
     except RuntimeError as exc:
         con.print(f"\n[red]Error:[/red] {exc}")
         return
 
-    con.print("\n")
-    history.append({"role": "user", "content": question})
-    history.append({"role": "assistant", "content": "".join(response_parts)})
+    if not cancelled:
+        con.print("\n")
+    full = "".join(response_parts)
+    if full:
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": full})
 
 
-def perform_reset() -> dict:
+def perform_reset() -> ResetResult:
     """Delete all documents and data. Returns summary of what was deleted."""
     deleted_docs = 0
     deleted_data = 0
@@ -210,18 +261,20 @@ def perform_reset() -> dict:
                 item.unlink()
             deleted_data += 1
 
-    return {
-        "command": "reset",
-        "deleted_docs": deleted_docs,
-        "deleted_data": deleted_data,
-        "documents_dir": str(cfg.documents_dir),
-        "data_dir": str(cfg.data_dir),
-    }
+    return ResetResult(
+        deleted_docs=deleted_docs,
+        deleted_data=deleted_data,
+        documents_dir=str(cfg.documents_dir),
+        data_dir=str(cfg.data_dir),
+    )
 
 
 def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
-    return {"command": "sync", **asdict(result)}  # type: ignore[call-overload]
+    from lilbee.ingest import SyncResult
+
+    assert isinstance(result, SyncResult)
+    return {"command": "sync", **result.model_dump()}
 
 
 def auto_sync(con: Console) -> None:
