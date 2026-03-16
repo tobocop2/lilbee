@@ -17,6 +17,7 @@ from lilbee.mcp import (
     lilbee_sync,
     main,
 )
+from lilbee.store import SearchChunk
 
 
 @pytest.fixture(autouse=True)
@@ -47,21 +48,55 @@ _SYNC_NOOP = SyncResult()
 
 class TestClean:
     def test_strips_vector(self):
-        result = clean({"source": "a.pdf", "vector": [0.1], "chunk": "hi"})
+        chunk = SearchChunk(
+            source="a.pdf",
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="hi",
+            chunk_index=0,
+            vector=[0.1],
+            distance=0.5,
+        )
+        result = clean(chunk)
         assert "vector" not in result
         assert result["source"] == "a.pdf"
 
-    def test_renames_distance(self):
-        result = clean({"_distance": 0.42, "chunk": "hi"})
+    def test_has_distance(self):
+        chunk = SearchChunk(
+            source="a.pdf",
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="hi",
+            chunk_index=0,
+            vector=[0.1],
+            distance=0.42,
+        )
+        result = clean(chunk)
         assert result["distance"] == 0.42
-        assert "_distance" not in result
 
 
 class TestLilbeeSearch:
     @mock.patch("lilbee.query.search_context")
     def test_returnscleaned_results(self, mock_search):
         mock_search.return_value = [
-            {"source": "doc.pdf", "chunk": "content", "_distance": 0.3, "vector": [0.1] * 768},
+            SearchChunk(
+                source="doc.pdf",
+                content_type="pdf",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="content",
+                chunk_index=0,
+                vector=[0.1] * 768,
+                distance=0.3,
+            ),
         ]
         results = lilbee_search("test query", top_k=3)
         assert len(results) == 1
