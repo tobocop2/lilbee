@@ -27,6 +27,7 @@ dependencies = [
     "ollama",
     "lancedb",
     "kreuzberg",
+    "filelock",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",
     "typer",
