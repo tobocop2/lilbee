@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -150,7 +151,7 @@ def handle_slash_add(args: str, con: Console) -> None:
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        add_paths([p], con, force=True)
+        add_paths([p], con, force=True, background=True)
     else:
         try:
             from prompt_toolkit import prompt as pt_prompt
@@ -166,7 +167,7 @@ def handle_slash_add(args: str, con: Console) -> None:
         if not p.exists():
             con.print(f"[red]Path not found:[/red] {raw}")
             return
-        add_paths([p], con, force=True)
+        add_paths([p], con, force=True, background=True)
 
 
 def handle_slash_quit(args: str, con: Console) -> None:
@@ -448,28 +449,38 @@ def chat_loop(con: Console) -> None:
     history: list[ChatMessage] = []
 
     _prompt_fn: Callable[[], str] | None = None
+    _patch_ctx: AbstractContextManager[object] | None = None
     if sys.stdin.isatty():
         try:
             from prompt_toolkit import PromptSession
+            from prompt_toolkit.patch_stdout import patch_stdout
 
             _session: PromptSession[str] = PromptSession(completer=make_completer())
             _prompt_fn = lambda: _session.prompt("> ")  # noqa: E731
+            _patch_ctx = patch_stdout()
         except ImportError:
             pass
 
-    while True:
-        try:
-            if _prompt_fn is not None:
-                question = _prompt_fn()
-            else:
-                question = con.input("[bold green]> [/bold green]")
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not question.strip():
-            continue
-        try:
-            if dispatch_slash(question, con):
+    if _patch_ctx is not None:
+        _patch_ctx.__enter__()
+
+    try:
+        while True:
+            try:
+                if _prompt_fn is not None:
+                    question = _prompt_fn()
+                else:
+                    question = con.input("[bold green]> [/bold green]")
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not question.strip():
                 continue
-        except QuitChat:
-            break
-        stream_response(question, history, con)
+            try:
+                if dispatch_slash(question, con):
+                    continue
+            except QuitChat:
+                break
+            stream_response(question, history, con)
+    finally:
+        if _patch_ctx is not None:
+            _patch_ctx.__exit__(None, None, None)
