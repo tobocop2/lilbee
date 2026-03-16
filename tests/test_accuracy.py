@@ -137,5 +137,5 @@ class TestRAGAccuracy:
 
         results = search_context("oil capacity")
         assert len(results) > 0
-        chunks_text = " ".join(r["chunk"] for r in results)
+        chunks_text = " ".join(r.chunk for r in results)
         assert "6.5 quarts" in chunks_text
