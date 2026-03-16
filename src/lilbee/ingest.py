@@ -509,6 +509,9 @@ async def sync(
             on_progress=on_progress,
         )
 
+    if files_to_process or removed:
+        store.ensure_fts_index()
+
     result = SyncResult(
         added=added,
         updated=updated,

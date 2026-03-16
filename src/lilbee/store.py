@@ -5,15 +5,30 @@ from datetime import UTC, datetime
 
 import lancedb
 import pyarrow as pa
-from typing_extensions import TypedDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, cfg
 
 log = logging.getLogger(__name__)
 
 
-class SearchChunk(TypedDict):
-    """A search result row from LanceDB — chunk fields plus distance."""
+class _FtsState:
+    """Ephemeral FTS index state — resets on process start."""
+
+    ready: bool = False
+
+
+_fts = _FtsState()
+
+
+class SearchChunk(BaseModel):
+    """A search result from LanceDB.
+
+    Hybrid results have ``relevance_score`` set (higher = better).
+    Vector-only results have ``distance`` set (lower = better).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     source: str
     content_type: str
@@ -23,8 +38,9 @@ class SearchChunk(TypedDict):
     line_end: int
     chunk: str
     chunk_index: int
-    vector: list[float]
-    _distance: float
+    vector: list[float] = Field(repr=False)
+    distance: float | None = Field(None, alias="_distance")
+    relevance_score: float | None = Field(None, alias="_relevance_score")
 
 
 def _chunks_schema() -> pa.Schema:
@@ -95,8 +111,26 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+def ensure_fts_index() -> None:
+    """Create or replace the FTS index on the chunks table.
+
+    No-op when the table doesn't exist or is empty.  Sets _fts.ready
+    on success so hybrid_search can be used.
+    """
+    table = _open_table(CHUNKS_TABLE)
+    if table is None:
+        return
+    try:
+        table.create_fts_index("chunk", replace=True)
+        _fts.ready = True
+        log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
+    except Exception:
+        log.debug("FTS index creation failed (empty table?)", exc_info=True)
+
+
 def add_chunks(records: list[dict]) -> int:
     """Add chunk records to the store. Returns count added."""
+    _fts.ready = False
     if not records:
         return 0
     for rec in records:
@@ -112,14 +146,35 @@ def add_chunks(records: list[dict]) -> int:
     return len(records)
 
 
+def _hybrid_search(
+    table: lancedb.table.Table,
+    query_text: str,
+    query_vector: list[float],
+    top_k: int,
+) -> list[SearchChunk]:
+    """Run hybrid (vector + FTS) search with RRF reranking."""
+    from lancedb.rerankers import RRFReranker
+
+    rows = (
+        table.search(query_type="hybrid")
+        .vector(query_vector)
+        .text(query_text)
+        .rerank(RRFReranker())
+        .limit(top_k)
+        .to_list()
+    )
+    return [SearchChunk(**r) for r in rows]
+
+
 def search(
     query_vector: list[float],
     top_k: int | None = None,
     max_distance: float | None = None,
+    query_text: str | None = None,
 ) -> list[SearchChunk]:
-    """Search for similar chunks by vector similarity.
+    """Search for similar chunks — hybrid when FTS index is available, else vector-only.
 
-    Results with distance > max_distance are filtered out.
+    Results with distance > max_distance are filtered out (vector-only path).
     Pass max_distance=0 to disable filtering.
     """
     if top_k is None:
@@ -129,9 +184,20 @@ def search(
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    results: list[SearchChunk] = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+
+    if query_text and not _fts.ready:
+        ensure_fts_index()
+
+    if query_text and _fts.ready:
+        try:
+            return _hybrid_search(table, query_text, query_vector, top_k)
+        except Exception:
+            log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
+
+    rows = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+    results = [SearchChunk(**r) for r in rows]
     if max_distance > 0:
-        results = [r for r in results if r["_distance"] <= max_distance]
+        results = [r for r in results if (r.distance or 0) <= max_distance]
     return results
 
 
@@ -141,8 +207,8 @@ def get_chunks_by_source(source: str) -> list[SearchChunk]:
     if table is None:
         return []
     escaped = _escape_sql_string(source)
-    rows: list[SearchChunk] = table.search().where(f"source = '{escaped}'").to_list()
-    return rows
+    rows = table.search().where(f"source = '{escaped}'").to_list()
+    return [SearchChunk(**r) for r in rows]
 
 
 def delete_by_source(source: str) -> None:
@@ -187,6 +253,7 @@ def delete_source(filename: str) -> None:
 
 def drop_all() -> None:
     """Drop all tables — used by rebuild."""
+    _fts.ready = False
     db = get_db()
     for name in _table_names(db):
         db.drop_table(name)
