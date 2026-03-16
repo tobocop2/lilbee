@@ -1,6 +1,5 @@
 """Tests for the document sync engine (mocked — no live server needed)."""
 
-from dataclasses import fields, replace
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -13,7 +12,7 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths to temp dir for every test."""
-    snapshot = replace(cfg)
+    snapshot = cfg.model_copy()
 
     docs = tmp_path / "documents"
     docs.mkdir()
@@ -23,8 +22,8 @@ def isolated_env(tmp_path):
 
     yield docs
 
-    for f in fields(cfg):
-        setattr(cfg, f.name, getattr(snapshot, f.name))
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
 
 
 def _fake_embed_batch(texts, **kwargs):
