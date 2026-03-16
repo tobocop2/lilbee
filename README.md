@@ -6,7 +6,7 @@
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee" alt="PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
   <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://tobocop2.github.io/lilbee/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
+  <a href="https://tobocop2.github.io/lilbee/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
   <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-blue.svg" alt="Typed"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
@@ -23,6 +23,7 @@
 - [Install](#install)
 - [Quick start](#quick-start) · [Full usage guide](docs/usage.md)
 - [Agent integration](#agent-integration)
+- [HTTP Server](#http-server) · [API reference](https://tobocop2.github.io/lilbee/api/)
 - [Interactive chat](#interactive-chat)
 - [Supported formats](#supported-formats)
 
@@ -172,6 +173,17 @@ See the [usage guide](docs/usage.md).
 
 lilbee can serve as a local retrieval backend for AI coding agents via MCP or JSON CLI. See [docs/agent-integration.md](docs/agent-integration.md) for setup and usage.
 
+## HTTP Server
+
+lilbee includes a REST API server for programmatic access:
+
+```bash
+lilbee serve                          # start on localhost:7433
+lilbee serve --host 0.0.0.0 --port 8080
+```
+
+Endpoints include `/api/search`, `/api/ask`, `/api/chat` (with streaming SSE variants), `/api/sync`, `/api/add`, and `/api/models`. When the server is running, interactive API docs are available at `/schema/redoc`. See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema.
+
 ## Interactive chat
 
 Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation history, streaming responses, and slash commands:
@@ -182,6 +194,8 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 | `/add [path]` | Add a file or directory (tab-completes paths) |
 | `/model [name]` | Switch chat model — no args opens an interactive picker; with a name, switches directly (tab-completes installed models) |
 | `/vision [name\|off]` | Switch vision OCR model — no args opens a picker, `off` disables (tab-completes catalog models) |
+| `/settings` | Show all current configuration values |
+| `/set <key> <value>` | Change a setting (e.g. `/set temperature 0.7`) |
 | `/version` | Show lilbee version |
 | `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |

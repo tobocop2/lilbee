@@ -36,9 +36,6 @@ async def mock_async_gen(*events):
         yield e
 
 
-# ── GET routes ───────────────────────────────────────────────────────────────
-
-
 class TestHealthRoute:
     @mock.patch(
         "lilbee.server.handlers.health",
@@ -89,9 +86,6 @@ class TestSearchRoute:
         mock_search.assert_awaited_once_with("x", top_k=5)
 
 
-# ── POST routes ──────────────────────────────────────────────────────────────
-
-
 class TestAskRoute:
     @mock.patch(
         "lilbee.server.handlers.ask",
@@ -113,6 +107,34 @@ class TestAskRoute:
         resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
         assert resp.status_code == 201
         mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={
+            "answer": "ok",
+            "sources": [
+                {
+                    "source": "doc.pdf",
+                    "content_type": "pdf",
+                    "chunk": "text",
+                    "distance": 0.1,
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk_index": 0,
+                }
+            ],
+        },
+    )
+    def test_returns_sources_as_typed_models(self, _mock, client):
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 201
+        sources = resp.json()["sources"]
+        assert len(sources) == 1
+        assert sources[0]["source"] == "doc.pdf"
+        assert sources[0]["distance"] == 0.1
 
 
 class TestAskStreamRoute:
@@ -175,9 +197,6 @@ class TestSyncRoute:
         mock_stream.assert_called_once_with(force_vision=True)
 
 
-# ── Models routes ────────────────────────────────────────────────────────────
-
-
 class TestModelsListRoute:
     @mock.patch(
         "lilbee.server.handlers.list_models",
@@ -214,7 +233,23 @@ class TestModelsSetVisionRoute:
         assert resp.json()["model"] == "llava:13b"
 
 
-# ── CORS ─────────────────────────────────────────────────────────────────────
+class TestOpenAPISchema:
+    def test_schema_endpoint_returns_json(self, client):
+        resp = client.get("/schema/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.json()
+        assert schema["info"]["title"] == "lilbee"
+        assert "/api/health" in schema["paths"]
+        assert "/api/ask" in schema["paths"]
+
+    def test_redoc_endpoint(self, client):
+        resp = client.get("/schema/redoc")
+        assert resp.status_code == 200
+        assert b"redoc" in resp.content.lower()
+
+    def test_swagger_endpoint(self, client):
+        resp = client.get("/schema/swagger")
+        assert resp.status_code == 200
 
 
 class TestCors:
@@ -247,9 +282,6 @@ class TestCors:
             },
         )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
-
-
-# ── __init__.py re-export ────────────────────────────────────────────────────
 
 
 class TestCreateAppReexport:

@@ -127,6 +127,8 @@ lilbee
 | `/add [path]` | Add a file or directory (tab-completes paths) |
 | `/model [name]` | Switch chat model — no args opens an interactive picker (tab-completes installed models) |
 | `/vision [name\|off]` | Switch vision OCR model — no args opens a picker, `off` disables |
+| `/settings` | Show all current configuration values |
+| `/set <key> <value>` | Change a setting (e.g. `/set temperature 0.7`) |
 | `/version` | Show lilbee version |
 | `/reset` | Delete all documents and data (asks for confirmation) |
 | `/help` | Show available commands |
@@ -191,6 +193,24 @@ All settings are configurable via environment variables:
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
+
+**Server:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
+| `LILBEE_SERVER_PORT` | `7433` | Server port |
+
+**Generation** — tune LLM output:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LILBEE_TEMPERATURE` | *(model default)* | Sampling temperature |
+| `LILBEE_TOP_P` | *(model default)* | Nucleus sampling threshold |
+| `LILBEE_TOP_K_SAMPLING` | *(model default)* | Top-k sampling |
+| `LILBEE_REPEAT_PENALTY` | *(model default)* | Repetition penalty |
+| `LILBEE_NUM_CTX` | *(model default)* | Context window size |
+| `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 
 **Advanced** — most users won't need to change these:
 
