@@ -193,20 +193,22 @@ def search(
         console.print("No results found.")
         return
 
+    has_relevance = any("relevance_score" in r for r in cleaned)
     table = Table(title="Search Results")
     table.add_column("Source", style="cyan")
     table.add_column("Chunk", max_width=80)
-    table.add_column("Distance", justify="right", style="dim")
+    score_label = "Score" if has_relevance else "Distance"
+    table.add_column(score_label, justify="right", style="dim")
 
     for r in cleaned:
         preview = r.get("chunk", "")[:CHUNK_PREVIEW_LEN]
         if len(r.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        table.add_row(
-            r.get("source", ""),
-            preview,
-            f"{r.get('distance', 0):.4f}",
-        )
+        if has_relevance:
+            score_str = f"{r.get('relevance_score', 0):.4f}"
+        else:
+            score_str = f"{r.get('distance', 0):.4f}"
+        table.add_row(r.get("source", ""), preview, score_str)
     console.print(table)
 
 
