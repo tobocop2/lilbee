@@ -6,10 +6,11 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from rich.console import Console, RenderableType
@@ -17,8 +18,10 @@ from rich.table import Table
 
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.progress import EventType
 
 if TYPE_CHECKING:
+    from lilbee.progress import DetailedProgressCallback
     from lilbee.query import ChatMessage
     from lilbee.store import SearchChunk
 
@@ -185,13 +188,26 @@ def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[
 
 
 def add_paths(
-    paths: list[Path], con: Console, *, force: bool = False, force_vision: bool = False
+    paths: list[Path],
+    con: Console,
+    *,
+    force: bool = False,
+    force_vision: bool = False,
+    background: bool = False,
 ) -> None:
-    """Copy *paths* into the knowledge base and sync (human output)."""
+    """Copy *paths* into the knowledge base and sync (human output).
+
+    When *background* is True (chat ``/add``), sync runs in a background thread
+    and this function returns immediately after copying files.
+    """
     from lilbee.ingest import sync
 
     copied = copy_paths(paths, con, force=force)
     con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.documents_dir}[/dim]")
+
+    if background:
+        run_sync_background(con, force_vision=force_vision)
+        return
 
     result = asyncio.run(sync(force_vision=force_vision))
     con.print(result)
@@ -274,8 +290,71 @@ def sync_result_to_json(result: object) -> dict:
     return {"command": "sync", **result.model_dump()}
 
 
-def auto_sync(con: Console) -> None:
-    """Run document sync before queries."""
+def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
+    """Return a callback that prints one-line status for FILE_START and DONE events."""
+    from lilbee.progress import FileStartEvent, SyncDoneEvent
+
+    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
+        if event_type == EventType.FILE_START:
+            ev = FileStartEvent(**data)
+            con.print(f"[dim]Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}[/dim]")
+        elif event_type == EventType.DONE:
+            ev_done = SyncDoneEvent(**data)
+            total = ev_done.added + ev_done.updated + ev_done.removed + ev_done.failed
+            if total:
+                con.print(
+                    f"[dim]Synced: {ev_done.added} added, "
+                    f"{ev_done.updated} updated, "
+                    f"{ev_done.removed} removed, "
+                    f"{ev_done.failed} failed[/dim]"
+                )
+
+    return _callback
+
+
+_bg_executor: ThreadPoolExecutor | None = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Lazy-init a single-worker executor (serializes concurrent submits)."""
+    global _bg_executor
+    if _bg_executor is None:
+        _bg_executor = ThreadPoolExecutor(max_workers=1)
+    return _bg_executor
+
+
+def _on_sync_done(con: Console, future: Future[object]) -> None:
+    """Callback attached to background sync futures — logs errors."""
+    exc = future.exception()
+    if exc is not None:
+        con.print(f"[red]Background sync error:[/red] {exc}")
+
+
+def run_sync_background(con: Console, *, force_vision: bool = False) -> Future[object]:
+    """Submit sync to a background thread. Returns the Future."""
+    from lilbee.ingest import sync
+
+    callback = _sync_progress_printer(con)
+
+    def _run() -> object:
+        return asyncio.run(sync(quiet=True, on_progress=callback, force_vision=force_vision))
+
+    future = _get_executor().submit(_run)
+    future.add_done_callback(lambda f: _on_sync_done(con, f))
+    return future
+
+
+def auto_sync(con: Console, *, background: bool = False) -> None:
+    """Run document sync before queries.
+
+    When *background* is True, sync runs in a background thread and this
+    function returns immediately (for chat/REPL).  When False (default),
+    sync blocks until complete (for ``lilbee ask``).
+    """
+    if background:
+        run_sync_background(con)
+        return
+
     from lilbee.ingest import sync
 
     try:

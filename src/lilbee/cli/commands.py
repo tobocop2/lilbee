@@ -486,7 +486,7 @@ def chat(
 
     ensure_chat_model()
     validate_model()
-    auto_sync(console)
+    auto_sync(console, background=True)
     from lilbee.cli.chat import chat_loop
 
     chat_loop(console)

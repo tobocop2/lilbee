@@ -1250,12 +1250,18 @@ class TestPromptSessionBranch:
         mock_session = mock.MagicMock()
         mock_session.prompt.side_effect = ["/quit"]
         mock_ps_cls = mock.MagicMock(return_value=mock_session)
+        mock_patch_stdout_mod = mock.MagicMock()
+
+        mock_pt = mock.MagicMock(PromptSession=mock_ps_cls)
 
         with (
             mock.patch("sys.stdin") as mock_stdin,
             mock.patch.dict(
                 "sys.modules",
-                {"prompt_toolkit": mock.MagicMock(PromptSession=mock_ps_cls)},
+                {
+                    "prompt_toolkit": mock_pt,
+                    "prompt_toolkit.patch_stdout": mock_patch_stdout_mod,
+                },
             ),
         ):
             mock_stdin.isatty.return_value = True
@@ -2427,3 +2433,183 @@ class TestLogLevel:
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert logging.getLogger().level == logging.WARNING
+
+
+class TestSyncProgressPrinter:
+    def test_file_start_event(self):
+        from lilbee.cli.helpers import _sync_progress_printer
+        from lilbee.progress import EventType
+
+        con = mock.MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.FILE_START, {"file": "doc.pdf", "total_files": 3, "current_file": 1})
+        con.print.assert_called_once()
+        assert "doc.pdf" in con.print.call_args[0][0]
+        assert "1/3" in con.print.call_args[0][0]
+
+    def test_done_event_with_changes(self):
+        from lilbee.cli.helpers import _sync_progress_printer
+        from lilbee.progress import EventType
+
+        con = mock.MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.DONE, {"added": 2, "updated": 1, "removed": 0, "failed": 0})
+        con.print.assert_called_once()
+        assert "Synced:" in con.print.call_args[0][0]
+
+    def test_done_event_no_changes(self):
+        from lilbee.cli.helpers import _sync_progress_printer
+        from lilbee.progress import EventType
+
+        con = mock.MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.DONE, {"added": 0, "updated": 0, "removed": 0, "failed": 0})
+        con.print.assert_not_called()
+
+    def test_other_events_ignored(self):
+        from lilbee.cli.helpers import _sync_progress_printer
+        from lilbee.progress import EventType
+
+        con = mock.MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.BATCH_PROGRESS, {"file": "x", "status": "ok", "current": 1, "total": 2})
+        con.print.assert_not_called()
+
+
+class TestRunSyncBackground:
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_returns_immediately(self, _sync):
+        from lilbee.cli.helpers import run_sync_background
+
+        con = mock.MagicMock()
+        future = run_sync_background(con)
+        # Should return a Future without blocking
+        assert future is not None
+        # Wait for it to finish so cleanup is clean
+        future.result(timeout=5)
+        _sync.assert_called_once()
+
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Ollama down"),
+    )
+    def test_error_logged(self, _sync):
+        from lilbee.cli.helpers import run_sync_background
+
+        con = mock.MagicMock()
+        future = run_sync_background(con)
+        # Wait for the future to complete (it will fail)
+        with pytest.raises(RuntimeError):
+            future.result(timeout=5)
+        # The done callback should have printed the error
+        con.print.assert_called()
+        assert "Background sync error" in con.print.call_args[0][0]
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_passes_force_vision(self, mock_sync):
+        from lilbee.cli.helpers import run_sync_background
+
+        con = mock.MagicMock()
+        future = run_sync_background(con, force_vision=True)
+        future.result(timeout=5)
+        mock_sync.assert_called_once()
+        assert mock_sync.call_args[1]["force_vision"] is True
+
+
+class TestAutoSyncBackground:
+    @mock.patch("lilbee.cli.helpers.run_sync_background")
+    def test_background_true_delegates(self, mock_bg):
+        from lilbee.cli.helpers import auto_sync
+
+        con = mock.MagicMock()
+        auto_sync(con, background=True)
+        mock_bg.assert_called_once_with(con)
+
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["new.pdf"]),
+    )
+    def test_background_false_blocks(self, _sync):
+        from lilbee.cli.helpers import auto_sync
+
+        con = mock.MagicMock()
+        auto_sync(con, background=False)
+        _sync.assert_called_once()
+        con.print.assert_called()
+
+
+class TestAddPathsBackground:
+    @mock.patch("lilbee.cli.helpers.run_sync_background")
+    def test_background_copies_then_returns(self, mock_bg, isolated_env, tmp_path):
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "src_dir" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+
+        con = mock.MagicMock()
+        add_paths([src], con, force=True, background=True)
+        mock_bg.assert_called_once()
+        # File should be copied
+        assert (cfg.documents_dir / "test.txt").exists()
+
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["test.txt"]),
+    )
+    def test_background_false_blocks(self, _sync, isolated_env, tmp_path):
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "src_dir" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+
+        con = mock.MagicMock()
+        add_paths([src], con, force=True, background=False)
+        _sync.assert_called_once()
+
+
+class TestChatBackgroundSync:
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_chat_command_passes_background(self, _sync):
+        """The chat command calls auto_sync with background=True."""
+        with mock.patch("lilbee.cli.helpers.run_sync_background") as mock_bg:
+            runner.invoke(app, ["chat"], input="/quit\n")
+            mock_bg.assert_called_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_default_command_passes_background(self, _sync):
+        """Bare `lilbee` calls auto_sync with background=True."""
+        with mock.patch("lilbee.cli.helpers.run_sync_background") as mock_bg:
+            runner.invoke(app, [], input="/quit\n")
+            mock_bg.assert_called_once()
+
+    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch(
+        "lilbee.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["x.pdf"]),
+    )
+    def test_ask_command_blocks(self, _sync, _stream):
+        """The ask command calls auto_sync with background=False (blocking)."""
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0
+        # Blocking sync should print summary
+        assert "Synced:" in result.output
+
+
+class TestSlashAddBackground:
+    @mock.patch("lilbee.cli.helpers.run_sync_background")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_slash_add_uses_background(self, _sync, mock_bg, isolated_env, tmp_path):
+        """Chat /add uses background sync."""
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+
+        result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
+        assert result.exit_code == 0
+        mock_bg.assert_called()
