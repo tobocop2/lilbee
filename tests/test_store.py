@@ -13,10 +13,10 @@ def isolated_db(tmp_path):
     """Point store at a temp directory and reset FTS flag."""
     original = cfg.lancedb_dir
     cfg.lancedb_dir = tmp_path / "lancedb_test"
-    store._fts_index_ready = False
+    store._fts.ready = False
     yield
     cfg.lancedb_dir = original
-    store._fts_index_ready = False
+    store._fts.ready = False
 
 
 def _make_records(n=3):
@@ -40,12 +40,12 @@ def _make_records(n=3):
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self):
         store.ensure_fts_index()
-        assert not store._fts_index_ready
+        assert not store._fts.ready
 
     def test_creates_index_after_add(self):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts_index_ready
+        assert store._fts.ready
 
     def test_handles_exception_gracefully(self):
         store.add_chunks(_make_records())
@@ -57,23 +57,23 @@ class TestEnsureFtsIndex:
             side_effect=RuntimeError("boom"),
         ):
             store.ensure_fts_index()
-            assert not store._fts_index_ready
+            assert not store._fts.ready
 
 
 class TestFtsIndexStaleFlag:
     def test_add_chunks_marks_stale(self):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts_index_ready
+        assert store._fts.ready
         store.add_chunks(_make_records(1))
-        assert not store._fts_index_ready
+        assert not store._fts.ready
 
     def test_drop_all_marks_stale(self):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts_index_ready
+        assert store._fts.ready
         store.drop_all()
-        assert not store._fts_index_ready
+        assert not store._fts.ready
 
 
 class TestHybridSearch:
@@ -84,7 +84,7 @@ class TestHybridSearch:
         query_vec = [0.5] * cfg.embedding_dim
         results = store.search(query_vec, top_k=3, query_text="chunk number")
         assert len(results) > 0
-        assert "_relevance_score" in results[0]
+        assert results[0].relevance_score is not None
 
     def test_fallback_to_vector_when_no_query_text(self):
         records = _make_records()
@@ -93,7 +93,7 @@ class TestHybridSearch:
         query_vec = [0.5] * cfg.embedding_dim
         results = store.search(query_vec, top_k=3)
         assert len(results) > 0
-        assert "_distance" in results[0]
+        assert results[0].distance is not None
 
     def test_fallback_to_vector_when_no_fts_index(self):
         records = _make_records()
@@ -103,7 +103,7 @@ class TestHybridSearch:
             query_vec = [0.5] * cfg.embedding_dim
             results = store.search(query_vec, top_k=3, query_text="chunk")
         assert len(results) > 0
-        assert "_distance" in results[0]
+        assert results[0].distance is not None
 
     def test_hybrid_fallback_on_exception(self):
         records = _make_records()
@@ -113,13 +113,13 @@ class TestHybridSearch:
         with mock.patch("lilbee.store._hybrid_search", side_effect=RuntimeError("boom")):
             results = store.search(query_vec, top_k=3, query_text="chunk")
         assert len(results) > 0
-        assert "_distance" in results[0]
+        assert results[0].distance is not None
 
     def test_auto_ensures_fts_index_when_query_text(self):
         records = _make_records()
         store.add_chunks(records)
-        assert not store._fts_index_ready
+        assert not store._fts.ready
         query_vec = [0.5] * cfg.embedding_dim
         results = store.search(query_vec, top_k=3, query_text="chunk number")
-        assert store._fts_index_ready
+        assert store._fts.ready
         assert len(results) > 0

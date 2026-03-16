@@ -26,17 +26,16 @@ def _zero_to_none(val: int) -> int | None:
 
 
 def _to_excerpt(chunk: SearchChunk) -> Excerpt:
-    if "_relevance_score" in chunk:
-        relevance = float(chunk["_relevance_score"])
+    if chunk.relevance_score is not None:
+        relevance = chunk.relevance_score
     else:
-        distance = float(chunk["_distance"])
-        relevance = 1.0 / (1.0 + distance)
+        relevance = 1.0 / (1.0 + (chunk.distance or 0))
     return Excerpt(
-        content=str(chunk["chunk"]),
-        page_start=_zero_to_none(chunk["page_start"]),
-        page_end=_zero_to_none(chunk["page_end"]),
-        line_start=_zero_to_none(chunk["line_start"]),
-        line_end=_zero_to_none(chunk["line_end"]),
+        content=chunk.chunk,
+        page_start=_zero_to_none(chunk.page_start),
+        page_end=_zero_to_none(chunk.page_end),
+        line_start=_zero_to_none(chunk.line_start),
+        line_end=_zero_to_none(chunk.line_end),
         relevance=relevance,
     )
 
@@ -45,7 +44,7 @@ def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group raw LanceDB chunks into document-centric results."""
     by_source: dict[str, list[SearchChunk]] = {}
     for chunk in chunks:
-        source = str(chunk["source"])
+        source = chunk.source
         by_source.setdefault(source, []).append(chunk)
 
     results: list[DocumentResult] = []
@@ -58,7 +57,7 @@ def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
         results.append(
             DocumentResult(
                 source=source,
-                content_type=str(source_chunks[0]["content_type"]),
+                content_type=source_chunks[0].content_type,
                 excerpts=excerpts,
                 best_relevance=excerpts[0].relevance,
             )

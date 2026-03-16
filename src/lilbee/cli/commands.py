@@ -201,14 +201,12 @@ def search(
     table.add_column(score_label, justify="right", style="dim")
 
     for r in cleaned:
-        preview = r.get("chunk", "")[:CHUNK_PREVIEW_LEN]
-        if len(r.get("chunk", "")) > CHUNK_PREVIEW_LEN:
+        chunk_text = r["chunk"]
+        preview = chunk_text[:CHUNK_PREVIEW_LEN]
+        if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        if has_relevance:
-            score_str = f"{r.get('relevance_score', 0):.4f}"
-        else:
-            score_str = f"{r.get('distance', 0):.4f}"
-        table.add_row(r.get("source", ""), preview, score_str)
+        score = r.get("relevance_score") or r.get("distance") or 0
+        table.add_row(r["source"], preview, f"{score:.4f}")
     console.print(table)
 
 

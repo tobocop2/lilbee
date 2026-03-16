@@ -19,6 +19,7 @@ from lilbee.cli import (
 )
 from lilbee.config import cfg
 from lilbee.ingest import SyncResult
+from lilbee.store import SearchChunk
 
 runner = CliRunner()
 
@@ -1286,36 +1287,40 @@ class TestPromptSessionBranch:
 # ---------------------------------------------------------------------------
 
 
+def _search_chunk(**overrides) -> SearchChunk:
+    defaults = dict(
+        source="a.pdf",
+        content_type="pdf",
+        page_start=0,
+        page_end=0,
+        line_start=0,
+        line_end=0,
+        chunk="hi",
+        chunk_index=0,
+        vector=[0.1, 0.2],
+    )
+    return SearchChunk(**(defaults | overrides))
+
+
 class TestCleanResult:
     def test_strips_vector(self):
-        result = clean_result({"source": "a.pdf", "vector": [0.1, 0.2], "chunk": "hi"})
+        result = clean_result(_search_chunk(distance=0.5))
         assert "vector" not in result
         assert result["source"] == "a.pdf"
 
-    def test_renames_distance(self):
-        result = clean_result({"_distance": 0.42, "chunk": "hi"})
-        assert "distance" in result
-        assert "_distance" not in result
+    def test_has_distance(self):
+        result = clean_result(_search_chunk(distance=0.42))
         assert result["distance"] == 0.42
 
-    def test_passthrough_other_fields(self):
-        result = clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
-        assert result == {"source": "a.pdf", "chunk": "hi", "page_start": 1}
+    def test_excludes_none_scores(self):
+        result = clean_result(_search_chunk(distance=0.5))
+        assert "relevance_score" not in result
 
-    def test_renames_relevance_score(self):
-        result = clean_result({"_relevance_score": 0.85, "chunk": "hi", "vector": [0.1]})
-        assert "relevance_score" in result
-        assert "_relevance_score" not in result
-        assert "vector" not in result
+    def test_has_relevance_score(self):
+        result = clean_result(_search_chunk(relevance_score=0.85))
         assert result["relevance_score"] == 0.85
-
-    def test_relevance_score_strips_distance(self):
-        result = clean_result(
-            {"_relevance_score": 0.85, "_distance": 0.3, "chunk": "hi", "vector": [0.1]}
-        )
-        assert "relevance_score" in result
+        assert "vector" not in result
         assert "distance" not in result
-        assert "_distance" not in result
 
 
 class TestJsonFlag:
@@ -1338,18 +1343,18 @@ class TestJsonFlag:
 # ---------------------------------------------------------------------------
 
 _MOCK_SEARCH_RESULTS = [
-    {
-        "source": "manual.pdf",
-        "content_type": "pdf",
-        "page_start": 5,
-        "page_end": 5,
-        "line_start": 0,
-        "line_end": 0,
-        "chunk": "The engine oil capacity is 5 quarts.",
-        "chunk_index": 0,
-        "_distance": 0.25,
-        "vector": [0.1] * 768,
-    },
+    SearchChunk(
+        source="manual.pdf",
+        content_type="pdf",
+        page_start=5,
+        page_end=5,
+        line_start=0,
+        line_end=0,
+        chunk="The engine oil capacity is 5 quarts.",
+        chunk_index=0,
+        distance=0.25,
+        vector=[0.1] * 768,
+    ),
 ]
 
 
@@ -1380,7 +1385,7 @@ class TestSearch:
 
     @mock.patch(
         "lilbee.query.search_context",
-        return_value=[{**_MOCK_SEARCH_RESULTS[0], "chunk": "x" * 100}],
+        return_value=[_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})],
     )
     def test_search_human_truncates_long_chunks(self, _search):
         result = runner.invoke(app, ["search", "test"])
@@ -1396,7 +1401,9 @@ class TestSearch:
 
     @mock.patch(
         "lilbee.query.search_context",
-        return_value=[{**_MOCK_SEARCH_RESULTS[0], "_relevance_score": 0.85}],
+        return_value=[
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
+        ],
     )
     def test_search_human_hybrid_shows_score(self, _search):
         result = runner.invoke(app, ["search", "engine oil"])
@@ -1406,7 +1413,9 @@ class TestSearch:
 
     @mock.patch(
         "lilbee.query.search_context",
-        return_value=[{**_MOCK_SEARCH_RESULTS[0], "_relevance_score": 0.85}],
+        return_value=[
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
+        ],
     )
     def test_search_json_hybrid_has_relevance_score(self, _search):
         result = runner.invoke(app, ["--json", "search", "engine oil"])
@@ -1899,18 +1908,18 @@ class TestAskJson:
         mock_ask_raw.return_value = AskResult(
             answer="5 quarts",
             sources=[
-                {
-                    "source": "manual.pdf",
-                    "content_type": "pdf",
-                    "page_start": 1,
-                    "page_end": 1,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "oil",
-                    "chunk_index": 0,
-                    "_distance": 0.3,
-                    "vector": [0.1],
-                }
+                SearchChunk(
+                    source="manual.pdf",
+                    content_type="pdf",
+                    page_start=1,
+                    page_end=1,
+                    line_start=0,
+                    line_end=0,
+                    chunk="oil",
+                    chunk_index=0,
+                    distance=0.3,
+                    vector=[0.1],
+                )
             ],
         )
         result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
