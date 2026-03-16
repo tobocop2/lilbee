@@ -53,7 +53,7 @@ def copy_fixtures_to(subdir: str, dest: Path) -> None:
             shutil.copy2(item, dest / item.name)
 
 
-def batch_search(queries: list[str], top_k: int = 10) -> dict[str, list[dict]]:
+def batch_search(queries: list[str], top_k: int = 10) -> dict[str, list]:
     """Embed all queries in one batch call, then search for each. Returns {query: results}."""
     from lilbee.embedder import embed_batch
     from lilbee.store import search

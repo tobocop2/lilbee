@@ -9,6 +9,7 @@ import pytest
 from lilbee.config import cfg
 from lilbee.ingest import SyncResult
 from lilbee.server import handlers
+from lilbee.store import SearchChunk
 
 
 @pytest.fixture(autouse=True)
@@ -70,16 +71,18 @@ class TestSearch:
     @patch("lilbee.query.search_context")
     async def test_returns_grouped_results(self, mock_search):
         mock_search.return_value = [
-            {
-                "source": "doc.pdf",
-                "content_type": "pdf",
-                "chunk": "hello",
-                "_distance": 0.2,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="doc.pdf",
+                content_type="pdf",
+                chunk="hello",
+                distance=0.2,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
@@ -100,18 +103,18 @@ class TestAsk:
         mock_ask.return_value = AskResult(
             answer="42",
             sources=[
-                {
-                    "source": "doc.pdf",
-                    "content_type": "pdf",
-                    "page_start": 1,
-                    "page_end": 1,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "c",
-                    "chunk_index": 0,
-                    "_distance": 0.1,
-                    "vector": [0.1],
-                }
+                SearchChunk(
+                    source="doc.pdf",
+                    content_type="pdf",
+                    page_start=1,
+                    page_end=1,
+                    line_start=0,
+                    line_end=0,
+                    chunk="c",
+                    chunk_index=0,
+                    distance=0.1,
+                    vector=[0.1],
+                )
             ],
         )
         result = await handlers.ask("what?")
@@ -143,16 +146,18 @@ class TestAskStream:
     @patch("lilbee.query.search_context")
     async def test_yields_token_sources_done(self, mock_search):
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         mock_chunk = MagicMock()
         mock_chunk.message.content = "answer"
@@ -169,16 +174,18 @@ class TestAskStream:
     @patch("lilbee.query.search_context")
     async def test_ollama_error_yields_error_event(self, mock_search):
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
 
         with patch("ollama.chat", side_effect=RuntimeError("model missing")):
@@ -195,16 +202,18 @@ class TestAskStream:
         import threading
 
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         barrier = threading.Event()
 
@@ -237,16 +246,18 @@ class TestAskStream:
         import threading
 
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         barrier = threading.Event()
 
@@ -276,16 +287,18 @@ class TestAskStream:
     async def test_skips_empty_tokens(self, mock_search):
         """Chunks with empty content are not emitted."""
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         empty_chunk = MagicMock()
         empty_chunk.message.content = ""
@@ -323,16 +336,18 @@ class TestChatStream:
     @patch("lilbee.query.search_context")
     async def test_yields_events_with_history(self, mock_search):
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         mock_chunk = MagicMock()
         mock_chunk.message.content = "reply"
@@ -350,16 +365,18 @@ class TestChatStream:
     @patch("lilbee.query.search_context")
     async def test_ollama_error_yields_error_event(self, mock_search):
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         with patch("ollama.chat", side_effect=ConnectionError("ollama down")):
             events = [e async for e in handlers.chat_stream("q", [])]
@@ -375,16 +392,18 @@ class TestChatStream:
         import threading
 
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         barrier = threading.Event()
 
@@ -417,16 +436,18 @@ class TestChatStream:
         import threading
 
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         barrier = threading.Event()
 
@@ -456,16 +477,18 @@ class TestChatStream:
     async def test_skips_empty_tokens(self, mock_search):
         """Chunks with empty content are not emitted."""
         mock_search.return_value = [
-            {
-                "source": "a.pdf",
-                "content_type": "pdf",
-                "chunk": "text",
-                "_distance": 0.1,
-                "page_start": 1,
-                "page_end": 1,
-                "line_start": 0,
-                "line_end": 0,
-            }
+            SearchChunk(
+                source="a.pdf",
+                content_type="pdf",
+                chunk="text",
+                distance=0.1,
+                page_start=1,
+                page_end=1,
+                line_start=0,
+                line_end=0,
+                chunk_index=0,
+                vector=[0.1],
+            )
         ]
         empty_chunk = MagicMock()
         empty_chunk.message.content = ""
