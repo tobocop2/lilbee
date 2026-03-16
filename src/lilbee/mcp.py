@@ -137,11 +137,8 @@ def lilbee_reset() -> dict:
 
 
 def clean(result: SearchChunk) -> dict[str, object]:
-    """Strip vector field and rename _distance for output."""
-    cleaned = {k: v for k, v in result.items() if k != "vector"}
-    if "_distance" in cleaned:
-        cleaned["distance"] = cleaned.pop("_distance")
-    return cleaned
+    """Convert SearchChunk to a JSON-friendly dict."""
+    return result.model_dump(exclude={"vector"}, exclude_none=True)
 
 
 def main() -> None:

@@ -29,20 +29,17 @@ Question: {question}"""
 
 def format_source(result: SearchChunk) -> str:
     """Format a search result as a source citation line."""
-    source = result["source"]
-    content_type = result["content_type"]
-
-    if content_type == "pdf":
-        ps, pe = result["page_start"], result["page_end"]
+    if result.content_type == "pdf":
+        ps, pe = result.page_start, result.page_end
         pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"  → {source}, {pages}"
+        return f"  → {result.source}, {pages}"
 
-    if content_type == "code":
-        ls, le = result["line_start"], result["line_end"]
+    if result.content_type == "code":
+        ls, le = result.line_start, result.line_end
         lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"  → {source}, {lines}"
+        return f"  → {result.source}, {lines}"
 
-    return f"  → {source}"
+    return f"  → {result.source}"
 
 
 def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> list[str]:
@@ -59,16 +56,29 @@ def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> l
     return citations
 
 
+def _sort_key(r: SearchChunk) -> float:
+    """Sort key: lower = more relevant.
+
+    Hybrid results have relevance_score (higher = better) → negate.
+    Vector results have distance (lower = better) → use directly.
+    """
+    if r.relevance_score is not None:
+        return -r.relevance_score
+    if r.distance is not None:
+        return r.distance
+    return float("inf")
+
+
 def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort search results by distance (lower = more relevant)."""
-    return sorted(results, key=lambda r: r.get("_distance", float("inf")))
+    """Sort search results by relevance (works for both hybrid and vector results)."""
+    return sorted(results, key=_sort_key)
 
 
 def build_context(results: list[SearchChunk]) -> str:
     """Build context block from search results."""
     parts: list[str] = []
     for i, r in enumerate(results, 1):
-        parts.append(f"[{i}] {r['chunk']}")
+        parts.append(f"[{i}] {r.chunk}")
     return "\n\n".join(parts)
 
 
@@ -77,7 +87,7 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
     if top_k == 0:
         top_k = cfg.top_k
     query_vec = embedder.embed(question)
-    return store.search(query_vec, top_k=top_k)
+    return store.search(query_vec, top_k=top_k, query_text=question)
 
 
 class AskResult(BaseModel):

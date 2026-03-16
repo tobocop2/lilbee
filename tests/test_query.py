@@ -15,6 +15,7 @@ from lilbee.query import (
     search_context,
     sort_by_relevance,
 )
+from lilbee.store import SearchChunk
 
 
 def _make_result(
@@ -26,21 +27,23 @@ def _make_result(
     line_end=0,
     chunk="some text",
     chunk_index=0,
-    _distance=0.5,
+    distance=0.5,
+    relevance_score=None,
     vector=None,
-):
-    return {
-        "source": source,
-        "content_type": content_type,
-        "page_start": page_start,
-        "page_end": page_end,
-        "line_start": line_start,
-        "line_end": line_end,
-        "chunk": chunk,
-        "chunk_index": chunk_index,
-        "_distance": _distance,
-        "vector": vector or [0.1],
-    }
+) -> SearchChunk:
+    return SearchChunk(
+        source=source,
+        content_type=content_type,
+        page_start=page_start,
+        page_end=page_end,
+        line_start=line_start,
+        line_end=line_end,
+        chunk=chunk,
+        chunk_index=chunk_index,
+        distance=distance,
+        relevance_score=relevance_score,
+        vector=vector or [0.1],
+    )
 
 
 class TestFormatSource:
@@ -93,23 +96,34 @@ class TestDeduplicateSources:
 class TestSortByRelevance:
     def test_sorts_by_distance(self):
         results = [
-            _make_result(source="far.pdf", _distance=0.9),
-            _make_result(source="close.pdf", _distance=0.1),
-            _make_result(source="mid.pdf", _distance=0.5),
+            _make_result(source="far.pdf", distance=0.9),
+            _make_result(source="close.pdf", distance=0.1),
+            _make_result(source="mid.pdf", distance=0.5),
         ]
         sorted_results = sort_by_relevance(results)
-        assert sorted_results[0]["source"] == "close.pdf"
-        assert sorted_results[1]["source"] == "mid.pdf"
-        assert sorted_results[2]["source"] == "far.pdf"
+        assert sorted_results[0].source == "close.pdf"
+        assert sorted_results[1].source == "mid.pdf"
+        assert sorted_results[2].source == "far.pdf"
 
     def test_missing_distance_sorts_last(self):
         results = [
-            {"source": "no_dist.pdf", "chunk": "text"},
-            _make_result(source="has_dist.pdf", _distance=0.3),
+            _make_result(source="no_dist.pdf", distance=None),
+            _make_result(source="has_dist.pdf", distance=0.3),
         ]
         sorted_results = sort_by_relevance(results)
-        assert sorted_results[0]["source"] == "has_dist.pdf"
-        assert sorted_results[1]["source"] == "no_dist.pdf"
+        assert sorted_results[0].source == "has_dist.pdf"
+        assert sorted_results[1].source == "no_dist.pdf"
+
+    def test_sorts_by_relevance_score_when_present(self):
+        results = [
+            _make_result(source="low.pdf", relevance_score=0.2),
+            _make_result(source="high.pdf", relevance_score=0.9),
+            _make_result(source="mid.pdf", relevance_score=0.5),
+        ]
+        sorted_results = sort_by_relevance(results)
+        assert sorted_results[0].source == "high.pdf"
+        assert sorted_results[1].source == "mid.pdf"
+        assert sorted_results[2].source == "low.pdf"
 
 
 class TestBuildContext:
@@ -129,6 +143,13 @@ class TestSearchContext:
         assert len(results) == 1
         mock_embed.assert_called_once_with("question")
 
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_passes_query_text(self, mock_embed, mock_search):
+        search_context("my question")
+        mock_search.assert_called_once()
+        assert mock_search.call_args[1]["query_text"] == "my question"
+
 
 class TestAskRaw:
     @mock.patch("ollama.chat")
@@ -139,7 +160,7 @@ class TestAskRaw:
         result = ask_raw("oil capacity?")
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
-        assert result.sources[0]["source"] == "test.pdf"
+        assert result.sources[0].source == "test.pdf"
 
     @mock.patch("lilbee.store.search", return_value=[])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)

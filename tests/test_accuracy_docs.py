@@ -82,13 +82,13 @@ class TestDocumentAccuracy:
         matching = [
             r
             for r in results
-            if r["source"].endswith(expected_source)
-            and any(term in r["chunk"] for term in expected_terms)
+            if r.source.endswith(expected_source)
+            and any(term in r.chunk for term in expected_terms)
         ]
         assert matching, (
             f"No result from '{expected_source}' containing {expected_terms} "
             f"for query '{query}'. Got sources: "
-            f"{[r['source'] for r in results]}"
+            f"{[r.source for r in results]}"
         )
 
     @pytest.mark.parametrize(
@@ -99,11 +99,11 @@ class TestDocumentAccuracy:
         self, doc_data, query, expected_source, expected_terms, expected_type
     ):
         results = doc_data.search_results[query]
-        matching = [r for r in results if r["source"].endswith(expected_source)]
+        matching = [r for r in results if r.source.endswith(expected_source)]
         assert matching, f"No result from '{expected_source}' for query '{query}'"
-        assert matching[0]["content_type"] == expected_type, (
+        assert matching[0].content_type == expected_type, (
             f"Expected content_type '{expected_type}' for '{expected_source}', "
-            f"got '{matching[0]['content_type']}'"
+            f"got '{matching[0].content_type}'"
         )
 
     def test_document_source_attribution(self, doc_data):

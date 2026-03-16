@@ -111,11 +111,8 @@ def json_output(data: dict) -> None:
 
 
 def clean_result(result: SearchChunk) -> dict:
-    """Strip vector field and rename _distance for JSON output."""
-    cleaned = {k: v for k, v in result.items() if k != "vector"}
-    if "_distance" in cleaned:
-        cleaned["distance"] = cleaned.pop("_distance")
-    return cleaned
+    """Convert SearchChunk to a JSON-friendly dict (no vector, no None scores)."""
+    return result.model_dump(exclude={"vector"}, exclude_none=True)
 
 
 def gather_status() -> StatusResult:
