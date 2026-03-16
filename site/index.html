@@ -72,16 +72,31 @@
     padding-top: 1rem;
   }
 
+  .bee-sm { display: none; }
   @media (max-width: 900px) {
     .bee-art { display: none; }
+    .bee-sm { display: inline; color: var(--dim); }
   }
+  .link-dots { }
+  .link-desc { }
+  @media (max-width: 600px) {
+    body { padding: 1rem; font-size: 11px; }
+    .link-dots, .link-desc { display: none; }
+  }
+  .main pre { overflow-x: auto; }
 </style>
 </head>
 <body>
 <h1>lilbee</h1>
 <div class="layout">
-<div class="main"><pre>
-888 d8b 888 888
+<div class="main"><pre><span class="bee-sm">
+      \)  (/
+     _{    }_
+    / /o  o\ \
+    \  \__/  /
+     '-____-'
+
+</span>888 d8b 888 888
 888 Y8P 888 888
 888     888 888
 888 888 888 88888b.  .d88b.  .d88b.
@@ -94,14 +109,14 @@
 
 <span class="faint">════════════════════════════════════════════</span>
 
- <a href="https://github.com/tobocop2/lilbee">[1] GitHub</a> <span class="faint">··············</span> <span class="dim">source code</span>
- <a href="https://pypi.org/project/lilbee/">[2] PyPI</a> <span class="faint">················</span> <span class="dim">package</span>
- <a href="api/">[3] API docs</a> <span class="faint">············</span> <span class="dim">OpenAPI / Redoc</span>
- <a href="coverage/">[4] Coverage</a> <span class="faint">············</span> <span class="dim">100% tested</span>
+ <a href="https://github.com/tobocop2/lilbee">[1] GitHub</a><span class="link-dots"> <span class="faint">··············</span></span><span class="link-desc"> <span class="dim">source code</span></span>
+ <a href="https://pypi.org/project/lilbee/">[2] PyPI</a><span class="link-dots"> <span class="faint">················</span></span><span class="link-desc"> <span class="dim">package</span></span>
+ <a href="api/">[3] API docs</a><span class="link-dots"> <span class="faint">············</span></span><span class="link-desc"> <span class="dim">OpenAPI / Redoc</span></span>
+ <a href="coverage/">[4] Coverage</a><span class="link-dots"> <span class="faint">············</span></span><span class="link-desc"> <span class="dim">100% tested</span></span>
 
 <span class="faint">──── built with lilbee ─────────────────────</span>
 
- <a href="https://github.com/tobocop2/obsidian-lilbee">Obsidian Plugin</a> <span class="faint">········</span> <span class="dim">chat, search, sync your vault</span>
+ <a href="https://github.com/tobocop2/obsidian-lilbee">Obsidian Plugin</a><span class="link-dots"> <span class="faint">········</span></span><span class="link-desc"> <span class="dim">chat, search, sync your vault</span></span>
 
 <span class="faint">════════════════════════════════════════════</span>
 
@@ -111,7 +126,7 @@
  <span class="dim">&gt;</span> PDFs, Office docs, images, 150+ code langs
  <span class="dim">&gt;</span> per-project databases (.lilbee/)
  <span class="dim">&gt;</span> AST-aware code chunking via tree-sitter
- <span class="dim">&gt;</span> no cloud, no Docker — fully local
+ <span class="dim">&gt;</span> runs local — or plug into any agent
 
  <span class="faint">$</span> pip install lilbee<span class="cursor"></span>
 
