@@ -111,9 +111,12 @@ def json_output(data: dict) -> None:
 
 
 def clean_result(result: SearchChunk) -> dict:
-    """Strip vector field and rename _distance for JSON output."""
+    """Strip vector field and normalize score fields for JSON output."""
     cleaned = {k: v for k, v in result.items() if k != "vector"}
-    if "_distance" in cleaned:
+    if "_relevance_score" in cleaned:
+        cleaned["relevance_score"] = cleaned.pop("_relevance_score")
+        cleaned.pop("_distance", None)
+    elif "_distance" in cleaned:
         cleaned["distance"] = cleaned.pop("_distance")
     return cleaned
 

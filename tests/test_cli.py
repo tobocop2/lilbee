@@ -1302,6 +1302,21 @@ class TestCleanResult:
         result = clean_result({"source": "a.pdf", "chunk": "hi", "page_start": 1})
         assert result == {"source": "a.pdf", "chunk": "hi", "page_start": 1}
 
+    def test_renames_relevance_score(self):
+        result = clean_result({"_relevance_score": 0.85, "chunk": "hi", "vector": [0.1]})
+        assert "relevance_score" in result
+        assert "_relevance_score" not in result
+        assert "vector" not in result
+        assert result["relevance_score"] == 0.85
+
+    def test_relevance_score_strips_distance(self):
+        result = clean_result(
+            {"_relevance_score": 0.85, "_distance": 0.3, "chunk": "hi", "vector": [0.1]}
+        )
+        assert "relevance_score" in result
+        assert "distance" not in result
+        assert "_distance" not in result
+
 
 class TestJsonFlag:
     def test_json_no_subcommand_returns_error(self):
@@ -1378,6 +1393,27 @@ class TestSearch:
         result = runner.invoke(app, ["search", "nothing"])
         assert result.exit_code == 0
         assert "No results found" in result.output
+
+    @mock.patch(
+        "lilbee.query.search_context",
+        return_value=[{**_MOCK_SEARCH_RESULTS[0], "_relevance_score": 0.85}],
+    )
+    def test_search_human_hybrid_shows_score(self, _search):
+        result = runner.invoke(app, ["search", "engine oil"])
+        assert result.exit_code == 0
+        assert "Score" in result.output
+        assert "0.85" in result.output
+
+    @mock.patch(
+        "lilbee.query.search_context",
+        return_value=[{**_MOCK_SEARCH_RESULTS[0], "_relevance_score": 0.85}],
+    )
+    def test_search_json_hybrid_has_relevance_score(self, _search):
+        result = runner.invoke(app, ["--json", "search", "engine oil"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert "relevance_score" in data["results"][0]
+        assert "distance" not in data["results"][0]
 
 
 # ---------------------------------------------------------------------------

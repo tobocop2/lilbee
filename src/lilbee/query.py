@@ -59,9 +59,20 @@ def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> l
     return citations
 
 
+def _sort_key(r: SearchChunk) -> float:
+    """Sort key: lower = more relevant.
+
+    Hybrid results have _relevance_score (higher = better) → negate.
+    Vector results have _distance (lower = better) → use directly.
+    """
+    if "_relevance_score" in r:
+        return -r["_relevance_score"]
+    return r.get("_distance", float("inf"))
+
+
 def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort search results by distance (lower = more relevant)."""
-    return sorted(results, key=lambda r: r.get("_distance", float("inf")))
+    """Sort search results by relevance (works for both hybrid and vector results)."""
+    return sorted(results, key=_sort_key)
 
 
 def build_context(results: list[SearchChunk]) -> str:
@@ -77,7 +88,7 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
     if top_k == 0:
         top_k = cfg.top_k
     query_vec = embedder.embed(question)
-    return store.search(query_vec, top_k=top_k)
+    return store.search(query_vec, top_k=top_k, query_text=question)
 
 
 class AskResult(BaseModel):

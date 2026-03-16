@@ -135,3 +135,43 @@ def test_best_relevance_matches_top_excerpt() -> None:
     ]
     results = group(chunks)
     assert results[0].best_relevance == results[0].excerpts[0].relevance
+
+
+def _hybrid_chunk(
+    source: str = "doc.md",
+    content_type: str = "text/markdown",
+    chunk: str = "hello world",
+    relevance_score: float = 0.8,
+    page_start: int = 0,
+    page_end: int = 0,
+    line_start: int = 0,
+    line_end: int = 0,
+    chunk_index: int = 0,
+) -> dict[str, object]:
+    return {
+        "source": source,
+        "content_type": content_type,
+        "chunk": chunk,
+        "_relevance_score": relevance_score,
+        "page_start": page_start,
+        "page_end": page_end,
+        "line_start": line_start,
+        "line_end": line_end,
+        "chunk_index": chunk_index,
+        "vector": [0.1, 0.2, 0.3],
+    }
+
+
+def test_relevance_score_used_directly() -> None:
+    results = group([_hybrid_chunk(relevance_score=0.75)])
+    assert results[0].excerpts[0].relevance == 0.75
+
+
+def test_hybrid_results_sorted_by_relevance_score() -> None:
+    chunks = [
+        _hybrid_chunk(source="a.md", relevance_score=0.3, chunk="low"),
+        _hybrid_chunk(source="a.md", relevance_score=0.9, chunk="high"),
+    ]
+    results = group(chunks)
+    assert results[0].excerpts[0].content == "high"
+    assert results[0].excerpts[1].content == "low"

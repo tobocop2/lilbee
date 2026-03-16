@@ -26,8 +26,11 @@ def _zero_to_none(val: int) -> int | None:
 
 
 def _to_excerpt(chunk: SearchChunk) -> Excerpt:
-    distance = float(chunk["_distance"])
-    relevance = 1.0 / (1.0 + distance)
+    if "_relevance_score" in chunk:
+        relevance = float(chunk["_relevance_score"])
+    else:
+        distance = float(chunk["_distance"])
+        relevance = 1.0 / (1.0 + distance)
     return Excerpt(
         content=str(chunk["chunk"]),
         page_start=_zero_to_none(chunk["page_start"]),

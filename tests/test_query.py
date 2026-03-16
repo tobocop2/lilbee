@@ -111,6 +111,17 @@ class TestSortByRelevance:
         assert sorted_results[0]["source"] == "has_dist.pdf"
         assert sorted_results[1]["source"] == "no_dist.pdf"
 
+    def test_sorts_by_relevance_score_when_present(self):
+        results = [
+            {**_make_result(source="low.pdf"), "_relevance_score": 0.2},
+            {**_make_result(source="high.pdf"), "_relevance_score": 0.9},
+            {**_make_result(source="mid.pdf"), "_relevance_score": 0.5},
+        ]
+        sorted_results = sort_by_relevance(results)
+        assert sorted_results[0]["source"] == "high.pdf"
+        assert sorted_results[1]["source"] == "mid.pdf"
+        assert sorted_results[2]["source"] == "low.pdf"
+
 
 class TestBuildContext:
     def test_numbers_chunks(self):
@@ -128,6 +139,13 @@ class TestSearchContext:
         results = search_context("question")
         assert len(results) == 1
         mock_embed.assert_called_once_with("question")
+
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_passes_query_text(self, mock_embed, mock_search):
+        search_context("my question")
+        mock_search.assert_called_once()
+        assert mock_search.call_args[1]["query_text"] == "my question"
 
 
 class TestAskRaw:
