@@ -1,13 +1,25 @@
 """RAG query pipeline — embed question, search, generate answer with citations."""
 
+from __future__ import annotations
+
 from collections.abc import Generator
-from dataclasses import dataclass
 from typing import Any
 
 import ollama
+from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 from lilbee import embedder, store
 from lilbee.config import cfg
+from lilbee.store import SearchChunk
+
+
+class ChatMessage(TypedDict):
+    """A single chat message with role and content."""
+
+    role: str
+    content: str
+
 
 _CONTEXT_TEMPLATE = """Context:
 {context}
@@ -15,25 +27,25 @@ _CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
-def format_source(result: dict) -> str:
+def format_source(result: SearchChunk) -> str:
     """Format a search result as a source citation line."""
-    source = result.get("source", "unknown")
-    content_type = result.get("content_type", "")
+    source = result["source"]
+    content_type = result["content_type"]
 
     if content_type == "pdf":
-        ps, pe = result.get("page_start", 0), result.get("page_end", 0)
+        ps, pe = result["page_start"], result["page_end"]
         pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
         return f"  → {source}, {pages}"
 
     if content_type == "code":
-        ls, le = result.get("line_start", 0), result.get("line_end", 0)
+        ls, le = result["line_start"], result["line_end"]
         lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
         return f"  → {source}, {lines}"
 
     return f"  → {source}"
 
 
-def deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[str]:
+def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> list[str]:
     """Merge results from same source into deduplicated citation lines."""
     seen: set[str] = set()
     citations: list[str] = []
@@ -47,12 +59,12 @@ def deduplicate_sources(results: list[dict], max_citations: int = 5) -> list[str
     return citations
 
 
-def sort_by_relevance(results: list[dict]) -> list[dict]:
+def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
     """Sort search results by distance (lower = more relevant)."""
     return sorted(results, key=lambda r: r.get("_distance", float("inf")))
 
 
-def build_context(results: list[dict]) -> str:
+def build_context(results: list[SearchChunk]) -> str:
     """Build context block from search results."""
     parts: list[str] = []
     for i, r in enumerate(results, 1):
@@ -60,7 +72,7 @@ def build_context(results: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def search_context(question: str, top_k: int = 0) -> list[dict]:
+def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
     """Embed question and return top-K matching chunks."""
     if top_k == 0:
         top_k = cfg.top_k
@@ -68,18 +80,17 @@ def search_context(question: str, top_k: int = 0) -> list[dict]:
     return store.search(query_vec, top_k=top_k)
 
 
-@dataclass
-class AskResult:
+class AskResult(BaseModel):
     """Structured result from ask_raw — answer text + raw search results."""
 
     answer: str
-    sources: list[dict]
+    sources: list[SearchChunk]
 
 
 def ask_raw(
     question: str,
     top_k: int = 0,
-    history: list[dict] | None = None,
+    history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> AskResult:
     """One-shot question returning structured answer + raw sources."""
@@ -94,7 +105,7 @@ def ask_raw(
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}]
+    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
@@ -112,7 +123,7 @@ def ask_raw(
 def ask(
     question: str,
     top_k: int = 0,
-    history: list[dict] | None = None,
+    history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> str:
     """One-shot question: returns full answer with source citations."""
@@ -126,7 +137,7 @@ def ask(
 def ask_stream(
     question: str,
     top_k: int = 0,
-    history: list[dict] | None = None,
+    history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> Generator[str, None, None]:
     """Streaming question: yields answer tokens, then source citations."""
@@ -139,7 +150,7 @@ def ask_stream(
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
-    messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}]
+    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})

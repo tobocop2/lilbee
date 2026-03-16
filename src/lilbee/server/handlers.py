@@ -4,20 +4,51 @@ Every public function is a plain async callable — no framework imports.
 Return types are dicts (JSON responses), lists, or async generators of SSE strings.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import threading
 from collections.abc import AsyncGenerator
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from lilbee.progress import DetailedProgressCallback
+from pydantic import BaseModel
+
+from lilbee.progress import DetailedProgressCallback, EventType
+
+if TYPE_CHECKING:
+    from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
+
+
+class ModelCatalogEntry(BaseModel):
+    """A single model in the catalog."""
+
+    name: str
+    size_gb: float
+    min_ram_gb: float
+    description: str
+    installed: bool
+
+
+class ModelCatalogSection(BaseModel):
+    """Chat or vision model catalog with active model and installed list."""
+
+    active: str
+    catalog: list[ModelCatalogEntry]
+    installed: list[str]
+
+
+class ModelsResponse(BaseModel):
+    """Response for the list-models endpoint."""
+
+    chat: ModelCatalogSection
+    vision: ModelCatalogSection
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -33,7 +64,7 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     """
     loop = asyncio.get_event_loop()
 
-    def _callback(event_type: str, data: dict[str, Any]) -> None:
+    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
         payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
         try:
             running = asyncio.get_running_loop()
@@ -67,7 +98,7 @@ async def status() -> dict[str, Any]:
     """Return config, sources, and chunk counts."""
     from lilbee.cli.helpers import gather_status
 
-    return gather_status()
+    return gather_status().model_dump(exclude_none=True)
 
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -118,7 +149,7 @@ async def ask_stream(
     results = sort_by_relevance(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
-    messages: list[dict[str, str]] = [{"role": "system", "content": cfg.system_prompt}]
+    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     messages.append({"role": "user", "content": prompt})
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
@@ -167,7 +198,7 @@ async def ask_stream(
 
 async def chat(
     question: str,
-    history: list[dict[str, str]],
+    history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -186,7 +217,7 @@ async def chat(
 
 async def chat_stream(
     question: str,
-    history: list[dict[str, str]],
+    history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -209,7 +240,7 @@ async def chat_stream(
     results = sort_by_relevance(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
-    messages: list[dict[str, str]] = [{"role": "system", "content": cfg.system_prompt}]
+    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
@@ -259,12 +290,12 @@ async def chat_stream(
 
 async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event."""
-    from lilbee.ingest import sync
+    from lilbee.ingest import SyncResult, sync
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     callback = _make_sse_callback(queue)
 
-    async def run_sync() -> object:
+    async def run_sync() -> SyncResult:
         return await sync(quiet=True, on_progress=callback, force_vision=force_vision)
 
     task = asyncio.create_task(run_sync())
@@ -275,8 +306,7 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
             continue
         if item is not None:
             yield item
-    result = task.result()
-    yield sse_event("done", asdict(result))  # type: ignore[call-overload]
+    yield sse_event("done", task.result().model_dump())
 
 
 async def _run_add(
@@ -316,7 +346,7 @@ async def _run_add(
         "copied": copy_result.copied,
         "skipped": copy_result.skipped,
         "errors": errors,
-        "sync": asdict(sync_result),
+        "sync": sync_result.model_dump(),
     }
     payload = f"event: summary\ndata: {json.dumps(summary)}\n\n"
     queue.put_nowait(payload)
@@ -355,36 +385,38 @@ async def list_models() -> dict[str, Any]:
     installed = set(list_ollama_models())
     chat_installed = set(list_ollama_models(exclude_vision=True))
     vision_names = {v.name for v in VISION_CATALOG}
-    return {
-        "chat": {
-            "active": cfg.chat_model,
-            "catalog": [
-                {
-                    "name": m.name,
-                    "size_gb": m.size_gb,
-                    "min_ram_gb": m.min_ram_gb,
-                    "description": m.description,
-                    "installed": m.name in installed,
-                }
+
+    response = ModelsResponse(
+        chat=ModelCatalogSection(
+            active=cfg.chat_model,
+            catalog=[
+                ModelCatalogEntry(
+                    name=m.name,
+                    size_gb=m.size_gb,
+                    min_ram_gb=m.min_ram_gb,
+                    description=m.description,
+                    installed=m.name in installed,
+                )
                 for m in MODEL_CATALOG
             ],
-            "installed": sorted(chat_installed),
-        },
-        "vision": {
-            "active": cfg.vision_model,
-            "catalog": [
-                {
-                    "name": m.name,
-                    "size_gb": m.size_gb,
-                    "min_ram_gb": m.min_ram_gb,
-                    "description": m.description,
-                    "installed": m.name in installed,
-                }
+            installed=sorted(chat_installed),
+        ),
+        vision=ModelCatalogSection(
+            active=cfg.vision_model,
+            catalog=[
+                ModelCatalogEntry(
+                    name=m.name,
+                    size_gb=m.size_gb,
+                    min_ram_gb=m.min_ram_gb,
+                    description=m.description,
+                    installed=m.name in installed,
+                )
                 for m in VISION_CATALOG
             ],
-            "installed": sorted(m for m in installed if m in vision_names),
-        },
-    }
+            installed=sorted(m for m in installed if m in vision_names),
+        ),
+    )
+    return response.model_dump()
 
 
 async def set_chat_model(model: str) -> dict[str, str]:

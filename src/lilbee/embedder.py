@@ -9,7 +9,7 @@ import ollama
 
 from lilbee.config import cfg
 from lilbee.models import pull_with_progress
-from lilbee.progress import DetailedProgressCallback, noop_callback
+from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def embed_batch(
             response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
             vectors.extend(response.embeddings)
             on_progress(
-                "embed",
+                EventType.EMBED,
                 {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
             )
             batch = []
@@ -105,7 +105,7 @@ def embed_batch(
         response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
         vectors.extend(response.embeddings)
         on_progress(
-            "embed",
+            EventType.EMBED,
             {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
         )
     for vec in vectors:

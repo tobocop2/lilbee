@@ -134,7 +134,7 @@ class TestPersistedChatModel:
         env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.settings.get", side_effect=Exception("bad toml")),
+            mock.patch("lilbee.settings.get", side_effect=ValueError("bad toml")),
         ):
             c = Config.from_env()
             assert c.chat_model == "qwen3:8b"

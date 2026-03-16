@@ -48,10 +48,22 @@ class TestHealth:
 
 class TestStatus:
     async def test_returns_config_and_sources(self):
-        expected = {"config": {}, "sources": [], "total_chunks": 0}
-        with patch("lilbee.cli.helpers.gather_status", return_value=expected):
+        from lilbee.cli.helpers import StatusConfig, StatusResult
+
+        mock_status = StatusResult(
+            config=StatusConfig(
+                documents_dir="/tmp/docs",
+                data_dir="/tmp/data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+        )
+        with patch("lilbee.cli.helpers.gather_status", return_value=mock_status):
             result = await handlers.status()
-        assert result == expected
+        assert result["sources"] == []
+        assert result["total_chunks"] == 0
 
 
 class TestSearch:
@@ -87,7 +99,20 @@ class TestAsk:
 
         mock_ask.return_value = AskResult(
             answer="42",
-            sources=[{"source": "doc.pdf", "chunk": "c", "_distance": 0.1, "vector": [0.1]}],
+            sources=[
+                {
+                    "source": "doc.pdf",
+                    "content_type": "pdf",
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "c",
+                    "chunk_index": 0,
+                    "_distance": 0.1,
+                    "vector": [0.1],
+                }
+            ],
         )
         result = await handlers.ask("what?")
         assert result["answer"] == "42"

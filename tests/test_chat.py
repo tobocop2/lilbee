@@ -121,7 +121,7 @@ class TestGetModelDefaults:
     def test_returns_empty_on_error(self, mock_show):
         from lilbee.cli.chat import _get_model_defaults
 
-        mock_show.side_effect = Exception("connection refused")
+        mock_show.side_effect = ConnectionError("connection refused")
         assert _get_model_defaults() == {}
 
     @mock.patch("ollama.show")
