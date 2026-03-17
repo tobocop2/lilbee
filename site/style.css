@@ -1,0 +1,89 @@
+:root {
+  --bg: #0a0800;
+  --amber: #ffb000;
+  --dim: #996a00;
+  --faint: #4d3500;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Courier New', monospace;
+  background: var(--bg);
+  color: var(--amber);
+  min-height: 100vh;
+  padding: 2rem;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.12) 2px,
+    rgba(0, 0, 0, 0.12) 4px
+  );
+  pointer-events: none;
+  z-index: 999;
+}
+
+pre { font: inherit; white-space: pre; }
+a { color: var(--amber); text-decoration: none; }
+a:hover { text-shadow: 0 0 8px rgba(255, 176, 0, 0.5); }
+
+.dim { color: var(--dim); }
+.faint { color: var(--faint); }
+
+.cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.1em;
+  background: var(--amber);
+  vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+h1 {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.layout {
+  display: flex;
+  gap: 3rem;
+  align-items: flex-start;
+}
+
+.main { flex: 0 1 auto; min-width: 0; }
+.main pre { overflow-x: auto; }
+
+.bee-art {
+  flex: 0 0 auto;
+  font-size: 7px;
+  line-height: 1.1;
+  color: var(--dim);
+  text-shadow: 0 0 4px rgba(255, 176, 0, 0.15);
+  user-select: none;
+  padding-top: 1rem;
+}
+
+.bee-sm { display: none; }
+
+@media (max-width: 900px) {
+  .bee-art { display: none; }
+  .bee-sm { display: inline; color: var(--dim); }
+}
+
+@media (max-width: 600px) {
+  body { padding: 1rem; font-size: 11px; }
+  .link-dots, .link-desc { display: none; }
+}

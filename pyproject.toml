@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.4.6"
+version = "0.5.0"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,7 @@ dependencies = [
     "ollama",
     "lancedb",
     "kreuzberg",
+    "filelock",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",
     "typer",
