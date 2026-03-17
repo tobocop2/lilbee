@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 
 from lilbee.cli import theme
-from lilbee.progress import EventType
+from lilbee.ingest import sync
+from lilbee.progress import EventType, ExtractEvent, FileStartEvent, SyncDoneEvent
 
 if TYPE_CHECKING:
     from lilbee.progress import DetailedProgressCallback
@@ -26,7 +27,6 @@ def _format_sync_summary(added: int, updated: int, removed: int, failed: int) ->
 
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
     """Return a callback that prints one-line status for FILE_START and DONE events."""
-    from lilbee.progress import FileStartEvent, SyncDoneEvent
 
     def _callback(event_type: EventType, data: dict[str, Any]) -> None:
         if event_type == EventType.FILE_START:
@@ -99,6 +99,7 @@ class SyncStatus:
 
     def __init__(self) -> None:
         self.text: str = ""
+        self.pending: int = 0
 
     def clear(self) -> None:
         self.text = ""
@@ -111,14 +112,19 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     toolbar).  On DONE the status is cleared and the summary is printed via
     ``print()`` (goes through StdoutProxy → appears above the prompt).
     """
-    from lilbee.progress import FileStartEvent, SyncDoneEvent
 
     status.clear()
 
     def _callback(event_type: EventType, data: dict[str, Any]) -> None:
+        queue_suffix = f" (+{status.pending} queued)" if status.pending > 0 else ""
         if event_type == EventType.FILE_START:
             ev = FileStartEvent(**data)
-            status.text = f"⟳ Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}"
+            status.text = f"⟳ Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}{queue_suffix}"
+        elif event_type == EventType.EXTRACT:
+            ev_ext = ExtractEvent(**data)
+            status.text = (
+                f"⟳ Vision OCR [{ev_ext.page}/{ev_ext.total_pages}]: {ev_ext.file}{queue_suffix}"
+            )
         elif event_type == EventType.DONE:
             status.clear()
             ev_done = SyncDoneEvent(**data)
@@ -139,15 +145,18 @@ def run_sync_background(
     sync_status: SyncStatus | None = None,
 ) -> Future[object]:
     """Submit sync to a background thread. Returns the Future."""
-    from lilbee.ingest import sync
 
-    if chat_mode:
-        callback = _chat_sync_callback(sync_status or SyncStatus())
-    else:
-        callback = _sync_progress_printer(con)
+    status = sync_status or SyncStatus()
+
+    callback = _chat_sync_callback(status) if chat_mode else _sync_progress_printer(con)
 
     def _run() -> object:
+        if chat_mode:
+            status.pending -= 1
         return asyncio.run(sync(quiet=True, on_progress=callback, force_vision=force_vision))
+
+    if chat_mode:
+        status.pending += 1
 
     future = _get_executor().submit(_run)
     future.add_done_callback(lambda f: _on_sync_done(con, f, chat_mode=chat_mode))
