@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from pydantic import BaseModel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from lilbee import embedder, store
 from lilbee.chunker import chunk_text
@@ -26,7 +33,9 @@ from lilbee.progress import (
     FileStartEvent,
     SyncDoneEvent,
     noop_callback,
+    shared_progress,
 )
+from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
 
@@ -248,15 +257,16 @@ async def _vision_fallback(
     source_name: str,
     content_type: str,
     on_progress: DetailedProgressCallback = noop_callback,
+    *,
+    quiet: bool = False,
 ) -> list[ChunkRecord]:
     """OCR a scanned PDF via vision model, chunk, and embed."""
-    from lilbee.vision import extract_pdf_vision
 
     page_texts = await asyncio.to_thread(
         extract_pdf_vision,
         path,
         cfg.vision_model,
-        quiet=cfg.json_mode,
+        quiet=quiet,
         timeout=cfg.vision_timeout,
         on_progress=on_progress,
     )
@@ -293,6 +303,7 @@ async def ingest_document(
     content_type: str,
     *,
     force_vision: bool = False,
+    quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document via kreuzberg, embed, return records.
@@ -324,7 +335,7 @@ async def ingest_document(
                 )
                 return []
             log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-            return await _vision_fallback(path, source_name, content_type, on_progress)
+            return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
 
         log.info(
             "Scanned PDF detected — extracted with Tesseract OCR: %s. "
@@ -424,6 +435,7 @@ async def _ingest_file(
     content_type: str,
     *,
     force_vision: bool = False,
+    quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> int:
     """Ingest a single file. Returns chunk count."""
@@ -438,6 +450,7 @@ async def _ingest_file(
             source_name,
             content_type,
             force_vision=force_vision,
+            quiet=quiet,
             on_progress=on_progress,
         )
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
@@ -569,6 +582,7 @@ async def ingest_batch(
                     name,
                     content_type,
                     force_vision=force_vision,
+                    quiet=quiet,
                     on_progress=on_progress,
                 )
                 on_progress(
@@ -589,15 +603,33 @@ async def ingest_batch(
                 )
                 return _IngestResult(name, path, 0, error=exc)
 
-    tasks = [
-        asyncio.ensure_future(_process_one(name, path, ct, idx))
-        for idx, (name, path, ct) in enumerate(files_to_process, 1)
-    ]
-
     if quiet:
+        tasks = [
+            asyncio.ensure_future(_process_one(name, path, ct, idx))
+            for idx, (name, path, ct) in enumerate(files_to_process, 1)
+        ]
         await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
-        await _collect_results_with_progress(tasks, added, updated, failed, on_progress=on_progress)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            transient=True,
+        ) as progress:
+            ptask = progress.add_task("Ingesting documents...", total=total_files)
+            token = shared_progress.set((progress, ptask))
+            try:
+                tasks = [
+                    asyncio.ensure_future(_process_one(name, path, ct, idx))
+                    for idx, (name, path, ct) in enumerate(files_to_process, 1)
+                ]
+                await _collect_results_with_progress(
+                    progress, ptask, tasks, added, updated, failed, on_progress=on_progress
+                )
+            finally:
+                shared_progress.reset(token)
 
 
 async def _collect_results(
@@ -625,6 +657,8 @@ async def _collect_results(
 
 
 async def _collect_results_with_progress(
+    progress: Progress,
+    ptask: Any,
     tasks: list[asyncio.Task[_IngestResult]],
     added: list[str],
     updated: list[str],
@@ -632,29 +666,23 @@ async def _collect_results_with_progress(
     *,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> None:
-    """Collect task results with Rich progress bar."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        transient=True,
-    ) as progress:
-        ptask = progress.add_task("Ingesting documents...", total=len(tasks))
-        for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
-            result = await fut
-            _apply_result(result, added, updated, failed)
-            desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
-            progress.update(ptask, description=desc)
-            progress.advance(ptask)
-            progress_status = "failed" if result.error is not None else "ingested"
-            on_progress(
-                EventType.BATCH_PROGRESS,
-                BatchProgressEvent(
-                    file=result.name,
-                    status=progress_status,
-                    current=completed_count,
-                    total=len(tasks),
-                ).model_dump(),
-            )
+    """Collect task results, updating an existing Rich progress bar."""
+    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
+        result = await fut
+        _apply_result(result, added, updated, failed)
+        desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+        progress.update(ptask, description=desc)
+        progress.advance(ptask)
+        progress_status = "failed" if result.error is not None else "ingested"
+        on_progress(
+            EventType.BATCH_PROGRESS,
+            BatchProgressEvent(
+                file=result.name,
+                status=progress_status,
+                current=completed_count,
+                total=len(tasks),
+            ).model_dump(),
+        )
 
 
 def _apply_result(

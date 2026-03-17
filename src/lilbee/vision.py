@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
-from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
+from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,33 @@ _OCR_PROMPT = (
 )
 
 _RASTER_DPI = 150
+
+
+class _SharedTask:
+    """Updates the batch task's description with per-page vision progress."""
+
+    def __init__(self, progress: Any, batch_task: Any, name: str, total: int) -> None:
+        self._progress = progress
+        self._batch_task = batch_task
+        self._name = name
+        self._total = total
+        self._current = 0
+
+    def __enter__(self) -> "_SharedTask":
+        self._progress.update(
+            self._batch_task, description=f"Vision OCR {self._name} (0/{self._total})"
+        )
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass  # batch loop updates the description after each file completes
+
+    def advance(self, _task_id: Any) -> None:
+        self._current += 1
+        self._progress.update(
+            self._batch_task,
+            description=f"Vision OCR {self._name} ({self._current}/{self._total})",
+        )
 
 
 def pdf_page_count(path: Path) -> int:
@@ -78,6 +105,12 @@ def _make_progress(name: str, total: int, quiet: bool) -> tuple[AbstractContextM
     """Return (context_manager, task_id | None) for optional Rich progress."""
     if quiet:
         return contextlib.nullcontext(), None
+
+    parent = shared_progress.get(None)
+    if parent is not None:
+        progress, batch_task = parent
+        return _SharedTask(progress, batch_task, name, total), batch_task
+
     from rich.console import Console
     from rich.progress import (  # lazy: heavy dependency
         BarColumn,

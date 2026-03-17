@@ -470,6 +470,18 @@ class TestSyncToolbar:
         status = SyncStatus()
         assert sync_toolbar(status) == ""
 
+    def test_extract_event_updates_toolbar(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.EXTRACT,
+            {"file": "scan.pdf", "page": 2, "total_pages": 5},
+        )
+        assert status.text == "⟳ Vision OCR [2/5]: scan.pdf"
+
     def test_returns_empty_after_clear(self):
         from lilbee.cli.chat.loop import sync_toolbar
         from lilbee.cli.chat.sync import SyncStatus
@@ -478,3 +490,35 @@ class TestSyncToolbar:
         status.text = "something"
         status.clear()
         assert sync_toolbar(status) == ""
+
+    def test_pending_defaults_to_zero(self):
+        from lilbee.cli.chat.sync import SyncStatus
+
+        status = SyncStatus()
+        assert status.pending == 0
+
+    def test_toolbar_shows_queued_count(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        status.pending = 2
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.FILE_START,
+            {"file": "a.pdf", "current_file": 1, "total_files": 1},
+        )
+        assert "(+2 queued)" in status.text
+
+    def test_toolbar_no_queued_suffix_when_zero(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        status.pending = 0
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.FILE_START,
+            {"file": "a.pdf", "current_file": 1, "total_files": 1},
+        )
+        assert "queued" not in status.text
