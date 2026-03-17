@@ -6,23 +6,21 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich.console import Console, RenderableType
 from rich.table import Table
 
+from lilbee.cli import theme
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
-from lilbee.progress import EventType
 
 if TYPE_CHECKING:
-    from lilbee.progress import DetailedProgressCallback
-    from lilbee.query import ChatMessage
+    from lilbee.cli.chat.sync import SyncStatus
     from lilbee.store import SearchChunk
 
 
@@ -66,12 +64,12 @@ class StatusResult(BaseModel):
     def __rich_console__(
         self, console: Console, options: object
     ) -> Generator[RenderableType, None, None]:
-        yield f"[bold]Documents:[/bold]  {self.config.documents_dir}"
-        yield f"[bold]Database:[/bold]   {self.config.data_dir}"
-        yield f"[bold]Chat model:[/bold] {self.config.chat_model}"
-        yield f"[bold]Embeddings:[/bold] {self.config.embedding_model}"
+        yield f"[{theme.LABEL}]Documents:[/{theme.LABEL}]  {self.config.documents_dir}"
+        yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
+        yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
+        yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
         if self.config.vision_model:
-            yield f"[bold]Vision OCR:[/bold] {self.config.vision_model}"
+            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {self.config.vision_model}"
         yield ""
 
         if not self.sources:
@@ -82,16 +80,15 @@ class StatusResult(BaseModel):
             return
 
         table = Table(title="Indexed Documents")
-        table.add_column("File", style="cyan")
-        table.add_column("Hash", style="dim", max_width=12)
+        table.add_column("File", style=theme.ACCENT)
+        table.add_column("Hash", style=theme.MUTED, max_width=12)
         table.add_column("Chunks", justify="right")
-        table.add_column("Ingested", style="dim")
+        table.add_column("Ingested", style=theme.MUTED)
         for s in self.sources:
             table.add_row(s.filename, s.file_hash, str(s.chunk_count), s.ingested_at)
         yield table
-        yield (
-            f"\n[bold]{len(self.sources)}[/bold] documents, [bold]{self.total_chunks}[/bold] chunks"
-        )
+        b = theme.LABEL
+        yield f"\n[{b}]{len(self.sources)}[/{b}] documents, [{b}]{self.total_chunks}[/{b}] chunks"
 
 
 def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
@@ -181,7 +178,7 @@ def copy_paths(paths: list[Path], con: Console, *, force: bool = False) -> list[
     result = copy_files(paths, force=force)
     for name in result.skipped:
         con.print(
-            f"[yellow]Warning:[/yellow] {name} already exists in knowledge base "
+            f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {name} already exists in knowledge base "
             f"(use --force to overwrite)"
         )
     return result.copied
@@ -194,6 +191,8 @@ def add_paths(
     force: bool = False,
     force_vision: bool = False,
     background: bool = False,
+    chat_mode: bool = False,
+    sync_status: SyncStatus | None = None,
 ) -> None:
     """Copy *paths* into the knowledge base and sync (human output).
 
@@ -203,54 +202,23 @@ def add_paths(
     from lilbee.ingest import sync
 
     copied = copy_paths(paths, con, force=force)
-    con.print(f"[dim]Copied {len(copied)} path(s) to {cfg.documents_dir}[/dim]")
+    if chat_mode:
+        print(f"Copied {len(copied)} path(s) to {cfg.documents_dir}")
+    else:
+        con.print(
+            f"[{theme.MUTED}]Copied {len(copied)} path(s) to {cfg.documents_dir}[/{theme.MUTED}]"
+        )
 
     if background:
-        run_sync_background(con, force_vision=force_vision)
+        from lilbee.cli.chat.sync import run_sync_background
+
+        run_sync_background(
+            con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
+        )
         return
 
     result = asyncio.run(sync(force_vision=force_vision))
     con.print(result)
-
-
-def stream_response(
-    question: str,
-    history: list[ChatMessage],
-    con: Console,
-) -> None:
-    """Stream an LLM answer and append the exchange to *history*."""
-    from lilbee.query import ask_stream
-
-    stream = ask_stream(question, history=history)
-    response_parts: list[str] = []
-    cancelled = False
-
-    try:
-        # Show a spinner while waiting for the first token from the LLM.
-        with con.status("Thinking..."):
-            first_token = next(stream, None)
-
-        if first_token is not None:
-            con.print(first_token, end="")
-            response_parts.append(first_token)
-
-        for token in stream:
-            con.print(token, end="")
-            response_parts.append(token)
-    except KeyboardInterrupt:
-        cancelled = True
-        stream.close()
-        con.print("\n[dim](stopped)[/dim]")
-    except RuntimeError as exc:
-        con.print(f"\n[red]Error:[/red] {exc}")
-        return
-
-    if not cancelled:
-        con.print("\n")
-    full = "".join(response_parts)
-    if full:
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": full})
 
 
 def perform_reset() -> ResetResult:
@@ -290,60 +258,6 @@ def sync_result_to_json(result: object) -> dict:
     return {"command": "sync", **result.model_dump()}
 
 
-def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
-    """Return a callback that prints one-line status for FILE_START and DONE events."""
-    from lilbee.progress import FileStartEvent, SyncDoneEvent
-
-    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
-        if event_type == EventType.FILE_START:
-            ev = FileStartEvent(**data)
-            con.print(f"[dim]Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}[/dim]")
-        elif event_type == EventType.DONE:
-            ev_done = SyncDoneEvent(**data)
-            total = ev_done.added + ev_done.updated + ev_done.removed + ev_done.failed
-            if total:
-                con.print(
-                    f"[dim]Synced: {ev_done.added} added, "
-                    f"{ev_done.updated} updated, "
-                    f"{ev_done.removed} removed, "
-                    f"{ev_done.failed} failed[/dim]"
-                )
-
-    return _callback
-
-
-_bg_executor: ThreadPoolExecutor | None = None
-
-
-def _get_executor() -> ThreadPoolExecutor:
-    """Lazy-init a single-worker executor (serializes concurrent submits)."""
-    global _bg_executor
-    if _bg_executor is None:
-        _bg_executor = ThreadPoolExecutor(max_workers=1)
-    return _bg_executor
-
-
-def _on_sync_done(con: Console, future: Future[object]) -> None:
-    """Callback attached to background sync futures — logs errors."""
-    exc = future.exception()
-    if exc is not None:
-        con.print(f"[red]Background sync error:[/red] {exc}")
-
-
-def run_sync_background(con: Console, *, force_vision: bool = False) -> Future[object]:
-    """Submit sync to a background thread. Returns the Future."""
-    from lilbee.ingest import sync
-
-    callback = _sync_progress_printer(con)
-
-    def _run() -> object:
-        return asyncio.run(sync(quiet=True, on_progress=callback, force_vision=force_vision))
-
-    future = _get_executor().submit(_run)
-    future.add_done_callback(lambda f: _on_sync_done(con, f))
-    return future
-
-
 def auto_sync(con: Console, *, background: bool = False) -> None:
     """Run document sync before queries.
 
@@ -352,6 +266,8 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
     sync blocks until complete (for ``lilbee ask``).
     """
     if background:
+        from lilbee.cli.chat.sync import run_sync_background
+
         run_sync_background(con)
         return
 
@@ -360,13 +276,13 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
     try:
         result = asyncio.run(sync())
     except RuntimeError as exc:
-        con.print(f"[red]Error:[/red] {exc}")
+        con.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
     total = len(result.added) + len(result.updated) + len(result.removed) + len(result.failed)
     if total:
         con.print(
-            f"[dim]Synced: {len(result.added)} added, "
+            f"[{theme.MUTED}]Synced: {len(result.added)} added, "
             f"{len(result.updated)} updated, "
             f"{len(result.removed)} removed, "
-            f"{len(result.failed)} failed[/dim]"
+            f"{len(result.failed)} failed[/{theme.MUTED}]"
         )

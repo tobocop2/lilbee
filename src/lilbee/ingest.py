@@ -571,6 +571,10 @@ async def ingest_batch(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if isinstance(
+                    exc, RuntimeError
+                ) and "cannot schedule new futures after shutdown" in str(exc):
+                    raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="error", chunks=0).model_dump(),

@@ -7,6 +7,7 @@ import typer
 from rich.table import Table
 
 from lilbee import settings
+from lilbee.cli import theme
 from lilbee.cli.app import (
     _global_option,
     app,
@@ -65,7 +66,10 @@ def _ensure_vision_model() -> None:
     try:
         installed = set(list_ollama_models())
     except Exception:
-        console.print("[yellow]Warning: Cannot connect to Ollama. Vision OCR disabled.[/yellow]")
+        console.print(
+            f"[{theme.WARNING}]Warning: Cannot connect to Ollama."
+            f" Vision OCR disabled.[/{theme.WARNING}]"
+        )
         return
 
     if sys.stdin.isatty():
@@ -121,10 +125,10 @@ def _pick_vision_interactive(installed: set[str]) -> None:
         try:
             choice = int(raw)
         except ValueError:
-            console.print(f"[red]Enter a number 1-{len(VISION_CATALOG)}.[/red]")
+            console.print(f"[{theme.ERROR}]Enter a number 1-{len(VISION_CATALOG)}.[/{theme.ERROR}]")
             return
         if not (1 <= choice <= len(VISION_CATALOG)):
-            console.print(f"[red]Enter a number 1-{len(VISION_CATALOG)}.[/red]")
+            console.print(f"[{theme.ERROR}]Enter a number 1-{len(VISION_CATALOG)}.[/{theme.ERROR}]")
             return
         model_info = VISION_CATALOG[choice - 1]
 
@@ -149,8 +153,10 @@ def _try_pull(model_name: str) -> bool:
     try:
         pull_with_progress(model_name)
     except Exception as exc:
-        console.print(f"[yellow]Warning: Failed to pull '{model_name}': {exc}[/yellow]")
-        console.print("[yellow]Continuing without vision OCR.[/yellow]")
+        console.print(
+            f"[{theme.WARNING}]Warning: Failed to pull '{model_name}': {exc}[/{theme.WARNING}]"
+        )
+        console.print(f"[{theme.WARNING}]Continuing without vision OCR.[/{theme.WARNING}]")
         return False
     return True
 
@@ -195,10 +201,10 @@ def search(
 
     has_relevance = any("relevance_score" in r for r in cleaned)
     table = Table(title="Search Results")
-    table.add_column("Source", style="cyan")
+    table.add_column("Source", style=theme.ACCENT)
     table.add_column("Chunk", max_width=80)
     score_label = "Score" if has_relevance else "Distance"
-    table.add_column(score_label, justify="right", style="dim")
+    table.add_column(score_label, justify="right", style=theme.MUTED)
 
     for r in cleaned:
         chunk_text = r["chunk"]
@@ -231,7 +237,7 @@ def sync_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[red]Error:[/red] {exc}")
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
@@ -260,7 +266,7 @@ def rebuild(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[red]Error:[/red] {exc}")
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output({"command": "rebuild", "ingested": len(result.added)})
@@ -299,7 +305,7 @@ def add(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[red]Error:[/red] {exc}")
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
 
 
@@ -322,7 +328,7 @@ def chunks(
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
             raise SystemExit(1)
-        console.print(f"[red]Source not found:[/red] {source}")
+        console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
         raise SystemExit(1)
 
     raw_chunks = get_chunks_by_source(source)
@@ -335,7 +341,10 @@ def chunks(
         json_output({"command": "chunks", "source": source, "chunks": cleaned})
         return
 
-    console.print(f"[bold]{len(cleaned)}[/bold] chunks from [cyan]{source}[/cyan]\n")
+    console.print(
+        f"[{theme.LABEL}]{len(cleaned)}[/{theme.LABEL}]"
+        f" chunks from [{theme.ACCENT}]{source}[/{theme.ACCENT}]\n"
+    )
     for c in cleaned:
         idx = c.get("chunk_index", "?")
         preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
@@ -389,9 +398,9 @@ def remove(
         return
 
     for name in removed:
-        console.print(f"Removed [cyan]{name}[/cyan]")
+        console.print(f"Removed [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
     for name in not_found:
-        console.print(f"[red]Not found:[/red] {name}")
+        console.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
     if not removed and not_found:
         raise SystemExit(1)
 
@@ -453,7 +462,7 @@ def ask(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[red]Error:[/red] {exc}")
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
 
 
@@ -481,15 +490,9 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
-    from lilbee.embedder import validate_model
-    from lilbee.models import ensure_chat_model
-
-    ensure_chat_model()
-    validate_model()
-    auto_sync(console, background=True)
     from lilbee.cli.chat import chat_loop
 
-    chat_loop(console)
+    chat_loop(console, auto_sync_bg=True)
 
 
 @app.command()
@@ -531,7 +534,7 @@ def reset(
             json_output({"error": "Use --yes to confirm reset in JSON mode"})
             raise SystemExit(1)
         console.print(
-            f"[bold red]This will delete ALL documents and data.[/bold red]\n"
+            f"[{theme.ERROR_BOLD}]This will delete ALL documents and data.[/{theme.ERROR_BOLD}]\n"
             f"  Documents: {cfg.documents_dir}\n"
             f"  Data:      {cfg.data_dir}"
         )
