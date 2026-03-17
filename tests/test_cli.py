@@ -1947,9 +1947,8 @@ class TestRebuildJson:
 
 
 class TestAddJson:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_json(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "manual.txt"
         src.parent.mkdir()
         src.write_text("Engine oil capacity is 5 quarts.")
