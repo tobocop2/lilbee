@@ -8,10 +8,11 @@ import pytest
 from rich.console import Console as RichConsole
 from typer.testing import CliRunner
 
-from lilbee.cli import app, dispatch_slash
-from lilbee.cli.chat import (
+from lilbee.cli import app
+from lilbee.cli.chat.slash import (
     _SETTINGS_MAP,
     _format_setting_value,
+    dispatch_slash,
     handle_slash_set,
     handle_slash_settings,
 )
@@ -88,7 +89,7 @@ class TestFormatSettingValue:
 class TestGetModelDefaults:
     @mock.patch("ollama.show")
     def test_parses_ollama_show_parameters(self, mock_show):
-        from lilbee.cli.chat import _get_model_defaults
+        from lilbee.cli.chat.slash import _get_model_defaults
 
         mock_resp = mock.Mock()
         mock_resp.parameters = (
@@ -106,7 +107,7 @@ class TestGetModelDefaults:
 
     @mock.patch("ollama.show")
     def test_skips_non_setting_params(self, mock_show):
-        from lilbee.cli.chat import _get_model_defaults
+        from lilbee.cli.chat.slash import _get_model_defaults
 
         mock_resp = mock.Mock()
         mock_resp.parameters = (
@@ -119,14 +120,14 @@ class TestGetModelDefaults:
 
     @mock.patch("ollama.show")
     def test_returns_empty_on_error(self, mock_show):
-        from lilbee.cli.chat import _get_model_defaults
+        from lilbee.cli.chat.slash import _get_model_defaults
 
         mock_show.side_effect = ConnectionError("connection refused")
         assert _get_model_defaults() == {}
 
     @mock.patch("ollama.show")
     def test_returns_empty_when_no_parameters(self, mock_show):
-        from lilbee.cli.chat import _get_model_defaults
+        from lilbee.cli.chat.slash import _get_model_defaults
 
         mock_resp = mock.Mock()
         mock_resp.parameters = None
@@ -135,7 +136,7 @@ class TestGetModelDefaults:
 
 
 class TestSlashSettings:
-    @mock.patch("lilbee.cli.chat._get_model_defaults", return_value={})
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     def test_shows_all_settings(self, _defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
@@ -143,13 +144,13 @@ class TestSlashSettings:
         for name in _SETTINGS_MAP:
             assert name in output
 
-    @mock.patch("lilbee.cli.chat._get_model_defaults", return_value={})
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     def test_shows_current_chat_model(self, _defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
         assert cfg.chat_model in buf.getvalue()
 
-    @mock.patch("lilbee.cli.chat._get_model_defaults", return_value={})
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     def test_shows_not_set_for_none_value(self, _defaults):
         cfg.temperature = None
         con, buf = _make_console()
@@ -157,7 +158,7 @@ class TestSlashSettings:
         assert "(not set)" in buf.getvalue()
 
     @mock.patch(
-        "lilbee.cli.chat._get_model_defaults",
+        "lilbee.cli.chat.slash._get_model_defaults",
         return_value={"temperature": "0.6", "top_p": "0.95"},
     )
     def test_shows_model_defaults_for_unset_values(self, _defaults):
@@ -166,7 +167,7 @@ class TestSlashSettings:
         handle_slash_settings("", con)
         assert "model default: 0.6" in buf.getvalue()
 
-    @mock.patch("lilbee.cli.chat._get_model_defaults", return_value={})
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_settings_in_chat_loop(self, _sync, _defaults):
         result = runner.invoke(app, ["chat"], input="/settings\n/quit\n")
@@ -383,7 +384,7 @@ class TestStreamResponseCancellation:
             raise KeyboardInterrupt
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_stream):
-            from lilbee.cli.helpers import stream_response
+            from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
@@ -400,7 +401,7 @@ class TestStreamResponseCancellation:
             raise KeyboardInterrupt
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_stream):
-            from lilbee.cli.helpers import stream_response
+            from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
@@ -417,7 +418,7 @@ class TestStreamResponseCancellation:
             yield  # type: ignore[misc]
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_stream):
-            from lilbee.cli.helpers import stream_response
+            from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
@@ -432,7 +433,7 @@ class TestStreamResponseCancellation:
             yield  # type: ignore[misc]
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_on_first):
-            from lilbee.cli.helpers import stream_response
+            from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
@@ -444,9 +445,53 @@ class TestStreamResponseCancellation:
         history: list[dict] = []
 
         with mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"])):
-            from lilbee.cli.helpers import stream_response
+            from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
         assert len(history) == 2
         assert history[1]["content"] == "Hello world"
+
+
+class TestSyncToolbar:
+    def test_returns_styled_text_when_active(self):
+        from lilbee.cli.chat.loop import sync_toolbar
+        from lilbee.cli.chat.sync import SyncStatus
+
+        status = SyncStatus()
+        status.text = "⟳ Syncing [1/3]: x.pdf"
+        result = sync_toolbar(status)
+        assert result == [("class:bottom-toolbar", "⟳ Syncing [1/3]: x.pdf")]
+
+    def test_returns_empty_when_no_text(self):
+        from lilbee.cli.chat.loop import sync_toolbar
+        from lilbee.cli.chat.sync import SyncStatus
+
+        status = SyncStatus()
+        assert sync_toolbar(status) == ""
+
+    def test_returns_empty_after_clear(self):
+        from lilbee.cli.chat.loop import sync_toolbar
+        from lilbee.cli.chat.sync import SyncStatus
+
+        status = SyncStatus()
+        status.text = "something"
+        status.clear()
+        assert sync_toolbar(status) == ""
+
+
+class TestInitModels:
+    def test_calls_ensure_and_validate(self):
+        from lilbee.cli.chat.loop import _init_models
+
+        con = mock.MagicMock()
+        con.status.return_value.__enter__ = mock.MagicMock()
+        con.status.return_value.__exit__ = mock.MagicMock()
+        with (
+            mock.patch("lilbee.models.ensure_chat_model") as m_chat,
+            mock.patch("lilbee.embedder.validate_model") as m_embed,
+        ):
+            _init_models(con)
+        m_chat.assert_called_once()
+        m_embed.assert_called_once()
+        con.status.assert_called_once_with("Initializing...")
