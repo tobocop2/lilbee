@@ -8,7 +8,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from lilbee.cli.helpers import auto_sync, get_version
+from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
 from lilbee.models import ensure_tag
@@ -149,12 +149,6 @@ def _default(
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
-        from lilbee.embedder import validate_model
-        from lilbee.models import ensure_chat_model
-
-        ensure_chat_model()
-        validate_model()
-        auto_sync(console)
         from lilbee.cli.chat import chat_loop
 
-        chat_loop(console)
+        chat_loop(console, auto_sync_bg=True)
