@@ -192,8 +192,8 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 |---------|-------------|
 | `/status` | Show indexed documents and config |
 | `/add [path]` | Add a file or directory (tab-completes paths) |
-| `/model [name]` | Switch chat model — no args opens an interactive picker; with a name, switches directly (tab-completes installed models) |
-| `/vision [name\|off]` | Switch vision OCR model — no args opens a picker, `off` disables (tab-completes catalog models) |
+| `/model [name]` | Switch chat model — no args opens a curated picker; with a name, switches directly or prompts to download if not installed (tab-completes installed models) |
+| `/vision [name\|off]` | Switch vision OCR model — no args opens a curated picker; with a name, prompts to download if not installed; `off` disables (tab-completes catalog models) |
 | `/settings` | Show all current configuration values |
 | `/set <key> <value>` | Change a setting (e.g. `/set temperature 0.7`) |
 | `/version` | Show lilbee version |
@@ -201,7 +201,7 @@ Running `lilbee` or `lilbee chat` enters an interactive REPL with conversation h
 | `/help` | Show available commands |
 | `/quit` | Exit chat |
 
-Slash commands and paths tab-complete. A spinner shows while waiting for the first token from the LLM.
+Slash commands and paths tab-complete. A spinner shows while waiting for the first token from the LLM. Background sync progress appears in the toolbar without interrupting the conversation.
 
 ## Supported formats
 
