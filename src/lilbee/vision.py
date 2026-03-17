@@ -7,6 +7,7 @@ via Ollama, and concatenates the extracted text.
 import contextlib
 import io
 import logging
+import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -77,6 +78,7 @@ def _make_progress(name: str, total: int, quiet: bool) -> tuple[AbstractContextM
     """Return (context_manager, task_id | None) for optional Rich progress."""
     if quiet:
         return contextlib.nullcontext(), None
+    from rich.console import Console
     from rich.progress import (  # lazy: heavy dependency
         BarColumn,
         MofNCompleteColumn,
@@ -91,6 +93,7 @@ def _make_progress(name: str, total: int, quiet: bool) -> tuple[AbstractContextM
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         transient=True,
+        console=Console(file=sys.__stderr__ or sys.stderr),
     )
     task = progress.add_task(f"Vision OCR {name}", total=total)
     return progress, task
