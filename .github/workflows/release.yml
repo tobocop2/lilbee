@@ -44,8 +44,6 @@ jobs:
             asset_name: lilbee-linux-x86_64
           - os: macos-latest
             asset_name: lilbee-macos-arm64
-          - os: macos-13
-            asset_name: lilbee-macos-x86_64
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
 

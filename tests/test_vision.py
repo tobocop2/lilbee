@@ -189,7 +189,7 @@ class TestExtractPageText:
 
     @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
     def test_warning_without_traceback(
-        self, _chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
@@ -206,7 +206,7 @@ class TestExtractPageText:
 
     @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
     def test_debug_includes_traceback(
-        self, _chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
@@ -226,7 +226,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1"), (1, b"png2")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
     def test_returns_page_tagged_tuples(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -235,7 +235,7 @@ class TestExtractPdfVision:
         assert _ext.call_count == 2
 
     @mock.patch("lilbee.vision.pdf_page_count", return_value=0)
-    def test_empty_pdf_returns_empty(self, _cnt: mock.MagicMock) -> None:
+    def test_empty_pdf_returns_empty(self, mock_page_count: mock.MagicMock) -> None:
         from lilbee.vision import extract_pdf_vision
 
         result = extract_pdf_vision(Path("test.pdf"), "test-model", quiet=True)
@@ -245,7 +245,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_whitespace_only_pages_excluded(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -259,7 +259,7 @@ class TestExtractPdfVision:
     )
     @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
     def test_mixed_pages_filters_blank(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -270,7 +270,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_passes_timeout_to_extract_page_text(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, mock_ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, mock_ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -281,7 +281,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_progress_bar_shown_when_not_quiet(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         mock_progress = mock.MagicMock()
         mock_progress.add_task.return_value = 0
@@ -313,7 +313,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_no_progress_bar_when_quiet(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         # Poison the rich.progress import — if quiet=True tries to import it, we'll know
         sentinel = ImportError("rich.progress should not be imported in quiet mode")
@@ -333,7 +333,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
     def test_failed_pages_counted(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
         caplog: pytest.LogCaptureFixture,
@@ -356,7 +356,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
     def test_failed_summary_printed_when_not_quiet(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
     ) -> None:
@@ -396,7 +396,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_no_failure_summary_when_all_succeed(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
         caplog: pytest.LogCaptureFixture,
