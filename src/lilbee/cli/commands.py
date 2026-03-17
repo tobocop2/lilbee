@@ -593,6 +593,9 @@ def _port_file() -> Path:
 async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> None:
     """Start uvicorn, write port file, and clean up on shutdown."""
     port_path = _port_file()
+    if not config.loaded:
+        config.load()
+    server.lifespan = config.lifespan_class(config)
     await server.startup()
     try:
         if server.servers:
