@@ -200,7 +200,7 @@ class TestValidateDiskAndPull:
     def test_pulls_and_persists(self, mock_pull, mock_save):
         info = ModelInfo("test:1b", 1.0, 4, "test")
         models.validate_disk_and_pull(info, 50.0)
-        mock_pull.assert_called_once_with("test:1b")
+        mock_pull.assert_called_once_with("test:1b", console=None)
         mock_save.assert_called_once_with(cfg.data_root, "chat_model", "test:1b")
 
     def test_insufficient_disk_raises(self):
@@ -251,7 +251,7 @@ class TestEnsureChatModel:
         )
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3-coder:30b")
+        mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
         mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
 
     @mock.patch("lilbee.settings.set_value")
@@ -263,7 +263,7 @@ class TestEnsureChatModel:
         mock_list.return_value = SimpleNamespace(models=[])
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:8b")
+        mock_pull.assert_called_once_with("qwen3:8b", console=None)
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
@@ -277,7 +277,7 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:1.7b")
+        mock_pull.assert_called_once_with("qwen3:1.7b", console=None)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)

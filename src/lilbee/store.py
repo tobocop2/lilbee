@@ -1,15 +1,21 @@
 """LanceDB vector store operations."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import lancedb
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, cfg
+from lilbee.lock import write_lock
 
 log = logging.getLogger(__name__)
+
+# How often readers re-check the manifest for new versions from other processes.
+# Zero means strong consistency (every read checks); higher values reduce disk I/O
+# on slow media (HDD) at the cost of serving slightly stale data.
+READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
 
 class _FtsState:
@@ -72,7 +78,9 @@ def _sources_schema() -> pa.Schema:
 
 def get_db() -> lancedb.DBConnection:
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(str(cfg.lancedb_dir))
+    return lancedb.connect(
+        str(cfg.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
+    )
 
 
 def _table_names(db: lancedb.DBConnection) -> list[str]:
@@ -98,12 +106,18 @@ def _open_table(name: str) -> lancedb.table.Table | None:
     return db.open_table(name)
 
 
-def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure."""
+def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
+    """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
     try:
         table.delete(predicate)
     except Exception:
         log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
+
+
+def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
+    """Delete rows matching predicate, logging on failure."""
+    with write_lock():
+        _safe_delete_unlocked(table, predicate)
 
 
 def _escape_sql_string(value: str) -> str:
@@ -117,33 +131,35 @@ def ensure_fts_index() -> None:
     No-op when the table doesn't exist or is empty.  Sets _fts.ready
     on success so hybrid_search can be used.
     """
-    table = _open_table(CHUNKS_TABLE)
-    if table is None:
-        return
-    try:
-        table.create_fts_index("chunk", replace=True)
-        _fts.ready = True
-        log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
-    except Exception:
-        log.debug("FTS index creation failed (empty table?)", exc_info=True)
+    with write_lock():
+        table = _open_table(CHUNKS_TABLE)
+        if table is None:
+            return
+        try:
+            table.create_fts_index("chunk", replace=True)
+            _fts.ready = True
+            log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
+        except Exception:
+            log.debug("FTS index creation failed (empty table?)", exc_info=True)
 
 
 def add_chunks(records: list[dict]) -> int:
     """Add chunk records to the store. Returns count added."""
-    _fts.ready = False
-    if not records:
-        return 0
-    for rec in records:
-        vec = rec.get("vector", [])
-        if len(vec) != cfg.embedding_dim:
-            raise ValueError(
-                f"Vector dimension mismatch: expected {cfg.embedding_dim}, got {len(vec)} "
-                f"(source={rec.get('source', '?')})"
-            )
-    db = get_db()
-    table = ensure_table(db, CHUNKS_TABLE, _chunks_schema())
-    table.add(records)
-    return len(records)
+    with write_lock():
+        _fts.ready = False
+        if not records:
+            return 0
+        for rec in records:
+            vec = rec.get("vector", [])
+            if len(vec) != cfg.embedding_dim:
+                raise ValueError(
+                    f"Vector dimension mismatch: expected {cfg.embedding_dim}, got {len(vec)} "
+                    f"(source={rec.get('source', '?')})"
+                )
+        db = get_db()
+        table = ensure_table(db, CHUNKS_TABLE, _chunks_schema())
+        table.add(records)
+        return len(records)
 
 
 def _hybrid_search(
@@ -213,9 +229,10 @@ def get_chunks_by_source(source: str) -> list[SearchChunk]:
 
 def delete_by_source(source: str) -> None:
     """Delete all chunks from a given source file."""
-    table = _open_table(CHUNKS_TABLE)
-    if table is not None:
-        safe_delete(table, f"source = '{_escape_sql_string(source)}'")
+    with write_lock():
+        table = _open_table(CHUNKS_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"source = '{_escape_sql_string(source)}'")
 
 
 def get_sources() -> list[dict]:
@@ -229,31 +246,34 @@ def get_sources() -> list[dict]:
 
 def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
     """Add or update a source file tracking record."""
-    db = get_db()
-    table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-    safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
-    table.add(
-        [
-            {
-                "filename": filename,
-                "file_hash": file_hash,
-                "ingested_at": datetime.now(UTC).isoformat(),
-                "chunk_count": chunk_count,
-            }
-        ]
-    )
+    with write_lock():
+        db = get_db()
+        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+        table.add(
+            [
+                {
+                    "filename": filename,
+                    "file_hash": file_hash,
+                    "ingested_at": datetime.now(UTC).isoformat(),
+                    "chunk_count": chunk_count,
+                }
+            ]
+        )
 
 
 def delete_source(filename: str) -> None:
     """Remove a source file tracking record."""
-    table = _open_table(SOURCES_TABLE)
-    if table is not None:
-        safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
+    with write_lock():
+        table = _open_table(SOURCES_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
 
 
 def drop_all() -> None:
     """Drop all tables — used by rebuild."""
-    _fts.ready = False
-    db = get_db()
-    for name in _table_names(db):
-        db.drop_table(name)
+    with write_lock():
+        _fts.ready = False
+        db = get_db()
+        for name in _table_names(db):
+            db.drop_table(name)
