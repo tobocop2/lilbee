@@ -703,7 +703,6 @@ class TestVisionFallback:
         """When PDF extraction is empty and vision_model is set, fall back to vision."""
         cfg.vision_model = "test-vision"
         cfg.vision_timeout = 45.0
-        cfg.json_mode = True
         # Called twice: initial extraction + Tesseract OCR (both empty)
         empty = _make_empty_result()
         mock_kf.side_effect = [empty, empty]
@@ -713,17 +712,63 @@ class TestVisionFallback:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.vision.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import ingest_document
 
-            result = await ingest_document(f, "scanned.pdf", "pdf")
+            result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
         mock_vision.assert_called_once_with(
             f, "test-vision", quiet=True, timeout=45.0, on_progress=mock.ANY
         )
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
         assert result[0]["page_start"] == 1
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_vision_fallback_quiet_false_by_default(self, mock_kf, _eb, isolated_env):
+        """Without quiet=True, vision fallback passes quiet=False."""
+        cfg.vision_model = "test-vision"
+        cfg.vision_timeout = 120.0
+        empty = _make_empty_result()
+        mock_kf.side_effect = [empty, empty]
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        vision_pages = [(1, "Vision extracted text. " * 10)]
+        with mock.patch(
+            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+        ) as mock_vision:
+            from lilbee.ingest import ingest_document
+
+            await ingest_document(f, "scanned.pdf", "pdf")
+        mock_vision.assert_called_once_with(
+            f, "test-vision", quiet=False, timeout=120.0, on_progress=mock.ANY
+        )
+
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_ingest_file_threads_quiet_to_vision(self, mock_kf, _eb, isolated_env):
+        """quiet=True flows from _ingest_file through ingest_document to vision."""
+        cfg.vision_model = "test-vision"
+        cfg.vision_timeout = 120.0
+        empty = _make_empty_result()
+        mock_kf.return_value = empty
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        vision_pages = [(1, "Vision extracted text. " * 10)]
+        with mock.patch(
+            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
+        ) as mock_vision:
+            from lilbee.ingest import _ingest_file
+
+            await _ingest_file(f, "scanned.pdf", "pdf", quiet=True)
+        mock_vision.assert_called_once_with(
+            f, "test-vision", quiet=True, timeout=120.0, on_progress=mock.ANY
+        )
 
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
@@ -734,7 +779,7 @@ class TestVisionFallback:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -750,7 +795,7 @@ class TestVisionFallback:
         f = isolated_env / "doc.txt"
         f.write_text("")
 
-        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "doc.txt", "text")
@@ -770,7 +815,7 @@ class TestVisionFallback:
         f = isolated_env / "blank.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.vision.extract_pdf_vision", return_value=[]):
+        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=[]):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "blank.pdf", "pdf")
@@ -787,7 +832,7 @@ class TestVisionFallback:
         f = isolated_env / "good.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "good.pdf", "pdf")
@@ -806,7 +851,7 @@ class TestVisionFallback:
         f.write_bytes(b"fake pdf")
 
         with (
-            mock.patch("lilbee.vision.extract_pdf_vision", return_value=[(1, "Some text")]),
+            mock.patch("lilbee.ingest.extract_pdf_vision", return_value=[(1, "Some text")]),
             mock.patch("lilbee.ingest.chunk_text", return_value=[]),
         ):
             from lilbee.ingest import ingest_document
@@ -832,7 +877,7 @@ class TestTesseractOcrMiddleTier:
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
-        with mock.patch("lilbee.vision.extract_pdf_vision") as mock_vision:
+        with mock.patch("lilbee.ingest.extract_pdf_vision") as mock_vision:
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
@@ -846,7 +891,6 @@ class TestTesseractOcrMiddleTier:
         """When Tesseract OCR also yields < 50 chars, fall through to vision."""
         cfg.vision_model = "test-vision"
         cfg.vision_timeout = 120.0
-        cfg.json_mode = False
         empty = _make_empty_result()
         # Called twice: initial extraction + Tesseract OCR (both empty)
         mock_kf.side_effect = [empty, empty]
@@ -856,7 +900,7 @@ class TestTesseractOcrMiddleTier:
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
         with mock.patch(
-            "lilbee.vision.extract_pdf_vision", return_value=vision_pages
+            "lilbee.ingest.extract_pdf_vision", return_value=vision_pages
         ) as mock_vision:
             from lilbee.ingest import ingest_document
 
@@ -902,7 +946,6 @@ class TestTesseractOcrMiddleTier:
         """When force_vision=True, Tesseract OCR tier is skipped entirely."""
         cfg.vision_model = "test-vision"
         cfg.vision_timeout = 120.0
-        cfg.json_mode = False
         empty = _make_empty_result()
         mock_kf.return_value = empty
 
@@ -910,7 +953,7 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.vision.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=vision_pages):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf", force_vision=True)
@@ -940,7 +983,6 @@ class TestTesseractOcrMiddleTier:
         """With vision_model set, Tesseract is skipped — vision takes precedence."""
         cfg.vision_model = "test-vision"
         cfg.vision_timeout = 120.0
-        cfg.json_mode = False
         empty = _make_empty_result()
         mock_kf.return_value = empty
 
@@ -948,13 +990,80 @@ class TestTesseractOcrMiddleTier:
         f.write_bytes(b"fake pdf")
 
         vision_pages = [(1, "Vision extracted text. " * 10)]
-        with mock.patch("lilbee.vision.extract_pdf_vision", return_value=vision_pages):
+        with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=vision_pages):
             from lilbee.ingest import ingest_document
 
             result = await ingest_document(f, "scanned.pdf", "pdf")
         # extract_file called only once (initial extraction), Tesseract skipped
         assert mock_kf.call_count == 1
         assert len(result) > 0
+
+
+class TestSharedProgress:
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_contextvar_set_during_progress(self, _kf, _eb, _vm, isolated_env):
+        """shared_progress contextvar is set inside _collect_results_with_progress."""
+        from lilbee.progress import shared_progress
+
+        (isolated_env / "a.txt").write_text("Content for shared progress test.")
+
+        captured: list[tuple] = []
+
+        # Use on_progress callback to capture the contextvar value during ingestion
+        def capture_progress(event_type, data):
+            val = shared_progress.get(None)
+            if val is not None and val not in captured:
+                captured.append(val)
+
+        from lilbee.ingest import sync
+
+        await sync(quiet=False, on_progress=capture_progress)
+        assert len(captured) > 0, "shared_progress was never set during progress bar"
+        progress_obj, task_id = captured[0]
+        assert progress_obj is not None
+        assert task_id is not None
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_contextvar_not_set_in_quiet_mode(self, _kf, _eb, _vm, isolated_env):
+        """shared_progress contextvar is NOT set in quiet mode (no progress bar)."""
+        from lilbee.progress import shared_progress
+
+        (isolated_env / "b.txt").write_text("Content for quiet mode test.")
+
+        captured: list[object] = []
+
+        def capture_progress(event_type, data):
+            val = shared_progress.get(None)
+            if val is not None:
+                captured.append(val)
+
+        from lilbee.ingest import sync
+
+        await sync(quiet=True, on_progress=capture_progress)
+        assert len(captured) == 0, "shared_progress should not be set in quiet mode"
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_contextvar_reset_after_progress(self, _kf, _eb, _vm, isolated_env):
+        """shared_progress is reset to None after _collect_results_with_progress completes."""
+        from lilbee.progress import shared_progress
+
+        (isolated_env / "c.txt").write_text("Content for reset test.")
+        from lilbee.ingest import sync
+
+        await sync(quiet=False)
+        assert shared_progress.get(None) is None
 
 
 class TestKreuzbergOcrConfig:
