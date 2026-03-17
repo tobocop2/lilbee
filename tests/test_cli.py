@@ -2527,7 +2527,7 @@ class TestSyncProgressPrinter:
 
 
 class TestRunSyncBackground:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_returns_immediately(self, _sync):
         from lilbee.cli.chat.sync import run_sync_background
 
@@ -2540,7 +2540,7 @@ class TestRunSyncBackground:
         _sync.assert_called_once()
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.cli.chat.sync.sync",
         new_callable=AsyncMock,
         side_effect=RuntimeError("Ollama down"),
     )
@@ -2557,7 +2557,7 @@ class TestRunSyncBackground:
         assert "Background sync error" in con.print.call_args[0][0]
 
     @mock.patch(
-        "lilbee.ingest.sync",
+        "lilbee.cli.chat.sync.sync",
         new_callable=AsyncMock,
         side_effect=RuntimeError("Ollama down"),
     )
@@ -2572,7 +2572,7 @@ class TestRunSyncBackground:
         con.print.assert_not_called()
         assert "Background sync error" in capsys.readouterr().out
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_passes_force_vision(self, mock_sync):
         from lilbee.cli.chat.sync import run_sync_background
 
@@ -2582,7 +2582,7 @@ class TestRunSyncBackground:
         mock_sync.assert_called_once()
         assert mock_sync.call_args[1]["force_vision"] is True
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_mode_uses_status_callback(self, mock_sync):
         from lilbee.cli.chat.sync import SyncStatus, run_sync_background
 
