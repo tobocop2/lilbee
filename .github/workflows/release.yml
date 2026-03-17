@@ -8,11 +8,34 @@ permissions:
   contents: write
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make lint
+      - run: make format-check
+      - run: make typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make test-ci
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   build:
-    needs: ci
+    needs: [lint, test]
     strategy:
       fail-fast: false
       matrix:
