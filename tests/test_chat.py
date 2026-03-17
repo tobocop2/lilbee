@@ -137,7 +137,7 @@ class TestGetModelDefaults:
 
 class TestSlashSettings:
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_all_settings(self, _defaults):
+    def test_shows_all_settings(self, mock_defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
         output = buf.getvalue()
@@ -145,13 +145,13 @@ class TestSlashSettings:
             assert name in output
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_current_chat_model(self, _defaults):
+    def test_shows_current_chat_model(self, mock_defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
         assert cfg.chat_model in buf.getvalue()
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_not_set_for_none_value(self, _defaults):
+    def test_shows_not_set_for_none_value(self, mock_defaults):
         cfg.temperature = None
         con, buf = _make_console()
         handle_slash_settings("", con)
@@ -161,7 +161,7 @@ class TestSlashSettings:
         "lilbee.cli.chat.slash._get_model_defaults",
         return_value={"temperature": "0.6", "top_p": "0.95"},
     )
-    def test_shows_model_defaults_for_unset_values(self, _defaults):
+    def test_shows_model_defaults_for_unset_values(self, mock_defaults):
         cfg.temperature = None
         con, buf = _make_console()
         handle_slash_settings("", con)
@@ -169,7 +169,7 @@ class TestSlashSettings:
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_settings_in_chat_loop(self, _sync, _defaults):
+    def test_settings_in_chat_loop(self, mock_sync, mock_defaults):
         result = runner.invoke(app, ["chat"], input="/settings\n/quit\n")
         assert result.exit_code == 0
         assert "chat_model" in result.output
@@ -275,7 +275,7 @@ class TestSlashSet:
         assert settings.get(cfg.data_root, "temperature") is None
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_set_in_chat_loop(self, _sync):
+    def test_set_in_chat_loop(self, mock_sync):
         result = runner.invoke(app, ["chat"], input="/set temperature 0.3\n/quit\n")
         assert result.exit_code == 0
         assert "saved" in result.output

@@ -162,7 +162,7 @@ class TestDisplayModelPicker:
 
 class TestPromptModelChoice:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_default_choice(self, _disk):
+    def test_default_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value=""):
             result = models.prompt_model_choice(8.0)
         assert isinstance(result, ModelInfo)
@@ -170,25 +170,25 @@ class TestPromptModelChoice:
         assert result == models.pick_default_model(8.0)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_numeric_choice(self, _disk):
+    def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
             result = models.prompt_model_choice(8.0)
         assert result.name == "qwen3:1.7b"
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_invalid_then_valid(self, _disk):
+    def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=["abc", "99", "2"]):
             result = models.prompt_model_choice(8.0)
         assert result.name == "qwen3:4b"
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_eof_returns_recommended(self, _disk):
+    def test_eof_returns_recommended(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=EOFError):
             result = models.prompt_model_choice(8.0)
         assert result == models.pick_default_model(8.0)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
-    def test_keyboard_interrupt_returns_recommended(self, _disk):
+    def test_keyboard_interrupt_returns_recommended(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
             result = models.prompt_model_choice(8.0)
         assert result == models.pick_default_model(8.0)
@@ -245,7 +245,9 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
     @mock.patch("ollama.list")
-    def test_non_interactive_auto_picks(self, mock_list, _ram, _disk, mock_pull, mock_save):
+    def test_non_interactive_auto_picks(
+        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
+    ):
         mock_list.return_value = SimpleNamespace(
             models=[self._make_model("nomic-embed-text:latest")]
         )
@@ -259,7 +261,9 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
     @mock.patch("ollama.list")
-    def test_non_interactive_low_ram(self, mock_list, _ram, _disk, mock_pull, _save):
+    def test_non_interactive_low_ram(
+        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+    ):
         mock_list.return_value = SimpleNamespace(models=[])
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
@@ -270,7 +274,9 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
     @mock.patch("ollama.list")
-    def test_interactive_uses_picker(self, mock_list, _ram, _disk, mock_pull, _save):
+    def test_interactive_uses_picker(
+        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+    ):
         mock_list.return_value = SimpleNamespace(models=[])
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
@@ -282,7 +288,7 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
     @mock.patch("ollama.list")
-    def test_insufficient_disk_raises(self, mock_list, _ram, _disk):
+    def test_insufficient_disk_raises(self, mock_list, mock_vram_estimate, mock_disk_estimate):
         mock_list.return_value = SimpleNamespace(models=[])
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),

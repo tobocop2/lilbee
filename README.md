@@ -14,7 +14,7 @@
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
 
-> Chat with your documents locally using Ollama — or plug into AI agents as a retrieval backend via MCP. Indexes PDFs (including scanned via vision OCR), Office docs, spreadsheets, images, and code with a git-like per-project model. Powered by [Kreuzberg] for text extraction, [Ollama] for embeddings and chat, and [LanceDB] for vector storage.
+> Interactively or programmatically chat with a database of documents using strictly your own hardware, completely offline. Augment any AI agent via MCP or shell — take a free model or even a frontier model and make it leagues better. Talks to an incredible amount of data formats ([see supported formats](#supported-formats)). Integrate document search into your favorite GUI using the built-in REST API — no need for a separate web app when you already have a preferred GUI ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)).
 
 ---
 
@@ -32,15 +32,11 @@
 
 ## Why lilbee
 
-lilbee indexes documents and code into a searchable local knowledge base. Use it standalone — search, ask questions, chat — or plug it into AI coding agents as a retrieval backend via MCP.
-
-Most tools like this only handle code. lilbee handles PDFs, Word docs, spreadsheets, images (OCR) — and code too, with AST-aware chunking.
-
-- **Standalone knowledge base** — add documents, search, ask questions, or chat interactively with model switching and slash commands
-- **AI agent backend** — MCP server and JSON CLI so coding agents can search your indexed docs as context
+- **Your hardware, your data** — chat with your documents completely offline. No cloud, no telemetry, no API keys required
+- **Make any model better** — augment any AI agent via MCP or shell with hybrid RAG search. Take a free model or even a frontier model and make it leagues better at your data
+- **Talks to everything** — PDFs, Office docs, spreadsheets, images (OCR), ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
+- **Bring your own GUI** — built-in REST API means you can integrate document search into whatever tool you already use. No extra app needed ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee))
 - **Per-project databases** — `lilbee init` creates a `.lilbee/` directory (like `.git/`) so each project gets its own isolated index
-- **Documents and code alike** — PDFs, Office docs, spreadsheets, images, ebooks, and [150+ code languages](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter
-- **Open-source** — runs with [Ollama] and LanceDB, no cloud APIs or Docker required
 
 Add files (`lilbee add`), then search or ask questions. Once indexed, `search` works without Ollama — agents use their own LLM to reason over the retrieved chunks.
 
@@ -175,11 +171,11 @@ lilbee can serve as a local retrieval backend for AI coding agents via MCP or JS
 
 ## HTTP Server
 
-lilbee includes a REST API server for programmatic access:
+lilbee includes a REST API server so you can integrate document search into any GUI or tool:
 
 ```bash
-lilbee serve                          # start on localhost:7433
-lilbee serve --host 0.0.0.0 --port 8080
+lilbee serve                          # start on a random port (written to <data_dir>/server.port)
+lilbee serve --port 8080              # or pick a fixed port
 ```
 
 Endpoints include `/api/search`, `/api/ask`, `/api/chat` (with streaming SSE variants), `/api/sync`, `/api/add`, and `/api/models`. When the server is running, interactive API docs are available at `/schema/redoc`. See the [API reference](https://tobocop2.github.io/lilbee/api/) for the full OpenAPI schema.

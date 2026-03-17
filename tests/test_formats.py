@@ -75,7 +75,9 @@ def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncDocx:
-    async def test_docx_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_docx_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "sample.docx").write_bytes(b"fake docx content")
         from lilbee.ingest import sync
 
@@ -92,7 +94,9 @@ class TestSyncDocx:
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncXlsx:
-    async def test_xlsx_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_xlsx_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "data.xlsx").write_bytes(b"fake xlsx content")
         from lilbee.ingest import sync
 
@@ -109,7 +113,9 @@ class TestSyncXlsx:
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncPptx:
-    async def test_pptx_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_pptx_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "slides.pptx").write_bytes(b"fake pptx content")
         from lilbee.ingest import sync
 
@@ -131,7 +137,9 @@ class TestSyncPptx:
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncEpub:
-    async def test_epub_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_epub_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "book.epub").write_bytes(b"fake epub content")
         from lilbee.ingest import sync
 
@@ -153,7 +161,9 @@ class TestSyncEpub:
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncImage:
-    async def test_image_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_image_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "scan.png").write_bytes(b"fake png content")
         from lilbee.ingest import sync
 
@@ -214,7 +224,9 @@ _CODE_FIXTURES: dict[str, tuple[str, str]] = {
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncCode:
     @pytest.mark.parametrize("filename,fixture", list(_CODE_FIXTURES.items()))
-    async def test_code_file_syncs(self, _eb, _e, _vm, isolated_env, filename, fixture):
+    async def test_code_file_syncs(
+        self, mock_embed_batch, mock_embed, mock_validate_model, isolated_env, filename, fixture
+    ):
         _ext, content = fixture
         (isolated_env / filename).write_text(content)
 
@@ -238,14 +250,18 @@ class TestSyncCode:
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncCsvTsv:
-    async def test_csv_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_csv_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "people.csv").write_text("name,city\nAlice,Montreal\n")
         from lilbee.ingest import sync
 
         result = await sync()
         assert "people.csv" in result.added
 
-    async def test_tsv_discovered_and_ingested(self, _kf, _eb, _e, _vm, isolated_env):
+    async def test_tsv_discovered_and_ingested(
+        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+    ):
         (isolated_env / "products.tsv").write_text("id\tproduct\n1\tWidget\n")
         from lilbee.ingest import sync
 

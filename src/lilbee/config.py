@@ -56,7 +56,7 @@ class Config(BaseModel):
     vision_model: str = ""
     vision_timeout: float = Field(default=120.0, ge=0.0)
     server_host: str = "127.0.0.1"
-    server_port: int = Field(default=7433, ge=1, le=65535)
+    server_port: int = Field(default=0, ge=0, le=65535)
     json_mode: bool = False
     temperature: float | None = Field(default=None, ge=0.0)
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -119,7 +119,7 @@ class Config(BaseModel):
             vision_model=vision_model,
             vision_timeout=vision_timeout,
             server_host=env("SERVER_HOST", "127.0.0.1"),
-            server_port=env_int("SERVER_PORT", 7433),
+            server_port=env_int("SERVER_PORT", 0),
             temperature=env_float("TEMPERATURE"),
             top_p=env_float("TOP_P"),
             top_k_sampling=env_int_optional("TOP_K_SAMPLING"),
