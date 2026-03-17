@@ -1,14 +1,52 @@
 """LanceDB vector store operations."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import lancedb
 import pyarrow as pa
+from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, cfg
+from lilbee.lock import write_lock
 
 log = logging.getLogger(__name__)
+
+# How often readers re-check the manifest for new versions from other processes.
+# Zero means strong consistency (every read checks); higher values reduce disk I/O
+# on slow media (HDD) at the cost of serving slightly stale data.
+READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
+
+
+class _FtsState:
+    """Ephemeral FTS index state — resets on process start."""
+
+    ready: bool = False
+
+
+_fts = _FtsState()
+
+
+class SearchChunk(BaseModel):
+    """A search result from LanceDB.
+
+    Hybrid results have ``relevance_score`` set (higher = better).
+    Vector-only results have ``distance`` set (lower = better).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    source: str
+    content_type: str
+    page_start: int
+    page_end: int
+    line_start: int
+    line_end: int
+    chunk: str
+    chunk_index: int
+    vector: list[float] = Field(repr=False)
+    distance: float | None = Field(None, alias="_distance")
+    relevance_score: float | None = Field(None, alias="_relevance_score")
 
 
 def _chunks_schema() -> pa.Schema:
@@ -40,7 +78,9 @@ def _sources_schema() -> pa.Schema:
 
 def get_db() -> lancedb.DBConnection:
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(str(cfg.lancedb_dir))
+    return lancedb.connect(
+        str(cfg.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
+    )
 
 
 def _table_names(db: lancedb.DBConnection) -> list[str]:
@@ -66,12 +106,18 @@ def _open_table(name: str) -> lancedb.table.Table | None:
     return db.open_table(name)
 
 
-def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure."""
+def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
+    """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
     try:
         table.delete(predicate)
     except Exception:
         log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
+
+
+def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
+    """Delete rows matching predicate, logging on failure."""
+    with write_lock():
+        _safe_delete_unlocked(table, predicate)
 
 
 def _escape_sql_string(value: str) -> str:
@@ -79,31 +125,72 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+def ensure_fts_index() -> None:
+    """Create or replace the FTS index on the chunks table.
+
+    No-op when the table doesn't exist or is empty.  Sets _fts.ready
+    on success so hybrid_search can be used.
+    """
+    with write_lock():
+        table = _open_table(CHUNKS_TABLE)
+        if table is None:
+            return
+        try:
+            table.create_fts_index("chunk", replace=True)
+            _fts.ready = True
+            log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
+        except Exception:
+            log.debug("FTS index creation failed (empty table?)", exc_info=True)
+
+
 def add_chunks(records: list[dict]) -> int:
     """Add chunk records to the store. Returns count added."""
-    if not records:
-        return 0
-    for rec in records:
-        vec = rec.get("vector", [])
-        if len(vec) != cfg.embedding_dim:
-            raise ValueError(
-                f"Vector dimension mismatch: expected {cfg.embedding_dim}, got {len(vec)} "
-                f"(source={rec.get('source', '?')})"
-            )
-    db = get_db()
-    table = ensure_table(db, CHUNKS_TABLE, _chunks_schema())
-    table.add(records)
-    return len(records)
+    with write_lock():
+        _fts.ready = False
+        if not records:
+            return 0
+        for rec in records:
+            vec = rec.get("vector", [])
+            if len(vec) != cfg.embedding_dim:
+                raise ValueError(
+                    f"Vector dimension mismatch: expected {cfg.embedding_dim}, got {len(vec)} "
+                    f"(source={rec.get('source', '?')})"
+                )
+        db = get_db()
+        table = ensure_table(db, CHUNKS_TABLE, _chunks_schema())
+        table.add(records)
+        return len(records)
+
+
+def _hybrid_search(
+    table: lancedb.table.Table,
+    query_text: str,
+    query_vector: list[float],
+    top_k: int,
+) -> list[SearchChunk]:
+    """Run hybrid (vector + FTS) search with RRF reranking."""
+    from lancedb.rerankers import RRFReranker
+
+    rows = (
+        table.search(query_type="hybrid")
+        .vector(query_vector)
+        .text(query_text)
+        .rerank(RRFReranker())
+        .limit(top_k)
+        .to_list()
+    )
+    return [SearchChunk(**r) for r in rows]
 
 
 def search(
     query_vector: list[float],
     top_k: int | None = None,
     max_distance: float | None = None,
-) -> list[dict]:
-    """Search for similar chunks by vector similarity.
+    query_text: str | None = None,
+) -> list[SearchChunk]:
+    """Search for similar chunks — hybrid when FTS index is available, else vector-only.
 
-    Results with distance > max_distance are filtered out.
+    Results with distance > max_distance are filtered out (vector-only path).
     Pass max_distance=0 to disable filtering.
     """
     if top_k is None:
@@ -113,27 +200,39 @@ def search(
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    results: list[dict] = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+
+    if query_text and not _fts.ready:
+        ensure_fts_index()
+
+    if query_text and _fts.ready:
+        try:
+            return _hybrid_search(table, query_text, query_vector, top_k)
+        except Exception:
+            log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
+
+    rows = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+    results = [SearchChunk(**r) for r in rows]
     if max_distance > 0:
-        results = [r for r in results if r.get("_distance", float("inf")) <= max_distance]
+        results = [r for r in results if (r.distance or 0) <= max_distance]
     return results
 
 
-def get_chunks_by_source(source: str) -> list[dict]:
+def get_chunks_by_source(source: str) -> list[SearchChunk]:
     """Return all chunks for a given source file."""
     table = _open_table(CHUNKS_TABLE)
     if table is None:
         return []
     escaped = _escape_sql_string(source)
-    rows: list[dict] = table.search().where(f"source = '{escaped}'").to_list()
-    return rows
+    rows = table.search().where(f"source = '{escaped}'").to_list()
+    return [SearchChunk(**r) for r in rows]
 
 
 def delete_by_source(source: str) -> None:
     """Delete all chunks from a given source file."""
-    table = _open_table(CHUNKS_TABLE)
-    if table is not None:
-        safe_delete(table, f"source = '{_escape_sql_string(source)}'")
+    with write_lock():
+        table = _open_table(CHUNKS_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"source = '{_escape_sql_string(source)}'")
 
 
 def get_sources() -> list[dict]:
@@ -147,30 +246,34 @@ def get_sources() -> list[dict]:
 
 def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
     """Add or update a source file tracking record."""
-    db = get_db()
-    table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-    safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
-    table.add(
-        [
-            {
-                "filename": filename,
-                "file_hash": file_hash,
-                "ingested_at": datetime.now(UTC).isoformat(),
-                "chunk_count": chunk_count,
-            }
-        ]
-    )
+    with write_lock():
+        db = get_db()
+        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
+        _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+        table.add(
+            [
+                {
+                    "filename": filename,
+                    "file_hash": file_hash,
+                    "ingested_at": datetime.now(UTC).isoformat(),
+                    "chunk_count": chunk_count,
+                }
+            ]
+        )
 
 
 def delete_source(filename: str) -> None:
     """Remove a source file tracking record."""
-    table = _open_table(SOURCES_TABLE)
-    if table is not None:
-        safe_delete(table, f"filename = '{_escape_sql_string(filename)}'")
+    with write_lock():
+        table = _open_table(SOURCES_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
 
 
 def drop_all() -> None:
     """Drop all tables — used by rebuild."""
-    db = get_db()
-    for name in _table_names(db):
-        db.drop_table(name)
+    with write_lock():
+        _fts.ready = False
+        db = get_db()
+        for name in _table_names(db):
+            db.drop_table(name)

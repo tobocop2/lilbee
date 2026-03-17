@@ -80,7 +80,7 @@ class TestStoreRoundTrip:
 
         results = search(embed("how much oil does it need?"), top_k=1)
         assert len(results) == 1
-        assert "5 quarts" in results[0]["chunk"]
+        assert "5 quarts" in results[0].chunk
 
     def test_delete_by_source_removes_chunks(self):
         from lilbee.embedder import embed
@@ -105,7 +105,7 @@ class TestStoreRoundTrip:
 
         delete_by_source("delete_me.pdf")
         for r in search(embed("tire pressure"), top_k=5):
-            assert r["source"] != "delete_me.pdf"
+            assert r.source != "delete_me.pdf"
 
 
 class TestStoreOperations:
@@ -134,7 +134,7 @@ class TestStoreOperations:
         assert count == 1
         results = search(vec, top_k=1)
         assert len(results) == 1
-        assert "5 quarts" in results[0]["chunk"]
+        assert "5 quarts" in results[0].chunk
 
     def test_add_chunks_empty_returns_zero(self):
         from lilbee.store import add_chunks
@@ -195,7 +195,7 @@ class TestStoreOperations:
         )
         delete_by_source("remove_me.txt")
         results = search(vec, top_k=5)
-        assert all(r["source"] != "remove_me.txt" for r in results)
+        assert all(r.source != "remove_me.txt" for r in results)
 
     def test_delete_by_source_with_single_quote(self):
         from lilbee.store import add_chunks, delete_by_source, search
@@ -218,7 +218,7 @@ class TestStoreOperations:
         )
         delete_by_source("it's_a_file.txt")
         results = search(vec, top_k=5)
-        assert all(r["source"] != "it's_a_file.txt" for r in results)
+        assert all(r.source != "it's_a_file.txt" for r in results)
 
     def test_delete_by_source_no_table(self):
         from lilbee.store import delete_by_source
@@ -297,7 +297,7 @@ class TestGetChunksBySource:
         )
         chunks = get_chunks_by_source("doc.txt")
         assert len(chunks) == 1
-        assert chunks[0]["chunk"] == "Hello world"
+        assert chunks[0].chunk == "Hello world"
 
     def test_empty_store_returns_empty(self):
         from lilbee.store import get_chunks_by_source
@@ -336,7 +336,7 @@ class TestGetChunksBySource:
         )
         chunks = get_chunks_by_source("a.txt")
         assert len(chunks) == 1
-        assert chunks[0]["source"] == "a.txt"
+        assert chunks[0].source == "a.txt"
 
 
 class TestSourceTracking:

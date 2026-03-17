@@ -86,7 +86,7 @@ def get_system_ram_gb() -> float:
             pages = os.sysconf("SC_PHYS_PAGES")
             page_size = os.sysconf("SC_PAGE_SIZE")
             return (pages * page_size) / (1024**3)
-    except Exception:
+    except (OSError, AttributeError, ValueError):
         log.debug("RAM detection failed, falling back to 8.0 GB")
         return 8.0
 
@@ -116,9 +116,11 @@ def _model_download_size_gb(model: str) -> float:
     return catalog_sizes.get(model, fallback)
 
 
-def display_model_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
-    """Show a Rich table of catalog models on stderr and return the recommended model."""
-    console = Console(stderr=True)
+def display_model_picker(
+    ram_gb: float, free_disk_gb: float, *, console: Console | None = None
+) -> ModelInfo:
+    """Show a Rich table of catalog models and return the recommended model."""
+    console = console or Console(stderr=True)
     recommended = pick_default_model(ram_gb)
 
     table = Table(title="Available Models", show_lines=False)
@@ -161,9 +163,11 @@ def pick_default_vision_model() -> ModelInfo:
     return VISION_CATALOG[0]
 
 
-def display_vision_picker(ram_gb: float, free_disk_gb: float) -> ModelInfo:
-    """Show a Rich table of vision models on stderr and return the recommended model."""
-    console = Console(stderr=True)
+def display_vision_picker(
+    ram_gb: float, free_disk_gb: float, *, console: Console | None = None
+) -> ModelInfo:
+    """Show a Rich table of vision models and return the recommended model."""
+    console = console or Console(stderr=True)
     recommended = pick_default_vision_model()
 
     table = Table(title="Vision OCR Models", show_lines=False)
@@ -228,7 +232,9 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
 
 
-def validate_disk_and_pull(model_info: ModelInfo, free_gb: float) -> None:
+def validate_disk_and_pull(
+    model_info: ModelInfo, free_gb: float, *, console: Console | None = None
+) -> None:
     """Check disk space, pull the model, and persist the choice."""
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
@@ -238,13 +244,15 @@ def validate_disk_and_pull(model_info: ModelInfo, free_gb: float) -> None:
             f"Free up space or manually pull a smaller model with 'ollama pull <model>'."
         )
 
-    pull_with_progress(model_info.name)
+    pull_with_progress(model_info.name, console=console)
     cfg.chat_model = model_info.name
     settings.set_value(cfg.data_root, "chat_model", model_info.name)
 
 
-def pull_with_progress(model: str) -> None:
-    """Pull an Ollama model, showing a Rich progress bar on stderr."""
+def pull_with_progress(model: str, *, console: Console | None = None) -> None:
+    """Pull an Ollama model, showing a Rich progress bar."""
+    if console is None:
+        console = Console(file=sys.__stderr__ or sys.stderr)
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -252,6 +260,7 @@ def pull_with_progress(model: str) -> None:
         DownloadColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
         transient=True,
+        console=console,
     ) as progress:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None)
@@ -260,7 +269,7 @@ def pull_with_progress(model: str) -> None:
             completed = event.completed or 0
             if total > 0:
                 progress.update(ptask, total=total, completed=completed)
-    sys.stderr.write(f"Model '{model}' ready.\n")
+    console.print(f"Model '{model}' ready.")
 
 
 def ensure_chat_model() -> None:

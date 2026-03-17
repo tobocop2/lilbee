@@ -1,0 +1,293 @@
+"""Tests for the Litestar HTTP adapter."""
+
+from unittest import mock
+from unittest.mock import AsyncMock
+
+import pytest
+from litestar.testing import TestClient
+
+from lilbee.config import cfg
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(tmp_path):
+    """Redirect config paths for all adapter tests."""
+    snapshot = cfg.model_copy()
+    cfg.documents_dir = tmp_path / "documents"
+    cfg.documents_dir.mkdir()
+    cfg.data_dir = tmp_path / "data"
+    cfg.data_root = tmp_path
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    yield tmp_path
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture()
+def client():
+    from lilbee.server.litestar_app import create_app
+
+    app = create_app()
+    return TestClient(app)
+
+
+async def mock_async_gen(*events):
+    for e in events:
+        yield e
+
+
+class TestHealthRoute:
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_returns_json(self, _mock, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["version"] == "1.0.0"
+
+
+class TestStatusRoute:
+    @mock.patch(
+        "lilbee.server.handlers.status",
+        new_callable=AsyncMock,
+        return_value={"config": {}, "sources": [], "total_chunks": 0},
+    )
+    def test_returns_json(self, _mock, client):
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["total_chunks"] == 0
+
+
+class TestSearchRoute:
+    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    def test_empty_results(self, mock_search, client):
+        resp = client.get("/api/search", params={"q": "hello", "top_k": "3"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+        mock_search.assert_awaited_once_with("hello", top_k=3)
+
+    @mock.patch(
+        "lilbee.server.handlers.search",
+        new_callable=AsyncMock,
+        return_value=[{"source": "a.md", "chunks": []}],
+    )
+    def test_with_results(self, _mock, client):
+        resp = client.get("/api/search", params={"q": "test"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    def test_default_top_k(self, mock_search, client):
+        client.get("/api/search", params={"q": "x"})
+        mock_search.assert_awaited_once_with("x", top_k=5)
+
+
+class TestAskRoute:
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "42", "sources": []},
+    )
+    def test_returns_answer(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "meaning?"})
+        assert resp.status_code == 201
+        assert resp.json()["answer"] == "42"
+        mock_ask.assert_awaited_once_with(question="meaning?", top_k=0, options=None)
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "yes", "sources": []},
+    )
+    def test_forwards_top_k(self, mock_ask, client):
+        resp = client.post("/api/ask", json={"question": "q", "top_k": 10})
+        assert resp.status_code == 201
+        mock_ask.assert_awaited_once_with(question="q", top_k=10, options=None)
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={
+            "answer": "ok",
+            "sources": [
+                {
+                    "source": "doc.pdf",
+                    "content_type": "pdf",
+                    "chunk": "text",
+                    "distance": 0.1,
+                    "page_start": 1,
+                    "page_end": 1,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk_index": 0,
+                }
+            ],
+        },
+    )
+    def test_returns_sources_as_typed_models(self, _mock, client):
+        resp = client.post("/api/ask", json={"question": "q"})
+        assert resp.status_code == 201
+        sources = resp.json()["sources"]
+        assert len(sources) == 1
+        assert sources[0]["source"] == "doc.pdf"
+        assert sources[0]["distance"] == 0.1
+
+
+class TestAskStreamRoute:
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_returns_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: token\ndata: {}\n\n")
+        resp = client.post("/api/ask/stream", json={"question": "hi"})
+        assert resp.status_code == 201
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert b"event: token" in resp.content
+
+
+class TestChatRoute:
+    @mock.patch(
+        "lilbee.server.handlers.chat",
+        new_callable=AsyncMock,
+        return_value={"answer": "reply", "sources": []},
+    )
+    def test_forwards_history(self, mock_chat, client):
+        history = [{"role": "user", "content": "hi"}]
+        resp = client.post("/api/chat", json={"question": "q", "history": history})
+        assert resp.status_code == 201
+        mock_chat.assert_awaited_once_with(question="q", history=history, top_k=0, options=None)
+
+    @mock.patch(
+        "lilbee.server.handlers.chat",
+        new_callable=AsyncMock,
+        return_value={"answer": "a", "sources": []},
+    )
+    def test_default_empty_history(self, mock_chat, client):
+        client.post("/api/chat", json={"question": "q"})
+        mock_chat.assert_awaited_once_with(question="q", history=[], top_k=0, options=None)
+
+
+class TestChatStreamRoute:
+    @mock.patch("lilbee.server.handlers.chat_stream")
+    def test_returns_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post(
+            "/api/chat/stream",
+            json={"question": "hi", "history": []},
+        )
+        assert resp.status_code == 201
+        assert b"event: done" in resp.content
+
+
+class TestSyncRoute:
+    @mock.patch("lilbee.server.handlers.sync_stream")
+    def test_returns_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/sync")
+        assert resp.status_code == 201
+        assert b"event: done" in resp.content
+        mock_stream.assert_called_once_with(force_vision=False)
+
+    @mock.patch("lilbee.server.handlers.sync_stream")
+    def test_force_vision(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        client.post("/api/sync", json={"force_vision": True})
+        mock_stream.assert_called_once_with(force_vision=True)
+
+
+class TestModelsListRoute:
+    @mock.patch(
+        "lilbee.server.handlers.list_models",
+        new_callable=AsyncMock,
+        return_value={"chat": {}, "vision": {}},
+    )
+    def test_returns_json(self, _mock, client):
+        resp = client.get("/api/models")
+        assert resp.status_code == 200
+        assert "chat" in resp.json()
+
+
+class TestModelsSetChatRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_chat_model",
+        new_callable=AsyncMock,
+        return_value={"model": "llama3:8b"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/chat", json={"model": "llama3:8b"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "llama3:8b"
+
+
+class TestModelsSetVisionRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_vision_model",
+        new_callable=AsyncMock,
+        return_value={"model": "llava:13b"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/vision", json={"model": "llava:13b"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "llava:13b"
+
+
+class TestOpenAPISchema:
+    def test_schema_endpoint_returns_json(self, client):
+        resp = client.get("/schema/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.json()
+        assert schema["info"]["title"] == "lilbee"
+        assert "/api/health" in schema["paths"]
+        assert "/api/ask" in schema["paths"]
+
+    def test_redoc_endpoint(self, client):
+        resp = client.get("/schema/redoc")
+        assert resp.status_code == 200
+        assert b"redoc" in resp.content.lower()
+
+    def test_swagger_endpoint(self, client):
+        resp = client.get("/schema/swagger")
+        assert resp.status_code == 200
+
+
+class TestCors:
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_obsidian_origin_allowed(self, _mock, client):
+        resp = client.options(
+            "/api/health",
+            headers={
+                "Origin": "app://obsidian.md",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.headers.get("access-control-allow-origin") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_localhost_origin_allowed(self, _mock, client):
+        resp = client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://localhost:7433",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
+
+
+class TestCreateAppReexport:
+    @mock.patch("lilbee.server.litestar_app.create_app")
+    def test_lazy_import(self, mock_create):
+        from lilbee.server import create_app
+
+        create_app()
+        mock_create.assert_called_once()

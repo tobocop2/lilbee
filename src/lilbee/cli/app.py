@@ -8,7 +8,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from lilbee.cli.helpers import auto_sync, get_version
+from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
 from lilbee.models import ensure_tag
@@ -50,6 +50,13 @@ _log_level_option = typer.Option(
     help="Set log level (DEBUG, INFO, WARNING, ERROR). Overrides LILBEE_LOG_LEVEL.",
 )
 
+temperature_option = typer.Option(None, "--temperature", "-t", help="Sampling temperature.")
+top_p_option = typer.Option(None, "--top-p", help="Top-p (nucleus) sampling threshold.")
+top_k_sampling_option = typer.Option(None, "--top-k-sampling", help="Top-k sampling count.")
+repeat_penalty_option = typer.Option(None, "--repeat-penalty", help="Repeat penalty factor.")
+num_ctx_option = typer.Option(None, "--num-ctx", help="Context window size (tokens).")
+seed_option = typer.Option(None, "--seed", help="Random seed for reproducibility.")
+
 
 def _apply_data_root(root: Path) -> None:
     """Point all cfg data paths at *root*."""
@@ -63,6 +70,12 @@ def apply_overrides(
     data_dir: Path | None = None,
     model: str | None = None,
     use_global: bool = False,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k_sampling: int | None = None,
+    repeat_penalty: float | None = None,
+    num_ctx: int | None = None,
+    seed: int | None = None,
 ) -> None:
     """Apply CLI overrides to config before any work begins.
 
@@ -85,6 +98,18 @@ def apply_overrides(
 
     if model is not None:
         cfg.chat_model = ensure_tag(model)
+    if temperature is not None:
+        cfg.temperature = temperature
+    if top_p is not None:
+        cfg.top_p = top_p
+    if top_k_sampling is not None:
+        cfg.top_k_sampling = top_k_sampling
+    if repeat_penalty is not None:
+        cfg.repeat_penalty = repeat_penalty
+    if num_ctx is not None:
+        cfg.num_ctx = num_ctx
+    if seed is not None:
+        cfg.seed = seed
 
 
 @app.callback()
@@ -124,12 +149,6 @@ def _default(
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
-        from lilbee.embedder import validate_model
-        from lilbee.models import ensure_chat_model
-
-        ensure_chat_model()
-        validate_model()
-        auto_sync(console)
         from lilbee.cli.chat import chat_loop
 
-        chat_loop(console)
+        chat_loop(console, auto_sync_bg=True)

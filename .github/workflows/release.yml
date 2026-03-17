@@ -1,0 +1,85 @@
+name: Release Executables
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make lint
+      - run: make format-check
+      - run: make typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync
+      - run: make test-ci
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+
+  build:
+    needs: [lint, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: lilbee-linux-x86_64
+          - os: macos-latest
+            asset_name: lilbee-macos-arm64
+          - os: windows-latest
+            asset_name: lilbee-windows-x86_64.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync && uv pip install pyinstaller
+
+      - name: Build executable
+        run: >
+          uv run pyinstaller
+          --onefile
+          --name ${{ matrix.asset_name }}
+          --copy-metadata lilbee
+          --collect-all lancedb
+          --collect-all tree_sitter_language_pack
+          --collect-all tiktoken_ext
+          --collect-all pypdfium2
+          src/lilbee/__main__.py
+
+      - name: Smoke test
+        run: ./dist/${{ matrix.asset_name }} --version
+        shell: bash
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset_name }}
