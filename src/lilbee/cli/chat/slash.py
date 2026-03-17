@@ -1,34 +1,21 @@
-"""Chat loop, slash-command dispatch, and tab completion."""
+"""Slash command handlers and dispatch for chat mode."""
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
 from lilbee import settings
-from lilbee.cli.helpers import (
-    add_paths,
-    get_version,
-    perform_reset,
-    render_status,
-    stream_response,
-)
+from lilbee.cli import theme
+from lilbee.cli.chat.complete import list_ollama_models
+from lilbee.cli.chat.sync import SyncStatus
+from lilbee.cli.helpers import add_paths, get_version, perform_reset, render_status
 from lilbee.config import cfg
-
-if TYPE_CHECKING:
-    from lilbee.query import ChatMessage
-
-_ADD_PREFIX = "/add "
-_MODEL_PREFIX = "/model "
-_VISION_PREFIX = "/vision "
-_SET_PREFIX = "/set "
 
 
 @dataclass(frozen=True)
@@ -83,7 +70,7 @@ def _pick_from_catalog(
 
     ram_gb = get_system_ram_gb()
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
-    recommended = display_fn(ram_gb, free_disk_gb)
+    recommended = display_fn(ram_gb, free_disk_gb, console=con)
     default_idx = list(catalog).index(recommended) + 1
     installed = set(list_ollama_models())
 
@@ -98,22 +85,22 @@ def _pick_from_catalog(
     try:
         choice = int(raw)
     except ValueError:
-        con.print(f"[red]Enter a number 1-{len(catalog)}.[/red]")
+        con.print(f"[{theme.ERROR}]Enter a number 1-{len(catalog)}.[/{theme.ERROR}]")
         return
 
     if not (1 <= choice <= len(catalog)):
-        con.print(f"[red]Enter a number 1-{len(catalog)}.[/red]")
+        con.print(f"[{theme.ERROR}]Enter a number 1-{len(catalog)}.[/{theme.ERROR}]")
         return
 
     model_info = catalog[choice - 1]
     if model_info.name not in installed:
         if config_attr == "chat_model":
-            validate_disk_and_pull(model_info, free_disk_gb)
+            validate_disk_and_pull(model_info, free_disk_gb, console=con)
         else:
-            pull_with_progress(model_info.name)
+            pull_with_progress(model_info.name, console=con)
     setattr(cfg, config_attr, model_info.name)
     settings.set_value(cfg.data_root, setting_key, model_info.name)
-    con.print(f"{label} [bold]{model_info.name}[/bold] (saved)")
+    con.print(f"{label} [{theme.LABEL}]{model_info.name}[/{theme.LABEL}] (saved)")
 
 
 def _set_named_model(
@@ -126,47 +113,46 @@ def _set_named_model(
     exclude_vision: bool = False,
 ) -> None:
     """Validate and set a named model directly (no picker)."""
-    from lilbee.models import ensure_tag
+    from lilbee.models import ensure_tag, pull_with_progress
 
     name = ensure_tag(name)
     available = list_ollama_models(exclude_vision=exclude_vision)
     if available and name not in available:
-        con.print(f"[red]Unknown model:[/red] {name}")
-        con.print(f"Available: {', '.join(sorted(available))}")
-        return
+        try:
+            answer = con.input(
+                f"[{theme.LABEL}]{name}[/{theme.LABEL}] not installed. Download? (y/n) "
+            )
+        except (EOFError, KeyboardInterrupt):
+            return
+        if answer.strip().lower() not in ("y", "yes"):
+            return
+        pull_with_progress(name, console=con)
     setattr(cfg, config_attr, name)
     settings.set_value(cfg.data_root, setting_key, name)
-    con.print(f"{label} [bold]{name}[/bold] (saved)")
+    con.print(f"{label} [{theme.LABEL}]{name}[/{theme.LABEL}] (saved)")
 
 
 def handle_slash_status(args: str, con: Console) -> None:
     render_status(con)
 
 
-def handle_slash_add(args: str, con: Console) -> None:
+def handle_slash_add(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
     raw = args.strip()
-    if raw:
-        p = Path(raw).expanduser()
-        if not p.exists():
-            con.print(f"[red]Path not found:[/red] {raw}")
-            return
-        add_paths([p], con, force=True)
-    else:
+    if not raw:
         try:
             from prompt_toolkit import prompt as pt_prompt
             from prompt_toolkit.completion import PathCompleter
 
-            raw = pt_prompt("path: ", completer=PathCompleter(expanduser=True))
+            raw = pt_prompt("path: ", completer=PathCompleter(expanduser=True)).strip()
         except (ImportError, EOFError, KeyboardInterrupt):
             return
-        raw = raw.strip()
-        if not raw:
-            return
-        p = Path(raw).expanduser()
-        if not p.exists():
-            con.print(f"[red]Path not found:[/red] {raw}")
-            return
-        add_paths([p], con, force=True)
+    if not raw:
+        return
+    p = Path(raw).expanduser()
+    if not p.exists():
+        print(f"Path not found: {raw}")
+        return
+    add_paths([p], con, force=True, background=True, chat_mode=True, sync_status=sync_status)
 
 
 def handle_slash_quit(args: str, con: Console) -> None:
@@ -181,7 +167,7 @@ def handle_slash_model(args: str, con: Console) -> None:
         )
         return
 
-    con.print(f"[bold]Current model:[/bold] {cfg.chat_model}\n")
+    con.print(f"[{theme.LABEL}]Current model:[/{theme.LABEL}] {cfg.chat_model}\n")
     from lilbee.models import MODEL_CATALOG, display_model_picker
 
     _pick_from_catalog(
@@ -200,7 +186,7 @@ def handle_slash_vision(args: str, con: Console) -> None:
     if name == "off":
         cfg.vision_model = ""
         settings.set_value(cfg.data_root, "vision_model", "")
-        con.print("Vision OCR [bold]disabled[/bold] (saved)")
+        con.print(f"Vision OCR [{theme.LABEL}]disabled[/{theme.LABEL}] (saved)")
         return
 
     if name:
@@ -209,9 +195,9 @@ def handle_slash_vision(args: str, con: Console) -> None:
 
     # bare /vision — show status then picker
     if cfg.vision_model:
-        con.print(f"[bold]Vision OCR:[/bold] {cfg.vision_model}\n")
+        con.print(f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {cfg.vision_model}\n")
     else:
-        con.print("[bold]Vision OCR:[/bold] disabled\n")
+        con.print(f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] disabled\n")
 
     from lilbee.models import VISION_CATALOG, display_vision_picker
 
@@ -226,15 +212,16 @@ def handle_slash_vision(args: str, con: Console) -> None:
 
 
 def handle_slash_version(args: str, con: Console) -> None:
-    con.print(f"lilbee [bold]{get_version()}[/bold]")
+    con.print(f"lilbee [{theme.LABEL}]{get_version()}[/{theme.LABEL}]")
 
 
-def handle_slash_reset(args: str, con: Console) -> None:
+def handle_slash_reset(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
     con.print(
-        "[bold red]This will delete ALL documents and data.[/bold red]\nType 'yes' to confirm:"
+        f"[{theme.ERROR_BOLD}]This will delete ALL documents and data.[/{theme.ERROR_BOLD}]"
+        "\nType 'yes' to confirm:"
     )
     try:
-        answer = con.input("[bold red]> [/bold red]")
+        answer = con.input(f"[{theme.ERROR_BOLD}]> [/{theme.ERROR_BOLD}]")
     except (EOFError, KeyboardInterrupt):
         con.print("Aborted.")
         return
@@ -242,6 +229,8 @@ def handle_slash_reset(args: str, con: Console) -> None:
         con.print("Aborted.")
         return
     result = perform_reset()
+    if sync_status is not None:
+        sync_status.clear()
     con.print(
         f"Reset complete: {result.deleted_docs} document(s), "
         f"{result.deleted_data} data item(s) deleted."
@@ -271,10 +260,10 @@ def _format_setting_value(value: object, model_default: str | None = None) -> st
     """Format a setting value for display."""
     if value is None or value == "":
         if model_default is not None:
-            return f"[dim](model default: {model_default})[/dim]"
-        return "[dim](not set)[/dim]"
+            return f"[{theme.MUTED}](model default: {model_default})[/{theme.MUTED}]"
+        return f"[{theme.MUTED}](not set)[/{theme.MUTED}]"
     if isinstance(value, str) and len(value) > 60:
-        return f"[dim]({len(value)} chars)[/dim]"
+        return f"[{theme.MUTED}]({len(value)} chars)[/{theme.MUTED}]"
     return str(value)
 
 
@@ -284,7 +273,7 @@ def handle_slash_settings(args: str, con: Console) -> None:
     for name, defn in _SETTINGS_MAP.items():
         value = getattr(cfg, defn.cfg_attr)
         table.add_row(
-            f"[bold]{name}[/bold]",
+            f"[{theme.LABEL}]{name}[/{theme.LABEL}]",
             _format_setting_value(value, defaults.get(name)),
         )
     con.print(table)
@@ -299,7 +288,7 @@ def handle_slash_set(args: str, con: Console) -> None:
     name = parts[0]
     defn = _SETTINGS_MAP.get(name)
     if defn is None:
-        con.print(f"[red]Unknown setting:[/red] {name}")
+        con.print(f"[{theme.ERROR}]Unknown setting:[/{theme.ERROR}] {name}")
         con.print(f"Available: {', '.join(_SETTINGS_MAP)}")
         return
 
@@ -312,7 +301,7 @@ def handle_slash_set(args: str, con: Console) -> None:
 
     if raw_value.lower() in ("off", "none", "default"):
         if not defn.nullable:
-            con.print(f"[red]{name} cannot be cleared[/red]")
+            con.print(f"[{theme.ERROR}]{name} cannot be cleared[/{theme.ERROR}]")
             return
         setattr(cfg, defn.cfg_attr, "" if defn.type is str else None)
         settings.delete_value(cfg.data_root, name)
@@ -322,14 +311,14 @@ def handle_slash_set(args: str, con: Console) -> None:
     try:
         parsed = defn.type(raw_value)
     except (ValueError, TypeError):
-        con.print(f"[red]Invalid {defn.type.__name__}:[/red] {raw_value}")
+        con.print(f"[{theme.ERROR}]Invalid {defn.type.__name__}:[/{theme.ERROR}] {raw_value}")
         return
 
     try:
         setattr(cfg, defn.cfg_attr, parsed)
     except ValidationError as exc:
         msg = exc.errors()[0]["msg"]
-        con.print(f"[red]{name}: {msg}[/red]")
+        con.print(f"[{theme.ERROR}]{name}: {msg}[/{theme.ERROR}]")
         return
 
     settings.set_value(cfg.data_root, name, str(parsed))
@@ -337,7 +326,7 @@ def handle_slash_set(args: str, con: Console) -> None:
 
 
 def handle_slash_help(args: str, con: Console) -> None:
-    con.print("[bold]Slash commands:[/bold]")
+    con.print(f"[{theme.LABEL}]Slash commands:[/{theme.LABEL}]")
     con.print("  /status  — show indexed documents and config")
     con.print("  /add [path]  — add a file or directory (tab-completes without args)")
     con.print("  /model [name]  — show or switch chat model")
@@ -364,7 +353,7 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
 }
 
 
-def dispatch_slash(raw_input: str, con: Console) -> bool:
+def dispatch_slash(raw_input: str, con: Console, *, sync_status: SyncStatus | None = None) -> bool:
     """Try to dispatch *raw_input* as a ``/command``.  Returns True if handled."""
     stripped = raw_input.strip()
     if not stripped.startswith("/"):
@@ -374,102 +363,12 @@ def dispatch_slash(raw_input: str, con: Console) -> bool:
     args = parts[1] if len(parts) > 1 else ""
     handler = _SLASH_COMMANDS.get(cmd)
     if handler is None:
-        con.print(f"[red]Unknown command:[/red] /{cmd}  — try /help")
+        con.print(f"[{theme.ERROR}]Unknown command:[/{theme.ERROR}] /{cmd}  — try /help")
         return True
-    handler(args, con)
+    if cmd == "add":
+        handle_slash_add(args, con, sync_status=sync_status)
+    elif cmd == "reset":
+        handle_slash_reset(args, con, sync_status=sync_status)
+    else:
+        handler(args, con)
     return True
-
-
-def list_ollama_models(*, exclude_vision: bool = False) -> list[str]:
-    """Return installed Ollama model names with explicit tags, excluding embedding models.
-
-    When *exclude_vision* is True, also filters out known vision catalog models.
-    """
-    try:
-        import ollama
-
-        embed_base = cfg.embedding_model.split(":")[0]
-        models = [
-            m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
-        ]
-        if exclude_vision:
-            from lilbee.models import VISION_CATALOG
-
-            vision_names = {m.name for m in VISION_CATALOG}
-            models = [m for m in models if m not in vision_names]
-        return models
-    except (ConnectionError, OSError):
-        return []
-
-
-def make_completer():  # type: ignore[no-untyped-def]
-    """Build a completer class that inherits from prompt_toolkit.completion.Completer."""
-    from prompt_toolkit.completion import Completer, Completion, PathCompleter
-    from prompt_toolkit.document import Document
-
-    class LilbeeCompleter(Completer):
-        def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def,override]
-            text = document.text_before_cursor
-            if text.startswith(_ADD_PREFIX):
-                sub_text = text[len(_ADD_PREFIX) :]
-                sub_doc = Document(sub_text, len(sub_text))
-                yield from PathCompleter(expanduser=True).get_completions(sub_doc, complete_event)
-            elif text.startswith(_MODEL_PREFIX):
-                prefix = text[len(_MODEL_PREFIX) :]
-                for name in list_ollama_models(exclude_vision=True):
-                    if name.startswith(prefix):
-                        yield Completion(name, start_position=-len(prefix))
-            elif text.startswith(_SET_PREFIX):
-                prefix = text[len(_SET_PREFIX) :]
-                for name in _SETTINGS_MAP:
-                    if name.startswith(prefix):
-                        yield Completion(name, start_position=-len(prefix))
-            elif text.startswith(_VISION_PREFIX):
-                from lilbee.models import VISION_CATALOG
-
-                prefix = text[len(_VISION_PREFIX) :]
-                if "off".startswith(prefix):
-                    yield Completion("off", start_position=-len(prefix))
-                for model in VISION_CATALOG:
-                    if model.name.startswith(prefix):
-                        yield Completion(model.name, start_position=-len(prefix))
-            elif text.startswith("/"):
-                prefix = text[1:]
-                for cmd in _SLASH_COMMANDS:
-                    if cmd.startswith(prefix):
-                        yield Completion(f"/{cmd}", start_position=-len(text))
-
-    return LilbeeCompleter()
-
-
-def chat_loop(con: Console) -> None:
-    """Interactive REPL with slash-command support."""
-    con.print("[bold]lilbee chat[/bold] — type /help for commands\n")
-    history: list[ChatMessage] = []
-
-    _prompt_fn: Callable[[], str] | None = None
-    if sys.stdin.isatty():
-        try:
-            from prompt_toolkit import PromptSession
-
-            _session: PromptSession[str] = PromptSession(completer=make_completer())
-            _prompt_fn = lambda: _session.prompt("> ")  # noqa: E731
-        except ImportError:
-            pass
-
-    while True:
-        try:
-            if _prompt_fn is not None:
-                question = _prompt_fn()
-            else:
-                question = con.input("[bold green]> [/bold green]")
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not question.strip():
-            continue
-        try:
-            if dispatch_slash(question, con):
-                continue
-        except QuitChat:
-            break
-        stream_response(question, history, con)

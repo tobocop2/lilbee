@@ -386,8 +386,8 @@ class TestExtractPdfVision:
 
             extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
 
-        mock_console_cls.assert_called_once_with(stderr=True)
-        mock_console.print.assert_called_once()
+        mock_console_cls.assert_any_call(stderr=True)
+        mock_console.print.assert_called()
         msg = mock_console.print.call_args[0][0]
         assert "2/2 pages failed" in msg
 

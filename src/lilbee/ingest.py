@@ -434,7 +434,11 @@ async def _ingest_file(
         records = await ingest_structured(path, source_name, content_type, on_progress)
     else:
         records = await ingest_document(
-            path, source_name, content_type, force_vision=force_vision, on_progress=on_progress
+            path,
+            source_name,
+            content_type,
+            force_vision=force_vision,
+            on_progress=on_progress,
         )
     return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
@@ -561,7 +565,11 @@ async def ingest_batch(
             )
             try:
                 chunk_count = await _ingest_file(
-                    path, name, content_type, force_vision=force_vision, on_progress=on_progress
+                    path,
+                    name,
+                    content_type,
+                    force_vision=force_vision,
+                    on_progress=on_progress,
                 )
                 on_progress(
                     EventType.FILE_DONE,
@@ -571,6 +579,10 @@ async def ingest_batch(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if isinstance(
+                    exc, RuntimeError
+                ) and "cannot schedule new futures after shutdown" in str(exc):
+                    raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="error", chunks=0).model_dump(),

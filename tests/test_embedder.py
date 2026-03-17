@@ -201,7 +201,7 @@ class TestValidateModel:
             with pytest.raises(ollama.ResponseError):
                 validate_model()
 
-    def test_auto_pull_shows_ready_message(self, capsys):
+    def test_auto_pull_shows_ready_message(self, capfd):
         mock_model = mock.MagicMock()
         mock_model.model = "llama3:latest"
         mock_response = mock.MagicMock()
@@ -214,7 +214,7 @@ class TestValidateModel:
             from lilbee.embedder import validate_model
 
             validate_model()
-            stderr = capsys.readouterr().err
+            stderr = capfd.readouterr().err
             assert "ready" in stderr
 
     def test_auto_pull_handles_events_without_total(self):
