@@ -1,6 +1,7 @@
 """Granular progress callback protocol for streaming pipeline events."""
 
 from collections.abc import Callable
+from contextvars import ContextVar
 from enum import StrEnum
 from typing import Any
 
@@ -19,6 +20,10 @@ class EventType(StrEnum):
 
 
 DetailedProgressCallback = Callable[[EventType, dict[str, Any]], None]
+
+# When set, vision updates the batch task's description instead of creating its own bar.
+# Value is (Progress, batch_task_id).
+shared_progress: ContextVar[tuple[Any, Any] | None] = ContextVar("shared_progress", default=None)
 
 
 def noop_callback(event_type: EventType, data: dict[str, Any]) -> None:
@@ -48,6 +53,14 @@ class BatchProgressEvent(BaseModel):
     status: str
     current: int
     total: int
+
+
+class ExtractEvent(BaseModel):
+    """Emitted per page during vision OCR extraction."""
+
+    file: str
+    page: int
+    total_pages: int
 
 
 class SyncDoneEvent(BaseModel):
