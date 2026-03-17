@@ -68,6 +68,7 @@ jobs:
           uv run pyinstaller
           --onefile
           --name ${{ matrix.asset_name }}
+          --copy-metadata lilbee
           --collect-all lancedb
           --collect-all tree_sitter_language_pack
           --collect-all tiktoken_ext
