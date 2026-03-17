@@ -44,6 +44,8 @@ jobs:
             asset_name: lilbee-linux-x86_64
           - os: macos-latest
             asset_name: lilbee-macos-arm64
+          - os: macos-13
+            asset_name: lilbee-macos-x86_64
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
 
@@ -61,7 +63,11 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync && uv pip install pyinstaller
+        run: |
+          uv sync && uv pip install pyinstaller
+          # python-multipart's `multipart/` package shadows the real `multipart.py`
+          # in frozen PyInstaller builds, causing an ImportError. Nothing uses it.
+          uv pip uninstall python-multipart
 
       - name: Build executable
         run: >
