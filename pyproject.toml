@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
@@ -13,6 +13,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
+    "Environment :: Web Environment",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -23,6 +24,7 @@ classifiers = [
     "Topic :: Text Processing :: Indexing",
     "Typing :: Typed",
 ]
+
 dependencies = [
     "ollama",
     "lancedb",
@@ -41,7 +43,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tobocop2/lilbee"
+Homepage = "https://tobocop2.github.io/lilbee/"
 Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 

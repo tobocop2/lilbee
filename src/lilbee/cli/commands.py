@@ -1,9 +1,15 @@
 """CLI command definitions registered on the app."""
 
+from __future__ import annotations
+
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    import uvicorn
 from rich.table import Table
 
 from lilbee import settings
@@ -580,10 +586,30 @@ def init() -> None:
     console.print(f"Initialized local knowledge base at {root}")
 
 
+def _port_file() -> Path:
+    return cfg.data_dir / "server.port"
+
+
+async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> None:
+    """Start uvicorn, write port file, and clean up on shutdown."""
+    port_path = _port_file()
+    await server.startup()
+    try:
+        if server.servers:
+            sock = server.servers[0].sockets[0]
+            actual_port = sock.getsockname()[1]
+            port_path.write_text(str(actual_port))
+            console.print(f"Listening on http://{host}:{actual_port}")
+        await server.main_loop()
+    finally:
+        port_path.unlink(missing_ok=True)
+        await server.shutdown()
+
+
 @app.command()
 def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
-    port: int = typer.Option(None, "--port", "-p", help="Port (default: 7433)"),
+    port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
 ) -> None:
@@ -602,11 +628,9 @@ def serve(
 
     logging.getLogger("asyncio").setLevel(logging.ERROR)
 
-    uvicorn.run(
-        create_app(),
-        host=cfg.server_host,
-        port=cfg.server_port,
-    )
+    config = uvicorn.Config(create_app(), host=cfg.server_host, port=cfg.server_port)
+    server = uvicorn.Server(config)
+    asyncio.run(_run_server(server, config, cfg.server_host))
 
 
 @app.command(name="mcp")

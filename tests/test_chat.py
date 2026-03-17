@@ -137,7 +137,7 @@ class TestGetModelDefaults:
 
 class TestSlashSettings:
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_all_settings(self, _defaults):
+    def test_shows_all_settings(self, mock_defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
         output = buf.getvalue()
@@ -145,13 +145,13 @@ class TestSlashSettings:
             assert name in output
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_current_chat_model(self, _defaults):
+    def test_shows_current_chat_model(self, mock_defaults):
         con, buf = _make_console()
         handle_slash_settings("", con)
         assert cfg.chat_model in buf.getvalue()
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
-    def test_shows_not_set_for_none_value(self, _defaults):
+    def test_shows_not_set_for_none_value(self, mock_defaults):
         cfg.temperature = None
         con, buf = _make_console()
         handle_slash_settings("", con)
@@ -161,7 +161,7 @@ class TestSlashSettings:
         "lilbee.cli.chat.slash._get_model_defaults",
         return_value={"temperature": "0.6", "top_p": "0.95"},
     )
-    def test_shows_model_defaults_for_unset_values(self, _defaults):
+    def test_shows_model_defaults_for_unset_values(self, mock_defaults):
         cfg.temperature = None
         con, buf = _make_console()
         handle_slash_settings("", con)
@@ -169,7 +169,7 @@ class TestSlashSettings:
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_settings_in_chat_loop(self, _sync, _defaults):
+    def test_settings_in_chat_loop(self, mock_sync, mock_defaults):
         result = runner.invoke(app, ["chat"], input="/settings\n/quit\n")
         assert result.exit_code == 0
         assert "chat_model" in result.output
@@ -275,7 +275,7 @@ class TestSlashSet:
         assert settings.get(cfg.data_root, "temperature") is None
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_set_in_chat_loop(self, _sync):
+    def test_set_in_chat_loop(self, mock_sync):
         result = runner.invoke(app, ["chat"], input="/set temperature 0.3\n/quit\n")
         assert result.exit_code == 0
         assert "saved" in result.output
@@ -470,6 +470,18 @@ class TestSyncToolbar:
         status = SyncStatus()
         assert sync_toolbar(status) == ""
 
+    def test_extract_event_updates_toolbar(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.EXTRACT,
+            {"file": "scan.pdf", "page": 2, "total_pages": 5},
+        )
+        assert status.text == "⟳ Vision OCR [2/5]: scan.pdf"
+
     def test_returns_empty_after_clear(self):
         from lilbee.cli.chat.loop import sync_toolbar
         from lilbee.cli.chat.sync import SyncStatus
@@ -478,3 +490,35 @@ class TestSyncToolbar:
         status.text = "something"
         status.clear()
         assert sync_toolbar(status) == ""
+
+    def test_pending_defaults_to_zero(self):
+        from lilbee.cli.chat.sync import SyncStatus
+
+        status = SyncStatus()
+        assert status.pending == 0
+
+    def test_toolbar_shows_queued_count(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        status.pending = 2
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.FILE_START,
+            {"file": "a.pdf", "current_file": 1, "total_files": 1},
+        )
+        assert "(+2 queued)" in status.text
+
+    def test_toolbar_no_queued_suffix_when_zero(self):
+        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType
+
+        status = SyncStatus()
+        status.pending = 0
+        callback = _chat_sync_callback(status)
+        callback(
+            EventType.FILE_START,
+            {"file": "a.pdf", "current_file": 1, "total_files": 1},
+        )
+        assert "queued" not in status.text

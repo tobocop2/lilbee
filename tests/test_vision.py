@@ -189,7 +189,7 @@ class TestExtractPageText:
 
     @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
     def test_warning_without_traceback(
-        self, _chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
@@ -206,7 +206,7 @@ class TestExtractPageText:
 
     @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
     def test_debug_includes_traceback(
-        self, _chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
@@ -226,7 +226,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1"), (1, b"png2")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
     def test_returns_page_tagged_tuples(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -235,7 +235,7 @@ class TestExtractPdfVision:
         assert _ext.call_count == 2
 
     @mock.patch("lilbee.vision.pdf_page_count", return_value=0)
-    def test_empty_pdf_returns_empty(self, _cnt: mock.MagicMock) -> None:
+    def test_empty_pdf_returns_empty(self, mock_page_count: mock.MagicMock) -> None:
         from lilbee.vision import extract_pdf_vision
 
         result = extract_pdf_vision(Path("test.pdf"), "test-model", quiet=True)
@@ -245,7 +245,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_whitespace_only_pages_excluded(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -259,7 +259,7 @@ class TestExtractPdfVision:
     )
     @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
     def test_mixed_pages_filters_blank(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -270,7 +270,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_passes_timeout_to_extract_page_text(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, mock_ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, mock_ext: mock.MagicMock
     ) -> None:
         from lilbee.vision import extract_pdf_vision
 
@@ -281,7 +281,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_progress_bar_shown_when_not_quiet(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         mock_progress = mock.MagicMock()
         mock_progress.add_task.return_value = 0
@@ -313,7 +313,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_no_progress_bar_when_quiet(
-        self, _cnt: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
+        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
     ) -> None:
         # Poison the rich.progress import — if quiet=True tries to import it, we'll know
         sentinel = ImportError("rich.progress should not be imported in quiet mode")
@@ -333,7 +333,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
     def test_failed_pages_counted(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
         caplog: pytest.LogCaptureFixture,
@@ -356,7 +356,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
     def test_failed_summary_printed_when_not_quiet(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
     ) -> None:
@@ -396,7 +396,7 @@ class TestExtractPdfVision:
     @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
     def test_no_failure_summary_when_all_succeed(
         self,
-        _cnt: mock.MagicMock,
+        mock_page_count: mock.MagicMock,
         _rast: mock.MagicMock,
         _ext: mock.MagicMock,
         caplog: pytest.LogCaptureFixture,
@@ -410,3 +410,100 @@ class TestExtractPdfVision:
 
         assert result == [(1, "All good.")]
         assert not any("pages failed" in r.message for r in caplog.records)
+
+
+class TestSharedTask:
+    def test_enter_returns_self_and_sets_description(self) -> None:
+        from lilbee.vision import _SharedTask
+
+        progress = mock.MagicMock()
+        st = _SharedTask(progress, batch_task=42, name="scan.pdf", total=10)
+        assert st.__enter__() is st
+        progress.update.assert_called_once_with(42, description="Vision OCR scan.pdf (0/10)")
+
+    def test_exit_is_noop(self) -> None:
+        from lilbee.vision import _SharedTask
+
+        progress = mock.MagicMock()
+        st = _SharedTask(progress, batch_task=7, name="x.pdf", total=3)
+        st.__exit__(None, None, None)
+        # exit should NOT remove any task — batch loop handles description after
+        progress.remove_task.assert_not_called()
+
+    def test_advance_updates_description(self) -> None:
+        from lilbee.vision import _SharedTask
+
+        progress = mock.MagicMock()
+        st = _SharedTask(progress, batch_task=3, name="doc.pdf", total=5)
+        st.advance(3)
+        progress.update.assert_called_with(3, description="Vision OCR doc.pdf (1/5)")
+        st.advance(3)
+        progress.update.assert_called_with(3, description="Vision OCR doc.pdf (2/5)")
+
+    def test_context_manager_full_cycle(self) -> None:
+        from lilbee.vision import _SharedTask
+
+        progress = mock.MagicMock()
+        st = _SharedTask(progress, batch_task=99, name="big.pdf", total=3)
+        with st as ctx:
+            assert ctx is st
+            ctx.advance(99)
+            ctx.advance(99)
+            ctx.advance(99)
+        # 1 from __enter__ + 3 from advance = 4 update calls
+        assert progress.update.call_count == 4
+        assert progress.update.call_args_list[-1] == mock.call(
+            99, description="Vision OCR big.pdf (3/3)"
+        )
+
+
+class TestMakeProgressShared:
+    def test_returns_shared_task_when_contextvar_set(self) -> None:
+        from lilbee.progress import shared_progress
+        from lilbee.vision import _make_progress, _SharedTask
+
+        mock_progress = mock.MagicMock()
+        batch_task = 42
+        token = shared_progress.set((mock_progress, batch_task))
+        try:
+            ctx, task_id = _make_progress("test.pdf", 5, quiet=False)
+            assert isinstance(ctx, _SharedTask)
+            assert task_id == batch_task
+        finally:
+            shared_progress.reset(token)
+
+    def test_returns_standalone_when_contextvar_unset(self) -> None:
+        from lilbee.progress import shared_progress
+        from lilbee.vision import _make_progress, _SharedTask
+
+        # Ensure contextvar is unset
+        assert shared_progress.get(None) is None
+
+        mock_progress = mock.MagicMock()
+        mock_progress.add_task.return_value = 0
+        mock_progress.__enter__ = mock.Mock(return_value=mock_progress)
+        mock_progress.__exit__ = mock.Mock(return_value=False)
+        mock_progress_cls = mock.MagicMock(return_value=mock_progress)
+
+        with mock.patch.dict(
+            "sys.modules",
+            {
+                "rich.progress": mock.MagicMock(
+                    Progress=mock_progress_cls,
+                    BarColumn=mock.MagicMock(),
+                    MofNCompleteColumn=mock.MagicMock(),
+                    TextColumn=mock.MagicMock(),
+                    TimeElapsedColumn=mock.MagicMock(),
+                ),
+            },
+        ):
+            ctx, task_id = _make_progress("test.pdf", 3, quiet=False)
+            assert not isinstance(ctx, _SharedTask)
+            assert task_id == 0
+
+    def test_quiet_returns_nullcontext(self) -> None:
+        from lilbee.vision import _make_progress, _SharedTask
+
+        ctx, task_id = _make_progress("test.pdf", 3, quiet=True)
+        assert task_id is None
+        assert not isinstance(ctx, _SharedTask)

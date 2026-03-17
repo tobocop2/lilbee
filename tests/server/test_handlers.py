@@ -67,7 +67,9 @@ def _parse_sse_events(body: bytes) -> list[tuple[str, dict]]:
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestAddEndpoint:
-    async def test_add_single_file(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_add_single_file(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """POST /api/add with a valid file streams SSE events and adds it."""
         from lilbee.server.litestar_app import create_app
 
@@ -85,7 +87,9 @@ class TestAddEndpoint:
         assert "done" in event_types
         assert "summary" in event_types
 
-    async def test_add_nonexistent_file_in_errors(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_add_nonexistent_file_in_errors(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """Nonexistent paths appear in the summary errors list."""
         from lilbee.server.litestar_app import create_app
 
@@ -97,7 +101,9 @@ class TestAddEndpoint:
         summary = next(d for t, d in events if t == "summary")
         assert "/no/such/file.txt" in summary["errors"]
 
-    async def test_add_with_force_flag(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_add_with_force_flag(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """The force flag allows overwriting existing files."""
         from lilbee.server.litestar_app import create_app
 
@@ -113,7 +119,9 @@ class TestAddEndpoint:
         summary = next(d for t, d in events if t == "summary")
         assert "dup.txt" in summary["copied"]
 
-    async def test_done_event_has_correct_fields(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_done_event_has_correct_fields(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """The done event includes added, updated, removed, failed counts."""
         from lilbee.server.litestar_app import create_app
 
@@ -130,7 +138,9 @@ class TestAddEndpoint:
         assert "removed" in done_data
         assert "failed" in done_data
 
-    async def test_file_start_has_total_and_current(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_file_start_has_total_and_current(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """file_start event includes total_files and current_file."""
         from lilbee.server.litestar_app import create_app
 
@@ -145,7 +155,9 @@ class TestAddEndpoint:
         assert file_start["total_files"] >= 1
         assert file_start["current_file"] >= 1
 
-    async def test_add_with_vision_model(self, _kf, _eb, _vm, isolated_env, tmp_path):
+    async def test_add_with_vision_model(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+    ):
         """Vision model parameter is temporarily set on cfg during sync."""
         from lilbee.server.litestar_app import create_app
 

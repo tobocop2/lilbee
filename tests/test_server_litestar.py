@@ -42,7 +42,7 @@ class TestHealthRoute:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_returns_json(self, _mock, client):
+    def test_returns_json(self, mock_patched, client):
         resp = client.get("/api/health")
         assert resp.status_code == 200
         body = resp.json()
@@ -56,7 +56,7 @@ class TestStatusRoute:
         new_callable=AsyncMock,
         return_value={"config": {}, "sources": [], "total_chunks": 0},
     )
-    def test_returns_json(self, _mock, client):
+    def test_returns_json(self, mock_patched, client):
         resp = client.get("/api/status")
         assert resp.status_code == 200
         assert resp.json()["total_chunks"] == 0
@@ -75,7 +75,7 @@ class TestSearchRoute:
         new_callable=AsyncMock,
         return_value=[{"source": "a.md", "chunks": []}],
     )
-    def test_with_results(self, _mock, client):
+    def test_with_results(self, mock_patched, client):
         resp = client.get("/api/search", params={"q": "test"})
         assert resp.status_code == 200
         assert len(resp.json()) == 1
@@ -128,7 +128,7 @@ class TestAskRoute:
             ],
         },
     )
-    def test_returns_sources_as_typed_models(self, _mock, client):
+    def test_returns_sources_as_typed_models(self, mock_patched, client):
         resp = client.post("/api/ask", json={"question": "q"})
         assert resp.status_code == 201
         sources = resp.json()["sources"]
@@ -203,7 +203,7 @@ class TestModelsListRoute:
         new_callable=AsyncMock,
         return_value={"chat": {}, "vision": {}},
     )
-    def test_returns_json(self, _mock, client):
+    def test_returns_json(self, mock_patched, client):
         resp = client.get("/api/models")
         assert resp.status_code == 200
         assert "chat" in resp.json()
@@ -258,7 +258,7 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_obsidian_origin_allowed(self, _mock, client):
+    def test_obsidian_origin_allowed(self, mock_patched, client):
         resp = client.options(
             "/api/health",
             headers={
@@ -273,7 +273,7 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_localhost_origin_allowed(self, _mock, client):
+    def test_localhost_origin_allowed(self, mock_patched, client):
         resp = client.options(
             "/api/health",
             headers={
