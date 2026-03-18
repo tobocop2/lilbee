@@ -14,7 +14,7 @@
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/dm/lilbee" alt="Downloads"></a>
 </p>
 
-> Interactively or programmatically chat with a database of documents using strictly your own hardware, completely offline. Augment any AI agent via MCP or shell — take a free model or even a frontier model and make it leagues better. Talks to an incredible amount of data formats ([see supported formats](#supported-formats)). Integrate document search into your favorite GUI using the built-in REST API — no need for a separate web app when you already have a preferred GUI ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)).
+> Interactively or programmatically chat with a database of documents using strictly your own hardware, completely offline. Augment any AI agent via MCP or shell — take a free model or even a frontier model and make it better. Talks to an incredible amount of data formats ([see supported formats](#supported-formats)). Integrate document search into your favorite GUI using the built-in REST API — no need for a separate web app when you already have a preferred GUI ([see Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee)).
 
 ---
 
