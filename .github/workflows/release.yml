@@ -42,10 +42,13 @@ jobs:
         include:
           - os: ubuntu-latest
             asset_name: lilbee-linux-x86_64
+            pyinstaller: .venv/bin/pyinstaller
           - os: macos-latest
             asset_name: lilbee-macos-arm64
+            pyinstaller: .venv/bin/pyinstaller
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
+            pyinstaller: .venv/Scripts/pyinstaller.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -65,13 +68,13 @@ jobs:
           uv sync && uv pip install pyinstaller
           # python-multipart ships a multipart/ shim that shadows the real
           # multipart.py in PyInstaller builds. Remove it so litestar gets
-          # the real module. IMPORTANT: use .venv/bin/pyinstaller below, not
-          # `uv run` — uv run re-syncs and reinstalls python-multipart.
+          # the real module. We invoke pyinstaller via matrix.pyinstaller
+          # (not `uv run`) so uv doesn't re-install it.
           uv pip uninstall python-multipart
 
       - name: Build executable
         run: >
-          .venv/bin/pyinstaller
+          ${{ matrix.pyinstaller }}
           --onefile
           --name ${{ matrix.asset_name }}
           --copy-metadata lilbee
