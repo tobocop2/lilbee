@@ -105,7 +105,7 @@ class TestLilbeeSearch:
         mock_search.assert_called_once_with("test query", top_k=3)
 
     @mock.patch("lilbee.query.search_context", return_value=[])
-    def test_empty_results(self, _search):
+    def test_empty_results(self, mock_search):
         assert lilbee_search("nothing") == []
 
 
@@ -138,7 +138,7 @@ class TestLilbeeStatus:
 
 class TestLilbeeSync:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_sync_empty(self, _sync):
+    async def test_sync_empty(self, mock_sync):
         result = await lilbee_sync()
         assert result["added"] == []
         assert result["unchanged"] == 0
@@ -148,7 +148,7 @@ class TestLilbeeSync:
         new_callable=AsyncMock,
         return_value=SyncResult(added=["test.txt"]),
     )
-    async def test_sync_with_file(self, _sync):
+    async def test_sync_with_file(self, mock_sync):
         (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = await lilbee_sync()
         assert "test.txt" in result["added"]
@@ -199,7 +199,7 @@ class TestLilbeeInit:
 
 class TestLilbeeAdd:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_single_file(self, _sync, tmp_path):
+    async def test_add_single_file(self, mock_sync, tmp_path):
         src = tmp_path / "test.txt"
         src.write_text("hello world")
 
@@ -210,17 +210,17 @@ class TestLilbeeAdd:
         assert result["errors"] == []
         assert result["skipped"] == []
         assert (cfg.documents_dir / "test.txt").read_text() == "hello world"
-        _sync.assert_awaited_once()
+        mock_sync.assert_awaited_once()
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_nonexistent_path(self, _sync, tmp_path):
+    async def test_add_nonexistent_path(self, mock_sync, tmp_path):
         result = await lilbee_add(["/no/such/path.txt"])
 
         assert "/no/such/path.txt" in result["errors"]
         assert result["copied"] == []
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_existing_no_force(self, _sync, tmp_path):
+    async def test_add_existing_no_force(self, mock_sync, tmp_path):
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
         src.write_text("new")
@@ -232,7 +232,7 @@ class TestLilbeeAdd:
         assert (cfg.documents_dir / "exist.txt").read_text() == "old"
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_existing_with_force(self, _sync, tmp_path):
+    async def test_add_existing_with_force(self, mock_sync, tmp_path):
         (cfg.documents_dir / "exist.txt").write_text("old")
         src = tmp_path / "exist.txt"
         src.write_text("new")
@@ -244,7 +244,7 @@ class TestLilbeeAdd:
         assert (cfg.documents_dir / "exist.txt").read_text() == "new"
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_directory(self, _sync, tmp_path):
+    async def test_add_directory(self, mock_sync, tmp_path):
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
         (src_dir / "a.txt").write_text("a")
@@ -266,7 +266,7 @@ class TestLilbeeAdd:
         assert cfg.vision_model == original_vision
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
-    async def test_add_vision_model_restored_on_error(self, _sync, tmp_path):
+    async def test_add_vision_model_restored_on_error(self, mock_sync, tmp_path):
         src = tmp_path / "file.txt"
         src.write_text("content")
         original_vision = cfg.vision_model
@@ -277,7 +277,7 @@ class TestLilbeeAdd:
         assert cfg.vision_model == original_vision
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_empty_paths(self, _sync):
+    async def test_add_empty_paths(self, mock_sync):
         result = await lilbee_add([])
 
         assert result["copied"] == []
