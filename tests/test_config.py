@@ -208,6 +208,24 @@ class TestVisionTimeoutConfig:
         assert any("Invalid LILBEE_VISION_TIMEOUT" in r.message for r in caplog.records)
 
 
+class TestCorsOriginsConfig:
+    def test_cors_origins_from_env(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"LILBEE_CORS_ORIGINS": "app://obsidian.md,https://my-app.com"}
+        ):
+            c = Config.from_env()
+            assert c.cors_origins == ["app://obsidian.md", "https://my-app.com"]
+
+    def test_cors_origins_default_empty(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "LILBEE_CORS_ORIGINS"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            c = Config.from_env()
+            assert c.cors_origins == []
+
+
 class TestLocalDotLilbee:
     def test_local_lilbee_overrides_default(self, tmp_path):
         local = tmp_path / ".lilbee"
