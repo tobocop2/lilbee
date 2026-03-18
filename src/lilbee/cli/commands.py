@@ -601,6 +601,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
         if server.servers:
             sock = server.servers[0].sockets[0]
             actual_port = sock.getsockname()[1]
+            port_path.parent.mkdir(parents=True, exist_ok=True)
             port_path.write_text(str(actual_port))
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()

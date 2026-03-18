@@ -161,3 +161,25 @@ class TestRunServer:
         asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         fake_config.load.assert_called_once()
+
+    def test_creates_data_dir_for_port_file(self, tmp_path):
+        from lilbee.cli.commands import _run_server
+
+        cfg.data_dir = tmp_path / "nonexistent" / "data"
+
+        sock = mock.MagicMock()
+        sock.getsockname.return_value = ("127.0.0.1", 8080)
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = [mock.MagicMock(sockets=[sock])]
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.main_loop = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        fake_config = mock.MagicMock()
+
+        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        # Dir was created, port file cleaned up after shutdown
+        assert cfg.data_dir.exists()
+        assert not (cfg.data_dir / "server.port").exists()
