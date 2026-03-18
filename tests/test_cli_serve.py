@@ -145,3 +145,19 @@ class TestRunServer:
         asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         assert not (cfg.data_dir / "server.port").exists()
+
+    def test_loads_config_when_not_loaded(self):
+        from lilbee.cli.commands import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = []
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.main_loop = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        fake_config = mock.MagicMock()
+        fake_config.loaded = False
+
+        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        fake_config.load.assert_called_once()
