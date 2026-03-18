@@ -13,6 +13,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.cli.helpers import get_version
+from lilbee.config import cfg
 from lilbee.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.handlers import _sse_generator
@@ -167,7 +168,7 @@ async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
-        allow_origins=["app://obsidian.md"],
+        allow_origins=cfg.cors_origins,
         allow_origin_regex=r"^http://localhost(:\d+)?$",
         allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type"],

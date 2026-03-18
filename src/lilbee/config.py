@@ -57,6 +57,7 @@ class Config(BaseModel):
     vision_timeout: float = Field(default=120.0, ge=0.0)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
+    cors_origins: list[str] = Field(default_factory=list)
     json_mode: bool = False
     temperature: float | None = Field(default=None, ge=0.0)
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -120,6 +121,7 @@ class Config(BaseModel):
             vision_timeout=vision_timeout,
             server_host=env("SERVER_HOST", "127.0.0.1"),
             server_port=env_int("SERVER_PORT", 0),
+            cors_origins=_parse_cors_origins(),
             temperature=env_float("TEMPERATURE"),
             top_p=env_float("TOP_P"),
             top_k_sampling=env_int_optional("TOP_K_SAMPLING"),
@@ -178,6 +180,14 @@ def _parse_vision_timeout() -> float:
     except ValueError:
         log.warning("Invalid LILBEE_VISION_TIMEOUT=%r, ignoring", raw)
         return 120.0
+
+
+def _parse_cors_origins() -> list[str]:
+    """Parse LILBEE_CORS_ORIGINS env var (comma-separated list of origins)."""
+    raw = os.environ.get("LILBEE_CORS_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 cfg = Config.from_env()

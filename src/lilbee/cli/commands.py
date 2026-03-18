@@ -616,7 +616,7 @@ def serve(
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
 ) -> None:
-    """Start the HTTP API server for Obsidian and other clients."""
+    """Start the HTTP API server."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if host is not None:
         cfg.server_host = host
