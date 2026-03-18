@@ -258,15 +258,43 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_obsidian_origin_allowed(self, mock_patched, client):
-        resp = client.options(
-            "/api/health",
-            headers={
-                "Origin": "app://obsidian.md",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
-        assert resp.headers.get("access-control-allow-origin") == "app://obsidian.md"
+    def test_configured_origin_allowed(self, mock_patched):
+        from litestar.testing import TestClient
+
+        cfg.cors_origins = ["app://custom.example"]
+        from lilbee.server.litestar_app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "app://custom.example",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+        assert resp.headers.get("access-control-allow-origin") == "app://custom.example"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_multiple_origins_allowed(self, mock_patched):
+        from litestar.testing import TestClient
+
+        cfg.cors_origins = ["app://obsidian.md", "https://my-app.com"]
+        from lilbee.server.litestar_app import create_app
+
+        with TestClient(create_app()) as c:
+            for origin in cfg.cors_origins:
+                resp = c.options(
+                    "/api/health",
+                    headers={
+                        "Origin": origin,
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+                assert resp.headers.get("access-control-allow-origin") == origin
 
     @mock.patch(
         "lilbee.server.handlers.health",

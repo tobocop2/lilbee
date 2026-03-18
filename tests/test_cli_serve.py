@@ -10,6 +10,11 @@ from lilbee.config import cfg
 runner = CliRunner()
 
 
+def _close_coro(coro, *_args, **_kwargs):
+    """Consume and close the coroutine so Python doesn't warn about it."""
+    coro.close()
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     snapshot = cfg.model_copy()
@@ -25,7 +30,7 @@ def isolated_env(tmp_path):
 
 
 class TestServeCommand:
-    @mock.patch("lilbee.cli.commands.asyncio.run")
+    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_default_host_port(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -33,7 +38,7 @@ class TestServeCommand:
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.asyncio.run")
+    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_custom_host_port(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -41,7 +46,7 @@ class TestServeCommand:
         assert result.exit_code == 0
         mock_asyncio_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.commands.asyncio.run")
+    @mock.patch("lilbee.cli.commands.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_short_flags(self, mock_create_app, mock_asyncio_run):
         mock_create_app.return_value = "fake_app"
@@ -140,3 +145,19 @@ class TestRunServer:
         asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         assert not (cfg.data_dir / "server.port").exists()
+
+    def test_loads_config_when_not_loaded(self):
+        from lilbee.cli.commands import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = []
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.main_loop = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        fake_config = mock.MagicMock()
+        fake_config.loaded = False
+
+        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        fake_config.load.assert_called_once()

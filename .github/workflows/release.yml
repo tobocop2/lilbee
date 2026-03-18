@@ -63,13 +63,15 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync && uv pip install pyinstaller
-          # python-multipart's `multipart/` package shadows the real `multipart.py`
-          # in frozen PyInstaller builds, causing an ImportError. Nothing uses it.
+          # python-multipart ships a multipart/ shim that shadows the real
+          # multipart.py in PyInstaller builds. Remove it so litestar gets
+          # the real module. IMPORTANT: use .venv/bin/pyinstaller below, not
+          # `uv run` — uv run re-syncs and reinstalls python-multipart.
           uv pip uninstall python-multipart
 
       - name: Build executable
         run: >
-          uv run pyinstaller
+          .venv/bin/pyinstaller
           --onefile
           --name ${{ matrix.asset_name }}
           --copy-metadata lilbee
@@ -80,7 +82,35 @@ jobs:
           src/lilbee/__main__.py
 
       - name: Smoke test
-        run: ./dist/${{ matrix.asset_name }} --version
+        run: |
+          ./dist/${{ matrix.asset_name }} --version
+          ./dist/${{ matrix.asset_name }} --help
+        shell: bash
+
+      - name: Verify server starts
+        # Catches the recurring python-multipart shadow import bug.
+        # Poll until the server responds or the process dies.
+        run: |
+          export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
+          mkdir -p "$LILBEE_DATA"
+          ./dist/${{ matrix.asset_name }} serve --port 9123 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "server process died"
+              exit 1
+            fi
+            if curl -sf http://127.0.0.1:9123/api/health > /dev/null 2>&1; then
+              echo "server responded on attempt $i"
+              kill $SERVER_PID 2>/dev/null || true
+              wait $SERVER_PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server never responded after 30s"
+          kill $SERVER_PID 2>/dev/null || true
+          exit 1
         shell: bash
 
       - name: Upload to release
