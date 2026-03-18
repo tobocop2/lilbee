@@ -90,7 +90,7 @@ class TestSearch:
         mock_search.assert_called_once_with("test", top_k=3)
 
     @patch("lilbee.query.search_context", return_value=[])
-    async def test_empty_results(self, _search):
+    async def test_empty_results(self, mock_search):
         result = await handlers.search("nothing")
         assert result == []
 
@@ -135,7 +135,7 @@ class TestAsk:
 
 class TestAskStream:
     @patch("lilbee.query.search_context", return_value=[])
-    async def test_no_results_yields_error(self, _search):
+    async def test_no_results_yields_error(self, mock_search):
         events = [e async for e in handlers.ask_stream("test")]
         # First event is the empty yield, then the error
         non_empty = [e for e in events if e]
@@ -328,7 +328,7 @@ class TestChat:
 
 class TestChatStream:
     @patch("lilbee.query.search_context", return_value=[])
-    async def test_no_results_yields_error(self, _search):
+    async def test_no_results_yields_error(self, mock_search):
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)

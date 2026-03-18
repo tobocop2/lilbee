@@ -200,6 +200,7 @@ All settings are configurable via environment variables:
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `LILBEE_SERVER_PORT` | `7433` | Server port |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of allowed CORS origins (e.g. `app://obsidian.md,https://my-app.com`). Localhost is always allowed. |
 
 **Generation** — tune LLM output:
 
