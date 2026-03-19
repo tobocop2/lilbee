@@ -15,7 +15,7 @@ def isolated_env(tmp_path):
     snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
-    cfg.documents_dir.mkdir()
+    cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
 
