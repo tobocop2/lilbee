@@ -48,7 +48,7 @@ def isolated_env(tmp_path, monkeypatch):
 
     cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
-    cfg.documents_dir.mkdir()
+    cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.json_mode = False

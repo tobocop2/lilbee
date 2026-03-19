@@ -1,4 +1,4 @@
-# lilbee
+# [lilbee](https://tobocop2.github.io/lilbee/)
 
 > Beta — feedback and bug reports welcome. [Open an issue](https://github.com/tobocop2/lilbee/issues).
 
