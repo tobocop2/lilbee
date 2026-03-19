@@ -19,9 +19,9 @@ def _close_coro(coro, *_args, **_kwargs):
 def isolated_env(tmp_path):
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
-    cfg.documents_dir.mkdir()
+    cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
-    cfg.data_dir.mkdir()
+    cfg.data_dir.mkdir(exist_ok=True)
     cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     yield tmp_path
