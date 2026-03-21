@@ -115,6 +115,14 @@ class TestHybridSearch:
         assert len(results) > 0
         assert results[0].distance is not None
 
+    def test_vector_only_applies_mmr(self):
+        """Vector-only path (no query_text) applies MMR when results > top_k."""
+        records = _make_records(n=6)
+        store.add_chunks(records)
+        query_vec = [0.5] * cfg.embedding_dim
+        results = store.search(query_vec, top_k=2)
+        assert len(results) == 2
+
     def test_auto_ensures_fts_index_when_query_text(self):
         records = _make_records()
         store.add_chunks(records)
@@ -123,3 +131,87 @@ class TestHybridSearch:
         results = store.search(query_vec, top_k=3, query_text="chunk number")
         assert store._fts.ready
         assert len(results) > 0
+
+
+class TestMMRRerank:
+    def test_selects_diverse_results(self):
+        from lilbee.store import SearchChunk, mmr_rerank
+
+        # Two results along x-axis (near-identical), one along y-axis (diverse but relevant)
+        query = [0.8, 0.6]
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x-axis 1",
+                chunk_index=0,
+                vector=[1.0, 0.0],
+                distance=0.2,
+            ),
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x-axis 2",
+                chunk_index=1,
+                vector=[1.0, 0.0],
+                distance=0.2,
+            ),
+            SearchChunk(
+                source="b.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="y-axis",
+                chunk_index=0,
+                vector=[0.0, 1.0],
+                distance=0.4,
+            ),
+        ]
+        selected = mmr_rerank(query, results, top_k=2, lam=0.5)
+        assert len(selected) == 2
+        assert selected[0].chunk == "x-axis 1"
+        # x-axis 2 is identical to x-axis 1, so max redundancy
+        # y-axis has relevance 0.6 and zero redundancy with x-axis 1
+        assert selected[1].chunk == "y-axis"
+
+    def test_returns_all_when_fewer_than_k(self):
+        from lilbee.store import SearchChunk, mmr_rerank
+
+        query = [1.0, 0.0]
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="only one",
+                chunk_index=0,
+                vector=[0.9, 0.1],
+                distance=0.1,
+            ),
+        ]
+        selected = mmr_rerank(query, results, top_k=5)
+        assert len(selected) == 1
+
+    def test_cosine_sim_zero_vectors(self):
+        from lilbee.store import _cosine_sim
+
+        assert _cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+    def test_cosine_sim_identical(self):
+        from lilbee.store import _cosine_sim
+
+        sim = _cosine_sim([1.0, 0.0], [1.0, 0.0])
+        assert abs(sim - 1.0) < 1e-6
