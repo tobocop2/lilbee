@@ -181,6 +181,10 @@ class Greeter:
             for c in chunks:
                 assert c.line_start > 0
                 assert c.line_end >= c.line_start
+            # Verify enriched headers contain symbol metadata
+            hello_chunk = next(c for c in chunks if "hello" in c.chunk and "def hello" in c.chunk)
+            assert "function: hello" in hello_chunk.chunk
+            assert f"lines {hello_chunk.line_start}-{hello_chunk.line_end}" in hello_chunk.chunk
         finally:
             path.unlink()
 
