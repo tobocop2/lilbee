@@ -522,3 +522,98 @@ class TestSyncToolbar:
             {"file": "a.pdf", "current_file": 1, "total_files": 1},
         )
         assert "queued" not in status.text
+
+
+class TestSystemPromptPanel:
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
+    def test_settings_shows_system_prompt_panel(self, mock_defaults):
+        con, buf = _make_console()
+        handle_slash_settings("", con)
+        output = buf.getvalue()
+        assert "system_prompt" in output
+        # The system prompt value should appear in the Panel body
+        assert cfg.system_prompt[:20] in output
+
+    @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
+    def test_settings_shows_generation_params_in_table(self, mock_defaults):
+        con, buf = _make_console()
+        handle_slash_settings("", con)
+        output = buf.getvalue()
+        # Generation params should still appear in the table
+        assert "chat_model" in output
+        assert "temperature" in output
+        assert "top_k" in output
+
+
+class TestEmptyStringRejection:
+    def test_set_chat_model_empty_rejected(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, buf = _make_console()
+        result = _validate_setting("chat_model", "", str, con)
+        assert result is None
+        assert "at least" in buf.getvalue()
+        assert cfg.chat_model != ""
+
+    def test_set_embedding_model_empty_rejected(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, buf = _make_console()
+        result = _validate_setting("embedding_model", "", str, con)
+        assert result is None
+        assert "at least" in buf.getvalue()
+        assert cfg.embedding_model != ""
+
+    def test_set_system_prompt_empty_rejected(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, buf = _make_console()
+        result = _validate_setting("system_prompt", "", str, con)
+        assert result is None
+        assert "at least" in buf.getvalue()
+
+
+class TestValidateSetting:
+    def test_validates_and_sets_successfully(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, _buf = _make_console()
+        result = _validate_setting("temperature", "0.5", float, con)
+        assert result == 0.5
+        assert cfg.temperature == 0.5
+
+    def test_returns_none_on_type_error(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, buf = _make_console()
+        result = _validate_setting("temperature", "abc", float, con)
+        assert result is None
+        assert "Invalid" in buf.getvalue()
+
+    def test_returns_none_on_validation_error(self):
+        from lilbee.cli.chat.slash import _validate_setting
+
+        con, buf = _make_console()
+        result = _validate_setting("temperature", "-1.0", float, con)
+        assert result is None
+        assert "greater than or equal" in buf.getvalue()
+
+
+class TestRenderStyle:
+    def test_system_prompt_has_full_render(self):
+        from lilbee.cli.chat.slash import RenderStyle
+
+        assert _SETTINGS_MAP["system_prompt"].render == RenderStyle.FULL
+
+    def test_other_settings_have_compact_render(self):
+        from lilbee.cli.chat.slash import RenderStyle
+
+        for name, defn in _SETTINGS_MAP.items():
+            if name != "system_prompt":
+                assert defn.render == RenderStyle.COMPACT
+
+    def test_render_style_enum_values(self):
+        from lilbee.cli.chat.slash import RenderStyle
+
+        assert RenderStyle.COMPACT == "compact"
+        assert RenderStyle.FULL == "full"

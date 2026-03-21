@@ -79,3 +79,44 @@ class TestDeleteValue:
     def test_delete_from_empty_file(self, tmp_path):
         settings.delete_value(tmp_path, "anything")
         assert settings.load(tmp_path) == {}
+
+
+class TestTomlEscaping:
+    def test_escape_double_quotes(self, tmp_path):
+        settings.set_value(tmp_path, "prompt", 'say "hello"')
+        assert settings.get(tmp_path, "prompt") == 'say "hello"'
+
+    def test_escape_backslashes(self, tmp_path):
+        settings.set_value(tmp_path, "path", r"C:\Users\test")
+        assert settings.get(tmp_path, "path") == r"C:\Users\test"
+
+    def test_escape_newlines(self, tmp_path):
+        settings.set_value(tmp_path, "msg", "line1\nline2")
+        assert settings.get(tmp_path, "msg") == "line1\nline2"
+
+    def test_escape_tab(self, tmp_path):
+        settings.set_value(tmp_path, "msg", "col1\tcol2")
+        assert settings.get(tmp_path, "msg") == "col1\tcol2"
+
+    def test_escape_mixed(self, tmp_path):
+        val = 'He said "hello" at C:\\home\n'
+        settings.set_value(tmp_path, "mixed", val)
+        assert settings.get(tmp_path, "mixed") == val
+
+    def test_escape_preserves_normal_values(self, tmp_path):
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        assert settings.get(tmp_path, "model") == "qwen3:8b"
+
+    def test_escape_empty_string(self, tmp_path):
+        settings.set_value(tmp_path, "key", "")
+        assert settings.get(tmp_path, "key") == ""
+
+    def test_escape_toml_string_function(self):
+        from lilbee.settings import _escape_toml_string
+
+        assert _escape_toml_string('say "hi"') == r"say \"hi\""
+        assert _escape_toml_string(r"C:\path") == r"C:\\path"
+        assert _escape_toml_string("a\nb") == r"a\nb"
+        assert _escape_toml_string("a\tb") == r"a\tb"
+        assert _escape_toml_string("normal") == "normal"
+        assert _escape_toml_string("") == ""
