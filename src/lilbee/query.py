@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, cast
 
-import ollama
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from lilbee import embedder, store
 from lilbee.config import cfg
+from lilbee.providers import get_provider
 from lilbee.store import SearchChunk
 
 
@@ -121,13 +121,9 @@ def ask_raw(
     messages.append({"role": "user", "content": prompt})
 
     opts = options if options is not None else cfg.generation_options()
-    try:
-        response = ollama.chat(model=cfg.chat_model, messages=messages, options=opts or None)
-    except ollama.ResponseError as exc:
-        raise RuntimeError(
-            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
-        ) from exc
-    return AskResult(answer=response.message.content or "", sources=results)
+    provider = get_provider()
+    answer = provider.chat(cast(list[dict[str, Any]], messages), options=opts or None)
+    return AskResult(answer=str(answer) or "", sources=results)
 
 
 def ask(
@@ -166,27 +162,13 @@ def ask_stream(
     messages.append({"role": "user", "content": prompt})
 
     opts = options if options is not None else cfg.generation_options()
-    try:
-        stream = ollama.chat(
-            model=cfg.chat_model,
-            messages=messages,
-            stream=True,
-            options=opts or None,
-        )
-    except ollama.ResponseError as exc:
-        raise RuntimeError(
-            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
-        ) from exc
+    provider = get_provider()
+    stream = provider.chat(cast(list[dict[str, Any]], messages), stream=True, options=opts or None)
 
     try:
-        for chunk in stream:
-            token = chunk.message.content
+        for token in stream:
             if token:
                 yield token
-    except ollama.ResponseError as exc:
-        raise RuntimeError(
-            f"Model '{cfg.chat_model}' not found in Ollama. Run: ollama pull {cfg.chat_model}"
-        ) from exc
     except (ConnectionError, OSError) as exc:
         yield f"\n\n[Connection lost: {exc}]"
 
