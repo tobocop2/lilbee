@@ -121,75 +121,43 @@ class TestRasterizePdf:
 
 
 class TestExtractPageText:
-    @mock.patch("ollama.chat")
-    def test_returns_extracted_text(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(
-            message=mock.MagicMock(content="Extracted text from page")
-        )
+    @mock.patch("lilbee.vision.get_provider")
+    def test_returns_extracted_text(self, mock_get_provider: mock.MagicMock) -> None:
+        mock_get_provider.return_value.chat.return_value = "Extracted text from page"
         from lilbee.vision import extract_page_text
 
         result = extract_page_text(b"fake-png-data", "test-model")
         assert result == "Extracted text from page"
-        mock_chat.assert_called_once()
+        mock_get_provider.return_value.chat.assert_called_once()
 
-    @mock.patch("ollama.chat")
-    def test_uses_correct_model(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="text"))
+    @mock.patch("lilbee.vision.get_provider")
+    def test_uses_correct_model(self, mock_get_provider: mock.MagicMock) -> None:
+        mock_get_provider.return_value.chat.return_value = "text"
         from lilbee.vision import extract_page_text
 
         extract_page_text(b"png", "maternion/LightOnOCR-2")
-        assert mock_chat.call_args.kwargs["model"] == "maternion/LightOnOCR-2"
+        call_kwargs = mock_get_provider.return_value.chat.call_args.kwargs
+        assert call_kwargs["model"] == "maternion/LightOnOCR-2"
 
-    @mock.patch("ollama.chat")
-    def test_sends_png_bytes_as_image(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="text"))
+    @mock.patch("lilbee.vision.get_provider")
+    def test_sends_png_bytes_as_image(self, mock_get_provider: mock.MagicMock) -> None:
+        mock_get_provider.return_value.chat.return_value = "text"
         from lilbee.vision import extract_page_text
 
         extract_page_text(b"my-png-bytes", "model")
-        messages = mock_chat.call_args.kwargs["messages"]
+        messages = mock_get_provider.return_value.chat.call_args[0][0]
         assert messages[0]["images"] == [b"my-png-bytes"]
 
-    @mock.patch("ollama.chat", side_effect=Exception("model failed"))
-    def test_error_returns_none(self, mock_chat: mock.MagicMock) -> None:
+    @mock.patch("lilbee.vision.get_provider", side_effect=Exception("model failed"))
+    def test_error_returns_none(self, mock_get_provider: mock.MagicMock) -> None:
         from lilbee.vision import extract_page_text
 
         result = extract_page_text(b"png", "bad-model")
         assert result is None
 
-    @mock.patch("ollama.Client")
-    def test_timeout_uses_client(self, mock_client_cls: mock.MagicMock) -> None:
-        mock_client = mock.MagicMock()
-        mock_client.chat.return_value = mock.MagicMock(message=mock.MagicMock(content="timed text"))
-        mock_client_cls.return_value = mock_client
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=60.0)
-        assert result == "timed text"
-        mock_client_cls.assert_called_once_with(timeout=60.0)
-        mock_client.chat.assert_called_once()
-
-    @mock.patch("ollama.chat")
-    def test_no_timeout_uses_module_chat(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="ok"))
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=None)
-        assert result == "ok"
-        mock_chat.assert_called_once()
-
-    @mock.patch("ollama.Client")
-    def test_timeout_error_returns_none(self, mock_client_cls: mock.MagicMock) -> None:
-        mock_client = mock.MagicMock()
-        mock_client.chat.side_effect = TimeoutError("timed out")
-        mock_client_cls.return_value = mock_client
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=5.0)
-        assert result is None
-
-    @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
+    @mock.patch("lilbee.vision.get_provider", side_effect=RuntimeError("connection reset"))
     def test_warning_without_traceback(
-        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_get_provider: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
@@ -204,9 +172,9 @@ class TestExtractPageText:
         assert "connection reset" in warning_records[0].message
         assert warning_records[0].exc_info is None or not warning_records[0].exc_info[0]
 
-    @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
+    @mock.patch("lilbee.vision.get_provider", side_effect=RuntimeError("connection reset"))
     def test_debug_includes_traceback(
-        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
+        self, mock_get_provider: mock.MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
 
