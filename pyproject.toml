@@ -40,7 +40,13 @@ dependencies = [
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
+    "litellm",
+    "huggingface_hub",
+    "httpx",
 ]
+
+[project.optional-dependencies]
+llama-cpp = ["llama-cpp-python"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
