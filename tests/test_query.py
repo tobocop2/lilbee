@@ -125,6 +125,48 @@ class TestSortByRelevance:
         assert sorted_results[2].source == "low.pdf"
 
 
+class TestDiversifySources:
+    def test_caps_per_source(self):
+        from lilbee.query import diversify_sources
+
+        results = [
+            _make_result(source="a.md", distance=0.1),
+            _make_result(source="a.md", distance=0.2),
+            _make_result(source="a.md", distance=0.3),
+            _make_result(source="a.md", distance=0.4),
+            _make_result(source="b.md", distance=0.5),
+        ]
+        diverse = diversify_sources(results, max_per_source=2)
+        a_count = sum(1 for r in diverse if r.source == "a.md")
+        assert a_count == 2
+        assert any(r.source == "b.md" for r in diverse)
+
+    def test_preserves_order(self):
+        from lilbee.query import diversify_sources
+
+        results = [
+            _make_result(source="a.md", distance=0.1),
+            _make_result(source="b.md", distance=0.2),
+            _make_result(source="a.md", distance=0.3),
+        ]
+        diverse = diversify_sources(results, max_per_source=1)
+        assert diverse[0].source == "a.md"
+        assert diverse[1].source == "b.md"
+        assert len(diverse) == 2
+
+    def test_empty_input(self):
+        from lilbee.query import diversify_sources
+
+        assert diversify_sources([]) == []
+
+    def test_default_cap_is_three(self):
+        from lilbee.query import diversify_sources
+
+        results = [_make_result(source="a.md", distance=float(i) / 10) for i in range(5)]
+        diverse = diversify_sources(results)
+        assert len(diverse) == 3
+
+
 class TestBuildContext:
     def test_numbers_chunks(self):
         results = [_make_result(chunk="chunk one"), _make_result(chunk="chunk two")]
