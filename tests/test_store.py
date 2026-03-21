@@ -215,3 +215,79 @@ class TestMMRRerank:
 
         sim = _cosine_sim([1.0, 0.0], [1.0, 0.0])
         assert abs(sim - 1.0) < 1e-6
+
+
+class TestAdaptiveFilter:
+    def test_returns_results_within_threshold(self):
+        from lilbee.store import SearchChunk, _adaptive_filter
+
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="close",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.2,
+            ),
+            SearchChunk(
+                source="b.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="far",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.8,
+            ),
+        ]
+        filtered = _adaptive_filter(results, top_k=1, initial_threshold=0.3)
+        assert len(filtered) == 1
+        assert filtered[0].chunk == "close"
+
+    def test_widens_threshold_when_too_few(self):
+        from lilbee.store import SearchChunk, _adaptive_filter
+
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="far",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.6,
+            ),
+        ]
+        # Initial threshold 0.3 finds nothing, should widen to 0.7
+        filtered = _adaptive_filter(results, top_k=1, initial_threshold=0.3)
+        assert len(filtered) == 1
+
+    def test_stops_at_max_threshold(self):
+        from lilbee.store import SearchChunk, _adaptive_filter
+
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="very far",
+                chunk_index=0,
+                vector=[0.1],
+                distance=1.5,
+            ),
+        ]
+        filtered = _adaptive_filter(results, top_k=1, initial_threshold=0.3)
+        assert len(filtered) == 0  # beyond max threshold of 1.0
