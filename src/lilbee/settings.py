@@ -8,6 +8,19 @@ def _config_path(data_root: Path) -> Path:
     return data_root / "config.toml"
 
 
+def _escape_toml_string(s: str) -> str:
+    """Escape a string for embedding in a TOML double-quoted value."""
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("\b", "\\b")
+        .replace("\f", "\\f")
+    )
+
+
 def load(data_root: Path) -> dict[str, str]:
     """Read all settings from config.toml. Returns {} if file is missing."""
     path = _config_path(data_root)
@@ -21,7 +34,7 @@ def save(data_root: Path, settings: dict[str, str]) -> None:
     """Write settings dict as simple TOML key-value pairs."""
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f'{k} = "{v}"\n' for k, v in sorted(settings.items())]
+    lines = [f'{k} = "{_escape_toml_string(v)}"\n' for k, v in sorted(settings.items())]
     path.write_text("".join(lines))
 
 

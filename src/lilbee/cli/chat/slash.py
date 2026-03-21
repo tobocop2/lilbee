@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from lilbee import settings
@@ -18,6 +21,13 @@ from lilbee.cli.helpers import add_paths, get_version, perform_reset, render_sta
 from lilbee.config import cfg
 
 
+class RenderStyle(StrEnum):
+    """How a setting is displayed in /settings."""
+
+    COMPACT = "compact"
+    FULL = "full"
+
+
 @dataclass(frozen=True)
 class _SettingDef:
     """Metadata for an interactive setting."""
@@ -25,6 +35,7 @@ class _SettingDef:
     cfg_attr: str
     type: type
     nullable: bool
+    render: RenderStyle = field(default=RenderStyle.COMPACT)
 
 
 _SETTINGS_MAP: dict[str, _SettingDef] = {
@@ -38,7 +49,7 @@ _SETTINGS_MAP: dict[str, _SettingDef] = {
     "repeat_penalty": _SettingDef("repeat_penalty", float, nullable=True),
     "num_ctx": _SettingDef("num_ctx", int, nullable=True),
     "seed": _SettingDef("seed", int, nullable=True),
-    "system_prompt": _SettingDef("system_prompt", str, nullable=False),
+    "system_prompt": _SettingDef("system_prompt", str, nullable=False, render=RenderStyle.FULL),
 }
 
 
@@ -272,11 +283,42 @@ def handle_slash_settings(args: str, con: Console) -> None:
     table = Table(show_header=False, box=None, padding=(0, 2))
     for name, defn in _SETTINGS_MAP.items():
         value = getattr(cfg, defn.cfg_attr)
-        table.add_row(
-            f"[{theme.LABEL}]{name}[/{theme.LABEL}]",
-            _format_setting_value(value, defaults.get(name)),
-        )
+        if defn.render == RenderStyle.FULL:
+            con.print(
+                Panel(
+                    value,
+                    title=f"[{theme.LABEL}]{name}[/{theme.LABEL}]",
+                    border_style=theme.MUTED,
+                    expand=False,
+                )
+            )
+        else:
+            table.add_row(
+                f"[{theme.LABEL}]{name}[/{theme.LABEL}]",
+                _format_setting_value(value, defaults.get(name)),
+            )
     con.print(table)
+
+
+def _validate_setting(cfg_attr: str, raw_value: str, typ: type, con: Console) -> Any:
+    """Coerce *raw_value* to *typ* and assign to *cfg_attr* on cfg.
+
+    Returns the parsed value on success, or None on failure (error printed to *con*).
+    """
+    try:
+        parsed = typ(raw_value)
+    except (ValueError, TypeError):
+        con.print(f"[{theme.ERROR}]Invalid {typ.__name__}:[/{theme.ERROR}] {raw_value}")
+        return None
+
+    try:
+        setattr(cfg, cfg_attr, parsed)
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        con.print(f"[{theme.ERROR}]{cfg_attr}: {msg}[/{theme.ERROR}]")
+        return None
+
+    return parsed
 
 
 def handle_slash_set(args: str, con: Console) -> None:
@@ -308,17 +350,8 @@ def handle_slash_set(args: str, con: Console) -> None:
         con.print(f"{name} cleared (saved)")
         return
 
-    try:
-        parsed = defn.type(raw_value)
-    except (ValueError, TypeError):
-        con.print(f"[{theme.ERROR}]Invalid {defn.type.__name__}:[/{theme.ERROR}] {raw_value}")
-        return
-
-    try:
-        setattr(cfg, defn.cfg_attr, parsed)
-    except ValidationError as exc:
-        msg = exc.errors()[0]["msg"]
-        con.print(f"[{theme.ERROR}]{name}: {msg}[/{theme.ERROR}]")
+    parsed = _validate_setting(defn.cfg_attr, raw_value, defn.type, con)
+    if parsed is None:
         return
 
     settings.set_value(cfg.data_root, name, str(parsed))

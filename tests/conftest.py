@@ -20,8 +20,9 @@ def _models_available() -> bool:
         from lilbee.embedder import embed
 
         embed("test")  # fastembed, no Ollama needed
-        ollama.chat(model=cfg.chat_model, messages=[{"role": "user", "content": "hi"}])
-        return True
+        # Just verify the chat model exists — don't run inference.
+        models = {m.model for m in ollama.list().models}
+        return cfg.chat_model in models
     except Exception:
         return False
 
