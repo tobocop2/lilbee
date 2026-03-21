@@ -1,8 +1,12 @@
-"""Token-based recursive text chunking (used by code_chunker fallback)."""
+"""Token-based recursive text chunking with markdown-aware heading splitting."""
+
+import re
 
 import tiktoken
 
 from lilbee.config import cfg
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
@@ -106,3 +110,72 @@ def chunk_text(
         chunks.append("\n\n".join(pending_segments))
 
     return chunks
+
+
+def _split_by_headings(text: str) -> list[tuple[list[str], str]]:
+    """Split markdown into sections, each with its heading hierarchy.
+
+    Returns a list of (heading_path, section_body) tuples.
+    heading_path is the current heading stack, e.g. ["# Setup", "## Install"].
+    """
+    sections: list[tuple[list[str], str]] = []
+    heading_stack: list[tuple[int, str]] = []
+    current_lines: list[str] = []
+
+    for line in text.split("\n"):
+        m = _HEADING_RE.match(line)
+        if m:
+            # Flush current section
+            body = "\n".join(current_lines).strip()
+            if body:
+                path = [h for _, h in heading_stack]
+                sections.append((list(path), body))
+            current_lines = []
+
+            level = len(m.group(1))
+            heading_text = f"{m.group(1)} {m.group(2)}"
+            # Pop headings at same or deeper level
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, heading_text))
+        else:
+            current_lines.append(line)
+
+    # Flush final section
+    body = "\n".join(current_lines).strip()
+    if body:
+        path = [h for _, h in heading_stack]
+        sections.append((list(path), body))
+
+    return sections
+
+
+def chunk_markdown(
+    text: str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[str]:
+    """Split markdown into chunks respecting heading boundaries.
+
+    Each chunk is prefixed with its heading hierarchy so the LLM
+    knows the section context. Falls back to plain chunk_text()
+    for non-markdown or text with no headings.
+    """
+    if not text or not text.strip():
+        return []
+
+    sections = _split_by_headings(text)
+    if not sections:
+        return chunk_text(text, chunk_size, chunk_overlap)
+
+    chunks: list[str] = []
+    for path, body in sections:
+        prefix = " > ".join(path)
+        sub_chunks = chunk_text(body, chunk_size, chunk_overlap)
+        for sub in sub_chunks:
+            if prefix:
+                chunks.append(f"{prefix}\n\n{sub}")
+            else:
+                chunks.append(sub)
+
+    return chunks if chunks else chunk_text(text, chunk_size, chunk_overlap)

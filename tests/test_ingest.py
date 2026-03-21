@@ -1201,6 +1201,25 @@ class TestKreuzbergOcrConfig:
         assert config.chunking is not None
 
 
+class TestIngestMarkdownEdgeCases:
+    async def test_empty_markdown_returns_empty(self, isolated_env):
+        from lilbee.ingest import ingest_markdown
+
+        md = isolated_env / "empty.md"
+        md.write_text("   ")
+        result = await ingest_markdown(md, "empty.md")
+        assert result == []
+
+    async def test_no_chunks_returns_empty(self, isolated_env):
+        from lilbee.ingest import ingest_markdown
+
+        md = isolated_env / "blank.md"
+        md.write_text("some text")
+        with mock.patch("lilbee.ingest.chunk_markdown", return_value=[]):
+            result = await ingest_markdown(md, "blank.md")
+        assert result == []
+
+
 class TestIngestStructuredEdgeCases:
     async def test_empty_preprocessed_text_returns_empty(self, isolated_env):
         from lilbee.ingest import _PREPROCESSORS, ingest_structured

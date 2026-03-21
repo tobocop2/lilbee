@@ -20,7 +20,7 @@ from rich.progress import (
 )
 
 from lilbee import embedder, store
-from lilbee.chunker import chunk_text
+from lilbee.chunker import chunk_markdown, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
@@ -429,6 +429,37 @@ async def ingest_structured(
     ]
 
 
+async def ingest_markdown(
+    path: Path,
+    source_name: str,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[ChunkRecord]:
+    """Chunk a markdown file by heading boundaries, embed, return records."""
+    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+    if not text.strip():
+        return []
+    texts = chunk_markdown(text)
+    if not texts:
+        return []
+    vectors = await asyncio.to_thread(
+        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+    )
+    return [
+        ChunkRecord(
+            source=source_name,
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=t,
+            chunk_index=idx,
+            vector=vec,
+        )
+        for idx, (t, vec) in enumerate(zip(texts, vectors, strict=True))
+    ]
+
+
 async def _ingest_file(
     path: Path,
     source_name: str,
@@ -444,6 +475,8 @@ async def _ingest_file(
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
     elif content_type in _PREPROCESSORS:
         records = await ingest_structured(path, source_name, content_type, on_progress)
+    elif path.suffix.lower() == ".md":
+        records = await ingest_markdown(path, source_name, on_progress)
     else:
         records = await ingest_document(
             path,
