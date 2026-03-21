@@ -1,6 +1,7 @@
 """LanceDB vector store operations."""
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 import lancedb
@@ -47,6 +48,52 @@ class SearchChunk(BaseModel):
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
     relevance_score: float | None = Field(None, alias="_relevance_score")
+
+
+_DEFAULT_MMR_LAMBDA = 0.5
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def mmr_rerank(
+    query_vector: list[float],
+    results: list[SearchChunk],
+    top_k: int,
+    lam: float = _DEFAULT_MMR_LAMBDA,
+) -> list[SearchChunk]:
+    """Maximal Marginal Relevance — select diverse results.
+
+    Score = λ * sim(query, chunk) - (1-λ) * max_sim(chunk, selected)
+    """
+    if len(results) <= top_k:
+        return results
+
+    selected: list[SearchChunk] = []
+    remaining = list(results)
+
+    for _ in range(top_k):
+        best_score = -float("inf")
+        best_idx = 0
+        for i, candidate in enumerate(remaining):
+            relevance = _cosine_sim(query_vector, candidate.vector)
+            redundancy = 0.0
+            if selected:
+                redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
+            score = lam * relevance - (1 - lam) * redundancy
+            if score > best_score:
+                best_score = score
+                best_idx = i
+        selected.append(remaining.pop(best_idx))
+
+    return selected
 
 
 def _chunks_schema() -> pa.Schema:
@@ -210,10 +257,13 @@ def search(
         except Exception:
             log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
-    rows = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+    candidate_k = top_k * 3
+    rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
     results = [SearchChunk(**r) for r in rows]
     if max_distance > 0:
         results = [r for r in results if (r.distance or 0) <= max_distance]
+    if len(results) > top_k:
+        results = mmr_rerank(query_vector, results, top_k)
     return results
 
 
