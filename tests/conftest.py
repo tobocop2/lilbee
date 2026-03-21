@@ -15,14 +15,13 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _models_available() -> bool:
     """Check that both embedding and chat models are available."""
     try:
-        import ollama
-
         from lilbee.embedder import embed
+        from lilbee.providers import get_provider
 
         embed("test")  # fastembed, no Ollama needed
         # Just verify the chat model exists — don't run inference.
-        models = {m.model for m in ollama.list().models}
-        return cfg.chat_model in models
+        installed = set(get_provider().list_models())
+        return cfg.chat_model in installed
     except Exception:
         return False
 

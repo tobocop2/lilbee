@@ -12,13 +12,15 @@ import logging
 import threading
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
 from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.providers import get_provider
 
 if TYPE_CHECKING:
+    from lilbee.model_manager import ModelSource
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -159,15 +161,16 @@ async def ask_stream(
 
     def _generate() -> None:
         try:
-            import ollama as ollama_client
-
-            stream = ollama_client.chat(
-                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+            provider = get_provider()
+            stream = provider.chat(
+                cast("list[dict[str, Any]]", messages),
+                stream=True,
+                options=opts or None,
+                model=cfg.chat_model,
             )
-            for chunk in stream:
+            for token in stream:
                 if cancel.is_set():
                     break
-                token = chunk.message.content
                 if token:
                     queue.put_nowait(sse_event("token", {"token": token}))
         except Exception as exc:
@@ -251,15 +254,16 @@ async def chat_stream(
 
     def _generate() -> None:
         try:
-            import ollama as ollama_client
-
-            stream = ollama_client.chat(
-                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+            provider = get_provider()
+            stream = provider.chat(
+                cast("list[dict[str, Any]]", messages),
+                stream=True,
+                options=opts or None,
+                model=cfg.chat_model,
             )
-            for chunk in stream:
+            for token in stream:
                 if cancel.is_set():
                     break
-                token = chunk.message.content
                 if token:
                     queue.put_nowait(sse_event("token", {"token": token}))
         except Exception as exc:
@@ -378,12 +382,12 @@ async def add_files(data: dict[str, Any]) -> AddResult:
 
 async def list_models() -> dict[str, Any]:
     """Return chat and vision model catalogs with installed status."""
-    from lilbee.cli.chat import list_ollama_models
+    from lilbee.cli.chat import list_installed_models
     from lilbee.config import cfg
     from lilbee.models import MODEL_CATALOG, VISION_CATALOG
 
-    installed = set(list_ollama_models())
-    chat_installed = set(list_ollama_models(exclude_vision=True))
+    installed = set(list_installed_models())
+    chat_installed = set(list_installed_models(exclude_vision=True))
     vision_names = {v.name for v in VISION_CATALOG}
 
     response = ModelsResponse(
@@ -439,3 +443,102 @@ async def set_vision_model(model: str) -> dict[str, str]:
     cfg.vision_model = model
     settings.set_value(cfg.data_root, "vision_model", model)
     return {"model": model}
+
+
+def _parse_source(source: str) -> ModelSource:
+    """Convert a source string to ModelSource enum."""
+    from lilbee.model_manager import ModelSource
+
+    return ModelSource(source)
+
+
+async def models_catalog(
+    task: str | None = None,
+    search: str = "",
+    size: str | None = None,
+    installed: bool | None = None,
+    featured: bool | None = None,
+    sort: str = "featured",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return paginated model catalog with installed status."""
+    from lilbee.catalog import get_catalog
+
+    result = get_catalog(
+        task=task,
+        search=search,
+        size=size,
+        installed=installed,
+        featured=featured,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    provider = get_provider()
+    installed_names = set(provider.list_models())
+
+    models = []
+    for m in result.models:
+        source = "ollama" if m.name in installed_names else "native"
+        models.append(
+            {
+                "name": m.name,
+                "size_gb": m.size_gb,
+                "min_ram_gb": m.min_ram_gb,
+                "description": m.description,
+                "installed": m.name in installed_names,
+                "source": source,
+            }
+        )
+
+    return {
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+        "models": models,
+    }
+
+
+async def models_installed() -> dict[str, Any]:
+    """Return list of installed models with their source."""
+    from lilbee.model_manager import ModelSource, get_model_manager
+
+    manager = get_model_manager()
+    names = manager.list_installed()
+    models = []
+    for name in names:
+        src = manager.get_source(name)
+        source_str = src.value if src is not None else ModelSource.OLLAMA.value
+        models.append({"name": name, "source": source_str})
+    return {"models": models}
+
+
+async def models_pull(model: str, *, source: str = "ollama") -> AsyncGenerator[str, None]:
+    """Yield SSE progress events while pulling a model."""
+    yield ""  # force generator
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
+    src = _parse_source(source)
+    try:
+        events: list[str] = []
+
+        def _on_progress(data: dict[str, Any]) -> None:
+            events.append(sse_event("progress", data))
+
+        manager.pull(model, src, on_progress=_on_progress)
+        for event in events:
+            yield event
+    except Exception as exc:
+        yield sse_event("error", {"message": str(exc)})
+
+
+async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]:
+    """Delete a model. Returns {deleted, model, freed_gb}."""
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
+    src = _parse_source(source)
+    deleted = manager.remove(model, src)
+    return {"deleted": deleted, "model": model, "freed_gb": 0.0}

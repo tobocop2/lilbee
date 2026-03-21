@@ -7,7 +7,7 @@ license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "knowledge-base", "rag", "ollama", "lancedb", "mcp",
+    "knowledge-base", "rag", "lancedb", "mcp",
     "vector-search", "ocr", "pdf", "local-llm", "offline",
 ]
 classifiers = [
@@ -26,7 +26,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "ollama",
     "lancedb",
     "kreuzberg",
     "filelock",

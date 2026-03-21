@@ -67,10 +67,10 @@ def _ensure_vision_model() -> None:
 
     import sys
 
-    from lilbee.cli.chat import list_ollama_models
+    from lilbee.cli.chat import list_installed_models
 
     try:
-        installed = set(list_ollama_models())
+        installed = set(list_installed_models())
     except Exception:
         console.print(
             f"[{theme.WARNING}]Warning: Cannot connect to Ollama."
@@ -86,14 +86,14 @@ def _ensure_vision_model() -> None:
 
 def _validate_configured_vision() -> None:
     """Check that a pre-configured vision model is available; pull if needed."""
-    from lilbee.cli.chat import list_ollama_models
+    from lilbee.cli.chat import list_installed_models
     from lilbee.models import ensure_tag
 
     tagged = ensure_tag(cfg.vision_model)
     cfg.vision_model = tagged
 
     try:
-        installed = set(list_ollama_models())
+        installed = set(list_installed_models())
     except Exception:
         # Can't reach Ollama — keep the config and let downstream handle errors
         return

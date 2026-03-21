@@ -10,25 +10,24 @@ _VISION_PREFIX = "/vision "
 _SET_PREFIX = "/set "
 
 
-def list_ollama_models(*, exclude_vision: bool = False) -> list[str]:
-    """Return installed Ollama model names with explicit tags, excluding embedding models.
+def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
+    """Return installed model names with explicit tags, excluding embedding models.
 
     When *exclude_vision* is True, also filters out known vision catalog models.
     """
-    try:
-        import ollama
+    from lilbee.providers import get_provider
 
+    try:
+        provider = get_provider()
         embed_base = cfg.embedding_model.split(":")[0]
-        models = [
-            m.model for m in ollama.list().models if m.model and m.model.split(":")[0] != embed_base
-        ]
+        models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
         if exclude_vision:
             from lilbee.models import VISION_CATALOG
 
             vision_names = {m.name for m in VISION_CATALOG}
             models = [m for m in models if m not in vision_names]
         return models
-    except (ConnectionError, OSError):
+    except Exception:
         return []
 
 
@@ -48,7 +47,7 @@ def make_completer():  # type: ignore[no-untyped-def]
                 yield from PathCompleter(expanduser=True).get_completions(sub_doc, complete_event)
             elif text.startswith(_MODEL_PREFIX):
                 prefix = text[len(_MODEL_PREFIX) :]
-                for name in list_ollama_models(exclude_vision=True):
+                for name in list_installed_models(exclude_vision=True):
                     if name.startswith(prefix):
                         yield Completion(name, start_position=-len(prefix))
             elif text.startswith(_SET_PREFIX):
