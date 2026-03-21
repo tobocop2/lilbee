@@ -1,11 +1,12 @@
 """Tests for Config dataclass and env var overrides."""
 
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from lilbee.config import CHUNKS_TABLE, DEFAULT_IGNORE_DIRS, SOURCES_TABLE, Config
+from lilbee.config import CHUNKS_TABLE, DEFAULT_IGNORE_DIRS, SOURCES_TABLE, Config, _load_setting
 
 
 class TestFromEnvDefaults:
@@ -97,29 +98,35 @@ class TestEnvVarOverrides:
 class TestPersistedChatModel:
     def test_config_toml_used_when_no_env_var(self):
         env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
+
+        def fake_get(root, key):
+            if key == "chat_model":
+                return "my-saved-model"
+            return None
+
         with (
             mock.patch.dict(os.environ, env, clear=True),
-            mock.patch("lilbee.settings.get", return_value="my-saved-model"),
+            mock.patch("lilbee.settings.get", side_effect=fake_get),
         ):
             c = Config.from_env()
             assert c.chat_model == "my-saved-model"
 
     def test_env_var_overrides_config_toml(self):
-        # When LILBEE_CHAT_MODEL is set, settings.get must NOT be called for chat_model.
-        # We also set LILBEE_VISION_MODEL to avoid settings reads.
+        # When LILBEE_CHAT_MODEL is set, _load_chat_model skips settings.get
+        # for chat_model. Other fields still call settings.get (that's expected).
         with (
             mock.patch.dict(
                 os.environ,
-                {
-                    "LILBEE_CHAT_MODEL": "env-model",
-                    "LILBEE_VISION_MODEL": "noop",
-                },
+                {"LILBEE_CHAT_MODEL": "env-model"},
             ),
-            mock.patch("lilbee.settings.get") as mock_get,
+            mock.patch("lilbee.settings.get", return_value=None) as mock_get,
         ):
             c = Config.from_env()
-            mock_get.assert_not_called()
             assert c.chat_model == "env-model"
+            # settings.get should not be called with "chat_model" key
+            # (but may be called for other keys like embedding_model)
+            for call in mock_get.call_args_list:
+                assert call[0][1] != "chat_model"
 
     def test_no_persisted_value_keeps_default(self):
         env = {k: v for k, v in os.environ.items() if k != "LILBEE_CHAT_MODEL"}
@@ -355,3 +362,255 @@ class TestIgnoreDirs:
             c = Config.from_env()
             assert "foo" in c.ignore_dirs
             assert "bar" in c.ignore_dirs
+
+
+class TestLoadSettingHelper:
+    def test_returns_default_when_no_env_and_no_saved(self, tmp_path):
+        with mock.patch("lilbee.settings.get", return_value=None):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.7
+
+    def test_returns_saved_when_no_env(self, tmp_path):
+        with mock.patch("lilbee.settings.get", return_value="0.5"):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.5
+
+    def test_env_var_takes_precedence(self, tmp_path):
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_TEMPERATURE": "0.3"}),
+            mock.patch("lilbee.settings.get", return_value="0.5"),
+        ):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.3
+
+    def test_corrupt_toml_falls_back_to_default(self, tmp_path):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=ValueError("bad")),
+        ):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.7
+
+    def test_os_error_falls_back_to_default(self, tmp_path):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=OSError("disk error")),
+        ):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.7
+
+    def test_empty_saved_value_returns_default(self, tmp_path):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", return_value=""),
+        ):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", 0.7, float)
+        assert result == 0.7
+
+    def test_int_type_coercion(self, tmp_path):
+        with mock.patch("lilbee.settings.get", return_value="42"):
+            result = _load_setting(tmp_path, "seed", "SEED", 0, int)
+        assert result == 42
+        assert isinstance(result, int)
+
+    def test_str_type_coercion(self, tmp_path):
+        with mock.patch("lilbee.settings.get", return_value="my-model"):
+            result = _load_setting(tmp_path, "embedding_model", "EMBEDDING_MODEL", "default", str)
+        assert result == "my-model"
+
+    def test_returns_none_default_for_optional(self, tmp_path):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", return_value=None),
+        ):
+            result = _load_setting(tmp_path, "temperature", "TEMPERATURE", None, float)
+        assert result is None
+
+
+class TestPersistedSettings:
+    """Test that all settings load from config.toml at startup."""
+
+    def _fake_get(self, data):
+        def fn(root, key):
+            return data.get(key)
+
+        return fn
+
+    def test_embedding_model_from_config(self):
+        saved = {"embedding_model": "my-embed"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.embedding_model == "my-embed"
+
+    def test_temperature_from_config(self):
+        saved = {"temperature": "0.5"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.temperature == 0.5
+
+    def test_top_p_from_config(self):
+        saved = {"top_p": "0.9"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.top_p == 0.9
+
+    def test_top_k_from_config(self):
+        saved = {"top_k": "20"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.top_k == 20
+
+    def test_top_k_sampling_from_config(self):
+        saved = {"top_k_sampling": "40"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.top_k_sampling == 40
+
+    def test_repeat_penalty_from_config(self):
+        saved = {"repeat_penalty": "1.2"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.repeat_penalty == 1.2
+
+    def test_num_ctx_from_config(self):
+        saved = {"num_ctx": "4096"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.num_ctx == 4096
+
+    def test_seed_from_config(self):
+        saved = {"seed": "123"}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.seed == 123
+
+    def test_system_prompt_from_config(self):
+        saved = {"system_prompt": "You are a pirate."}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.system_prompt == "You are a pirate."
+
+    def test_env_var_overrides_config_toml_for_temperature(self):
+        saved = {"temperature": "0.5"}
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_TEMPERATURE": "0.9"}),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.temperature == 0.9
+
+    def test_env_var_overrides_config_toml_for_system_prompt(self):
+        saved = {"system_prompt": "Be verbose."}
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_SYSTEM_PROMPT": "Be brief."}),
+            mock.patch("lilbee.settings.get", side_effect=self._fake_get(saved)),
+        ):
+            c = Config.from_env()
+            assert c.system_prompt == "Be brief."
+
+
+class TestEmptyStringValidation:
+    def test_empty_chat_model_rejected(self):
+        with pytest.raises(Exception, match="at least 1 character"):
+            Config(
+                data_root=Path("/tmp"),
+                documents_dir=Path("/tmp/docs"),
+                data_dir=Path("/tmp/data"),
+                lancedb_dir=Path("/tmp/data/lancedb"),
+                chat_model="",
+                embedding_model="nomic-embed-text",
+                embedding_dim=768,
+                chunk_size=512,
+                chunk_overlap=100,
+                max_embed_chars=2000,
+                top_k=10,
+                max_distance=0.7,
+                system_prompt="You are helpful.",
+                ignore_dirs=frozenset(),
+            )
+
+    def test_empty_embedding_model_rejected(self):
+        with pytest.raises(Exception, match="at least 1 character"):
+            Config(
+                data_root=Path("/tmp"),
+                documents_dir=Path("/tmp/docs"),
+                data_dir=Path("/tmp/data"),
+                lancedb_dir=Path("/tmp/data/lancedb"),
+                chat_model="qwen3:8b",
+                embedding_model="",
+                embedding_dim=768,
+                chunk_size=512,
+                chunk_overlap=100,
+                max_embed_chars=2000,
+                top_k=10,
+                max_distance=0.7,
+                system_prompt="You are helpful.",
+                ignore_dirs=frozenset(),
+            )
+
+    def test_empty_system_prompt_rejected(self):
+        with pytest.raises(Exception, match="at least 1 character"):
+            Config(
+                data_root=Path("/tmp"),
+                documents_dir=Path("/tmp/docs"),
+                data_dir=Path("/tmp/data"),
+                lancedb_dir=Path("/tmp/data/lancedb"),
+                chat_model="qwen3:8b",
+                embedding_model="nomic-embed-text",
+                embedding_dim=768,
+                chunk_size=512,
+                chunk_overlap=100,
+                max_embed_chars=2000,
+                top_k=10,
+                max_distance=0.7,
+                system_prompt="",
+                ignore_dirs=frozenset(),
+            )
+
+    def test_empty_vision_model_allowed(self):
+        """vision_model is nullable — empty string is valid."""
+        c = Config(
+            data_root=Path("/tmp"),
+            documents_dir=Path("/tmp/docs"),
+            data_dir=Path("/tmp/data"),
+            lancedb_dir=Path("/tmp/data/lancedb"),
+            chat_model="qwen3:8b",
+            embedding_model="nomic-embed-text",
+            embedding_dim=768,
+            chunk_size=512,
+            chunk_overlap=100,
+            max_embed_chars=2000,
+            top_k=10,
+            max_distance=0.7,
+            system_prompt="You are helpful.",
+            ignore_dirs=frozenset(),
+            vision_model="",
+        )
+        assert c.vision_model == ""
