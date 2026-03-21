@@ -20,7 +20,11 @@ def get_provider() -> LLMProvider:
 
     provider_name = cfg.llm_provider
 
-    if provider_name == "llama-cpp":
+    if provider_name == "auto":
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        _provider = RoutingProvider()
+    elif provider_name == "llama-cpp":
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         _provider = LlamaCppProvider()
