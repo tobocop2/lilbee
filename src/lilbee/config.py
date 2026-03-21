@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_float, env_int, env_int_optional
+from lilbee.platform import default_data_dir, env, env_int
 
 log = logging.getLogger(__name__)
 
@@ -43,15 +43,15 @@ class Config(BaseModel):
     documents_dir: Path
     data_dir: Path
     lancedb_dir: Path
-    chat_model: str
-    embedding_model: str
+    chat_model: str = Field(min_length=1)
+    embedding_model: str = Field(min_length=1)
     embedding_dim: int = Field(ge=1)
     chunk_size: int = Field(ge=1)
     chunk_overlap: int = Field(ge=0)
     max_embed_chars: int = Field(ge=1)
     top_k: int = Field(ge=1)
     max_distance: float = Field(ge=0.0)
-    system_prompt: str
+    system_prompt: str = Field(min_length=1)
     ignore_dirs: frozenset[str]
     vision_model: str = ""
     vision_timeout: float = Field(default=120.0, ge=0.0)
@@ -96,25 +96,38 @@ class Config(BaseModel):
             name.strip() for name in extra.split(",") if name.strip()
         )
 
+        _DEFAULT_SYSTEM_PROMPT = (
+            "You are a precise, direct assistant grounded in the provided context. "
+            "Answer using only the context — if it doesn't contain enough information, "
+            "say so rather than guessing. Be specific: quote relevant passages, cite file "
+            "paths, and prefer exact values over approximations. For code, prefer working "
+            "examples over abstract explanations. Keep responses concise unless asked to "
+            "elaborate."
+        )
+
         return cls(
             data_root=data_root,
             documents_dir=data_root / "documents",
             data_dir=data_root / "data",
             lancedb_dir=data_root / "data" / "lancedb",
             chat_model=chat_model,
-            embedding_model=env("EMBEDDING_MODEL", "nomic-embed-text"),
-            embedding_dim=env_int("EMBEDDING_DIM", 768),
-            chunk_size=env_int("CHUNK_SIZE", 512),
-            chunk_overlap=env_int("CHUNK_OVERLAP", 100),
-            max_embed_chars=env_int("MAX_EMBED_CHARS", 2000),
-            top_k=env_int("TOP_K", 10),
-            max_distance=float(env("MAX_DISTANCE", "0.7")),
-            system_prompt=env(
+            embedding_model=_load_setting(
+                data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str
+            ),
+            embedding_dim=_load_setting(data_root, "embedding_dim", "EMBEDDING_DIM", 768, int),
+            chunk_size=_load_setting(data_root, "chunk_size", "CHUNK_SIZE", 512, int),
+            chunk_overlap=_load_setting(data_root, "chunk_overlap", "CHUNK_OVERLAP", 100, int),
+            max_embed_chars=_load_setting(
+                data_root, "max_embed_chars", "MAX_EMBED_CHARS", 2000, int
+            ),
+            top_k=_load_setting(data_root, "top_k", "TOP_K", 10, int),
+            max_distance=_load_setting(data_root, "max_distance", "MAX_DISTANCE", 0.7, float),
+            system_prompt=_load_setting(
+                data_root,
+                "system_prompt",
                 "SYSTEM_PROMPT",
-                "You are a helpful technical assistant. Answer questions using "
-                "the provided context. Be specific — prefer exact numbers, part numbers, "
-                "and measurements over vague references. Cite facts directly from the context. "
-                "Do not make up information.",
+                _DEFAULT_SYSTEM_PROMPT,
+                str,
             ),
             ignore_dirs=ignore_dirs,
             vision_model=vision_model,
@@ -122,13 +135,29 @@ class Config(BaseModel):
             server_host=env("SERVER_HOST", "127.0.0.1"),
             server_port=env_int("SERVER_PORT", 0),
             cors_origins=_parse_cors_origins(),
-            temperature=env_float("TEMPERATURE"),
-            top_p=env_float("TOP_P"),
-            top_k_sampling=env_int_optional("TOP_K_SAMPLING"),
-            repeat_penalty=env_float("REPEAT_PENALTY"),
-            num_ctx=env_int_optional("NUM_CTX"),
-            seed=env_int_optional("SEED"),
+            temperature=_load_setting(data_root, "temperature", "TEMPERATURE", None, float),
+            top_p=_load_setting(data_root, "top_p", "TOP_P", None, float),
+            top_k_sampling=_load_setting(data_root, "top_k_sampling", "TOP_K_SAMPLING", None, int),
+            repeat_penalty=_load_setting(
+                data_root, "repeat_penalty", "REPEAT_PENALTY", None, float
+            ),
+            num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
+            seed=_load_setting(data_root, "seed", "SEED", None, int),
         )
+
+
+def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:
+    """Load setting with precedence: LILBEE_<ENV> env > config.toml > default."""
+    raw = os.environ.get(f"LILBEE_{env_var}")
+    if raw is not None:
+        return typ(raw)
+    try:
+        saved = settings.get(data_root, key)
+    except (ValueError, OSError):
+        saved = None
+    if saved:
+        return typ(saved)
+    return default
 
 
 def _resolve_data_root() -> Path:
