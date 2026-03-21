@@ -1219,6 +1219,14 @@ class TestIngestMarkdownEdgeCases:
             result = await ingest_markdown(md, "blank.md")
         assert result == []
 
+    async def test_frontmatter_only_returns_empty(self, isolated_env):
+        from lilbee.ingest import ingest_markdown
+
+        md = isolated_env / "fm_only.md"
+        md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
+        result = await ingest_markdown(md, "fm_only.md")
+        assert result == []
+
 
 class TestIngestStructuredEdgeCases:
     async def test_empty_preprocessed_text_returns_empty(self, isolated_env):
