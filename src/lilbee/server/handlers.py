@@ -139,6 +139,7 @@ async def ask_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
+        diversify_sources,
         search_context,
         sort_by_relevance,
     )
@@ -149,6 +150,7 @@ async def ask_stream(
         return
 
     results = sort_by_relevance(results)
+    results = diversify_sources(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
@@ -231,6 +233,7 @@ async def chat_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
+        diversify_sources,
         search_context,
         sort_by_relevance,
     )
@@ -241,6 +244,7 @@ async def chat_stream(
         return
 
     results = sort_by_relevance(results)
+    results = diversify_sources(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
