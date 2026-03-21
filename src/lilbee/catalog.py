@@ -301,12 +301,32 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
         return sorted(models, key=lambda m: (not m.featured, -m.downloads))
 
 
+# Maps Ollama-style names to catalog display names for lookup
+_OLLAMA_TO_CATALOG: dict[str, str] = {
+    "qwen3:0.6b": "Qwen3 0.6B",
+    "qwen3:1.7b": "Qwen3 0.6B",  # closest small model
+    "qwen3:4b": "Qwen3 4B",
+    "qwen3:8b": "Qwen3 8B",
+    "mistral:7b": "Mistral 7B Instruct",
+    "qwen3-coder:30b": "Qwen3-Coder 30B A3B",
+    "nomic-embed-text": "Nomic Embed Text v1.5",
+    "nomic-embed-text:latest": "Nomic Embed Text v1.5",
+}
+
+
 def find_catalog_entry(name: str) -> CatalogModel | None:
-    """Find a featured model by name (case-insensitive)."""
+    """Find a featured model by name, display name, or Ollama-style name."""
     name_lower = name.lower()
+    # Try direct match on display name
     for model in FEATURED_ALL:
         if model.name.lower() == name_lower:
             return model
+    # Try Ollama-style name mapping
+    display_name = _OLLAMA_TO_CATALOG.get(name_lower)
+    if display_name:
+        for model in FEATURED_ALL:
+            if model.name == display_name:
+                return model
     return None
 
 

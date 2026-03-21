@@ -240,7 +240,7 @@ def validate_disk_and_pull(
         raise RuntimeError(
             f"Not enough disk space to download '{model_info.name}': "
             f"need {required_gb:.1f} GB, have {free_gb:.1f} GB free. "
-            f"Free up space or manually pull a smaller model with 'ollama pull <model>'."
+            f"Free up space or choose a smaller model."
         )
 
     pull_with_progress(model_info.name, console=console)
@@ -273,7 +273,7 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
             if total > 0:
                 progress.update(ptask, total=total, completed=completed)
 
-        manager.pull(model, ModelSource.OLLAMA, on_progress=_on_progress)
+        manager.pull(model, ModelSource.NATIVE, on_progress=_on_progress)
     console.print(f"Model '{model}' ready.")
 
 
