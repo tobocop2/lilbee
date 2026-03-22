@@ -771,6 +771,22 @@ class TestModelsDelete:
         assert result["freed_gb"] == 0.0
 
 
+class TestModelsShow:
+    async def test_returns_params(self):
+        mock_provider = MagicMock()
+        mock_provider.show_model.return_value = {"parameters": "temp 0.7"}
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_show("qwen3:8b")
+        assert result == {"parameters": "temp 0.7"}
+
+    async def test_returns_empty_when_none(self):
+        mock_provider = MagicMock()
+        mock_provider.show_model.return_value = None
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_show("unknown")
+        assert result == {}
+
+
 class TestDeleteDocuments:
     @patch("lilbee.store.get_sources")
     @patch("lilbee.store.delete_source")

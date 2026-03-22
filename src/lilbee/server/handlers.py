@@ -491,6 +491,13 @@ async def list_documents() -> dict[str, Any]:
     }
 
 
+async def models_show(model: str) -> dict[str, Any]:
+    """Return model metadata/parameters. Returns empty dict if unavailable."""
+    provider = get_provider()
+    result = provider.show_model(model)
+    return result if result is not None else {}
+
+
 def _parse_source(source: str) -> ModelSource:
     """Convert a source string to ModelSource enum."""
     from lilbee.model_manager import ModelSource
