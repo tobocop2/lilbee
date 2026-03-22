@@ -224,3 +224,38 @@ All settings are configurable via environment variables:
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
 
 CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
+
+## Advanced: Cross-Encoder Reranking
+
+By default, lilbee uses hybrid search (BM25 + vector) with MMR diversity. For higher precision, you can optionally enable cross-encoder reranking, which re-scores the top search results using a more accurate (but slower) model.
+
+### Why it's optional
+
+Cross-encoder reranking requires `sentence-transformers`, which depends on PyTorch (~2GB). This is too heavy to include by default — most users get good results without it.
+
+### Installation
+
+```bash
+pip install lilbee[reranker]
+```
+
+### Configuration
+
+```bash
+# Set a reranker model (enables reranking)
+export LILBEE_RERANKER_MODEL="cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# How many candidates to rerank (default: 20)
+export LILBEE_RERANK_CANDIDATES=20
+```
+
+### How it works
+
+After the normal search pipeline returns candidates, the cross-encoder scores each (query, chunk) pair. Results are blended with the original ranking using position-aware weights — top results trust the original ranking more, lower results trust the reranker more. This catches cases where the vector/BM25 search ranked something incorrectly.
+
+### Limitations
+
+- Adds ~200-500ms per query (depends on model and candidate count)
+- Requires downloading a reranker model (~100MB)
+- Only helps when you have many candidates that need precise ordering
+- Without it, hybrid search + MMR already provides good results for most use cases

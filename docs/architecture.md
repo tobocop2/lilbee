@@ -300,22 +300,3 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, ollama, litellm | auto = use Ollama if reachable, otherwise llama-cpp |
 | `LILBEE_OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint | Also reads `OLLAMA_HOST` for backwards compatibility. Supports remote Ollama servers. |
 
----
-
-## Optional: Cross-Encoder Reranking
-
-For higher precision search results, install the reranker extra:
-
-```bash
-pip install lilbee[reranker]
-# or with uv:
-uv pip install lilbee[reranker]
-```
-
-This adds `sentence-transformers` (~2GB, includes PyTorch) which enables cross-encoder reranking. Configure with:
-
-```bash
-export LILBEE_RERANKER_MODEL="cross-encoder/ms-marco-MiniLM-L-6-v2"
-```
-
-When set, search results are re-scored by a cross-encoder model for more precise relevance ranking. Without this extra installed, reranking is silently skipped and search works normally with hybrid search + MMR.
