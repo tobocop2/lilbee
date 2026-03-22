@@ -1118,6 +1118,7 @@ dependencies = [
     { name = "lancedb" },
     { name = "litellm" },
     { name = "litestar" },
+    { name = "llama-cpp-python" },
     { name = "mcp" },
     { name = "pillow" },
     { name = "prompt-toolkit" },
@@ -1127,11 +1128,6 @@ dependencies = [
     { name = "tree-sitter-language-pack" },
     { name = "typer" },
     { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-llama-cpp = [
-    { name = "llama-cpp-python" },
 ]
 
 [package.dev-dependencies]
@@ -1156,7 +1152,7 @@ requires-dist = [
     { name = "lancedb" },
     { name = "litellm" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "llama-cpp-python", marker = "extra == 'llama-cpp'" },
+    { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
@@ -1167,7 +1163,6 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["llama-cpp"]
 
 [package.metadata.requires-dev]
 dev = [
