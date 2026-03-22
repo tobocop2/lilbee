@@ -3,6 +3,7 @@
 import logging
 import math
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import lancedb
 import pyarrow as pa
@@ -281,8 +282,9 @@ def _adaptive_filter(
 ) -> list[SearchChunk]:
     """Widen cosine distance threshold when too few results.
 
-    Adapts the recursive threshold widening pattern described in
-    adaptive retrieval literature. Step size and cap are configurable.
+    Inspired by grantflow's (grantflow-ai/grantflow) adaptive retrieval
+    pattern which widens thresholds on recursive retry. Step size and
+    cap are configurable via ``cfg.adaptive_threshold_step``.
 
     Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
     Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
