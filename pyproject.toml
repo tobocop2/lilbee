@@ -42,10 +42,8 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "llama-cpp-python",
 ]
-
-[project.optional-dependencies]
-llama-cpp = ["llama-cpp-python"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
