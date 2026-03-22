@@ -118,7 +118,9 @@ _EXPANSION_PROMPT = (
     "Question: {question}"
 )
 
-# Token budget for the expansion LLM call
+# Max tokens the LLM can generate for expansion variants.
+# 200 tokens is enough for 3 one-line query variants (~50 tokens each
+# plus formatting). Not configurable — this is an internal budget.
 _EXPANSION_MAX_TOKENS = 200
 
 
