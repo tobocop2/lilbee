@@ -821,6 +821,19 @@ class TestDeleteDocuments:
         assert not f.exists()
 
 
+class TestGetConfig:
+    async def test_returns_all_config_keys(self):
+        result = await handlers.get_config()
+        assert "chat_model" in result
+        assert "system_prompt" in result
+        assert "ollama_url" in result
+        assert "diversity_max_per_source" in result
+        assert "mmr_lambda" in result
+        assert "query_expansion_count" in result
+        assert "adaptive_threshold_step" in result
+        assert "temperature" in result
+
+
 class TestListDocuments:
     @patch("lilbee.store.get_sources")
     async def test_returns_documents(self, mock_sources):
