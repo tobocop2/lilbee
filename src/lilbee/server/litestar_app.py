@@ -217,9 +217,13 @@ async def models_delete_route(model: str, source: str = "native") -> dict[str, A
 
 
 @get("/api/documents")
-async def documents_list_route() -> dict[str, Any]:
-    """List all indexed documents with metadata."""
-    return await handlers.list_documents()
+async def documents_list_route(
+    search: str = Parameter(query="search", default=""),
+    limit: int = Parameter(query="limit", default=50),
+    offset: int = Parameter(query="offset", default=0),
+) -> dict[str, Any]:
+    """List indexed documents with metadata, paginated and searchable."""
+    return await handlers.list_documents(search=search, limit=limit, offset=offset)
 
 
 @post("/api/documents/remove")

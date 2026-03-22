@@ -473,11 +473,20 @@ async def delete_documents(names: list[str], *, delete_files: bool = False) -> d
     return {"removed": removed, "not_found": not_found}
 
 
-async def list_documents() -> dict[str, Any]:
-    """Return all indexed documents with metadata."""
+async def list_documents(
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return indexed documents with metadata, paginated and filterable."""
     from lilbee.store import get_sources
 
     sources = get_sources()
+    if search:
+        search_lower = search.lower()
+        sources = [s for s in sources if search_lower in s["filename"].lower()]
+    total = len(sources)
+    page = sources[offset : offset + limit]
     return {
         "documents": [
             {
@@ -485,9 +494,11 @@ async def list_documents() -> dict[str, Any]:
                 "chunk_count": s.get("chunk_count", 0),
                 "ingested_at": s.get("ingested_at", ""),
             }
-            for s in sources
+            for s in page
         ],
-        "total": len(sources),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
     }
 
 
