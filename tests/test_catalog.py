@@ -20,6 +20,14 @@ from lilbee.catalog import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_hf_cache():
+    """Clear the HuggingFace API cache between tests."""
+    catalog._hf_cache.clear()
+    yield
+    catalog._hf_cache.clear()
+
+
 class TestCatalogModelDataclass:
     def test_frozen(self) -> None:
         m = FEATURED_CHAT[0]
