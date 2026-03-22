@@ -243,6 +243,17 @@ class TestExpandQuery:
 
         assert _expand_query("q") == []
 
+    def test_disabled_when_count_zero(self):
+        from lilbee.config import cfg
+        from lilbee.query import _expand_query
+
+        old = cfg.query_expansion_count
+        cfg.query_expansion_count = 0
+        try:
+            assert _expand_query("anything") == []
+        finally:
+            cfg.query_expansion_count = old
+
     @mock.patch("lilbee.query.get_provider")
     def test_returns_empty_on_non_string(self, mock_get_provider):
         mock_provider = mock.MagicMock()
