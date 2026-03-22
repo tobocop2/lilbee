@@ -502,6 +502,35 @@ async def list_documents(
     }
 
 
+async def get_config() -> dict[str, Any]:
+    """Return all user-facing configuration values."""
+    from lilbee.config import cfg
+
+    return {
+        "chat_model": cfg.chat_model,
+        "embedding_model": cfg.embedding_model,
+        "vision_model": cfg.vision_model,
+        "ollama_url": cfg.ollama_url,
+        "system_prompt": cfg.system_prompt,
+        "top_k": cfg.top_k,
+        "max_distance": cfg.max_distance,
+        "chunk_size": cfg.chunk_size,
+        "chunk_overlap": cfg.chunk_overlap,
+        "temperature": cfg.temperature,
+        "top_p": cfg.top_p,
+        "top_k_sampling": cfg.top_k_sampling,
+        "repeat_penalty": cfg.repeat_penalty,
+        "num_ctx": cfg.num_ctx,
+        "seed": cfg.seed,
+        "llm_provider": cfg.llm_provider,
+        "diversity_max_per_source": cfg.diversity_max_per_source,
+        "mmr_lambda": cfg.mmr_lambda,
+        "candidate_multiplier": cfg.candidate_multiplier,
+        "query_expansion_count": cfg.query_expansion_count,
+        "adaptive_threshold_step": cfg.adaptive_threshold_step,
+    }
+
+
 async def models_show(model: str) -> dict[str, Any]:
     """Return model metadata/parameters. Returns empty dict if unavailable."""
     provider = get_provider()
