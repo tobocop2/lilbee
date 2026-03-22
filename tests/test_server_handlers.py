@@ -838,3 +838,26 @@ class TestListDocuments:
         result = await handlers.list_documents()
         assert result["total"] == 0
         assert result["documents"] == []
+
+    @patch("lilbee.store.get_sources")
+    async def test_pagination(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
+        ]
+        result = await handlers.list_documents(limit=3, offset=2)
+        assert result["total"] == 10
+        assert len(result["documents"]) == 3
+        assert result["documents"][0]["filename"] == "doc2.md"
+        assert result["limit"] == 3
+        assert result["offset"] == 2
+
+    @patch("lilbee.store.get_sources")
+    async def test_search_filter(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": "readme.md", "chunk_count": 3},
+            {"filename": "setup.py", "chunk_count": 1},
+            {"filename": "readme_dev.md", "chunk_count": 2},
+        ]
+        result = await handlers.list_documents(search="readme")
+        assert result["total"] == 2
+        assert all("readme" in d["filename"] for d in result["documents"])
