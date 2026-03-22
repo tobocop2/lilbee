@@ -94,6 +94,43 @@ class Config(BaseModel):
     # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
     adaptive_threshold_step: float = Field(default=0.2, gt=0.0)
 
+    # Validate LLM-generated expansion variants to prevent query drift.
+    # Checks token overlap with original query (≥ 0.3) and deduplicates
+    # near-identical variants (cosine similarity > 0.85).
+    expansion_guardrails: bool = True
+
+    # BM25 confidence score above which query expansion is skipped entirely.
+    # Based on 90th percentile of sigmoid-normalized BM25 score distribution.
+    # Higher = expansion runs more often. Calibrate per-corpus.
+    expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    # Minimum gap between top-1 and top-2 BM25 scores to skip expansion.
+    # Approximately 1 standard deviation of typical score spread.
+    expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # Maximum chunks included in LLM context after adaptive selection.
+    # More = more complete answers but higher latency and token cost.
+    max_context_sources: int = Field(default=5, ge=1)
+
+    # Enable HyDE (Hypothetical Document Embeddings) for search.
+    # Gao et al. 2022. Adds ~500ms per query. Best for vague queries.
+    hyde: bool = False
+
+    # Weight for HyDE results relative to original search (0.0-1.0).
+    # Lower = less trust in hypothetical documents.
+    hyde_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+
+    # Cross-encoder model for reranking. Empty = disabled.
+    # Requires sentence-transformers installed.
+    reranker_model: str = ""
+
+    # Number of candidates to rerank with cross-encoder.
+    rerank_candidates: int = Field(default=20, ge=1)
+
+    # Enable temporal filtering (date-based result filtering).
+    # Only activates when temporal keywords detected in query.
+    temporal_filtering: bool = True
+
     # Show reasoning model thinking process (<think>...</think> tags).
     # When False, thinking is stripped silently. When True, emitted as
     # separate SSE events (event: reasoning) for UI rendering.
@@ -196,6 +233,27 @@ class Config(BaseModel):
             ),
             adaptive_threshold_step=_load_setting(
                 data_root, "adaptive_threshold_step", "ADAPTIVE_THRESHOLD_STEP", 0.2, float
+            ),
+            expansion_guardrails=_load_setting(
+                data_root, "expansion_guardrails", "EXPANSION_GUARDRAILS", True, bool
+            ),
+            expansion_skip_threshold=_load_setting(
+                data_root, "expansion_skip_threshold", "EXPANSION_SKIP_THRESHOLD", 0.8, float
+            ),
+            expansion_skip_gap=_load_setting(
+                data_root, "expansion_skip_gap", "EXPANSION_SKIP_GAP", 0.15, float
+            ),
+            max_context_sources=_load_setting(
+                data_root, "max_context_sources", "MAX_CONTEXT_SOURCES", 5, int
+            ),
+            hyde=_load_setting(data_root, "hyde", "HYDE", False, bool),
+            hyde_weight=_load_setting(data_root, "hyde_weight", "HYDE_WEIGHT", 0.7, float),
+            reranker_model=_load_setting(data_root, "reranker_model", "RERANKER_MODEL", "", str),
+            rerank_candidates=_load_setting(
+                data_root, "rerank_candidates", "RERANK_CANDIDATES", 20, int
+            ),
+            temporal_filtering=_load_setting(
+                data_root, "temporal_filtering", "TEMPORAL_FILTERING", True, bool
             ),
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool

@@ -291,3 +291,66 @@ class TestAdaptiveFilter:
         ]
         filtered = _adaptive_filter(results, top_k=1, initial_threshold=0.3)
         assert len(filtered) == 0  # beyond max threshold of 1.0
+
+
+class TestRemoveDocuments:
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_removes_known_files(self, mock_del, mock_del_src, mock_sources, tmp_path):
+        mock_sources.return_value = [{"filename": "a.md"}, {"filename": "b.md"}]
+        result = store.remove_documents(["a.md"], documents_dir=tmp_path)
+        assert result.removed == ["a.md"]
+        assert result.not_found == []
+        mock_del.assert_called_once_with("a.md")
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_not_found(self, mock_sources, tmp_path):
+        mock_sources.return_value = []
+        result = store.remove_documents(["missing.md"], documents_dir=tmp_path)
+        assert result.removed == []
+        assert result.not_found == ["missing.md"]
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_deletes_physical_file(self, mock_del, mock_del_src, mock_sources, tmp_path):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        f = tmp_path / "a.md"
+        f.write_text("content")
+        result = store.remove_documents(["a.md"], delete_files=True, documents_dir=tmp_path)
+        assert result.removed == ["a.md"]
+        assert not f.exists()
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_blocks_path_traversal(self, mock_del, mock_del_src, mock_sources, tmp_path):
+        mock_sources.return_value = [{"filename": "../../../etc/passwd"}]
+        secret = tmp_path.parent / "secret.txt"
+        secret.write_text("don't delete me")
+        result = store.remove_documents(
+            ["../../../etc/passwd"], delete_files=True, documents_dir=tmp_path
+        )
+        assert result.removed == ["../../../etc/passwd"]
+        # File outside documents_dir should NOT be deleted
+        assert secret.exists()
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_nonexistent_file_still_removes_from_store(
+        self, mock_del, mock_del_src, mock_sources, tmp_path
+    ):
+        mock_sources.return_value = [{"filename": "gone.md"}]
+        result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
+        assert result.removed == ["gone.md"]
+        mock_del.assert_called_once()
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_uses_default_documents_dir(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        result = store.remove_documents(["a.md"])
+        assert result.removed == ["a.md"]
