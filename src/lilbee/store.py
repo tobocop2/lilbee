@@ -281,8 +281,8 @@ def _adaptive_filter(
 ) -> list[SearchChunk]:
     """Widen cosine distance threshold when too few results.
 
-    Inspired by grantflow (grantflow-ai/grantflow) which uses
-    ``threshold = 0.3 + 0.2 * iteration`` with recursive retry.
+    Adapts the recursive threshold widening pattern described in
+    adaptive retrieval literature. Step size and cap are configurable.
 
     Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
     Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
@@ -351,6 +351,53 @@ def delete_source(filename: str) -> None:
         table = _open_table(SOURCES_TABLE)
         if table is not None:
             _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+
+
+class RemoveResult:
+    """Result of a remove_documents operation."""
+
+    def __init__(self, removed: list[str], not_found: list[str]) -> None:
+        self.removed = removed
+        self.not_found = not_found
+
+
+def remove_documents(
+    names: list[str],
+    *,
+    delete_files: bool = False,
+    documents_dir: Path | None = None,
+) -> RemoveResult:
+    """Remove documents from the knowledge base by source name.
+
+    Looks up known sources, deletes chunks and source records for each.
+    If *delete_files* is True, resolves the path and verifies it is
+    contained within *documents_dir* before unlinking (path traversal guard).
+
+    Returns a RemoveResult with removed and not_found lists.
+    """
+    if documents_dir is None:
+        documents_dir = cfg.documents_dir
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_files:
+            path = (documents_dir / name).resolve()
+            if not path.is_relative_to(documents_dir.resolve()):
+                log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
+                continue
+            if path.exists():
+                path.unlink()
+
+    return RemoveResult(removed=removed, not_found=not_found)
 
 
 def drop_all() -> None:
