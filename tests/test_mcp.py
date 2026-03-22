@@ -11,6 +11,8 @@ from lilbee.mcp import (
     clean,
     lilbee_add,
     lilbee_init,
+    lilbee_list_documents,
+    lilbee_remove,
     lilbee_reset,
     lilbee_search,
     lilbee_status,
@@ -152,6 +154,50 @@ class TestLilbeeSync:
         (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = await lilbee_sync()
         assert "test.txt" in result["added"]
+
+
+class TestLilbeeRemove:
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_removes_known_file(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        result = lilbee_remove(["a.md"])
+        assert result["removed"] == ["a.md"]
+        assert result["not_found"] == []
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_not_found(self, mock_sources):
+        mock_sources.return_value = []
+        result = lilbee_remove(["missing.md"])
+        assert result["not_found"] == ["missing.md"]
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_delete_files_removes_from_disk(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        f = cfg.documents_dir / "a.md"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("content")
+        result = lilbee_remove(["a.md"], delete_files=True)
+        assert result["removed"] == ["a.md"]
+        assert not f.exists()
+
+
+class TestLilbeeListDocuments:
+    @mock.patch("lilbee.store.get_sources")
+    def test_returns_documents(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
+        result = lilbee_list_documents()
+        assert result["total"] == 1
+        assert result["documents"][0]["filename"] == "a.md"
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_empty(self, mock_sources):
+        mock_sources.return_value = []
+        result = lilbee_list_documents()
+        assert result["total"] == 0
 
 
 class TestLilbeeReset:
