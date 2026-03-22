@@ -332,16 +332,16 @@ class TestAskStream:
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_provider):
         mock_provider.return_value.chat.return_value = iter(["Hello", " world"])
-        tokens = list(ask_stream("test"))
-        combined = "".join(tokens)
+        stream_tokens = list(ask_stream("test"))
+        combined = "".join(st.content for st in stream_tokens)
         assert "Hello world" in combined
         assert "Sources:" in combined
 
     @mock.patch("lilbee.store.search", return_value=[])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_empty_results_yields_message(self, mock_embed, mock_search):
-        tokens = list(ask_stream("anything"))
-        assert any("No relevant documents" in t for t in tokens)
+        stream_tokens = list(ask_stream("anything"))
+        assert any("No relevant documents" in st.content for st in stream_tokens)
 
     @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
@@ -355,7 +355,6 @@ class TestAskStream:
         list(ask_stream("new question", history=history))
         call_args = mock_provider.return_value.chat.call_args
         messages = call_args[0][0]
-        # System + 2 history + user = 4 messages
         assert len(messages) == 4
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "previous question"
@@ -365,10 +364,19 @@ class TestAskStream:
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_skips_empty_tokens(self, mock_embed, mock_search, mock_provider):
         mock_provider.return_value.chat.return_value = iter(["", "data"])
-        tokens = list(ask_stream("test"))
-        # Empty string token should not appear as a separate yield
-        non_source_tokens = [t for t in tokens if "Sources:" not in t]
-        assert all(t != "" for t in non_source_tokens if t.strip())
+        stream_tokens = list(ask_stream("test"))
+        non_source = [st for st in stream_tokens if "Sources:" not in st.content]
+        assert all(st.content != "" for st in non_source)
+
+    @mock.patch("lilbee.query.get_provider")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_reasoning_stripped_by_default(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = iter(["<think>reasoning</think>answer"])
+        stream_tokens = list(ask_stream("test"))
+        combined = "".join(st.content for st in stream_tokens if not st.is_reasoning)
+        assert "reasoning" not in combined
+        assert "answer" in combined
 
 
 class TestGenerationOptions:
@@ -446,8 +454,8 @@ class TestAskStreamError:
             raise ConnectionError("lost connection")
 
         mock_provider.return_value.chat.return_value = failing_stream()
-        tokens = list(ask_stream("test"))
-        combined = "".join(tokens)
+        stream_tokens = list(ask_stream("test"))
+        combined = "".join(st.content for st in stream_tokens)
         assert "partial" in combined
         assert "Connection lost" in combined
 

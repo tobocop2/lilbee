@@ -94,6 +94,11 @@ class Config(BaseModel):
     # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
     adaptive_threshold_step: float = Field(default=0.2, gt=0.0)
 
+    # Show reasoning model thinking process (<think>...</think> tags).
+    # When False, thinking is stripped silently. When True, emitted as
+    # separate SSE events (event: reasoning) for UI rendering.
+    show_reasoning: bool = False
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
 
@@ -191,6 +196,9 @@ class Config(BaseModel):
             ),
             adaptive_threshold_step=_load_setting(
                 data_root, "adaptive_threshold_step", "ADAPTIVE_THRESHOLD_STEP", 0.2, float
+            ),
+            show_reasoning=_load_setting(
+                data_root, "show_reasoning", "SHOW_REASONING", False, bool
             ),
         )
 
