@@ -69,9 +69,26 @@ def _sort_key(r: SearchChunk) -> float:
     return float("inf")
 
 
+_MAX_PER_SOURCE = 3
+
+
 def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
     """Sort search results by relevance (works for both hybrid and vector results)."""
     return sorted(results, key=_sort_key)
+
+
+def diversify_sources(
+    results: list[SearchChunk], max_per_source: int = _MAX_PER_SOURCE
+) -> list[SearchChunk]:
+    """Cap results per source document to ensure diversity."""
+    counts: dict[str, int] = {}
+    diverse: list[SearchChunk] = []
+    for r in results:
+        count = counts.get(r.source, 0)
+        if count < max_per_source:
+            diverse.append(r)
+            counts[r.source] = count + 1
+    return diverse
 
 
 def build_context(results: list[SearchChunk]) -> str:
@@ -112,6 +129,7 @@ def ask_raw(
         )
 
     results = sort_by_relevance(results)
+    results = diversify_sources(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
@@ -153,6 +171,7 @@ def ask_stream(
         return
 
     results = sort_by_relevance(results)
+    results = diversify_sources(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
