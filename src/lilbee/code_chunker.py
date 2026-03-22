@@ -36,12 +36,48 @@ def get_parser(lang_name: str) -> tree_sitter.Parser | None:
         return None
 
 
+def _node_name(node: tree_sitter.Node) -> str:
+    """Extract the identifier name from a definition node."""
+    for child in node.children:
+        if child.type in ("identifier", "name", "property_identifier"):
+            return child.text.decode("utf-8", errors="replace") if child.text else ""
+    return ""
+
+
+def _symbol_type(node_type: str) -> str:
+    """Map tree-sitter node type to a human-readable symbol kind."""
+    _MAP = {
+        "function_definition": "function",
+        "function_declaration": "function",
+        "function_item": "function",
+        "method_declaration": "method",
+        "method": "method",
+        "class_definition": "class",
+        "class_declaration": "class",
+        "class_specifier": "class",
+        "struct_item": "struct",
+        "struct_specifier": "struct",
+        "struct_definition": "struct",
+        "enum_item": "enum",
+        "interface_declaration": "interface",
+        "trait_item": "trait",
+        "type_alias_declaration": "type",
+        "type_declaration": "type",
+        "impl_item": "impl",
+        "module": "module",
+        "module_definition": "module",
+    }
+    return _MAP.get(node_type, node_type.replace("_", " "))
+
+
 def _node_span(node: tree_sitter.Node, source: bytes) -> dict:
-    """Extract text and line range from an AST node."""
+    """Extract text, line range, and symbol metadata from an AST node."""
     return {
         "text": source[node.start_byte : node.end_byte].decode("utf-8", errors="replace"),
         "line_start": node.start_point.row + 1,
         "line_end": node.end_point.row + 1,
+        "symbol_name": _node_name(node),
+        "symbol_type": _symbol_type(node.type),
     }
 
 
@@ -110,16 +146,23 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     if not definitions:
         return _fallback_chunks(source_text)
 
-    prefix = f"# File: {file_path}\n\n"
-    return [
-        CodeChunk(
-            chunk=prefix + d["text"],
-            line_start=d["line_start"],
-            line_end=d["line_end"],
-            chunk_index=i,
+    chunks: list[CodeChunk] = []
+    for i, d in enumerate(definitions):
+        header = f"# File: {file_path}"
+        name = d.get("symbol_name", "")
+        kind = d.get("symbol_type", "")
+        if name and kind:
+            header += f" | {kind}: {name}"
+        header += f" (lines {d['line_start']}-{d['line_end']})"
+        chunks.append(
+            CodeChunk(
+                chunk=f"{header}\n\n{d['text']}",
+                line_start=d["line_start"],
+                line_end=d["line_end"],
+                chunk_index=i,
+            )
         )
-        for i, d in enumerate(definitions)
-    ]
+    return chunks
 
 
 def supported_extensions() -> set[str]:
