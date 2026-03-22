@@ -49,8 +49,13 @@ All settings override via environment variables:
 - `LILBEE_TOP_K` — retrieval result count (default: `5`)
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
-- `LILBEE_LLM_PROVIDER` — backend: `llama-cpp` (default), `ollama`, `openai`, `huggingface`
+- `LILBEE_LLM_PROVIDER` — backend: `auto` (default), `llama-cpp`, `ollama`, `openai`
 - `LILBEE_LLM_BASE_URL` — Ollama endpoint (default: `http://localhost:11434`)
+- `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
+- `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
+- `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)
+- `LILBEE_QUERY_EXPANSION_COUNT` — LLM-generated query variants, 0=disabled (default: `3`)
+- `LILBEE_ADAPTIVE_THRESHOLD_STEP` — distance threshold widening step (default: `0.2`)
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 
 CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision-timeout`, and `--log-level`.

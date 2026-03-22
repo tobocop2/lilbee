@@ -50,7 +50,7 @@ class SearchChunk(BaseModel):
     relevance_score: float | None = Field(None, alias="_relevance_score")
 
 
-_DEFAULT_MMR_LAMBDA = 0.5
+_DEFAULT_MMR_LAMBDA = 0.5  # fallback if called without config
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
@@ -257,31 +257,34 @@ def search(
         except Exception:
             log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
-    candidate_k = top_k * 3
+    candidate_k = top_k * cfg.candidate_multiplier
     rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
     results = [SearchChunk(**r) for r in rows]
     if max_distance > 0:
         results = _adaptive_filter(results, top_k, max_distance)
     if len(results) > top_k:
-        results = mmr_rerank(query_vector, results, top_k)
+        results = mmr_rerank(query_vector, results, top_k, lam=cfg.mmr_lambda)
     return results
 
 
-_THRESHOLD_STEP = 0.2
 _MAX_THRESHOLD = 1.0
 
 
 def _adaptive_filter(
     results: list[SearchChunk], top_k: int, initial_threshold: float
 ) -> list[SearchChunk]:
-    """Widen cosine distance threshold when too few results, up to _MAX_THRESHOLD."""
+    """Widen cosine distance threshold when too few results.
+
+    Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
+    """
     cap = max(initial_threshold, _MAX_THRESHOLD)
+    step = cfg.adaptive_threshold_step
     threshold = initial_threshold
     while threshold <= cap:
         filtered = [r for r in results if (r.distance or 0) <= threshold]
         if len(filtered) >= top_k:
             return filtered
-        threshold += _THRESHOLD_STEP
+        threshold += step
     return [r for r in results if (r.distance or 0) <= cap]
 
 

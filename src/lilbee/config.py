@@ -70,6 +70,30 @@ class Config(BaseModel):
     llm_base_url: str = "http://localhost:11434"
     llm_api_key: str = ""
 
+    # Retrieval quality knobs — defaults chosen from research across gno, grantflow, QMD
+    # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
+
+    # Max chunks per source document in results. Prevents one large file from
+    # dominating all top-k slots. 3 balances coverage vs diversity.
+    diversity_max_per_source: int = Field(default=3, ge=1)
+
+    # MMR relevance/diversity tradeoff. 0.0 = max diversity, 1.0 = pure relevance.
+    # 0.5 is the standard default from Carbonell & Goldstein 1998.
+    mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # How many extra candidates to retrieve for MMR reranking.
+    # 3x gives enough candidates to find diverse results without excessive latency.
+    candidate_multiplier: int = Field(default=3, ge=1)
+
+    # Number of LLM-generated alternative queries for expansion.
+    # 3 variants covers lexical + semantic angles. Set to 0 to disable expansion.
+    query_expansion_count: int = Field(default=3, ge=0)
+
+    # Cosine distance threshold step for adaptive widening.
+    # When too few results are found, threshold widens by this amount per retry.
+    # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
+    adaptive_threshold_step: float = Field(default=0.2, gt=0.0)
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
 
@@ -151,6 +175,19 @@ class Config(BaseModel):
             llm_provider=env("LLM_PROVIDER", "auto"),
             llm_base_url=env("LLM_BASE_URL", "http://localhost:11434"),
             llm_api_key=env("LLM_API_KEY", ""),
+            diversity_max_per_source=_load_setting(
+                data_root, "diversity_max_per_source", "DIVERSITY_MAX_PER_SOURCE", 3, int
+            ),
+            mmr_lambda=_load_setting(data_root, "mmr_lambda", "MMR_LAMBDA", 0.5, float),
+            candidate_multiplier=_load_setting(
+                data_root, "candidate_multiplier", "CANDIDATE_MULTIPLIER", 3, int
+            ),
+            query_expansion_count=_load_setting(
+                data_root, "query_expansion_count", "QUERY_EXPANSION_COUNT", 3, int
+            ),
+            adaptive_threshold_step=_load_setting(
+                data_root, "adaptive_threshold_step", "ADAPTIVE_THRESHOLD_STEP", 0.2, float
+            ),
         )
 
 
