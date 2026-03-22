@@ -514,7 +514,7 @@ async def models_installed() -> dict[str, Any]:
     return {"models": models}
 
 
-async def models_pull(model: str, *, source: str = "ollama") -> AsyncGenerator[str, None]:
+async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
     """Yield SSE progress events while pulling a model."""
     yield ""  # force generator
     from lilbee.model_manager import get_model_manager

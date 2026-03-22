@@ -739,7 +739,7 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
-            events = [e async for e in handlers.models_pull("test", source="ollama")]
+            events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
         assert any("success" in e for e in non_empty)
@@ -748,7 +748,7 @@ class TestModelsPull:
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
-            events = [e async for e in handlers.models_pull("bad", source="ollama")]
+            events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
 
