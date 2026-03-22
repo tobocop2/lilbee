@@ -27,8 +27,6 @@ class ModelManager:
         self._models_dir = models_dir
         self._ollama_base_url = ollama_base_url.rstrip("/")
 
-    # ── Listing ──────────────────────────────────────────────────────────
-
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. source=None lists all sources."""
         if source is None:
@@ -60,8 +58,6 @@ class ModelManager:
             log.debug("Ollama not reachable: %s", exc)
             return []
 
-    # ── Query ────────────────────────────────────────────────────────────
-
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""
         if source is None:
@@ -83,8 +79,6 @@ class ModelManager:
         if self._is_ollama(model):
             return ModelSource.OLLAMA
         return None
-
-    # ── Pull / Download ──────────────────────────────────────────────────
 
     def pull(
         self,
@@ -136,8 +130,6 @@ class ModelManager:
             raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
         log.info("Pulled %s via Ollama", model)
 
-    # ── Remove ───────────────────────────────────────────────────────────
-
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove installed model. Returns True if removed."""
         if source is None:
@@ -176,8 +168,6 @@ class ModelManager:
         except httpx.ConnectError as exc:
             raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 
-
-# ── Singleton ─────────────────────────────────────────────────────────────
 
 _manager: ModelManager | None = None
 

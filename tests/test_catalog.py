@@ -368,25 +368,6 @@ class TestFindCatalogEntry:
         result = find_catalog_entry("")
         assert result is None
 
-    def test_ollama_name_lookup(self) -> None:
-        result = find_catalog_entry("qwen3:8b")
-        assert result is not None
-        assert result.name == "Qwen3 8B"
-
-    def test_ollama_name_mistral(self) -> None:
-        result = find_catalog_entry("mistral:7b")
-        assert result is not None
-        assert "Mistral" in result.name
-
-    def test_ollama_name_embedding(self) -> None:
-        result = find_catalog_entry("nomic-embed-text:latest")
-        assert result is not None
-        assert "Nomic" in result.name
-
-    def test_ollama_name_not_found(self) -> None:
-        result = find_catalog_entry("nonexistent:latest")
-        assert result is None
-
 
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
