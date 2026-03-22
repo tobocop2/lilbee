@@ -339,6 +339,77 @@ class TestSlashSetValidation:
         assert "saved" in buf.getvalue()
 
 
+class TestSlashDelete:
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_deletes_known_file(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        con, buf = _make_console()
+        dispatch_slash("/delete a.md", con)
+        output = buf.getvalue()
+        assert "Deleted" in output
+        assert "a.md" in output
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_not_found(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        con, buf = _make_console()
+        dispatch_slash("/delete missing.md", con)
+        output = buf.getvalue()
+        assert "Not found" in output
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_no_documents(self, mock_sources):
+        mock_sources.return_value = []
+        con, buf = _make_console()
+        dispatch_slash("/delete", con)
+        output = buf.getvalue()
+        assert "No documents" in output
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_deletes_physical_file(self, mock_del, mock_del_src, mock_sources, tmp_path):
+        from lilbee.config import cfg
+
+        mock_sources.return_value = [{"filename": "a.md"}]
+        cfg.documents_dir = tmp_path
+        f = tmp_path / "a.md"
+        f.write_text("content")
+        con, _buf = _make_console()
+        dispatch_slash("/delete a.md", con)
+        assert not f.exists()
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_interactive_picker_eof(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        con, _buf = _make_console()
+        with mock.patch("prompt_toolkit.prompt", side_effect=EOFError):
+            dispatch_slash("/delete", con)
+        # Should not crash, just return silently
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_interactive_empty_input(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        con, _buf = _make_console()
+        with mock.patch("prompt_toolkit.prompt", return_value="   "):
+            dispatch_slash("/delete", con)
+        # Empty input after strip — should return silently
+
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
+    def test_clears_sync_status(self, mock_del, mock_del_src, mock_sources):
+        from lilbee.cli.chat.slash import handle_slash_delete
+        from lilbee.cli.chat.sync import SyncStatus
+
+        mock_sources.return_value = [{"filename": "a.md"}]
+        con, _buf = _make_console()
+        ss = SyncStatus()
+        handle_slash_delete("a.md", con, sync_status=ss)
+
+
 class TestSlashHelpIncludesNewCommands:
     def test_help_shows_settings(self):
         con, buf = _make_console()

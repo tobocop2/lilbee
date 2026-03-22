@@ -126,6 +126,48 @@ def lilbee_init(path: str = "") -> dict:
 
 
 @mcp.tool()
+def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
+    """Remove documents from the knowledge base by source name.
+
+    Args:
+        names: Source filenames to remove (as shown by lilbee_status).
+        delete_files: Also delete the physical files from the documents directory.
+    """
+    from lilbee.config import cfg
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_files:
+            path = cfg.documents_dir / name
+            if path.exists():
+                path.unlink()
+    return {"command": "remove", "removed": removed, "not_found": not_found}
+
+
+@mcp.tool()
+def lilbee_list_documents() -> dict:
+    """List all indexed documents with their chunk counts."""
+    from lilbee.store import get_sources
+
+    sources = get_sources()
+    return {
+        "documents": [
+            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in sources
+        ],
+        "total": len(sources),
+    }
+
+
+@mcp.tool()
 def lilbee_reset() -> dict:
     """Delete all documents and data (full factory reset).
 

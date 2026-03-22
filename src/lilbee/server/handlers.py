@@ -449,6 +449,48 @@ async def set_vision_model(model: str) -> dict[str, str]:
     return {"model": model}
 
 
+async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
+    """Remove documents from the knowledge base by source name."""
+    from lilbee.config import cfg
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_files:
+            path = cfg.documents_dir / name
+            if path.exists():
+                path.unlink()
+
+    return {"removed": removed, "not_found": not_found}
+
+
+async def list_documents() -> dict[str, Any]:
+    """Return all indexed documents with metadata."""
+    from lilbee.store import get_sources
+
+    sources = get_sources()
+    return {
+        "documents": [
+            {
+                "filename": s["filename"],
+                "chunk_count": s.get("chunk_count", 0),
+                "ingested_at": s.get("ingested_at", ""),
+            }
+            for s in sources
+        ],
+        "total": len(sources),
+    }
+
+
 def _parse_source(source: str) -> ModelSource:
     """Convert a source string to ModelSource enum."""
     from lilbee.model_manager import ModelSource

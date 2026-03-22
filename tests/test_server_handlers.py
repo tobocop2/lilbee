@@ -769,3 +769,56 @@ class TestModelsDelete:
             result = await handlers.models_delete("missing", source="native")
         assert result["deleted"] is False
         assert result["freed_gb"] == 0.0
+
+
+class TestDeleteDocuments:
+    @patch("lilbee.store.get_sources")
+    @patch("lilbee.store.delete_source")
+    @patch("lilbee.store.delete_by_source")
+    async def test_removes_known_documents(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}, {"filename": "b.md"}]
+        result = await handlers.delete_documents(["a.md"])
+        assert result["removed"] == ["a.md"]
+        assert result["not_found"] == []
+        mock_del.assert_called_once_with("a.md")
+        mock_del_src.assert_called_once_with("a.md")
+
+    @patch("lilbee.store.get_sources")
+    async def test_not_found(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        result = await handlers.delete_documents(["missing.md"])
+        assert result["removed"] == []
+        assert result["not_found"] == ["missing.md"]
+
+    @patch("lilbee.store.get_sources")
+    @patch("lilbee.store.delete_source")
+    @patch("lilbee.store.delete_by_source")
+    async def test_delete_files_removes_from_disk(
+        self, mock_del, mock_del_src, mock_sources, tmp_path
+    ):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        cfg.documents_dir = tmp_path
+        f = tmp_path / "a.md"
+        f.write_text("content")
+        result = await handlers.delete_documents(["a.md"], delete_files=True)
+        assert result["removed"] == ["a.md"]
+        assert not f.exists()
+
+
+class TestListDocuments:
+    @patch("lilbee.store.get_sources")
+    async def test_returns_documents(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
+        ]
+        result = await handlers.list_documents()
+        assert result["total"] == 1
+        assert result["documents"][0]["filename"] == "a.md"
+        assert result["documents"][0]["chunk_count"] == 5
+
+    @patch("lilbee.store.get_sources")
+    async def test_empty(self, mock_sources):
+        mock_sources.return_value = []
+        result = await handlers.list_documents()
+        assert result["total"] == 0
+        assert result["documents"] == []

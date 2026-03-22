@@ -226,6 +226,42 @@ def handle_slash_version(args: str, con: Console) -> None:
     con.print(f"lilbee [{theme.LABEL}]{get_version()}[/{theme.LABEL}]")
 
 
+def handle_slash_delete(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
+    """Delete documents from the knowledge base. Interactive picker if no arg given."""
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    if not known:
+        con.print(f"[{theme.MUTED}]No documents indexed.[/{theme.MUTED}]")
+        return
+
+    name = args.strip()
+    if not name:
+        try:
+            from prompt_toolkit import prompt as pt_prompt
+            from prompt_toolkit.completion import WordCompleter
+
+            completer = WordCompleter(sorted(known), sentence=True)
+            name = pt_prompt("delete file: ", completer=completer).strip()
+        except (ImportError, EOFError, KeyboardInterrupt):
+            return
+    if not name:
+        return
+
+    if name not in known:
+        con.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
+        return
+
+    delete_by_source(name)
+    delete_source(name)
+    path = cfg.documents_dir / name
+    if path.exists():
+        path.unlink()
+    if sync_status is not None:
+        sync_status.clear()
+    con.print(f"Deleted [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
+
+
 def handle_slash_reset(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
     con.print(
         f"[{theme.ERROR_BOLD}]This will delete ALL documents and data.[/{theme.ERROR_BOLD}]"
@@ -381,6 +417,7 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "settings": handle_slash_settings,
     "set": handle_slash_set,
     "version": handle_slash_version,
+    "delete": handle_slash_delete,
     "reset": handle_slash_reset,
     "help": handle_slash_help,
     "quit": handle_slash_quit,
@@ -401,6 +438,8 @@ def dispatch_slash(raw_input: str, con: Console, *, sync_status: SyncStatus | No
         return True
     if cmd == "add":
         handle_slash_add(args, con, sync_status=sync_status)
+    elif cmd == "delete":
+        handle_slash_delete(args, con, sync_status=sync_status)
     elif cmd == "reset":
         handle_slash_reset(args, con, sync_status=sync_status)
     else:
