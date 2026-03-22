@@ -748,7 +748,7 @@ class TestFactory:
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
         cfg.llm_provider = "ollama"
-        cfg.llm_base_url = "http://custom:11434"
+        cfg.ollama_url = "http://custom:11434"
         provider = get_provider()
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://custom:11434"
@@ -770,7 +770,7 @@ class TestConfigProvider:
 
             c = Config.from_env()
             assert c.llm_provider == "auto"
-            assert c.llm_base_url == "http://localhost:11434"
+            assert c.ollama_url == "http://localhost:11434"
             assert c.llm_api_key == ""
 
     def test_provider_env_override(self) -> None:
@@ -780,7 +780,7 @@ class TestConfigProvider:
             os.environ,
             {
                 "LILBEE_LLM_PROVIDER": "ollama",
-                "LILBEE_LLM_BASE_URL": "http://myhost:11434",
+                "LILBEE_OLLAMA_URL": "http://myhost:11434",
                 "LILBEE_LLM_API_KEY": "sk-key",
             },
         ):
@@ -788,7 +788,7 @@ class TestConfigProvider:
 
             c = Config.from_env()
             assert c.llm_provider == "ollama"
-            assert c.llm_base_url == "http://myhost:11434"
+            assert c.ollama_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
     def test_models_dir_computed(self) -> None:

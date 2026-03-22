@@ -35,7 +35,7 @@ class RoutingProvider(LLMProvider):
             from lilbee.config import cfg
             from lilbee.providers.litellm_provider import LiteLLMProvider
 
-            self._litellm = LiteLLMProvider(base_url=cfg.llm_base_url)
+            self._litellm = LiteLLMProvider(base_url=cfg.ollama_url)
         return self._litellm
 
     def _ollama_available(self) -> set[str]:

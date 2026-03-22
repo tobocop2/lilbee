@@ -188,7 +188,7 @@ def get_model_manager() -> ModelManager:
     if _manager is None:
         from lilbee.config import cfg
 
-        _manager = ModelManager(cfg.models_dir, cfg.llm_base_url)
+        _manager = ModelManager(cfg.models_dir, cfg.ollama_url)
     return _manager
 
 

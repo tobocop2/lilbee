@@ -470,14 +470,14 @@ class TestSingleton:
     def test_creates_singleton(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.llm_base_url = "http://localhost:11434"
+            mock_cfg.ollama_url = "http://localhost:11434"
             mgr = get_model_manager()
             assert isinstance(mgr, ModelManager)
 
     def test_returns_same_instance(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.llm_base_url = "http://localhost:11434"
+            mock_cfg.ollama_url = "http://localhost:11434"
             mgr1 = get_model_manager()
             mgr2 = get_model_manager()
             assert mgr1 is mgr2
@@ -485,7 +485,7 @@ class TestSingleton:
     def test_reset_creates_new_instance(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.llm_base_url = "http://localhost:11434"
+            mock_cfg.ollama_url = "http://localhost:11434"
             mgr1 = get_model_manager()
             reset_model_manager()
             mgr2 = get_model_manager()
