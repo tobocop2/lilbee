@@ -110,9 +110,8 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(parts)
 
 
-# Multi-query expansion inspired by gno (gmickel/gno) which generates
-# lexical + semantic variants with guardrails. Simplified here to LLM-generated
-# alternative phrasings merged via deduplication.
+# Multi-query expansion generates alternative search phrasings to
+# improve recall. Based on standard multi-query retrieval techniques.
 _EXPANSION_PROMPT = (
     "Generate {count} alternative search queries for the following question. "
     "Return ONLY the queries, one per line, no numbering or explanation.\n\n"

@@ -1,9 +1,7 @@
 """Extract YAML frontmatter and inline hashtags from markdown files.
 
-Parsing approach inspired by gno (gmickel/gno) frontmatter.ts which
-supports YAML frontmatter, Logseq properties, and inline hashtags
-with code-block-aware extraction and NFC tag normalization.
-"""
+Standard YAML frontmatter extraction with code-block-aware
+hashtag parsing and NFC unicode tag normalization."""
 
 from __future__ import annotations
 
