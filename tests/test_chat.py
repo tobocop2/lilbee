@@ -87,51 +87,52 @@ class TestFormatSettingValue:
 
 
 class TestGetModelDefaults:
-    @mock.patch("ollama.show")
-    def test_parses_ollama_show_parameters(self, mock_show):
+    @mock.patch("lilbee.providers.get_provider")
+    def test_parses_provider_show_model_parameters(self, mock_get_provider):
         from lilbee.cli.chat.slash import _get_model_defaults
 
-        mock_resp = mock.Mock()
-        mock_resp.parameters = (
-            "temperature                    0.6\n"
-            "top_k                          20\n"
-            "top_p                          0.95\n"
-            "repeat_penalty                 1\n"
-        )
-        mock_show.return_value = mock_resp
+        mock_provider = mock.MagicMock()
+        mock_provider.show_model.return_value = {
+            "temperature": "0.6",
+            "top_k": "20",
+            "top_p": "0.95",
+            "repeat_penalty": "1",
+        }
+        mock_get_provider.return_value = mock_provider
         defaults = _get_model_defaults()
         assert defaults["temperature"] == "0.6"
         assert defaults["top_k_sampling"] == "20"
         assert defaults["top_p"] == "0.95"
         assert defaults["repeat_penalty"] == "1"
 
-    @mock.patch("ollama.show")
-    def test_skips_non_setting_params(self, mock_show):
+    @mock.patch("lilbee.providers.get_provider")
+    def test_skips_non_setting_params(self, mock_get_provider):
         from lilbee.cli.chat.slash import _get_model_defaults
 
-        mock_resp = mock.Mock()
-        mock_resp.parameters = (
-            'stop                           "<|im_start|>"\ntemperature                    0.6\n'
-        )
-        mock_show.return_value = mock_resp
+        mock_provider = mock.MagicMock()
+        mock_provider.show_model.return_value = {
+            "stop": '"<|im_start|>"',
+            "temperature": "0.6",
+        }
+        mock_get_provider.return_value = mock_provider
         defaults = _get_model_defaults()
         assert "stop" not in defaults
         assert defaults["temperature"] == "0.6"
 
-    @mock.patch("ollama.show")
-    def test_returns_empty_on_error(self, mock_show):
+    @mock.patch("lilbee.providers.get_provider")
+    def test_returns_empty_on_error(self, mock_get_provider):
         from lilbee.cli.chat.slash import _get_model_defaults
 
-        mock_show.side_effect = ConnectionError("connection refused")
+        mock_get_provider.side_effect = ConnectionError("connection refused")
         assert _get_model_defaults() == {}
 
-    @mock.patch("ollama.show")
-    def test_returns_empty_when_no_parameters(self, mock_show):
+    @mock.patch("lilbee.providers.get_provider")
+    def test_returns_empty_when_none(self, mock_get_provider):
         from lilbee.cli.chat.slash import _get_model_defaults
 
-        mock_resp = mock.Mock()
-        mock_resp.parameters = None
-        mock_show.return_value = mock_resp
+        mock_provider = mock.MagicMock()
+        mock_provider.show_model.return_value = None
+        mock_get_provider.return_value = mock_provider
         assert _get_model_defaults() == {}
 
 

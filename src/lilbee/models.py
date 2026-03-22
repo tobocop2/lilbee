@@ -7,7 +7,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import ollama
 from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -250,9 +249,12 @@ def validate_disk_and_pull(
 
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
-    """Pull an Ollama model, showing a Rich progress bar."""
+    """Pull a model via model_manager, showing a Rich progress bar."""
+    from lilbee.model_manager import ModelSource, get_model_manager
+
     if console is None:
         console = Console(file=sys.__stderr__ or sys.stderr)
+    manager = get_model_manager()
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -264,31 +266,35 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     ) as progress:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None)
-        for event in ollama.pull(model, stream=True):
-            total = event.total or 0
-            completed = event.completed or 0
+
+        def _on_progress(data: dict) -> None:
+            total = data.get("total", 0) or 0
+            completed = data.get("completed", 0) or 0
             if total > 0:
                 progress.update(ptask, total=total, completed=completed)
+
+        manager.pull(model, ModelSource.OLLAMA, on_progress=_on_progress)
     console.print(f"Model '{model}' ready.")
 
 
 def ensure_chat_model() -> None:
-    """If Ollama has no chat models installed, pick and pull one.
+    """If no chat models are installed, pick and pull one.
 
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
     try:
-        models = ollama.list()
-    except (ConnectionError, OSError) as exc:
-        raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+        installed = manager.list_installed()
+    except RuntimeError as exc:
+        raise RuntimeError(f"Cannot list models: {exc}") from exc
 
     # Filter out embedding model — only check for chat models
     embed_base = cfg.embedding_model.split(":")[0]
-    chat_models = [
-        m.model for m in models.models if m.model and m.model.split(":")[0] != embed_base
-    ]
+    chat_models = [m for m in installed if m.split(":")[0] != embed_base]
     if chat_models:
         return
 

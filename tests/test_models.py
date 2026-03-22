@@ -1,6 +1,5 @@
 """Tests for models.py — RAM detection, model selection, picker UI, auto-install."""
 
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -210,47 +209,61 @@ class TestValidateDiskAndPull:
 
 
 class TestPullWithProgress:
-    @mock.patch("ollama.pull")
-    def test_calls_ollama_pull(self, mock_pull):
-        event = SimpleNamespace(total=100, completed=100)
-        mock_pull.return_value = iter([event])
-        models.pull_with_progress("test-model")
-        mock_pull.assert_called_once_with("test-model", stream=True)
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_calls_manager_pull(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
 
-    @mock.patch("ollama.pull")
-    def test_handles_zero_total(self, mock_pull):
-        event = SimpleNamespace(total=0, completed=0)
-        mock_pull.return_value = iter([event])
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"total": 100, "completed": 100})
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        mock_get_manager.return_value = mock_manager
+        models.pull_with_progress("test-model")
+        mock_manager.pull.assert_called_once()
+
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_handles_zero_total(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"total": 0, "completed": 0})
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        mock_get_manager.return_value = mock_manager
         models.pull_with_progress("test-model")
 
 
 class TestEnsureChatModel:
-    def _make_model(self, name: str) -> SimpleNamespace:
-        return SimpleNamespace(model=name)
-
-    @mock.patch("ollama.list")
-    def test_noop_when_chat_models_exist(self, mock_list):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("llama3:latest"), self._make_model("nomic-embed-text:latest")]
-        )
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_noop_when_chat_models_exist(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = ["llama3:latest", "nomic-embed-text:latest"]
+        mock_get_manager.return_value = mock_manager
         models.ensure_chat_model()  # should not raise or pull
 
-    @mock.patch("ollama.list", side_effect=ConnectionError("refused"))
-    def test_connection_error_raises(self, _):
-        with pytest.raises(RuntimeError, match="Cannot connect to Ollama"):
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_connection_error_raises(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.side_effect = RuntimeError("refused")
+        mock_get_manager.return_value = mock_manager
+        with pytest.raises(RuntimeError, match="Cannot list models"):
             models.ensure_chat_model()
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_non_interactive_auto_picks(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
     ):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("nomic-embed-text:latest")]
-        )
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+        mock_get_manager.return_value = mock_manager
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
         mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
@@ -260,11 +273,13 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_non_interactive_low_ram(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
     ):
-        mock_list.return_value = SimpleNamespace(models=[])
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
         mock_pull.assert_called_once_with("qwen3:8b", console=None)
@@ -273,11 +288,13 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_interactive_uses_picker(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
     ):
-        mock_list.return_value = SimpleNamespace(models=[])
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="1"),
@@ -287,18 +304,24 @@ class TestEnsureChatModel:
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("ollama.list")
-    def test_insufficient_disk_raises(self, mock_list, mock_vram_estimate, mock_disk_estimate):
-        mock_list.return_value = SimpleNamespace(models=[])
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_insufficient_disk_raises(
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate
+    ):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
             models.ensure_chat_model()
 
-    @mock.patch("ollama.list")
-    def test_empty_model_list_triggers_pull(self, mock_list):
-        mock_list.return_value = SimpleNamespace(models=[])
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_empty_model_list_triggers_pull(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
             mock.patch.object(models, "get_free_disk_gb", return_value=50.0),
@@ -307,11 +330,11 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("ollama.list")
-    def test_only_embedding_model_triggers_pull(self, mock_list):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("nomic-embed-text:latest")]
-        )
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_only_embedding_model_triggers_pull(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
             mock.patch.object(models, "get_free_disk_gb", return_value=50.0),

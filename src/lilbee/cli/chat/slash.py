@@ -15,7 +15,7 @@ from rich.table import Table
 
 from lilbee import settings
 from lilbee.cli import theme
-from lilbee.cli.chat.complete import list_ollama_models
+from lilbee.cli.chat.complete import list_installed_models
 from lilbee.cli.chat.sync import SyncStatus
 from lilbee.cli.helpers import add_paths, get_version, perform_reset, render_status
 from lilbee.config import cfg
@@ -83,7 +83,7 @@ def _pick_from_catalog(
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_fn(ram_gb, free_disk_gb, console=con)
     default_idx = list(catalog).index(recommended) + 1
-    installed = set(list_ollama_models())
+    installed = set(list_installed_models())
 
     try:
         raw = input(f"Choice [{default_idx}]: ").strip()
@@ -127,7 +127,7 @@ def _set_named_model(
     from lilbee.models import ensure_tag, pull_with_progress
 
     name = ensure_tag(name)
-    available = list_ollama_models(exclude_vision=exclude_vision)
+    available = list_installed_models(exclude_vision=exclude_vision)
     if available and name not in available:
         try:
             answer = con.input(
@@ -249,21 +249,22 @@ def handle_slash_reset(args: str, con: Console, *, sync_status: SyncStatus | Non
 
 
 def _get_model_defaults() -> dict[str, str]:
-    """Fetch generation parameter defaults from Ollama for the current chat model."""
+    """Fetch generation parameter defaults from the provider for the current chat model."""
+    from lilbee.providers import get_provider
+
     _OLLAMA_TO_SETTING = {"top_k": "top_k_sampling"}
     try:
-        import ollama
-
-        resp = ollama.show(cfg.chat_model)
+        provider = get_provider()
+        params = provider.show_model(cfg.chat_model)
+        if params is None:
+            return {}
         defaults: dict[str, str] = {}
-        for line in (resp.parameters or "").splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                key = _OLLAMA_TO_SETTING.get(parts[0], parts[0])
-                if key in _SETTINGS_MAP:
-                    defaults[key] = parts[1]
+        for key, value in params.items():
+            mapped_key = _OLLAMA_TO_SETTING.get(key, key)
+            if mapped_key in _SETTINGS_MAP:
+                defaults[mapped_key] = value
         return defaults
-    except (ollama.ResponseError, ConnectionError, OSError):
+    except Exception:
         return {}
 
 

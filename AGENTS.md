@@ -1,7 +1,7 @@
 # lilbee — Development Guide
 
 ## Project
-Local RAG knowledge base. Python 3.11+, Ollama for LLM/embeddings, LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+Local knowledge base. Python 3.11+, pluggable LLM providers (llama-cpp default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
 ## Task Tracking (beads)
 ```bash
@@ -49,6 +49,8 @@ All settings override via environment variables:
 - `LILBEE_TOP_K` — retrieval result count (default: `5`)
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
+- `LILBEE_LLM_PROVIDER` — backend: `llama-cpp` (default), `ollama`, `openai`, `huggingface`
+- `LILBEE_LLM_BASE_URL` — Ollama endpoint (default: `http://localhost:11434`)
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 
 CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision-timeout`, and `--log-level`.
@@ -59,7 +61,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - **100% test coverage required** — enforced by `pytest-cov` with `fail_under = 100`
 - Write tests BEFORE or alongside implementation, not after
 - Every public function MUST have at least one test
-- Mock all external dependencies (Ollama, filesystem I/O where needed) — tests must run without a live server
+- Mock all external dependencies (LLM providers, filesystem I/O where needed) — tests must run without a live server
 - Use `pytest.mark.skipif` only for integration tests that genuinely require live services
 - Use `tmp_path` fixtures for filesystem tests — never write to real paths
 - Test edge cases and error paths, not just the happy path
@@ -75,7 +77,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - If you need to copy-paste code, refactor into a shared function instead
 
 ### Code Style
-- No LangChain — raw Ollama SDK
+- No LangChain — provider abstraction (no raw SDK calls)
 - Type hints on all public functions
 - Dataclasses for structured return types (not raw dicts)
 - Named constants for magic numbers — with descriptive comments
@@ -94,7 +96,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Access config via `cfg.attribute` (late-bound), never `from lilbee.config import SOME_CONSTANT` (early-bound copy)
 
 ### Import Discipline
-- **Lazy imports only when justified**: circular dependency, heavy third-party lib (ollama, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path
+- **Lazy imports only when justified**: circular dependency, heavy third-party lib (llama-cpp-python, litellm, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path
 - Everything else goes at the top of the module — `from lilbee.config import cfg` is always safe top-level
 - Never use `importlib.reload` — it's a sign of bad design. If you need different config in tests, mutate the singleton
 
@@ -144,16 +146,16 @@ lilbee has a local knowledge base you can query. Use it for domain-specific ques
 
 An MCP server is configured in `.claude/settings.json` for this project. Tools available:
 
-| Tool | Description | Requires Ollama |
-|------|-------------|-----------------|
-| `lilbee_search(query, top_k)` | Search for relevant chunks | No |
-| `lilbee_status()` | Show indexed docs and config | No |
-| `lilbee_sync()` | Sync documents to vector store | Yes (embedding) |
-| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync | Yes (embedding) |
-| `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base | No |
-| `lilbee_reset()` | Delete all documents and data (factory reset) | No |
+| Tool | Description |
+|------|-------------|
+| `lilbee_search(query, top_k)` | Search for relevant chunks |
+| `lilbee_status()` | Show indexed docs and config |
+| `lilbee_sync()` | Sync documents to vector store |
+| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync |
+| `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base |
+| `lilbee_reset()` | Delete all documents and data (factory reset) |
 
-Prefer `lilbee_search` — it returns pre-embedded chunks without calling Ollama at query time.
+Prefer `lilbee_search` — it returns pre-embedded chunks without calling the LLM at query time.
 
 ### JSON CLI (fallback)
 
@@ -176,7 +178,10 @@ See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 - `store.py` — LanceDB operations
 - `chunker.py` — Text chunking (token-based recursive)
 - `code_chunker.py` — Code chunking (tree-sitter AST)
-- `embedder.py` — Ollama embedding wrapper
+- `providers/` — LLM provider abstraction (base protocol, llama-cpp, litellm, factory)
+- `catalog.py` — Model discovery from HuggingFace
+- `model_manager.py` — Model lifecycle (install, remove, list)
+- `embedder.py` — Embedding wrapper (uses provider abstraction)
 - `platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
 - `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
 - `mcp.py` — MCP server exposing search, ask, status, sync, init as tools
