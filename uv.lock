@@ -1108,7 +1108,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.5.4"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },

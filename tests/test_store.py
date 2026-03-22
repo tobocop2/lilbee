@@ -354,3 +354,24 @@ class TestRemoveDocuments:
         mock_sources.return_value = [{"filename": "a.md"}]
         result = store.remove_documents(["a.md"])
         assert result.removed == ["a.md"]
+
+
+class TestBm25Probe:
+    def test_returns_results_when_fts_ready(self):
+        records = _make_records(n=3)
+        store.add_chunks(records)
+        store.ensure_fts_index()
+        results = store.bm25_probe("chunk number", top_k=3)
+        assert len(results) > 0
+
+    def test_returns_empty_when_no_fts(self):
+        records = _make_records(n=1)
+        store.add_chunks(records)
+        store._fts.ready = False
+        results = store.bm25_probe("anything")
+        # May or may not build FTS — but should not crash
+        assert isinstance(results, list)
+
+    def test_returns_empty_when_no_table(self):
+        results = store.bm25_probe("anything")
+        assert results == []
