@@ -70,7 +70,7 @@ class Config(BaseModel):
     ollama_url: str = "http://localhost:11434"
     llm_api_key: str = ""
 
-    # Retrieval quality knobs — defaults chosen from research across gno, grantflow, QMD
+    # Retrieval quality knobs — defaults chosen from academic research and grantflow
     # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
 
     # Max chunks per source document in results. Prevents one large file from
