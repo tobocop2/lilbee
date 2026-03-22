@@ -80,7 +80,11 @@ def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
 def diversify_sources(
     results: list[SearchChunk], max_per_source: int | None = None
 ) -> list[SearchChunk]:
-    """Cap results per source document to ensure diversity."""
+    """Cap results per source document to ensure diversity.
+
+    Standard IR diversity technique; see Zhai 2008,
+    "Towards a Game-Theoretic Framework for Information Retrieval."
+    """
     if max_per_source is None:
         max_per_source = cfg.diversity_max_per_source
     counts: dict[str, int] = {}
@@ -93,6 +97,11 @@ def diversify_sources(
     return diverse
 
 
+def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
+    """Sort by relevance and apply source diversity cap."""
+    return diversify_sources(sort_by_relevance(results))
+
+
 def build_context(results: list[SearchChunk]) -> str:
     """Build context block from search results."""
     parts: list[str] = []
@@ -101,6 +110,9 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(parts)
 
 
+# Multi-query expansion inspired by gno (gmickel/gno) which generates
+# lexical + semantic variants with guardrails. Simplified here to LLM-generated
+# alternative phrasings merged via deduplication.
 _EXPANSION_PROMPT = (
     "Generate {count} alternative search queries for the following question. "
     "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
@@ -158,7 +170,8 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                     results.append(r)
                     seen.add(key)
 
-    return results
+    # Cap total results to prevent context overflow from expansion
+    return results[: top_k * 2]
 
 
 class AskResult(BaseModel):
@@ -182,8 +195,7 @@ def ask_raw(
             sources=[],
         )
 
-    results = sort_by_relevance(results)
-    results = diversify_sources(results)
+    results = prepare_results(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
@@ -233,8 +245,7 @@ def ask_stream(
         )
         return
 
-    results = sort_by_relevance(results)
-    results = diversify_sources(results)
+    results = prepare_results(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 

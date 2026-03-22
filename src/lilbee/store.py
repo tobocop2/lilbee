@@ -50,9 +50,6 @@ class SearchChunk(BaseModel):
     relevance_score: float | None = Field(None, alias="_relevance_score")
 
 
-_DEFAULT_MMR_LAMBDA = 0.5  # fallback if called without config
-
-
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
@@ -67,12 +64,20 @@ def mmr_rerank(
     query_vector: list[float],
     results: list[SearchChunk],
     top_k: int,
-    lam: float = _DEFAULT_MMR_LAMBDA,
+    mmr_lambda: float | None = None,
 ) -> list[SearchChunk]:
     """Maximal Marginal Relevance — select diverse results.
 
-    Score = λ * sim(query, chunk) - (1-λ) * max_sim(chunk, selected)
+    Algorithm: Carbonell & Goldstein 1998,
+    "The Use of MMR, Diversity-Based Reranking for Reordering Documents
+    and Producing Summaries."
+
+    ``mmr_lambda`` controls the relevance/diversity tradeoff:
+    0.0 = maximum diversity, 1.0 = pure relevance.
+    Defaults to ``cfg.mmr_lambda`` (0.5).
     """
+    if mmr_lambda is None:
+        mmr_lambda = cfg.mmr_lambda
     if len(results) <= top_k:
         return results
 
@@ -87,7 +92,7 @@ def mmr_rerank(
             redundancy = 0.0
             if selected:
                 redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
-            score = lam * relevance - (1 - lam) * redundancy
+            score = mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
             if score > best_score:
                 best_score = score
                 best_idx = i
@@ -263,11 +268,12 @@ def search(
     if max_distance > 0:
         results = _adaptive_filter(results, top_k, max_distance)
     if len(results) > top_k:
-        results = mmr_rerank(query_vector, results, top_k, lam=cfg.mmr_lambda)
+        results = mmr_rerank(query_vector, results, top_k)
     return results
 
 
 _MAX_THRESHOLD = 1.0
+_MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
 def _adaptive_filter(
@@ -275,12 +281,18 @@ def _adaptive_filter(
 ) -> list[SearchChunk]:
     """Widen cosine distance threshold when too few results.
 
+    Inspired by grantflow (grantflow-ai/grantflow) which uses
+    ``threshold = 0.3 + 0.2 * iteration`` with recursive retry.
+
     Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
+    Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
     """
     cap = max(initial_threshold, _MAX_THRESHOLD)
     step = cfg.adaptive_threshold_step
     threshold = initial_threshold
-    while threshold <= cap:
+    for _ in range(_MAX_FILTER_ITERATIONS):
+        if threshold > cap:
+            break
         filtered = [r for r in results if (r.distance or 0) <= threshold]
         if len(filtered) >= top_k:
             return filtered
