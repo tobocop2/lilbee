@@ -216,6 +216,12 @@ async def models_delete_route(model: str, source: str = "native") -> dict[str, A
     return await handlers.models_delete(model, source=source)
 
 
+@get("/api/config")
+async def config_route() -> dict[str, Any]:
+    """Return all user-facing configuration values."""
+    return await handlers.get_config()
+
+
 @get("/api/documents")
 async def documents_list_route(
     search: str = Parameter(query="search", default=""),
@@ -256,6 +262,7 @@ def create_app() -> Litestar:
             models_list_route,
             models_set_chat_route,
             models_set_vision_route,
+            config_route,
             models_catalog_route,
             models_installed_route,
             models_pull_route,
