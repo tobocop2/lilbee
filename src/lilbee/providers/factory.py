@@ -31,11 +31,11 @@ def get_provider() -> LLMProvider:
     elif provider_name == "ollama":
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        _provider = LiteLLMProvider(base_url=cfg.llm_base_url)
+        _provider = LiteLLMProvider(base_url=cfg.ollama_url)
     elif provider_name == "litellm":
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        _provider = LiteLLMProvider(base_url=cfg.llm_base_url, api_key=cfg.llm_api_key)
+        _provider = LiteLLMProvider(base_url=cfg.ollama_url, api_key=cfg.llm_api_key)
     else:
         from lilbee.providers.base import ProviderError
 
