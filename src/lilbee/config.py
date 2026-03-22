@@ -67,7 +67,7 @@ class Config(BaseModel):
     num_ctx: int | None = Field(default=None, ge=1)
     seed: int | None = None
     llm_provider: str = "auto"
-    llm_base_url: str = "http://localhost:11434"
+    ollama_url: str = "http://localhost:11434"
     llm_api_key: str = ""
 
     # Retrieval quality knobs — defaults chosen from research across gno, grantflow, QMD
@@ -173,7 +173,11 @@ class Config(BaseModel):
             num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
             seed=_load_setting(data_root, "seed", "SEED", None, int),
             llm_provider=env("LLM_PROVIDER", "auto"),
-            llm_base_url=env("LLM_BASE_URL", "http://localhost:11434"),
+            ollama_url=env(
+                "OLLAMA_URL",
+                # Fall back to OLLAMA_HOST for backwards compat
+                os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            ),
             llm_api_key=env("LLM_API_KEY", ""),
             diversity_max_per_source=_load_setting(
                 data_root, "diversity_max_per_source", "DIVERSITY_MAX_PER_SOURCE", 3, int
