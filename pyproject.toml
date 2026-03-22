@@ -29,8 +29,7 @@ dependencies = [
     "lancedb",
     "kreuzberg>=4.5.0",
     "filelock",
-    "tree-sitter>=0.25",
-    "tree-sitter-language-pack>=0.7",
+    "tree-sitter-language-pack>=1.0.0",
     "typer",
     "tiktoken",
     "prompt-toolkit>=3.0",
@@ -44,6 +43,9 @@ dependencies = [
     "httpx",
     "llama-cpp-python",
 ]
+
+[project.optional-dependencies]
+reranker = ["sentence-transformers"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"

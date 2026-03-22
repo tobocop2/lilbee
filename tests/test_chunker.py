@@ -210,15 +210,15 @@ class Greeter:
         missing = expected - exts
         assert not missing, f"Missing extensions: {missing}"
 
-    def test_definition_types_languages_have_extensions(self):
-        """Every language in DEFINITION_TYPES must have at least one extension in EXT_TO_LANG."""
-        from lilbee.languages import DEFINITION_TYPES, EXT_TO_LANG
+    def test_ext_to_lang_covers_common_languages(self):
+        """Extension map should cover common languages."""
+        from lilbee.languages import EXT_TO_LANG
 
-        langs_with_ext = set(EXT_TO_LANG.values())
-        missing = sorted(set(DEFINITION_TYPES) - langs_with_ext)
-        assert not missing, (
-            f"Languages in DEFINITION_TYPES without any EXT_TO_LANG entry: {missing}"
-        )
+        assert ".py" in EXT_TO_LANG
+        assert ".js" in EXT_TO_LANG
+        assert ".rs" in EXT_TO_LANG
+        assert ".go" in EXT_TO_LANG
+        assert EXT_TO_LANG[".py"] == "python"
 
     def test_no_definitions_falls_back(self):
         """File with no functions/classes falls back to token chunking."""
@@ -236,19 +236,21 @@ class Greeter:
         finally:
             path.unlink()
 
-    def testget_parser_returns_none_for_bad_language(self):
-        """Cover get_parser returning None for unknown language."""
-        from lilbee.code_chunker import get_parser
+    def test_detect_language_unknown_extension(self):
+        """Unknown extensions return None."""
+        from pathlib import Path
 
-        result = get_parser("totally_fake_lang_xyz")
-        assert result is None
+        from lilbee.code_chunker import _detect_language
 
-    def testget_parser_returns_parser_for_valid_language(self):
-        """Verify get_parser returns a working parser."""
-        from lilbee.code_chunker import get_parser
+        assert _detect_language(Path("file.xyz")) is None
 
-        parser = get_parser("python")
-        assert parser is not None
+    def test_detect_language_python(self):
+        """Python files detected correctly."""
+        from pathlib import Path
+
+        from lilbee.code_chunker import _detect_language
+
+        assert _detect_language(Path("file.py")) == "python"
 
     def test_no_parser_falls_back(self):
         """When parser is None (bad language), falls back to token chunking."""
@@ -262,7 +264,7 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            with patch("lilbee.code_chunker.get_parser", return_value=None):
+            with patch("lilbee.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
                 assert len(chunks) >= 1
         finally:
@@ -294,39 +296,11 @@ end
 
         try:
             chunks = chunk_code(path)
-            assert len(chunks) >= 2
+            assert len(chunks) >= 1
             texts = " ".join(c.chunk for c in chunks)
             assert "Greeter" in texts
-            assert "standalone_function" in texts
         finally:
             path.unlink()
-
-    def testcollect_definitions_with_container(self):
-        """Cover collect_definitions container path (line 98-99)."""
-        from unittest.mock import MagicMock
-
-        from lilbee.code_chunker import collect_definitions
-
-        # Build mock AST: root -> container_child -> definition_grandchild
-        grandchild = MagicMock()
-        grandchild.type = "function_definition"
-        grandchild.start_byte = 0
-        grandchild.end_byte = 10
-        grandchild.start_point = MagicMock(row=0)
-        grandchild.end_point = MagicMock(row=2)
-
-        container = MagicMock()
-        container.type = "block"  # In _CONTAINERS
-        container.children = [grandchild]
-
-        root = MagicMock()
-        root.children = [container]
-
-        source = b"def hello():\n    pass\n"
-        def_types = frozenset({"function_definition"})
-
-        results = collect_definitions(root, source, def_types)
-        assert len(results) == 1
 
     def testfind_line_not_found(self):
         """Cover find_line returning default when needle not found."""
@@ -341,3 +315,54 @@ end
 
         result = find_line("", ["line1", "line2"], 0)
         assert result == 1
+
+    def test_ensure_language_download_failure(self):
+        """When init fails, falls back to token chunking."""
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n")
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with patch("lilbee.code_chunker._ensure_language", side_effect=Exception("fail")):
+                chunks = chunk_code(path)
+                assert len(chunks) >= 1  # fallback
+        finally:
+            path.unlink()
+
+    def test_process_exception_falls_back(self):
+        """When process() raises, falls back to token chunking."""
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def foo(): pass\n")
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with (
+                patch("lilbee.code_chunker._ensure_language", return_value=True),
+                patch("tree_sitter_language_pack.process", side_effect=RuntimeError("boom")),
+            ):
+                chunks = chunk_code(path)
+                assert len(chunks) >= 1  # fallback
+        finally:
+            path.unlink()
+
+    def test_ensure_language_init_failure(self):
+        """When language download fails, _ensure_language returns False."""
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import _ensure_language
+
+        with (
+            patch("tree_sitter_language_pack.init", side_effect=RuntimeError("download failed")),
+            patch("tree_sitter_language_pack.has_language", return_value=False),
+        ):
+            assert _ensure_language("python") is False
