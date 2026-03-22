@@ -9,13 +9,26 @@ build enriched chunk headers with symbol metadata.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
+
+from tree_sitter_language_pack import ProcessConfig, has_language, init, process
 
 from lilbee.chunker import chunk_text
 from lilbee.config import cfg
 from lilbee.languages import EXT_TO_LANG
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class SymbolInfo:
+    """Extracted symbol metadata from tree-sitter process()."""
+
+    name: str
+    kind: str
+    line_start: int
+    line_end: int
+    text: str
 
 
 @dataclass
@@ -36,8 +49,6 @@ def _detect_language(file_path: Path) -> str | None:
 def _ensure_language(lang: str) -> bool:
     """Download language parser if not already available."""
     try:
-        from tree_sitter_language_pack import has_language, init
-
         if has_language(lang):
             return True
         init({"languages": [lang]})
@@ -79,6 +90,30 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
     return results
 
 
+def _extract_symbols(result: dict[str, Any], source_text: str) -> list[SymbolInfo]:
+    """Parse process() result into typed SymbolInfo objects."""
+    raw = result.get("structure", [])
+    if not isinstance(raw, list):
+        return []
+    symbols: list[SymbolInfo] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        span = entry.get("span", {})
+        start_byte = span.get("start_byte", 0)
+        end_byte = span.get("end_byte", len(source_text))
+        symbols.append(
+            SymbolInfo(
+                name=str(entry.get("name", "")),
+                kind=str(entry.get("kind", "")).lower(),
+                line_start=int(span.get("start_line", 0)) + 1,
+                line_end=int(span.get("end_line", 0)) + 1,
+                text=source_text[start_byte:end_byte],
+            )
+        )
+    return symbols
+
+
 def chunk_code(file_path: Path) -> list[CodeChunk]:
     """Chunk a source file using tree-sitter-language-pack's process() API.
 
@@ -97,8 +132,6 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     try:
         if not _ensure_language(lang):
             return _fallback_chunks(source_text)
-        from tree_sitter_language_pack import ProcessConfig, process
-
         config = ProcessConfig(
             lang,
             structure=True,
@@ -111,31 +144,22 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
         log.debug("tree-sitter process() failed for %s", file_path, exc_info=True)
         return _fallback_chunks(source_text)
 
-    structures = cast(list[dict[str, Any]], result.get("structure", []))
-    if not structures:
+    symbols = _extract_symbols(result, source_text)
+    if not symbols:
         return _fallback_chunks(source_text)
 
     chunks: list[CodeChunk] = []
-    for i, sym in enumerate(structures):
-        name = sym.get("name", "")
-        kind = sym.get("kind", "").lower()
-        span = sym.get("span", {})
-        line_start = span.get("start_line", 0) + 1
-        line_end = span.get("end_line", 0) + 1
-        start_byte = span.get("start_byte", 0)
-        end_byte = span.get("end_byte", len(source_text))
-        text = source_text[start_byte:end_byte]
-
+    for i, sym in enumerate(symbols):
         header = f"# File: {file_path}"
-        if name and kind:
-            header += f" | {kind}: {name}"
-        header += f" (lines {line_start}-{line_end})"
+        if sym.name and sym.kind:
+            header += f" | {sym.kind}: {sym.name}"
+        header += f" (lines {sym.line_start}-{sym.line_end})"
 
         chunks.append(
             CodeChunk(
-                chunk=f"{header}\n\n{text}",
-                line_start=line_start,
-                line_end=line_end,
+                chunk=f"{header}\n\n{sym.text}",
+                line_start=sym.line_start,
+                line_end=sym.line_end,
                 chunk_index=i,
             )
         )

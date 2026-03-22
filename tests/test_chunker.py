@@ -362,7 +362,33 @@ end
         from lilbee.code_chunker import _ensure_language
 
         with (
-            patch("tree_sitter_language_pack.init", side_effect=RuntimeError("download failed")),
-            patch("tree_sitter_language_pack.has_language", return_value=False),
+            patch("lilbee.code_chunker.init", side_effect=RuntimeError("download failed")),
+            patch("lilbee.code_chunker.has_language", return_value=False),
         ):
             assert _ensure_language("python") is False
+
+    def test_extract_symbols_non_list(self):
+        """When structure is not a list, returns empty."""
+        from lilbee.code_chunker import _extract_symbols
+
+        assert _extract_symbols({"structure": "not a list"}, "code") == []
+
+    def test_extract_symbols_non_dict_entry(self):
+        """Non-dict entries in structure are skipped."""
+        from lilbee.code_chunker import _extract_symbols
+
+        result = _extract_symbols(
+            {
+                "structure": [
+                    "not a dict",
+                    {
+                        "name": "foo",
+                        "kind": "Function",
+                        "span": {"start_byte": 0, "end_byte": 3, "start_line": 0, "end_line": 0},
+                    },
+                ]
+            },
+            "foo",
+        )
+        assert len(result) == 1
+        assert result[0].name == "foo"
