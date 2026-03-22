@@ -973,14 +973,14 @@ wheels = [
 
 [[package]]
 name = "kreuzberg"
-version = "4.4.6"
+version = "4.5.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9a/8c/f8719a802c12fad0102796c5dee1112497c09c8d19b81302b7b20b026e14/kreuzberg-4.4.6.tar.gz", hash = "sha256:c7a525afae447a86c5f38e158c576ab9c4135d49c6b54c9d817563cdb7c18aa0", size = 1774526 }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/14/6bf268a89937d232095e3d5474104978e6334fe415aa6dd3e08c2fa35918/kreuzberg-4.5.3.tar.gz", hash = "sha256:e630f367d649fdc398867b11bb5891e525f1c71dc78f318f9faa10d6e292cd24", size = 2017700 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/e5/a5cf09416d837bfac10c70c33c163c8989d5cf0b92baf08eb5ba12b185a7/kreuzberg-4.4.6-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:7bfb9e7b6fd82893a1892d63321199735c8f223e8fa85cdf4663e8e528868e77", size = 34005922 },
-    { url = "https://files.pythonhosted.org/packages/e6/49/f09c06853bf56dbfb6c66f6a1967c9721a027ed370afb7f22103974b7793/kreuzberg-4.4.6-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:92c52d06ec512137c4044c6dfc055e41c1ad295f0d1f06a50fd860264cce426f", size = 39738109 },
-    { url = "https://files.pythonhosted.org/packages/f8/cc/a5ee591ee7d6e6dabf3260b8c67eaf7bca33f9bd23285a90334412eab8b4/kreuzberg-4.4.6-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:60a2eae27d1f613b67498d79bbd8cc16b93b9c343216c75fd9eb8265c8998c35", size = 38700564 },
-    { url = "https://files.pythonhosted.org/packages/6a/98/0b3fb96519229934ad3a72bf7cb58da9e59f12a1148b7611dcbb7d0a638e/kreuzberg-4.4.6-cp310-abi3-win_amd64.whl", hash = "sha256:048ba591ca2bea4d0b90194a3401a28ade7bf5ac2fdc5c00770b4c4fff012230", size = 40206925 },
+    { url = "https://files.pythonhosted.org/packages/86/b2/42b5ac50062bf9d675791f2cb0d111f741ce2cbe18d0ec5ee38871fcab3a/kreuzberg-4.5.3-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:89ca8168a5feb5731c01ca622ca49f3aa8451fecdb73b6726f867b569465355d", size = 49257751 },
+    { url = "https://files.pythonhosted.org/packages/6e/3d/f74f666fae29a058524fa93bad260ed32475d2c8c2fa21f3ea846d4d61e5/kreuzberg-4.5.3-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:2aadbeb3b64c4123cb9eb1359791aaf169209c982755534ca929af51c25ac239", size = 57279671 },
+    { url = "https://files.pythonhosted.org/packages/e5/f5/efdecf0390121f24eceb9b15ebc2beba28e60437a6d32b8bd86422c0a60c/kreuzberg-4.5.3-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:42148d315a62814ddc7c0b6d79fde97c32e3209c66b56080a3ec2f6d22081d16", size = 56891091 },
+    { url = "https://files.pythonhosted.org/packages/5b/5b/1338bf8c17ee3ef3fb3fdb86876accbba49896bd83e672c7a0fe04493e8b/kreuzberg-4.5.3-cp310-abi3-win_amd64.whl", hash = "sha256:621993d4893ee8df9600c2143677e7c69d4fe553fe4029e703902ca72758d09b", size = 56611249 },
 ]
 
 [[package]]
@@ -1144,6 +1144,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "reportlab" },
     { name = "ruff" },
+    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -1151,7 +1152,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "httpx" },
     { name = "huggingface-hub" },
-    { name = "kreuzberg" },
+    { name = "kreuzberg", specifier = ">=4.5.0" },
     { name = "lancedb" },
     { name = "litellm" },
     { name = "litestar", specifier = ">=2.0" },
@@ -1178,6 +1179,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "reportlab" },
     { name = "ruff", specifier = ">=0.15.4" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 
 [[package]]
@@ -2960,6 +2962,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085 },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20250915"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338 },
 ]
 
 [[package]]

@@ -435,7 +435,13 @@ async def ingest_markdown(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Chunk a markdown file by heading boundaries, embed, return records."""
-    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+    from lilbee.frontmatter import parse_frontmatter
+
+    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+    if not raw_text.strip():
+        return []
+    fm = parse_frontmatter(raw_text)
+    text = fm.body
     if not text.strip():
         return []
     texts = chunk_markdown(text)
