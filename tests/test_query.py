@@ -220,11 +220,11 @@ class TestExpandQuery:
     @mock.patch("lilbee.query.get_provider")
     def test_returns_variants(self, mock_get_provider):
         mock_provider = mock.MagicMock()
-        mock_provider.chat.return_value = "How does X work?\nWhat is X used for?"
+        mock_provider.chat.return_value = "explain how X works in detail\nexplain the purpose of X"
         mock_get_provider.return_value = mock_provider
         from lilbee.query import _expand_query
 
-        variants = _expand_query("explain X")
+        variants = _expand_query("explain X in detail")
         assert len(variants) == 2
 
     @mock.patch("lilbee.query.get_provider")
@@ -497,3 +497,135 @@ class TestProviderError:
         mock_provider.return_value.chat.return_value = failing_mid_stream()
         with pytest.raises(ProviderError, match="not found"):
             list(ask_stream("hello"))
+
+
+class TestApplyGuardrails:
+    def test_filters_drifted_variants(self):
+        from lilbee.query import _apply_guardrails
+
+        variants = ["completely unrelated topic", "explain kubernetes deployment"]
+        result = _apply_guardrails(variants, "explain kubernetes deployment")
+        assert "completely unrelated topic" not in result
+        assert "explain kubernetes deployment" in result
+
+    def test_keeps_overlapping_variants(self):
+        from lilbee.query import _apply_guardrails
+
+        variants = ["kubernetes deployment steps", "deploying kubernetes clusters"]
+        result = _apply_guardrails(variants, "kubernetes deployment guide")
+        assert len(result) >= 1
+
+    def test_returns_all_when_guardrails_disabled(self):
+        from lilbee.config import cfg
+        from lilbee.query import _apply_guardrails
+
+        old = cfg.expansion_guardrails
+        cfg.expansion_guardrails = False
+        try:
+            result = _apply_guardrails(["anything"], "question")
+            assert result == ["anything"]
+        finally:
+            cfg.expansion_guardrails = old
+
+    def test_empty_variants(self):
+        from lilbee.query import _apply_guardrails
+
+        assert _apply_guardrails([], "question") == []
+
+    def test_empty_original_tokens(self):
+        from lilbee.query import _apply_guardrails
+
+        result = _apply_guardrails(["variant"], "a the is")
+        assert result == ["variant"]
+
+    def test_empty_variant_tokens(self):
+        from lilbee.query import _apply_guardrails
+
+        result = _apply_guardrails(["a the is", "real content here"], "real content here")
+        assert len(result) == 1
+
+
+class TestTokenizeQuery:
+    def test_removes_stop_words(self):
+        from lilbee.query import _tokenize_query
+
+        result = _tokenize_query("how does the system work")
+        assert "how" not in result
+        assert "does" not in result
+        assert "the" not in result
+        assert "system" in result
+        assert "work" in result
+
+    def test_lowercases(self):
+        from lilbee.query import _tokenize_query
+
+        result = _tokenize_query("Kubernetes Deployment")
+        assert "kubernetes" in result
+
+    def test_removes_single_chars(self):
+        from lilbee.query import _tokenize_query
+
+        result = _tokenize_query("a b c real word")
+        assert "real" in result
+        assert "word" in result
+        assert "b" not in result
+
+
+class TestSelectContext:
+    def test_selects_covering_chunks(self):
+        from lilbee.query import select_context
+
+        chunks = [
+            _make_result(chunk="kubernetes deployment guide", source="a.md"),
+            _make_result(chunk="kubernetes networking setup", source="b.md"),
+            _make_result(chunk="deployment automation tools", source="c.md"),
+        ]
+        result = select_context(chunks, "kubernetes deployment networking", max_sources=2)
+        assert len(result) == 2
+        texts = " ".join(r.chunk for r in result)
+        assert "kubernetes" in texts
+        assert "networking" in texts
+
+    def test_passes_through_when_under_max(self):
+        from lilbee.query import select_context
+
+        chunks = [_make_result(chunk="only one")]
+        result = select_context(chunks, "anything", max_sources=5)
+        assert len(result) == 1
+
+    def test_empty_query_returns_top_n(self):
+        from lilbee.query import select_context
+
+        chunks = [_make_result(chunk=f"chunk {i}") for i in range(10)]
+        result = select_context(chunks, "a the is", max_sources=3)
+        assert len(result) == 3
+
+    def test_stops_on_full_coverage(self):
+        from lilbee.query import select_context
+
+        chunks = [
+            _make_result(chunk="alpha beta gamma delta", source="a.md"),
+            _make_result(chunk="alpha beta gamma delta", source="b.md"),
+            _make_result(chunk="alpha beta gamma delta", source="c.md"),
+            _make_result(chunk="alpha beta gamma delta", source="d.md"),
+            _make_result(chunk="alpha beta gamma delta", source="e.md"),
+        ]
+        result = select_context(chunks, "alpha beta gamma delta", max_sources=3)
+        assert len(result) == 1  # first chunk covers everything
+
+    def test_stops_on_zero_gain(self):
+        from lilbee.query import select_context
+
+        chunks = [
+            _make_result(chunk="alpha beta unique1", source="a.md"),
+            _make_result(chunk="alpha beta unique1", source="b.md"),
+            _make_result(chunk="alpha beta unique1", source="c.md"),
+            _make_result(chunk="alpha beta unique1", source="d.md"),
+            _make_result(chunk="alpha beta unique1", source="e.md"),
+            _make_result(chunk="alpha beta unique1", source="f.md"),
+        ]
+        # Query has "alpha beta unique1 unique2" — first chunk covers 3/4
+        # Remaining chunks add 0 new terms, so selection stops early
+        result = select_context(chunks, "alpha beta unique1 unique2", max_sources=5)
+        # Should stop after 1 or 2 chunks since no gain after first
+        assert len(result) < 5

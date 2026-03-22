@@ -141,6 +141,7 @@ async def ask_stream(
         build_context,
         prepare_results,
         search_context,
+        select_context,
     )
 
     results = search_context(question, top_k=top_k)
@@ -149,6 +150,7 @@ async def ask_stream(
         return
 
     results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
@@ -236,6 +238,7 @@ async def chat_stream(
         build_context,
         prepare_results,
         search_context,
+        select_context,
     )
 
     results = search_context(question, top_k=top_k)
@@ -244,6 +247,7 @@ async def chat_stream(
         return
 
     results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]

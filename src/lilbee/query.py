@@ -122,10 +122,123 @@ _EXPANSION_PROMPT = (
 _EXPANSION_MAX_TOKENS = 200
 
 
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "about",
+        "between",
+        "through",
+        "after",
+        "before",
+        "above",
+        "below",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "that",
+        "this",
+        "it",
+        "its",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+    }
+)
+
+# Minimum token overlap ratio between variant and original query.
+# Below 0.3, the variant has drifted too far from the original question.
+_MIN_OVERLAP_RATIO = 0.3
+
+
+def _tokenize_query(text: str) -> set[str]:
+    """Tokenize into lowercase words, removing stop words."""
+    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
+
+
+def _apply_guardrails(variants: list[str], question: str) -> list[str]:
+    """Validate expansion variants to prevent drift.
+
+    Drops variants with less than 30% token overlap with the original query.
+    Falls back to empty list if all variants are filtered.
+    """
+    if not cfg.expansion_guardrails:
+        return variants
+
+    original_tokens = _tokenize_query(question)
+    if not original_tokens:
+        return variants
+
+    validated: list[str] = []
+    for variant in variants:
+        variant_tokens = _tokenize_query(variant)
+        if not variant_tokens:
+            continue
+        overlap = len(original_tokens & variant_tokens) / len(original_tokens)
+        if overlap >= _MIN_OVERLAP_RATIO:
+            validated.append(variant)
+
+    return validated
+
+
 def _expand_query(question: str) -> list[str]:
     """Use the LLM to generate alternative query phrasings.
 
     Returns up to ``cfg.query_expansion_count`` variants.
+    When ``cfg.expansion_guardrails`` is True, validates variants for drift.
     Set ``LILBEE_QUERY_EXPANSION_COUNT=0`` to disable expansion entirely.
     """
     count = cfg.query_expansion_count
@@ -141,9 +254,51 @@ def _expand_query(question: str) -> list[str]:
         if not isinstance(response, str):
             return []
         variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
-        return variants[:count]
+        variants = variants[:count]
+        return _apply_guardrails(variants, question)
     except Exception:
         return []
+
+
+def select_context(
+    results: list[SearchChunk], question: str, max_sources: int | None = None
+) -> list[SearchChunk]:
+    """Select chunks that maximize query term coverage.
+
+    Greedy set-cover: pick chunks adding the most uncovered query terms.
+    Falls through unchanged if results ≤ max_sources.
+    """
+    if max_sources is None:
+        max_sources = cfg.max_context_sources
+    if len(results) <= max_sources:
+        return results
+
+    query_terms = _tokenize_query(question)
+    if not query_terms:
+        return results[:max_sources]
+
+    selected: list[SearchChunk] = []
+    covered: set[str] = set()
+    remaining = list(results)
+
+    for _ in range(max_sources):
+        if not remaining or covered == query_terms:
+            break
+        best_idx = 0
+        best_gain = -1
+        for i, chunk in enumerate(remaining):
+            chunk_terms = _tokenize_query(chunk.chunk)
+            gain = len((chunk_terms & query_terms) - covered)
+            if gain > best_gain or (gain == best_gain and i < best_idx):
+                best_gain = gain
+                best_idx = i
+        if best_gain <= 0 and selected:
+            break
+        chosen = remaining.pop(best_idx)
+        selected.append(chosen)
+        covered |= _tokenize_query(chosen.chunk) & query_terms
+
+    return selected
 
 
 def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
@@ -195,6 +350,7 @@ def ask_raw(
         )
 
     results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
@@ -245,6 +401,7 @@ def ask_stream(
         return
 
     results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
 
