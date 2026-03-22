@@ -69,18 +69,17 @@ def _sort_key(r: SearchChunk) -> float:
     return float("inf")
 
 
-_MAX_PER_SOURCE = 3
-
-
 def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
     """Sort search results by relevance (works for both hybrid and vector results)."""
     return sorted(results, key=_sort_key)
 
 
 def diversify_sources(
-    results: list[SearchChunk], max_per_source: int = _MAX_PER_SOURCE
+    results: list[SearchChunk], max_per_source: int | None = None
 ) -> list[SearchChunk]:
     """Cap results per source document to ensure diversity."""
+    if max_per_source is None:
+        max_per_source = cfg.diversity_max_per_source
     counts: dict[str, int] = {}
     diverse: list[SearchChunk] = []
     for r in results:
@@ -100,26 +99,35 @@ def build_context(results: list[SearchChunk]) -> str:
 
 
 _EXPANSION_PROMPT = (
-    "Generate 2-3 alternative search queries for the following question. "
+    "Generate {count} alternative search queries for the following question. "
     "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
     "Question: {question}"
 )
 
-_EXPANSION_TIMEOUT_TOKENS = 200
+# Token budget for the expansion LLM call
+_EXPANSION_MAX_TOKENS = 200
 
 
 def _expand_query(question: str) -> list[str]:
-    """Use the LLM to generate alternative query phrasings."""
+    """Use the LLM to generate alternative query phrasings.
+
+    Returns up to ``cfg.query_expansion_count`` variants.
+    Set ``LILBEE_QUERY_EXPANSION_COUNT=0`` to disable expansion entirely.
+    """
+    count = cfg.query_expansion_count
+    if count == 0:
+        return []
     try:
         provider = get_provider()
-        messages = [{"role": "user", "content": _EXPANSION_PROMPT.format(question=question)}]
+        prompt = _EXPANSION_PROMPT.format(count=count, question=question)
+        messages = [{"role": "user", "content": prompt}]
         response = provider.chat(
-            messages, stream=False, options={"num_predict": _EXPANSION_TIMEOUT_TOKENS}
+            messages, stream=False, options={"num_predict": _EXPANSION_MAX_TOKENS}
         )
         if not isinstance(response, str):
             return []
         variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
-        return variants[:3]
+        return variants[:count]
     except Exception:
         return []
 
