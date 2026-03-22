@@ -99,12 +99,55 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(parts)
 
 
+_EXPANSION_PROMPT = (
+    "Generate 2-3 alternative search queries for the following question. "
+    "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
+    "Question: {question}"
+)
+
+_EXPANSION_TIMEOUT_TOKENS = 200
+
+
+def _expand_query(question: str) -> list[str]:
+    """Use the LLM to generate alternative query phrasings."""
+    try:
+        provider = get_provider()
+        messages = [{"role": "user", "content": _EXPANSION_PROMPT.format(question=question)}]
+        response = provider.chat(
+            messages, stream=False, options={"num_predict": _EXPANSION_TIMEOUT_TOKENS}
+        )
+        if not isinstance(response, str):
+            return []
+        variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
+        return variants[:3]
+    except Exception:
+        return []
+
+
 def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
-    """Embed question and return top-K matching chunks."""
+    """Embed question and return top-K matching chunks.
+
+    Uses query expansion: generates alternative phrasings via LLM,
+    searches with each, and merges results (deduped by source+index).
+    """
     if top_k == 0:
         top_k = cfg.top_k
     query_vec = embedder.embed(question)
-    return store.search(query_vec, top_k=top_k, query_text=question)
+    results = store.search(query_vec, top_k=top_k, query_text=question)
+
+    variants = _expand_query(question)
+    if variants:
+        seen = {(r.source, r.chunk_index) for r in results}
+        for variant in variants:
+            variant_vec = embedder.embed(variant)
+            variant_results = store.search(variant_vec, top_k=top_k, query_text=variant)
+            for r in variant_results:
+                key = (r.source, r.chunk_index)
+                if key not in seen:
+                    results.append(r)
+                    seen.add(key)
+
+    return results
 
 
 class AskResult(BaseModel):

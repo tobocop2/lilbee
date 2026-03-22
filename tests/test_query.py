@@ -177,19 +177,80 @@ class TestBuildContext:
 
 
 class TestSearchContext:
+    @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_results(self, mock_embed, mock_search):
+    def test_returns_results(self, mock_embed, mock_search, mock_expand):
         results = search_context("question")
         assert len(results) == 1
         mock_embed.assert_called_once_with("question")
 
+    @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_passes_query_text(self, mock_embed, mock_search):
+    def test_passes_query_text(self, mock_embed, mock_search, mock_expand):
         search_context("my question")
         mock_search.assert_called_once()
         assert mock_search.call_args[1]["query_text"] == "my question"
+
+    @mock.patch("lilbee.store.search")
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.query._expand_query", return_value=["alt query 1"])
+    def test_expansion_merges_results(self, mock_expand, mock_embed, mock_search):
+        original = _make_result(source="a.md", chunk_index=0)
+        expanded = _make_result(source="b.md", chunk_index=0)
+        mock_search.side_effect = [[original], [expanded]]
+        results = search_context("question")
+        assert len(results) == 2
+        sources = {r.source for r in results}
+        assert "a.md" in sources
+        assert "b.md" in sources
+
+    @mock.patch("lilbee.store.search")
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.query._expand_query", return_value=["alt"])
+    def test_expansion_deduplicates(self, mock_expand, mock_embed, mock_search):
+        same = _make_result(source="a.md", chunk_index=0)
+        mock_search.side_effect = [[same], [same]]
+        results = search_context("question")
+        assert len(results) == 1
+
+
+class TestExpandQuery:
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_variants(self, mock_get_provider):
+        mock_provider = mock.MagicMock()
+        mock_provider.chat.return_value = "How does X work?\nWhat is X used for?"
+        mock_get_provider.return_value = mock_provider
+        from lilbee.query import _expand_query
+
+        variants = _expand_query("explain X")
+        assert len(variants) == 2
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_caps_at_three(self, mock_get_provider):
+        mock_provider = mock.MagicMock()
+        mock_provider.chat.return_value = "A\nB\nC\nD\nE"
+        mock_get_provider.return_value = mock_provider
+        from lilbee.query import _expand_query
+
+        assert len(_expand_query("q")) == 3
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_empty_on_error(self, mock_get_provider):
+        mock_get_provider.side_effect = RuntimeError("no provider")
+        from lilbee.query import _expand_query
+
+        assert _expand_query("q") == []
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_empty_on_non_string(self, mock_get_provider):
+        mock_provider = mock.MagicMock()
+        mock_provider.chat.return_value = iter(["stream"])  # not a string
+        mock_get_provider.return_value = mock_provider
+        from lilbee.query import _expand_query
+
+        assert _expand_query("q") == []
 
 
 class TestAskRaw:
