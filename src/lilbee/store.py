@@ -1,7 +1,9 @@
 """LanceDB vector store operations."""
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import lancedb
 import pyarrow as pa
@@ -47,6 +49,57 @@ class SearchChunk(BaseModel):
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
     relevance_score: float | None = Field(None, alias="_relevance_score")
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def mmr_rerank(
+    query_vector: list[float],
+    results: list[SearchChunk],
+    top_k: int,
+    mmr_lambda: float | None = None,
+) -> list[SearchChunk]:
+    """Maximal Marginal Relevance — select diverse results.
+
+    Algorithm: Carbonell & Goldstein 1998,
+    "The Use of MMR, Diversity-Based Reranking for Reordering Documents
+    and Producing Summaries."
+
+    ``mmr_lambda`` controls the relevance/diversity tradeoff:
+    0.0 = maximum diversity, 1.0 = pure relevance.
+    Defaults to ``cfg.mmr_lambda`` (0.5).
+    """
+    if mmr_lambda is None:
+        mmr_lambda = cfg.mmr_lambda
+    if len(results) <= top_k:
+        return results
+
+    selected: list[SearchChunk] = []
+    remaining = list(results)
+
+    for _ in range(top_k):
+        best_score = -float("inf")
+        best_idx = 0
+        for i, candidate in enumerate(remaining):
+            relevance = _cosine_sim(query_vector, candidate.vector)
+            redundancy = 0.0
+            if selected:
+                redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
+            score = mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
+            if score > best_score:
+                best_score = score
+                best_idx = i
+        selected.append(remaining.pop(best_idx))
+
+    return selected
 
 
 def _chunks_schema() -> pa.Schema:
@@ -182,6 +235,23 @@ def _hybrid_search(
     return [SearchChunk(**r) for r in rows]
 
 
+def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
+    """Quick BM25-only search for confidence checking. Returns up to top_k results."""
+    table = _open_table(CHUNKS_TABLE)
+    if table is None:
+        return []
+    if not _fts.ready:
+        ensure_fts_index()
+    if not _fts.ready:
+        return []  # pragma: no cover
+    try:
+        rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
+        return [SearchChunk(**r) for r in rows]
+    except Exception:
+        log.debug("BM25 probe failed", exc_info=True)
+        return []
+
+
 def search(
     query_vector: list[float],
     top_k: int | None = None,
@@ -210,11 +280,43 @@ def search(
         except Exception:
             log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
-    rows = table.search(query_vector).metric("cosine").limit(top_k).to_list()
+    candidate_k = top_k * cfg.candidate_multiplier
+    rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
     results = [SearchChunk(**r) for r in rows]
     if max_distance > 0:
-        results = [r for r in results if (r.distance or 0) <= max_distance]
+        results = _adaptive_filter(results, top_k, max_distance)
+    if len(results) > top_k:
+        results = mmr_rerank(query_vector, results, top_k)
     return results
+
+
+_MAX_THRESHOLD = 1.0
+_MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
+
+
+def _adaptive_filter(
+    results: list[SearchChunk], top_k: int, initial_threshold: float
+) -> list[SearchChunk]:
+    """Widen cosine distance threshold when too few results.
+
+    Inspired by grantflow's (grantflow-ai/grantflow) adaptive retrieval
+    pattern which widens thresholds on recursive retry. Step size and
+    cap are configurable via ``cfg.adaptive_threshold_step``.
+
+    Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
+    Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
+    """
+    cap = max(initial_threshold, _MAX_THRESHOLD)
+    step = cfg.adaptive_threshold_step
+    threshold = initial_threshold
+    for _ in range(_MAX_FILTER_ITERATIONS):
+        if threshold > cap:
+            break
+        filtered = [r for r in results if (r.distance or 0) <= threshold]
+        if len(filtered) >= top_k:
+            return filtered
+        threshold += step
+    return [r for r in results if (r.distance or 0) <= cap]
 
 
 def get_chunks_by_source(source: str) -> list[SearchChunk]:
@@ -268,6 +370,53 @@ def delete_source(filename: str) -> None:
         table = _open_table(SOURCES_TABLE)
         if table is not None:
             _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+
+
+class RemoveResult:
+    """Result of a remove_documents operation."""
+
+    def __init__(self, removed: list[str], not_found: list[str]) -> None:
+        self.removed = removed
+        self.not_found = not_found
+
+
+def remove_documents(
+    names: list[str],
+    *,
+    delete_files: bool = False,
+    documents_dir: Path | None = None,
+) -> RemoveResult:
+    """Remove documents from the knowledge base by source name.
+
+    Looks up known sources, deletes chunks and source records for each.
+    If *delete_files* is True, resolves the path and verifies it is
+    contained within *documents_dir* before unlinking (path traversal guard).
+
+    Returns a RemoveResult with removed and not_found lists.
+    """
+    if documents_dir is None:
+        documents_dir = cfg.documents_dir
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_files:
+            path = (documents_dir / name).resolve()
+            if not path.is_relative_to(documents_dir.resolve()):
+                log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
+                continue
+            if path.exists():
+                path.unlink()
+
+    return RemoveResult(removed=removed, not_found=not_found)
 
 
 def drop_all() -> None:

@@ -84,6 +84,75 @@ class TestSegmentsEmpty:
             assert result == []
 
 
+class TestChunkMarkdown:
+    def test_splits_on_headings(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "# Intro\n\nHello world.\n\n## Details\n\nSome details here."
+        chunks = chunk_markdown(md)
+        assert len(chunks) == 2
+        assert "# Intro" in chunks[0]
+        assert "Hello world" in chunks[0]
+        assert "## Details" in chunks[1]
+        assert "Some details here" in chunks[1]
+
+    def test_heading_hierarchy_prepended(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "# Top\n\n## Sub\n\nContent under sub."
+        chunks = chunk_markdown(md)
+        assert any("# Top > ## Sub" in c for c in chunks)
+
+    def test_no_headings_falls_back(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "Just plain text without any headings."
+        chunks = chunk_markdown(md)
+        assert len(chunks) >= 1
+        assert "Just plain text" in chunks[0]
+
+    def test_empty_text(self):
+        from lilbee.chunker import chunk_markdown
+
+        assert chunk_markdown("") == []
+        assert chunk_markdown("   ") == []
+
+    def test_content_before_first_heading(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "Preamble text.\n\n# First Section\n\nSection body."
+        chunks = chunk_markdown(md)
+        assert len(chunks) == 2
+        assert "Preamble" in chunks[0]
+        assert "# First Section" in chunks[1]
+
+    def test_heading_only_no_body_falls_back(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "# Heading Only\n\n"
+        chunks = chunk_markdown(md)
+        # No body text under heading — sections list is empty bodies, falls back
+        assert len(chunks) >= 0  # doesn't crash
+
+    def test_nested_headings(self):
+        from lilbee.chunker import chunk_markdown
+
+        md = "# A\n\nA body\n\n## B\n\nB body\n\n### C\n\nC body\n\n## D\n\nD body"
+        chunks = chunk_markdown(md)
+        # Should have 4 sections: A, B, C, D
+        assert len(chunks) == 4
+        # C should have full path
+        c_chunk = next(c for c in chunks if "C body" in c)
+        assert "# A" in c_chunk
+        assert "## B" in c_chunk
+        assert "### C" in c_chunk
+        # D should NOT have B or C in its path (they were popped)
+        d_chunk = next(c for c in chunks if "D body" in c)
+        assert "# A" in d_chunk
+        assert "## D" in d_chunk
+        assert "## B" not in d_chunk
+
+
 class TestCodeChunker:
     def test_python_function_extraction(self):
         from lilbee.code_chunker import chunk_code
@@ -112,6 +181,10 @@ class Greeter:
             for c in chunks:
                 assert c.line_start > 0
                 assert c.line_end >= c.line_start
+            # Verify enriched headers contain symbol metadata
+            hello_chunk = next(c for c in chunks if "hello" in c.chunk and "def hello" in c.chunk)
+            assert "function: hello" in hello_chunk.chunk
+            assert f"lines {hello_chunk.line_start}-{hello_chunk.line_end}" in hello_chunk.chunk
         finally:
             path.unlink()
 

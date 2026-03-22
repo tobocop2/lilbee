@@ -1,13 +1,13 @@
 [project]
 name = "lilbee"
-version = "0.5.4"
+version = "0.6.0"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "knowledge-base", "rag", "ollama", "lancedb", "mcp",
+    "knowledge-base", "rag", "lancedb", "mcp",
     "vector-search", "ocr", "pdf", "local-llm", "offline",
 ]
 classifiers = [
@@ -26,9 +26,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "ollama",
     "lancedb",
-    "kreuzberg",
+    "kreuzberg>=4.5.0",
     "filelock",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",
@@ -43,10 +42,8 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "llama-cpp-python",
 ]
-
-[project.optional-dependencies]
-llama-cpp = ["llama-cpp-python"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
@@ -73,6 +70,7 @@ dev = [
     "reportlab",
     "ruff>=0.15.4",
     "httpx>=0.27",
+    "types-pyyaml>=6.0.12.20250915",
 ]
 
 [tool.pytest.ini_options]

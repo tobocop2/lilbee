@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from litestar import Litestar, get, post, put
+from litestar import Litestar, delete, get, post, put
 from litestar.config.cors import CORSConfig
 from litestar.exceptions import ValidationException
 from litestar.openapi import OpenAPIConfig
@@ -165,12 +165,87 @@ async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
     return SetModelResponse(**raw)
 
 
+@get("/api/models/catalog")
+async def models_catalog_route(
+    task: str | None = Parameter(query="task", default=None),
+    search: str = Parameter(query="search", default=""),
+    size: str | None = Parameter(query="size", default=None),
+    featured: bool | None = Parameter(query="featured", default=None),
+    sort: str = Parameter(query="sort", default="featured"),
+    limit: int = Parameter(query="limit", default=20),
+    offset: int = Parameter(query="offset", default=0),
+) -> dict[str, Any]:
+    """Browse the model catalog with optional filters."""
+    return await handlers.models_catalog(
+        task=task,
+        search=search,
+        size=size,
+        featured=featured,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@get("/api/models/installed")
+async def models_installed_route() -> dict[str, Any]:
+    """List installed models with their source (native or ollama)."""
+    return await handlers.models_installed()
+
+
+@post("/api/models/pull")
+async def models_pull_route(data: dict[str, Any]) -> Stream:
+    """Pull a model with streaming SSE progress events."""
+    model = data.get("model", "")
+    source = data.get("source", "native")
+    return Stream(
+        handlers.models_pull(model, source=source),
+        media_type="text/event-stream",
+    )
+
+
+@post("/api/models/show")
+async def models_show_route(data: SetModelRequest) -> dict[str, Any]:
+    """Get model metadata and parameter defaults."""
+    return await handlers.models_show(model=data.model)
+
+
+@delete("/api/models/{model:str}", status_code=200)
+async def models_delete_route(model: str, source: str = "native") -> dict[str, Any]:
+    """Delete a model from the specified source."""
+    return await handlers.models_delete(model, source=source)
+
+
+@get("/api/config")
+async def config_route() -> dict[str, Any]:
+    """Return all user-facing configuration values."""
+    return await handlers.get_config()
+
+
+@get("/api/documents")
+async def documents_list_route(
+    search: str = Parameter(query="search", default=""),
+    limit: int = Parameter(query="limit", default=50),
+    offset: int = Parameter(query="offset", default=0),
+) -> dict[str, Any]:
+    """List indexed documents with metadata, paginated and searchable."""
+    return await handlers.list_documents(search=search, limit=limit, offset=offset)
+
+
+@post("/api/documents/remove")
+async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove documents from the knowledge base by source name."""
+    names = data.get("names", [])
+    delete_files = data.get("delete_files", False)
+    return await handlers.delete_documents(names, delete_files=delete_files)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
         allow_origins=cfg.cors_origins,
         allow_origin_regex=r"^http://localhost(:\d+)?$",
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type"],
     )
     return Litestar(
@@ -187,6 +262,14 @@ def create_app() -> Litestar:
             models_list_route,
             models_set_chat_route,
             models_set_vision_route,
+            config_route,
+            models_catalog_route,
+            models_installed_route,
+            models_pull_route,
+            models_show_route,
+            models_delete_route,
+            documents_list_route,
+            documents_remove_route,
         ],
         cors_config=cors,
         openapi_config=OpenAPIConfig(

@@ -66,9 +66,75 @@ class Config(BaseModel):
     repeat_penalty: float | None = Field(default=None, ge=0.0)
     num_ctx: int | None = Field(default=None, ge=1)
     seed: int | None = None
-    llm_provider: str = "llama-cpp"
-    llm_base_url: str = "http://localhost:11434"
+    llm_provider: str = "auto"
+    ollama_url: str = "http://localhost:11434"
     llm_api_key: str = ""
+
+    # Retrieval quality knobs — defaults chosen from academic research and grantflow
+    # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
+
+    # Max chunks per source document in results. Prevents one large file from
+    # dominating all top-k slots. 3 balances coverage vs diversity.
+    diversity_max_per_source: int = Field(default=3, ge=1)
+
+    # MMR relevance/diversity tradeoff. 0.0 = max diversity, 1.0 = pure relevance.
+    # 0.5 is the standard default from Carbonell & Goldstein 1998.
+    mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # How many extra candidates to retrieve for MMR reranking.
+    # 3x gives enough candidates to find diverse results without excessive latency.
+    candidate_multiplier: int = Field(default=3, ge=1)
+
+    # Number of LLM-generated alternative queries for expansion.
+    # 3 variants covers lexical + semantic angles. Set to 0 to disable expansion.
+    query_expansion_count: int = Field(default=3, ge=0)
+
+    # Cosine distance threshold step for adaptive widening.
+    # When too few results are found, threshold widens by this amount per retry.
+    # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
+    adaptive_threshold_step: float = Field(default=0.2, gt=0.0)
+
+    # Validate LLM-generated expansion variants to prevent query drift.
+    # Checks token overlap with original query (≥ 0.3) and deduplicates
+    # near-identical variants (cosine similarity > 0.85).
+    expansion_guardrails: bool = True
+
+    # BM25 confidence score above which query expansion is skipped entirely.
+    # Based on 90th percentile of sigmoid-normalized BM25 score distribution.
+    # Higher = expansion runs more often. Calibrate per-corpus.
+    expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    # Minimum gap between top-1 and top-2 BM25 scores to skip expansion.
+    # Approximately 1 standard deviation of typical score spread.
+    expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # Maximum chunks included in LLM context after adaptive selection.
+    # More = more complete answers but higher latency and token cost.
+    max_context_sources: int = Field(default=5, ge=1)
+
+    # Enable HyDE (Hypothetical Document Embeddings) for search.
+    # Gao et al. 2022. Adds ~500ms per query. Best for vague queries.
+    hyde: bool = False
+
+    # Weight for HyDE results relative to original search (0.0-1.0).
+    # Lower = less trust in hypothetical documents.
+    hyde_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+
+    # Cross-encoder model for reranking. Empty = disabled.
+    # Requires sentence-transformers installed.
+    reranker_model: str = ""
+
+    # Number of candidates to rerank with cross-encoder.
+    rerank_candidates: int = Field(default=20, ge=1)
+
+    # Enable temporal filtering (date-based result filtering).
+    # Only activates when temporal keywords detected in query.
+    temporal_filtering: bool = True
+
+    # Show reasoning model thinking process (<think>...</think> tags).
+    # When False, thinking is stripped silently. When True, emitted as
+    # separate SSE events (event: reasoning) for UI rendering.
+    show_reasoning: bool = False
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
@@ -148,9 +214,50 @@ class Config(BaseModel):
             ),
             num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
             seed=_load_setting(data_root, "seed", "SEED", None, int),
-            llm_provider=env("LLM_PROVIDER", "llama-cpp"),
-            llm_base_url=env("LLM_BASE_URL", "http://localhost:11434"),
+            llm_provider=env("LLM_PROVIDER", "auto"),
+            ollama_url=env(
+                "OLLAMA_URL",
+                # Fall back to OLLAMA_HOST for backwards compat
+                os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            ),
             llm_api_key=env("LLM_API_KEY", ""),
+            diversity_max_per_source=_load_setting(
+                data_root, "diversity_max_per_source", "DIVERSITY_MAX_PER_SOURCE", 3, int
+            ),
+            mmr_lambda=_load_setting(data_root, "mmr_lambda", "MMR_LAMBDA", 0.5, float),
+            candidate_multiplier=_load_setting(
+                data_root, "candidate_multiplier", "CANDIDATE_MULTIPLIER", 3, int
+            ),
+            query_expansion_count=_load_setting(
+                data_root, "query_expansion_count", "QUERY_EXPANSION_COUNT", 3, int
+            ),
+            adaptive_threshold_step=_load_setting(
+                data_root, "adaptive_threshold_step", "ADAPTIVE_THRESHOLD_STEP", 0.2, float
+            ),
+            expansion_guardrails=_load_setting(
+                data_root, "expansion_guardrails", "EXPANSION_GUARDRAILS", True, bool
+            ),
+            expansion_skip_threshold=_load_setting(
+                data_root, "expansion_skip_threshold", "EXPANSION_SKIP_THRESHOLD", 0.8, float
+            ),
+            expansion_skip_gap=_load_setting(
+                data_root, "expansion_skip_gap", "EXPANSION_SKIP_GAP", 0.15, float
+            ),
+            max_context_sources=_load_setting(
+                data_root, "max_context_sources", "MAX_CONTEXT_SOURCES", 5, int
+            ),
+            hyde=_load_setting(data_root, "hyde", "HYDE", False, bool),
+            hyde_weight=_load_setting(data_root, "hyde_weight", "HYDE_WEIGHT", 0.7, float),
+            reranker_model=_load_setting(data_root, "reranker_model", "RERANKER_MODEL", "", str),
+            rerank_candidates=_load_setting(
+                data_root, "rerank_candidates", "RERANK_CANDIDATES", 20, int
+            ),
+            temporal_filtering=_load_setting(
+                data_root, "temporal_filtering", "TEMPORAL_FILTERING", True, bool
+            ),
+            show_reasoning=_load_setting(
+                data_root, "show_reasoning", "SHOW_REASONING", False, bool
+            ),
         )
 
 

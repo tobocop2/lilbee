@@ -8,6 +8,7 @@ Three levels:
 
 import fnmatch
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,13 +144,24 @@ _SIZE_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
+# TTL cache for HuggingFace API results (5 minutes)
+_HF_CACHE_TTL = 300
+_hf_cache: dict[str, tuple[float, list["CatalogModel"]]] = {}
+
+
 def _fetch_hf_models(
     pipeline_tag: str = "text-generation",
     tags: str = "gguf",
     sort: str = "downloads",
     limit: int = 50,
 ) -> list[CatalogModel]:
-    """Fetch models from HuggingFace API. Returns empty list on error."""
+    """Fetch models from HuggingFace API with 5-minute cache. Returns empty list on error."""
+    cache_key = f"{pipeline_tag}:{tags}:{sort}:{limit}"
+    now = time.monotonic()
+    cached = _hf_cache.get(cache_key)
+    if cached and now - cached[0] < _HF_CACHE_TTL:
+        return cached[1]
+
     params: dict[str, str | int] = {
         "pipeline_tag": pipeline_tag,
         "tags": tags,
@@ -189,6 +201,7 @@ def _fetch_hf_models(
                 task="chat",
             )
         )
+    _hf_cache[cache_key] = (now, models)
     return models
 
 
@@ -301,8 +314,9 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
         return sorted(models, key=lambda m: (not m.featured, -m.downloads))
 
 
+# Maps Ollama-style names to catalog display names for lookup
 def find_catalog_entry(name: str) -> CatalogModel | None:
-    """Find a featured model by name (case-insensitive)."""
+    """Find a featured model by display name (case-insensitive)."""
     name_lower = name.lower()
     for model in FEATURED_ALL:
         if model.name.lower() == name_lower:

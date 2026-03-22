@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 
 from lilbee.config import cfg
+
+if TYPE_CHECKING:
+    from lilbee.providers.routing_provider import RoutingProvider
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -679,7 +683,15 @@ class TestLiteLLMProvider:
 
 
 class TestFactory:
-    def test_default_provider_is_llama_cpp(self) -> None:
+    def test_default_provider_is_routing(self) -> None:
+        from lilbee.providers.factory import get_provider
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        cfg.llm_provider = "auto"
+        provider = get_provider()
+        assert isinstance(provider, RoutingProvider)
+
+    def test_explicit_llama_cpp(self) -> None:
         from lilbee.providers.factory import get_provider
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
@@ -736,7 +748,7 @@ class TestFactory:
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
         cfg.llm_provider = "ollama"
-        cfg.llm_base_url = "http://custom:11434"
+        cfg.ollama_url = "http://custom:11434"
         provider = get_provider()
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://custom:11434"
@@ -757,8 +769,8 @@ class TestConfigProvider:
             from lilbee.config import Config
 
             c = Config.from_env()
-            assert c.llm_provider == "llama-cpp"
-            assert c.llm_base_url == "http://localhost:11434"
+            assert c.llm_provider == "auto"
+            assert c.ollama_url == "http://localhost:11434"
             assert c.llm_api_key == ""
 
     def test_provider_env_override(self) -> None:
@@ -768,7 +780,7 @@ class TestConfigProvider:
             os.environ,
             {
                 "LILBEE_LLM_PROVIDER": "ollama",
-                "LILBEE_LLM_BASE_URL": "http://myhost:11434",
+                "LILBEE_OLLAMA_URL": "http://myhost:11434",
                 "LILBEE_LLM_API_KEY": "sk-key",
             },
         ):
@@ -776,7 +788,7 @@ class TestConfigProvider:
 
             c = Config.from_env()
             assert c.llm_provider == "ollama"
-            assert c.llm_base_url == "http://myhost:11434"
+            assert c.ollama_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
     def test_models_dir_computed(self) -> None:
@@ -787,3 +799,175 @@ class TestConfigProvider:
 
             c = Config.from_env()
             assert c.models_dir == __import__("pathlib").Path("/tmp/test-lilbee/models")
+
+
+# ---------------------------------------------------------------------------
+# RoutingProvider
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingProvider:
+    def _make_provider(self) -> RoutingProvider:
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        return RoutingProvider()
+
+    def test_routes_chat_to_ollama_when_model_in_ollama(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["qwen3:8b"]
+        mock_litellm.chat.return_value = "hello"
+        rp._litellm = mock_litellm
+
+        cfg.chat_model = "qwen3:8b"
+        result = rp.chat([{"role": "user", "content": "hi"}])
+        assert result == "hello"
+        mock_litellm.chat.assert_called_once()
+
+    def test_routes_chat_to_llama_cpp_when_not_in_ollama(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = []
+        rp._litellm = mock_litellm
+
+        mock_llama = mock.MagicMock()
+        mock_llama.chat.return_value = "local"
+        rp._llama_cpp = mock_llama
+
+        cfg.chat_model = "local-model.gguf"
+        result = rp.chat([{"role": "user", "content": "hi"}])
+        assert result == "local"
+        mock_llama.chat.assert_called_once()
+
+    def test_routes_embed_to_ollama_when_model_available(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["nomic-embed-text:latest"]
+        mock_litellm.embed.return_value = [[0.1, 0.2]]
+        rp._litellm = mock_litellm
+
+        cfg.embedding_model = "nomic-embed-text:latest"
+        result = rp.embed(["test"])
+        assert result == [[0.1, 0.2]]
+        mock_litellm.embed.assert_called_once()
+
+    def test_routes_embed_to_llama_cpp_when_not_in_ollama(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = []
+        rp._litellm = mock_litellm
+
+        mock_llama = mock.MagicMock()
+        mock_llama.embed.return_value = [[0.3, 0.4]]
+        rp._llama_cpp = mock_llama
+
+        cfg.embedding_model = "embed.gguf"
+        result = rp.embed(["test"])
+        assert result == [[0.3, 0.4]]
+
+    def test_list_models_merges_both_sources(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["qwen3:8b", "mistral:7b"]
+        rp._litellm = mock_litellm
+
+        mock_llama = mock.MagicMock()
+        mock_llama.list_models.return_value = ["local.gguf"]
+        rp._llama_cpp = mock_llama
+
+        result = rp.list_models()
+        assert "qwen3:8b" in result
+        assert "local.gguf" in result
+        assert len(result) == 3
+
+    def test_ollama_unreachable_falls_back_to_llama_cpp(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.side_effect = ProviderError("unreachable")
+        rp._litellm = mock_litellm
+
+        mock_llama = mock.MagicMock()
+        mock_llama.chat.return_value = "fallback"
+        rp._llama_cpp = mock_llama
+
+        cfg.chat_model = "local.gguf"
+        result = rp.chat([{"role": "user", "content": "hi"}])
+        assert result == "fallback"
+
+    def test_show_model_delegates_to_ollama(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["qwen3:8b"]
+        mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
+        rp._litellm = mock_litellm
+
+        result = rp.show_model("qwen3:8b")
+        assert result == {"parameters": "temp 0.7"}
+        mock_litellm.show_model.assert_called_once_with("qwen3:8b")
+
+    def test_show_model_falls_back_to_llama_cpp(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = []
+        rp._litellm = mock_litellm
+
+        mock_llama = mock.MagicMock()
+        mock_llama.show_model.return_value = None
+        rp._llama_cpp = mock_llama
+
+        result = rp.show_model("local.gguf")
+        assert result is None
+
+    def test_invalidate_cache_clears_ollama_list(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["qwen3:8b"]
+        rp._litellm = mock_litellm
+
+        # First call caches
+        assert rp._is_in_ollama("qwen3:8b")
+        assert rp._ollama_models is not None
+
+        rp.invalidate_cache()
+        assert rp._ollama_models is None
+
+    def test_pull_model_delegates_to_ollama(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["qwen3:8b"]
+        mock_litellm.pull_model.return_value = None
+        rp._litellm = mock_litellm
+
+        rp.pull_model("qwen3:8b")
+        mock_litellm.pull_model.assert_called_once()
+        # Cache should be invalidated after pull
+        assert rp._ollama_models is None
+
+    def test_pull_model_raises_when_ollama_fails(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = []
+        mock_litellm.pull_model.side_effect = ProviderError("fail")
+        rp._litellm = mock_litellm
+
+        with pytest.raises(ProviderError, match="no pull-capable backend"):
+            rp.pull_model("bad-model")
+
+    def test_chat_with_explicit_model_override(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.list_models.return_value = ["vision:7b"]
+        mock_litellm.chat.return_value = "saw it"
+        rp._litellm = mock_litellm
+
+        cfg.chat_model = "local.gguf"
+        result = rp.chat(
+            [{"role": "user", "content": "describe"}],
+            model="vision:7b",
+        )
+        assert result == "saw it"
+        mock_litellm.chat.assert_called_once()

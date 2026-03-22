@@ -20,18 +20,22 @@ def get_provider() -> LLMProvider:
 
     provider_name = cfg.llm_provider
 
-    if provider_name == "llama-cpp":
+    if provider_name == "auto":
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        _provider = RoutingProvider()
+    elif provider_name == "llama-cpp":
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         _provider = LlamaCppProvider()
     elif provider_name == "ollama":
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        _provider = LiteLLMProvider(base_url=cfg.llm_base_url)
+        _provider = LiteLLMProvider(base_url=cfg.ollama_url)
     elif provider_name == "litellm":
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        _provider = LiteLLMProvider(base_url=cfg.llm_base_url, api_key=cfg.llm_api_key)
+        _provider = LiteLLMProvider(base_url=cfg.ollama_url, api_key=cfg.llm_api_key)
     else:
         from lilbee.providers.base import ProviderError
 

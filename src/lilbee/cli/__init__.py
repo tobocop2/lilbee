@@ -6,7 +6,7 @@ from lilbee.cli.chat import (
     QuitChat,
     chat_loop,
     dispatch_slash,
-    list_ollama_models,
+    list_installed_models,
     make_completer,
 )
 from lilbee.cli.commands import CHUNK_PREVIEW_LEN as CHUNK_PREVIEW_LEN
@@ -37,7 +37,7 @@ __all__ = [
     "dispatch_slash",
     "get_version",
     "json_output",
-    "list_ollama_models",
+    "list_installed_models",
     "make_completer",
     "perform_reset",
     "sync_result_to_json",

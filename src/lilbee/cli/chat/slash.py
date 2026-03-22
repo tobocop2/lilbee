@@ -15,7 +15,7 @@ from rich.table import Table
 
 from lilbee import settings
 from lilbee.cli import theme
-from lilbee.cli.chat.complete import list_ollama_models
+from lilbee.cli.chat.complete import list_installed_models
 from lilbee.cli.chat.sync import SyncStatus
 from lilbee.cli.helpers import add_paths, get_version, perform_reset, render_status
 from lilbee.config import cfg
@@ -50,6 +50,7 @@ _SETTINGS_MAP: dict[str, _SettingDef] = {
     "num_ctx": _SettingDef("num_ctx", int, nullable=True),
     "seed": _SettingDef("seed", int, nullable=True),
     "system_prompt": _SettingDef("system_prompt", str, nullable=False, render=RenderStyle.FULL),
+    "show_reasoning": _SettingDef("show_reasoning", bool, nullable=False),
 }
 
 
@@ -83,7 +84,7 @@ def _pick_from_catalog(
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_fn(ram_gb, free_disk_gb, console=con)
     default_idx = list(catalog).index(recommended) + 1
-    installed = set(list_ollama_models())
+    installed = set(list_installed_models())
 
     try:
         raw = input(f"Choice [{default_idx}]: ").strip()
@@ -127,7 +128,7 @@ def _set_named_model(
     from lilbee.models import ensure_tag, pull_with_progress
 
     name = ensure_tag(name)
-    available = list_ollama_models(exclude_vision=exclude_vision)
+    available = list_installed_models(exclude_vision=exclude_vision)
     if available and name not in available:
         try:
             answer = con.input(
@@ -226,6 +227,42 @@ def handle_slash_version(args: str, con: Console) -> None:
     con.print(f"lilbee [{theme.LABEL}]{get_version()}[/{theme.LABEL}]")
 
 
+def handle_slash_delete(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
+    """Delete documents from the knowledge base. Interactive picker if no arg given."""
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    if not known:
+        con.print(f"[{theme.MUTED}]No documents indexed.[/{theme.MUTED}]")
+        return
+
+    name = args.strip()
+    if not name:
+        try:
+            from prompt_toolkit import prompt as pt_prompt
+            from prompt_toolkit.completion import WordCompleter
+
+            completer = WordCompleter(sorted(known), sentence=True)
+            name = pt_prompt("delete file: ", completer=completer).strip()
+        except (ImportError, EOFError, KeyboardInterrupt):
+            return
+    if not name:
+        return
+
+    if name not in known:
+        con.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
+        return
+
+    delete_by_source(name)
+    delete_source(name)
+    path = cfg.documents_dir / name
+    if path.exists():
+        path.unlink()
+    if sync_status is not None:
+        sync_status.clear()
+    con.print(f"Deleted [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
+
+
 def handle_slash_reset(args: str, con: Console, *, sync_status: SyncStatus | None = None) -> None:
     con.print(
         f"[{theme.ERROR_BOLD}]This will delete ALL documents and data.[/{theme.ERROR_BOLD}]"
@@ -249,21 +286,22 @@ def handle_slash_reset(args: str, con: Console, *, sync_status: SyncStatus | Non
 
 
 def _get_model_defaults() -> dict[str, str]:
-    """Fetch generation parameter defaults from Ollama for the current chat model."""
+    """Fetch generation parameter defaults from the provider for the current chat model."""
+    from lilbee.providers import get_provider
+
     _OLLAMA_TO_SETTING = {"top_k": "top_k_sampling"}
     try:
-        import ollama
-
-        resp = ollama.show(cfg.chat_model)
+        provider = get_provider()
+        params = provider.show_model(cfg.chat_model)
+        if params is None:
+            return {}
         defaults: dict[str, str] = {}
-        for line in (resp.parameters or "").splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                key = _OLLAMA_TO_SETTING.get(parts[0], parts[0])
-                if key in _SETTINGS_MAP:
-                    defaults[key] = parts[1]
+        for key, value in params.items():
+            mapped_key = _OLLAMA_TO_SETTING.get(key, key)
+            if mapped_key in _SETTINGS_MAP:
+                defaults[mapped_key] = value
         return defaults
-    except (ollama.ResponseError, ConnectionError, OSError):
+    except Exception:
         return {}
 
 
@@ -380,6 +418,7 @@ _SLASH_COMMANDS: dict[str, Callable[[str, Console], None]] = {
     "settings": handle_slash_settings,
     "set": handle_slash_set,
     "version": handle_slash_version,
+    "delete": handle_slash_delete,
     "reset": handle_slash_reset,
     "help": handle_slash_help,
     "quit": handle_slash_quit,
@@ -400,6 +439,8 @@ def dispatch_slash(raw_input: str, con: Console, *, sync_status: SyncStatus | No
         return True
     if cmd == "add":
         handle_slash_add(args, con, sync_status=sync_status)
+    elif cmd == "delete":
+        handle_slash_delete(args, con, sync_status=sync_status)
     elif cmd == "reset":
         handle_slash_reset(args, con, sync_status=sync_status)
     else:

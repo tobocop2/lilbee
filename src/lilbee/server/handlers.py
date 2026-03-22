@@ -10,15 +10,17 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
 from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.providers import get_provider
 
 if TYPE_CHECKING:
+    from lilbee.model_manager import ModelSource
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -137,8 +139,9 @@ async def ask_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
+        prepare_results,
         search_context,
-        sort_by_relevance,
+        select_context,
     )
 
     results = search_context(question, top_k=top_k)
@@ -146,7 +149,8 @@ async def ask_stream(
         yield sse_event("error", {"message": "No relevant documents found."})
         return
 
-    results = sort_by_relevance(results)
+    results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
@@ -158,18 +162,22 @@ async def ask_stream(
     error_holder: list[str] = []
 
     def _generate() -> None:
-        try:
-            import ollama as ollama_client
+        from lilbee.reasoning import filter_reasoning
 
-            stream = ollama_client.chat(
-                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+        try:
+            provider = get_provider()
+            stream = provider.chat(
+                cast("list[dict[str, Any]]", messages),
+                stream=True,
+                options=opts or None,
+                model=cfg.chat_model,
             )
-            for chunk in stream:
+            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
                 if cancel.is_set():
                     break
-                token = chunk.message.content
-                if token:
-                    queue.put_nowait(sse_event("token", {"token": token}))
+                if st.content:
+                    event_type = "reasoning" if st.is_reasoning else "token"
+                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
         except Exception as exc:
             error_holder.append(str(exc))
         finally:
@@ -228,8 +236,9 @@ async def chat_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
+        prepare_results,
         search_context,
-        sort_by_relevance,
+        select_context,
     )
 
     results = search_context(question, top_k=top_k)
@@ -237,7 +246,8 @@ async def chat_stream(
         yield sse_event("error", {"message": "No relevant documents found."})
         return
 
-    results = sort_by_relevance(results)
+    results = prepare_results(results)
+    results = select_context(results, question)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
@@ -250,18 +260,22 @@ async def chat_stream(
     error_holder: list[str] = []
 
     def _generate() -> None:
-        try:
-            import ollama as ollama_client
+        from lilbee.reasoning import filter_reasoning
 
-            stream = ollama_client.chat(
-                model=cfg.chat_model, messages=messages, stream=True, options=opts or None
+        try:
+            provider = get_provider()
+            stream = provider.chat(
+                cast("list[dict[str, Any]]", messages),
+                stream=True,
+                options=opts or None,
+                model=cfg.chat_model,
             )
-            for chunk in stream:
+            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
                 if cancel.is_set():
                     break
-                token = chunk.message.content
-                if token:
-                    queue.put_nowait(sse_event("token", {"token": token}))
+                if st.content:
+                    event_type = "reasoning" if st.is_reasoning else "token"
+                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
         except Exception as exc:
             error_holder.append(str(exc))
         finally:
@@ -378,12 +392,12 @@ async def add_files(data: dict[str, Any]) -> AddResult:
 
 async def list_models() -> dict[str, Any]:
     """Return chat and vision model catalogs with installed status."""
-    from lilbee.cli.chat import list_ollama_models
+    from lilbee.cli.chat import list_installed_models
     from lilbee.config import cfg
     from lilbee.models import MODEL_CATALOG, VISION_CATALOG
 
-    installed = set(list_ollama_models())
-    chat_installed = set(list_ollama_models(exclude_vision=True))
+    installed = set(list_installed_models())
+    chat_installed = set(list_installed_models(exclude_vision=True))
     vision_names = {v.name for v in VISION_CATALOG}
 
     response = ModelsResponse(
@@ -439,3 +453,192 @@ async def set_vision_model(model: str) -> dict[str, str]:
     cfg.vision_model = model
     settings.set_value(cfg.data_root, "vision_model", model)
     return {"model": model}
+
+
+async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
+    """Remove documents from the knowledge base by source name."""
+    from lilbee.config import cfg
+    from lilbee.store import delete_by_source, delete_source, get_sources
+
+    known = {s["filename"] for s in get_sources()}
+    removed: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name not in known:
+            not_found.append(name)
+            continue
+        delete_by_source(name)
+        delete_source(name)
+        removed.append(name)
+        if delete_files:
+            path = cfg.documents_dir / name
+            if path.exists():
+                path.unlink()
+
+    return {"removed": removed, "not_found": not_found}
+
+
+async def list_documents(
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return indexed documents with metadata, paginated and filterable."""
+    from lilbee.store import get_sources
+
+    sources = get_sources()
+    if search:
+        search_lower = search.lower()
+        sources = [s for s in sources if search_lower in s["filename"].lower()]
+    total = len(sources)
+    page = sources[offset : offset + limit]
+    return {
+        "documents": [
+            {
+                "filename": s["filename"],
+                "chunk_count": s.get("chunk_count", 0),
+                "ingested_at": s.get("ingested_at", ""),
+            }
+            for s in page
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def get_config() -> dict[str, Any]:
+    """Return all user-facing configuration values."""
+    from lilbee.config import cfg
+
+    return {
+        "chat_model": cfg.chat_model,
+        "embedding_model": cfg.embedding_model,
+        "vision_model": cfg.vision_model,
+        "ollama_url": cfg.ollama_url,
+        "system_prompt": cfg.system_prompt,
+        "top_k": cfg.top_k,
+        "max_distance": cfg.max_distance,
+        "chunk_size": cfg.chunk_size,
+        "chunk_overlap": cfg.chunk_overlap,
+        "temperature": cfg.temperature,
+        "top_p": cfg.top_p,
+        "top_k_sampling": cfg.top_k_sampling,
+        "repeat_penalty": cfg.repeat_penalty,
+        "num_ctx": cfg.num_ctx,
+        "seed": cfg.seed,
+        "llm_provider": cfg.llm_provider,
+        "diversity_max_per_source": cfg.diversity_max_per_source,
+        "mmr_lambda": cfg.mmr_lambda,
+        "candidate_multiplier": cfg.candidate_multiplier,
+        "query_expansion_count": cfg.query_expansion_count,
+        "adaptive_threshold_step": cfg.adaptive_threshold_step,
+        "show_reasoning": cfg.show_reasoning,
+    }
+
+
+async def models_show(model: str) -> dict[str, Any]:
+    """Return model metadata/parameters. Returns empty dict if unavailable."""
+    provider = get_provider()
+    result = provider.show_model(model)
+    return result if result is not None else {}
+
+
+def _parse_source(source: str) -> ModelSource:
+    """Convert a source string to ModelSource enum."""
+    from lilbee.model_manager import ModelSource
+
+    return ModelSource(source)
+
+
+async def models_catalog(
+    task: str | None = None,
+    search: str = "",
+    size: str | None = None,
+    installed: bool | None = None,
+    featured: bool | None = None,
+    sort: str = "featured",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return paginated model catalog with installed status."""
+    from lilbee.catalog import get_catalog
+
+    result = get_catalog(
+        task=task,
+        search=search,
+        size=size,
+        installed=installed,
+        featured=featured,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    provider = get_provider()
+    installed_names = set(provider.list_models())
+
+    models = []
+    for m in result.models:
+        source = "ollama" if m.name in installed_names else "native"
+        models.append(
+            {
+                "name": m.name,
+                "size_gb": m.size_gb,
+                "min_ram_gb": m.min_ram_gb,
+                "description": m.description,
+                "installed": m.name in installed_names,
+                "source": source,
+            }
+        )
+
+    return {
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+        "models": models,
+    }
+
+
+async def models_installed() -> dict[str, Any]:
+    """Return list of installed models with their source."""
+    from lilbee.model_manager import ModelSource, get_model_manager
+
+    manager = get_model_manager()
+    names = manager.list_installed()
+    models = []
+    for name in names:
+        src = manager.get_source(name)
+        source_str = src.value if src is not None else ModelSource.OLLAMA.value
+        models.append({"name": name, "source": source_str})
+    return {"models": models}
+
+
+async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
+    """Yield SSE progress events while pulling a model."""
+    yield ""  # force generator
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
+    src = _parse_source(source)
+    try:
+        events: list[str] = []
+
+        def _on_progress(data: dict[str, Any]) -> None:
+            events.append(sse_event("progress", data))
+
+        manager.pull(model, src, on_progress=_on_progress)
+        for event in events:
+            yield event
+    except Exception as exc:
+        yield sse_event("error", {"message": str(exc)})
+
+
+async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]:
+    """Delete a model. Returns {deleted, model, freed_gb}."""
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
+    src = _parse_source(source)
+    deleted = manager.remove(model, src)
+    return {"deleted": deleted, "model": model, "freed_gb": 0.0}

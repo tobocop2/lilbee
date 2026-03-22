@@ -233,6 +233,99 @@ class TestModelsSetVisionRoute:
         assert resp.json()["model"] == "llava:13b"
 
 
+class TestModelsCatalogRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_catalog",
+        new_callable=AsyncMock,
+        return_value={"total": 0, "limit": 20, "offset": 0, "models": []},
+    )
+    def test_returns_json(self, mock_cat, client):
+        resp = client.get("/api/models/catalog")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestModelsInstalledRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_installed",
+        new_callable=AsyncMock,
+        return_value={"models": []},
+    )
+    def test_returns_json(self, mock_inst, client):
+        resp = client.get("/api/models/installed")
+        assert resp.status_code == 200
+        assert resp.json()["models"] == []
+
+
+class TestModelsPullRoute:
+    @mock.patch("lilbee.server.handlers.models_pull")
+    def test_returns_sse(self, mock_pull, client):
+        mock_pull.return_value = mock_async_gen("event: progress\ndata: {}\n\n")
+        resp = client.post("/api/models/pull", json={"model": "test", "source": "native"})
+        assert resp.status_code == 201
+
+
+class TestModelsShowRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_show",
+        new_callable=AsyncMock,
+        return_value={"parameters": "temp 0.7"},
+    )
+    def test_returns_json(self, mock_show, client):
+        resp = client.post("/api/models/show", json={"model": "test"})
+        assert resp.status_code == 201
+        assert resp.json()["parameters"] == "temp 0.7"
+
+
+class TestModelsDeleteRoute:
+    @mock.patch(
+        "lilbee.server.handlers.models_delete",
+        new_callable=AsyncMock,
+        return_value={"deleted": True, "model": "test", "freed_gb": 0.0},
+    )
+    def test_returns_json(self, mock_del, client):
+        resp = client.delete("/api/models/test")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+
+
+class TestConfigRoute:
+    @mock.patch(
+        "lilbee.server.handlers.get_config",
+        new_callable=AsyncMock,
+        return_value={"chat_model": "qwen3:8b", "system_prompt": "You are helpful."},
+    )
+    def test_returns_json(self, mock_cfg, client):
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        assert resp.json()["chat_model"] == "qwen3:8b"
+        assert "system_prompt" in resp.json()
+
+
+class TestDocumentsListRoute:
+    @mock.patch(
+        "lilbee.server.handlers.list_documents",
+        new_callable=AsyncMock,
+        return_value={"documents": [], "total": 0},
+    )
+    def test_returns_json(self, mock_list, client):
+        resp = client.get("/api/documents")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
+class TestDocumentsRemoveRoute:
+    @mock.patch(
+        "lilbee.server.handlers.delete_documents",
+        new_callable=AsyncMock,
+        return_value={"removed": ["a.md"], "not_found": []},
+    )
+    def test_returns_json(self, mock_remove, client):
+        resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
+        assert resp.status_code == 201
+        assert resp.json()["removed"] == ["a.md"]
+
+
 class TestOpenAPISchema:
     def test_schema_endpoint_returns_json(self, client):
         resp = client.get("/schema/openapi.json")

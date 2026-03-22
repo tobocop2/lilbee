@@ -11,10 +11,15 @@ from lilbee.ingest import SyncResult
 from lilbee.server import handlers
 from lilbee.store import SearchChunk
 
+PATCH_PROVIDER = "lilbee.server.handlers.get_provider"
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all handler tests."""
+    from lilbee.providers import reset_provider
+
+    reset_provider()
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
@@ -22,6 +27,7 @@ def isolated_env(tmp_path):
     cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     yield tmp_path
+    reset_provider()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -159,10 +165,9 @@ class TestAskStream:
                 vector=[0.1],
             )
         ]
-        mock_chunk = MagicMock()
-        mock_chunk.message.content = "answer"
-
-        with patch("ollama.chat", return_value=[mock_chunk]):
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = iter(["answer"])
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -172,7 +177,7 @@ class TestAskStream:
         assert "done" in event_types
 
     @patch("lilbee.query.search_context")
-    async def test_ollama_error_yields_error_event(self, mock_search):
+    async def test_provider_error_yields_error_event(self, mock_search):
         mock_search.return_value = [
             SearchChunk(
                 source="a.pdf",
@@ -187,8 +192,9 @@ class TestAskStream:
                 vector=[0.1],
             )
         ]
-
-        with patch("ollama.chat", side_effect=RuntimeError("model missing")):
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = RuntimeError("model missing")
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -217,16 +223,14 @@ class TestAskStream:
         ]
         barrier = threading.Event()
 
-        def blocking_chat(**kwargs):
-            chunk1 = MagicMock()
-            chunk1.message.content = "first"
-            yield chunk1
+        def blocking_chat(*args, **kwargs):
+            yield "first"
             barrier.wait(timeout=2)
-            chunk2 = MagicMock()
-            chunk2.message.content = "second"
-            yield chunk2
+            yield "second"
 
-        with patch("ollama.chat", side_effect=blocking_chat):
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = blocking_chat
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             gen = handlers.ask_stream("question")
             events = []
             async for event in gen:
@@ -261,18 +265,16 @@ class TestAskStream:
         ]
         barrier = threading.Event()
 
-        def blocking_chat(**kwargs):
-            chunk1 = MagicMock()
-            chunk1.message.content = "first"
-            yield chunk1
+        def blocking_chat(*args, **kwargs):
+            yield "first"
             barrier.wait(timeout=2)
-            chunk2 = MagicMock()
-            chunk2.message.content = "second"
-            yield chunk2
+            yield "second"
 
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = blocking_chat
         with (
             caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-            patch("ollama.chat", side_effect=blocking_chat),
+            patch(PATCH_PROVIDER, return_value=mock_provider),
         ):
             gen = handlers.ask_stream("question")
             async for event in gen:
@@ -285,7 +287,7 @@ class TestAskStream:
 
     @patch("lilbee.query.search_context")
     async def test_skips_empty_tokens(self, mock_search):
-        """Chunks with empty content are not emitted."""
+        """Empty strings from provider are not emitted."""
         mock_search.return_value = [
             SearchChunk(
                 source="a.pdf",
@@ -300,12 +302,10 @@ class TestAskStream:
                 vector=[0.1],
             )
         ]
-        empty_chunk = MagicMock()
-        empty_chunk.message.content = ""
-        real_chunk = MagicMock()
-        real_chunk.message.content = "answer"
 
-        with patch("ollama.chat", return_value=[empty_chunk, real_chunk]):
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = iter(["", "answer"])
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -349,11 +349,9 @@ class TestChatStream:
                 vector=[0.1],
             )
         ]
-        mock_chunk = MagicMock()
-        mock_chunk.message.content = "reply"
-        mock_stream = [mock_chunk]
-
-        with patch("ollama.chat", return_value=mock_stream):
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = iter(["reply"])
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             history = [{"role": "user", "content": "hi"}]
             events = [e async for e in handlers.chat_stream("follow up", history)]
 
@@ -363,7 +361,7 @@ class TestChatStream:
         assert "done" in event_types
 
     @patch("lilbee.query.search_context")
-    async def test_ollama_error_yields_error_event(self, mock_search):
+    async def test_provider_error_yields_error_event(self, mock_search):
         mock_search.return_value = [
             SearchChunk(
                 source="a.pdf",
@@ -378,13 +376,15 @@ class TestChatStream:
                 vector=[0.1],
             )
         ]
-        with patch("ollama.chat", side_effect=ConnectionError("ollama down")):
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = ConnectionError("provider down")
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             events = [e async for e in handlers.chat_stream("q", [])]
 
         non_empty = [e for e in events if e]
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
-        assert "ollama down" in error_events[0]
+        assert "provider down" in error_events[0]
 
     @patch("lilbee.query.search_context")
     async def test_cancel_sets_cancel_event(self, mock_search):
@@ -407,16 +407,14 @@ class TestChatStream:
         ]
         barrier = threading.Event()
 
-        def blocking_chat(**kwargs):
-            chunk1 = MagicMock()
-            chunk1.message.content = "first"
-            yield chunk1
+        def blocking_chat(*args, **kwargs):
+            yield "first"
             barrier.wait(timeout=2)
-            chunk2 = MagicMock()
-            chunk2.message.content = "second"
-            yield chunk2
+            yield "second"
 
-        with patch("ollama.chat", side_effect=blocking_chat):
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = blocking_chat
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             gen = handlers.chat_stream("question", [])
             events = []
             async for event in gen:
@@ -451,18 +449,16 @@ class TestChatStream:
         ]
         barrier = threading.Event()
 
-        def blocking_chat(**kwargs):
-            chunk1 = MagicMock()
-            chunk1.message.content = "first"
-            yield chunk1
+        def blocking_chat(*args, **kwargs):
+            yield "first"
             barrier.wait(timeout=2)
-            chunk2 = MagicMock()
-            chunk2.message.content = "second"
-            yield chunk2
+            yield "second"
 
+        mock_provider = MagicMock()
+        mock_provider.chat.side_effect = blocking_chat
         with (
             caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-            patch("ollama.chat", side_effect=blocking_chat),
+            patch(PATCH_PROVIDER, return_value=mock_provider),
         ):
             gen = handlers.chat_stream("question", [])
             async for event in gen:
@@ -475,7 +471,7 @@ class TestChatStream:
 
     @patch("lilbee.query.search_context")
     async def test_skips_empty_tokens(self, mock_search):
-        """Chunks with empty content are not emitted."""
+        """Empty strings from provider are not emitted."""
         mock_search.return_value = [
             SearchChunk(
                 source="a.pdf",
@@ -490,12 +486,10 @@ class TestChatStream:
                 vector=[0.1],
             )
         ]
-        empty_chunk = MagicMock()
-        empty_chunk.message.content = ""
-        real_chunk = MagicMock()
-        real_chunk.message.content = "reply"
 
-        with patch("ollama.chat", return_value=[empty_chunk, real_chunk]):
+        mock_provider = MagicMock()
+        mock_provider.chat.return_value = iter(["", "reply"])
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
             events = [e async for e in handlers.chat_stream("question", [])]
 
         non_empty = [e for e in events if e]
@@ -568,7 +562,7 @@ class TestSyncStream:
 
 
 class TestListModels:
-    @patch("lilbee.cli.chat.list_ollama_models")
+    @patch("lilbee.cli.chat.list_installed_models")
     async def test_returns_catalogs(self, mock_list):
         mock_list.return_value = ["qwen3:8b", "mistral:7b"]
         result = await handlers.list_models()
@@ -581,7 +575,7 @@ class TestListModels:
         assert isinstance(result["vision"]["catalog"], list)
         assert isinstance(result["vision"]["installed"], list)
 
-    @patch("lilbee.cli.chat.list_ollama_models")
+    @patch("lilbee.cli.chat.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:8b"]
         result = await handlers.list_models()
@@ -617,3 +611,266 @@ class TestSetVisionModel:
         result = await handlers.set_vision_model("")
         assert result["model"] == ""
         assert cfg.vision_model == ""
+
+
+class TestModelsCatalog:
+    @patch("lilbee.catalog.get_catalog")
+    async def test_returns_catalog_response(self, mock_get_catalog):
+        from lilbee.catalog import CatalogModel, CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    name="Qwen3 8B",
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="Medium model",
+                    featured=True,
+                    downloads=1000,
+                    task="chat",
+                )
+            ],
+        )
+        mock_provider = MagicMock()
+        mock_provider.list_models.return_value = ["qwen3:8b"]
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_catalog()
+
+        assert result["total"] == 1
+        assert len(result["models"]) == 1
+        m = result["models"][0]
+        assert m["name"] == "Qwen3 8B"
+        assert m["installed"] is False
+        assert m["source"] == "native"
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_filters_passed_to_catalog(self, mock_get_catalog):
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(total=0, limit=10, offset=5, models=[])
+        mock_provider = MagicMock()
+        mock_provider.list_models.return_value = []
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            await handlers.models_catalog(
+                task="chat",
+                search="qwen",
+                size="small",
+                installed=True,
+                featured=True,
+                sort="downloads",
+                limit=10,
+                offset=5,
+            )
+        mock_get_catalog.assert_called_once_with(
+            task="chat",
+            search="qwen",
+            size="small",
+            installed=True,
+            featured=True,
+            sort="downloads",
+            limit=10,
+            offset=5,
+        )
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_installed_flag(self, mock_get_catalog):
+        from lilbee.catalog import CatalogModel, CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    name="qwen3:8b",
+                    hf_repo="Qwen/Qwen3-8B-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=5.0,
+                    min_ram_gb=8.0,
+                    description="test",
+                    featured=True,
+                    downloads=0,
+                    task="chat",
+                )
+            ],
+        )
+        mock_provider = MagicMock()
+        mock_provider.list_models.return_value = ["qwen3:8b"]
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_catalog()
+        assert result["models"][0]["installed"] is True
+
+
+class TestModelsInstalled:
+    async def test_returns_installed_models(self):
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
+        from lilbee.model_manager import ModelSource
+
+        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            result = await handlers.models_installed()
+        assert len(result["models"]) == 2
+        assert result["models"][0]["source"] == "ollama"
+
+    async def test_unknown_source_defaults_to_ollama(self):
+        mock_manager = MagicMock()
+        mock_manager.list_installed.return_value = ["unknown"]
+        mock_manager.get_source.return_value = None
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            result = await handlers.models_installed()
+        assert result["models"][0]["source"] == "ollama"
+
+
+class TestModelsPull:
+    async def test_yields_progress_events(self):
+        mock_manager = MagicMock()
+
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"status": "downloading"})
+                on_progress({"status": "success"})
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            events = [e async for e in handlers.models_pull("test", source="native")]
+        non_empty = [e for e in events if e]
+        assert any("downloading" in e for e in non_empty)
+        assert any("success" in e for e in non_empty)
+
+    async def test_error_yields_error_event(self):
+        mock_manager = MagicMock()
+        mock_manager.pull.side_effect = RuntimeError("fail")
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            events = [e async for e in handlers.models_pull("bad", source="native")]
+        non_empty = [e for e in events if e]
+        assert any("error" in e and "fail" in e for e in non_empty)
+
+
+class TestModelsDelete:
+    async def test_returns_deleted_true(self):
+        mock_manager = MagicMock()
+        mock_manager.remove.return_value = True
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            result = await handlers.models_delete("test", source="ollama")
+        assert result["deleted"] is True
+        assert result["model"] == "test"
+
+    async def test_returns_deleted_false(self):
+        mock_manager = MagicMock()
+        mock_manager.remove.return_value = False
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+            result = await handlers.models_delete("missing", source="native")
+        assert result["deleted"] is False
+        assert result["freed_gb"] == 0.0
+
+
+class TestModelsShow:
+    async def test_returns_params(self):
+        mock_provider = MagicMock()
+        mock_provider.show_model.return_value = {"parameters": "temp 0.7"}
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_show("qwen3:8b")
+        assert result == {"parameters": "temp 0.7"}
+
+    async def test_returns_empty_when_none(self):
+        mock_provider = MagicMock()
+        mock_provider.show_model.return_value = None
+        with patch(PATCH_PROVIDER, return_value=mock_provider):
+            result = await handlers.models_show("unknown")
+        assert result == {}
+
+
+class TestDeleteDocuments:
+    @patch("lilbee.store.get_sources")
+    @patch("lilbee.store.delete_source")
+    @patch("lilbee.store.delete_by_source")
+    async def test_removes_known_documents(self, mock_del, mock_del_src, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}, {"filename": "b.md"}]
+        result = await handlers.delete_documents(["a.md"])
+        assert result["removed"] == ["a.md"]
+        assert result["not_found"] == []
+        mock_del.assert_called_once_with("a.md")
+        mock_del_src.assert_called_once_with("a.md")
+
+    @patch("lilbee.store.get_sources")
+    async def test_not_found(self, mock_sources):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        result = await handlers.delete_documents(["missing.md"])
+        assert result["removed"] == []
+        assert result["not_found"] == ["missing.md"]
+
+    @patch("lilbee.store.get_sources")
+    @patch("lilbee.store.delete_source")
+    @patch("lilbee.store.delete_by_source")
+    async def test_delete_files_removes_from_disk(
+        self, mock_del, mock_del_src, mock_sources, tmp_path
+    ):
+        mock_sources.return_value = [{"filename": "a.md"}]
+        cfg.documents_dir = tmp_path
+        f = tmp_path / "a.md"
+        f.write_text("content")
+        result = await handlers.delete_documents(["a.md"], delete_files=True)
+        assert result["removed"] == ["a.md"]
+        assert not f.exists()
+
+
+class TestGetConfig:
+    async def test_returns_all_config_keys(self):
+        result = await handlers.get_config()
+        assert "chat_model" in result
+        assert "system_prompt" in result
+        assert "ollama_url" in result
+        assert "diversity_max_per_source" in result
+        assert "mmr_lambda" in result
+        assert "query_expansion_count" in result
+        assert "adaptive_threshold_step" in result
+        assert "temperature" in result
+
+
+class TestListDocuments:
+    @patch("lilbee.store.get_sources")
+    async def test_returns_documents(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
+        ]
+        result = await handlers.list_documents()
+        assert result["total"] == 1
+        assert result["documents"][0]["filename"] == "a.md"
+        assert result["documents"][0]["chunk_count"] == 5
+
+    @patch("lilbee.store.get_sources")
+    async def test_empty(self, mock_sources):
+        mock_sources.return_value = []
+        result = await handlers.list_documents()
+        assert result["total"] == 0
+        assert result["documents"] == []
+
+    @patch("lilbee.store.get_sources")
+    async def test_pagination(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
+        ]
+        result = await handlers.list_documents(limit=3, offset=2)
+        assert result["total"] == 10
+        assert len(result["documents"]) == 3
+        assert result["documents"][0]["filename"] == "doc2.md"
+        assert result["limit"] == 3
+        assert result["offset"] == 2
+
+    @patch("lilbee.store.get_sources")
+    async def test_search_filter(self, mock_sources):
+        mock_sources.return_value = [
+            {"filename": "readme.md", "chunk_count": 3},
+            {"filename": "setup.py", "chunk_count": 1},
+            {"filename": "readme_dev.md", "chunk_count": 2},
+        ]
+        result = await handlers.list_documents(search="readme")
+        assert result["total"] == 2
+        assert all("readme" in d["filename"] for d in result["documents"])
