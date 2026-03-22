@@ -177,7 +177,7 @@ class TestMMRRerank:
                 distance=0.4,
             ),
         ]
-        selected = mmr_rerank(query, results, top_k=2, lam=0.5)
+        selected = mmr_rerank(query, results, top_k=2, mmr_lambda=0.5)
         assert len(selected) == 2
         assert selected[0].chunk == "x-axis 1"
         # x-axis 2 is identical to x-axis 1, so max redundancy

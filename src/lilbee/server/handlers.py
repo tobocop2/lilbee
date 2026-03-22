@@ -139,9 +139,8 @@ async def ask_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
-        diversify_sources,
+        prepare_results,
         search_context,
-        sort_by_relevance,
     )
 
     results = search_context(question, top_k=top_k)
@@ -149,8 +148,7 @@ async def ask_stream(
         yield sse_event("error", {"message": "No relevant documents found."})
         return
 
-    results = sort_by_relevance(results)
-    results = diversify_sources(results)
+    results = prepare_results(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
@@ -236,9 +234,8 @@ async def chat_stream(
     from lilbee.query import (
         _CONTEXT_TEMPLATE,
         build_context,
-        diversify_sources,
+        prepare_results,
         search_context,
-        sort_by_relevance,
     )
 
     results = search_context(question, top_k=top_k)
@@ -246,8 +243,7 @@ async def chat_stream(
         yield sse_event("error", {"message": "No relevant documents found."})
         return
 
-    results = sort_by_relevance(results)
-    results = diversify_sources(results)
+    results = prepare_results(results)
     context = build_context(results)
     prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]

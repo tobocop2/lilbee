@@ -23,6 +23,7 @@ from lilbee import embedder, store
 from lilbee.chunker import chunk_markdown, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
+from lilbee.frontmatter import parse_frontmatter
 from lilbee.platform import is_ignored_dir
 from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 from lilbee.progress import (
@@ -435,7 +436,6 @@ async def ingest_markdown(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Chunk a markdown file by heading boundaries, embed, return records."""
-    from lilbee.frontmatter import parse_frontmatter
 
     raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     if not raw_text.strip():

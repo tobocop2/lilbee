@@ -1,10 +1,17 @@
-"""Extract YAML frontmatter and inline hashtags from markdown files."""
+"""Extract YAML frontmatter and inline hashtags from markdown files.
+
+Parsing approach inspired by gno (gmickel/gno) frontmatter.ts which
+supports YAML frontmatter, Logseq properties, and inline hashtags
+with code-block-aware extraction and NFC tag normalization.
+"""
 
 from __future__ import annotations
 
 import re
 import unicodedata
 from dataclasses import dataclass, field
+
+import yaml
 
 _FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)(?:\r?\n)?---(?:\r?\n|$)")
 _CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```|`[^`\n]+`")
@@ -47,7 +54,6 @@ def parse_frontmatter(text: str) -> FrontmatterResult:
 
     Returns metadata and the body text with frontmatter stripped.
     """
-    import yaml
 
     body = text
     title = ""
