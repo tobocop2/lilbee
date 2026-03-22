@@ -1,15 +1,6 @@
 # [lilbee](https://tobocop2.github.io/lilbee/)
-> This is in active development. Cool things coming, bear with me please: https://github.com/tobocop2/lilbee/pull/15
-> Feel free to use latest published versions but the entire project is actively being rebuilt and will be much more useful soon
-> My motivation is a single executable that I can use for q&a, programming, and just having a locally curated encyclopedia like I used to have with Encarta 99, but this time I can talk to it instead and get responses without any need for reaching the Internet. Having a local search engine is awesome and being in full control of the inputs and outputs is even better. 
->
-> Gain back some privacy while still having the awesome power of AI. Frontier AI's are awesome and local LLM's are no replacement but they certainly should be used much more than they currently are. Graphics cards not just for gamers and crypto miners, but now they have become very useful to my friends and I on a daily basis thanks to lilbee. 
->
-> It's time the masses have something simple to use, fully local, and all in one process / install. Computers can be more than frontends for agents and web browsers and it's time to take advantage of our hardware. This is my attempt at a solution to this problem. I think existing solutions have too many moving pieces and require too many heavy dependencies and often use sidecar style solutions. 
->
-> There's no simple way to make local AI immediately useful right in the terminal. That was also a big motivation for me. I needed something terminal first. A single executable that anyone can run is much more ideal and shareable and democratic. It's easier to install and use that way for everyone. 
->
-> Local AI at this time is for nerds but it doesn't have to be and this approach I think is the right direction towards that goal. There's a lot to this project so check out the description below for what to expect For the GUI option, I'm releasing an obsidian plugin on top of lilbee with feature parity to the terminal UI here [https://github.com/tobocop2/obsidian-lilbee](https://github.com/tobocop2/obsidian-lilbee)
+
+> Beta — feedback and bug reports welcome. [Open an issue](https://github.com/tobocop2/lilbee/issues).
 
 <p align="center">
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee" alt="PyPI"></a>

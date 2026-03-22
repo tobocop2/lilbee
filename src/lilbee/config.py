@@ -43,6 +43,7 @@ class Config(BaseModel):
     documents_dir: Path
     data_dir: Path
     lancedb_dir: Path
+    models_dir: Path
     chat_model: str = Field(min_length=1)
     embedding_model: str = Field(min_length=1)
     embedding_dim: int = Field(ge=1)
@@ -65,6 +66,9 @@ class Config(BaseModel):
     repeat_penalty: float | None = Field(default=None, ge=0.0)
     num_ctx: int | None = Field(default=None, ge=1)
     seed: int | None = None
+    llm_provider: str = "llama-cpp"
+    llm_base_url: str = "http://localhost:11434"
+    llm_api_key: str = ""
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
@@ -110,6 +114,7 @@ class Config(BaseModel):
             documents_dir=data_root / "documents",
             data_dir=data_root / "data",
             lancedb_dir=data_root / "data" / "lancedb",
+            models_dir=data_root / "models",
             chat_model=chat_model,
             embedding_model=_load_setting(
                 data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str
@@ -143,6 +148,9 @@ class Config(BaseModel):
             ),
             num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
             seed=_load_setting(data_root, "seed", "SEED", None, int),
+            llm_provider=env("LLM_PROVIDER", "llama-cpp"),
+            llm_base_url=env("LLM_BASE_URL", "http://localhost:11434"),
+            llm_api_key=env("LLM_API_KEY", ""),
         )
 
 
