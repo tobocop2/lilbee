@@ -629,3 +629,297 @@ class TestSelectContext:
         result = select_context(chunks, "alpha beta unique1 unique2", max_sources=5)
         # Should stop after 1 or 2 chunks since no gain after first
         assert len(result) < 5
+
+
+class TestShouldSkipExpansion:
+    @mock.patch("lilbee.store.bm25_probe")
+    def test_skips_when_confident(self, mock_probe):
+        from lilbee.query import _should_skip_expansion
+
+        mock_probe.return_value = [
+            _make_result(relevance_score=0.9),
+            _make_result(relevance_score=0.5),
+        ]
+        assert _should_skip_expansion("test query") is True
+
+    @mock.patch("lilbee.store.bm25_probe")
+    def test_does_not_skip_when_low_score(self, mock_probe):
+        from lilbee.query import _should_skip_expansion
+
+        mock_probe.return_value = [
+            _make_result(relevance_score=0.5),
+            _make_result(relevance_score=0.4),
+        ]
+        assert _should_skip_expansion("test query") is False
+
+    @mock.patch("lilbee.store.bm25_probe")
+    def test_does_not_skip_when_close_gap(self, mock_probe):
+        from lilbee.query import _should_skip_expansion
+
+        mock_probe.return_value = [
+            _make_result(relevance_score=0.85),
+            _make_result(relevance_score=0.82),
+        ]
+        assert _should_skip_expansion("test query") is False
+
+    @mock.patch("lilbee.store.bm25_probe")
+    def test_skips_with_single_confident_result(self, mock_probe):
+        from lilbee.query import _should_skip_expansion
+
+        mock_probe.return_value = [_make_result(relevance_score=0.9)]
+        assert _should_skip_expansion("test") is True
+
+    @mock.patch("lilbee.store.bm25_probe")
+    def test_does_not_skip_when_empty(self, mock_probe):
+        from lilbee.query import _should_skip_expansion
+
+        mock_probe.return_value = []
+        assert _should_skip_expansion("test") is False
+
+    def test_disabled_when_threshold_zero(self):
+        from lilbee.config import cfg
+        from lilbee.query import _should_skip_expansion
+
+        old = cfg.expansion_skip_threshold
+        cfg.expansion_skip_threshold = 0
+        try:
+            assert _should_skip_expansion("test") is False
+        finally:
+            cfg.expansion_skip_threshold = old
+
+
+class TestParseStructuredQuery:
+    def test_term_prefix(self):
+        from lilbee.query import _parse_structured_query
+
+        mode, query = _parse_structured_query("term: kubernetes pods")
+        assert mode == "term"
+        assert query == "kubernetes pods"
+
+    def test_vec_prefix(self):
+        from lilbee.query import _parse_structured_query
+
+        mode, query = _parse_structured_query("vec: how does auth work")
+        assert mode == "vec"
+        assert "auth" in query
+
+    def test_hyde_prefix(self):
+        from lilbee.query import _parse_structured_query
+
+        mode, _query = _parse_structured_query("hyde: explain caching")
+        assert mode == "hyde"
+
+    def test_no_prefix(self):
+        from lilbee.query import _parse_structured_query
+
+        mode, query = _parse_structured_query("normal question")
+        assert mode is None
+        assert query == "normal question"
+
+    def test_case_insensitive(self):
+        from lilbee.query import _parse_structured_query
+
+        mode, _ = _parse_structured_query("TERM: test")
+        assert mode == "term"
+
+
+class TestHydeSearch:
+    @mock.patch("lilbee.query.get_provider")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_returns_results(self, mock_embed, mock_search, mock_provider):
+        from lilbee.query import _hyde_search
+
+        mock_provider.return_value.chat.return_value = "hypothetical document about X"
+        results = _hyde_search("explain X", top_k=5)
+        assert len(results) >= 1
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_empty_on_error(self, mock_provider):
+        from lilbee.query import _hyde_search
+
+        mock_provider.return_value.chat.side_effect = RuntimeError("fail")
+        assert _hyde_search("test", top_k=5) == []
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_empty_on_non_string(self, mock_provider):
+        from lilbee.query import _hyde_search
+
+        mock_provider.return_value.chat.return_value = iter(["stream"])
+        assert _hyde_search("test", top_k=5) == []
+
+    @mock.patch("lilbee.query.get_provider")
+    def test_returns_empty_on_blank(self, mock_provider):
+        from lilbee.query import _hyde_search
+
+        mock_provider.return_value.chat.return_value = "   "
+        assert _hyde_search("test", top_k=5) == []
+
+
+class TestTemporalFilter:
+    @mock.patch("lilbee.store.get_sources")
+    def test_filters_by_date(self, mock_sources):
+        from lilbee.query import _apply_temporal_filter
+
+        mock_sources.return_value = [
+            {"filename": "old.md", "ingested_at": "2025-01-01T00:00:00+00:00"},
+            {"filename": "new.md", "ingested_at": "2026-03-22T12:00:00+00:00"},
+        ]
+        results = [
+            _make_result(source="old.md"),
+            _make_result(source="new.md"),
+        ]
+        filtered = _apply_temporal_filter(results, "recent changes")
+        assert any(r.source == "new.md" for r in filtered)
+
+    def test_no_temporal_keyword_passes_through(self):
+        from lilbee.query import _apply_temporal_filter
+
+        results = [_make_result()]
+        assert _apply_temporal_filter(results, "how does auth work") == results
+
+    def test_disabled_via_config(self):
+        from lilbee.config import cfg
+        from lilbee.query import _apply_temporal_filter
+
+        old = cfg.temporal_filtering
+        cfg.temporal_filtering = False
+        try:
+            results = [_make_result()]
+            assert _apply_temporal_filter(results, "recent") == results
+        finally:
+            cfg.temporal_filtering = old
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_keeps_results_without_dates(self, mock_sources):
+        from lilbee.query import _apply_temporal_filter
+
+        mock_sources.return_value = [{"filename": "a.md", "ingested_at": ""}]
+        results = [_make_result(source="a.md")]
+        filtered = _apply_temporal_filter(results, "today's notes")
+        assert len(filtered) == 1
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_falls_back_when_nothing_matches(self, mock_sources):
+        from lilbee.query import _apply_temporal_filter
+
+        mock_sources.return_value = [
+            {"filename": "old.md", "ingested_at": "2020-01-01T00:00:00+00:00"},
+        ]
+        results = [_make_result(source="old.md")]
+        filtered = _apply_temporal_filter(results, "today's notes")
+        assert len(filtered) == 1  # falls back to unfiltered
+
+    @mock.patch("lilbee.store.get_sources")
+    def test_handles_invalid_date(self, mock_sources):
+        from lilbee.query import _apply_temporal_filter
+
+        mock_sources.return_value = [{"filename": "a.md", "ingested_at": "not-a-date"}]
+        results = [_make_result(source="a.md")]
+        filtered = _apply_temporal_filter(results, "recent")
+        assert len(filtered) == 1
+
+
+class TestSearchStructured:
+    @mock.patch("lilbee.store.bm25_probe", return_value=[_make_result()])
+    def test_term_mode(self, mock_probe):
+        from lilbee.query import _search_structured
+
+        results = _search_structured("term", "test query", 5)
+        assert len(results) == 1
+        mock_probe.assert_called_once_with("test query", top_k=5)
+
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_vec_mode(self, mock_embed, mock_search):
+        from lilbee.query import _search_structured
+
+        results = _search_structured("vec", "semantic query", 5)
+        assert len(results) == 1
+
+    @mock.patch("lilbee.query._hyde_search", return_value=[_make_result()])
+    def test_hyde_mode(self, mock_hyde):
+        from lilbee.query import _search_structured
+
+        results = _search_structured("hyde", "vague question", 5)
+        assert len(results) == 1
+
+    def test_unknown_mode_returns_empty(self):
+        from lilbee.query import _search_structured
+
+        assert _search_structured("unknown", "test", 5) == []
+
+
+class TestSearchContextIntegration:
+    @mock.patch("lilbee.query._expand_query", return_value=[])
+    @mock.patch("lilbee.store.bm25_probe", return_value=[])
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_structured_term_mode(self, mock_embed, mock_search, mock_probe, mock_expand):
+        mock_probe.return_value = [_make_result()]
+        results = search_context("term: kubernetes pods")
+        mock_probe.assert_called_once()
+        assert len(results) >= 1
+
+    @mock.patch("lilbee.query._expand_query", return_value=[])
+    @mock.patch("lilbee.query._should_skip_expansion", return_value=True)
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_skips_expansion_when_confident(self, mock_embed, mock_search, mock_skip, mock_expand):
+        results = search_context("exact match query")
+        mock_expand.assert_not_called()
+        assert len(results) >= 1
+
+    @mock.patch("lilbee.query._hyde_search", return_value=[_make_result(source="hyde.md")])
+    @mock.patch("lilbee.query._expand_query", return_value=[])
+    @mock.patch("lilbee.query._should_skip_expansion", return_value=False)
+    @mock.patch("lilbee.store.search", return_value=[_make_result(source="normal.md")])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_hyde_merges_results(self, mock_embed, mock_search, mock_skip, mock_expand, mock_hyde):
+        from lilbee.config import cfg
+
+        old = cfg.hyde
+        cfg.hyde = True
+        try:
+            results = search_context("vague question")
+            sources = {r.source for r in results}
+            assert "hyde.md" in sources
+        finally:
+            cfg.hyde = old
+
+
+class TestAskRawWithReranker:
+    @mock.patch("lilbee.query.get_provider")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_reranker_called_when_configured(self, mock_embed, mock_search, mock_provider):
+        from lilbee.config import cfg
+
+        mock_provider.return_value.chat.return_value = "answer"
+        old = cfg.reranker_model
+        cfg.reranker_model = "test-reranker"
+        try:
+            with mock.patch("lilbee.reranker.rerank", return_value=[_make_result()]) as mock_rerank:
+                result = ask_raw("question")
+                mock_rerank.assert_called_once()
+                assert result.answer == "answer"
+        finally:
+            cfg.reranker_model = old
+
+
+class TestAskStreamWithReranker:
+    @mock.patch("lilbee.query.get_provider")
+    @mock.patch("lilbee.store.search", return_value=[_make_result()])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_reranker_called_when_configured(self, mock_embed, mock_search, mock_provider):
+        from lilbee.config import cfg
+
+        mock_provider.return_value.chat.return_value = iter(["token"])
+        old = cfg.reranker_model
+        cfg.reranker_model = "test-reranker"
+        try:
+            with mock.patch("lilbee.reranker.rerank", return_value=[_make_result()]) as mock_rerank:
+                list(ask_stream("question"))
+                mock_rerank.assert_called_once()
+        finally:
+            cfg.reranker_model = old

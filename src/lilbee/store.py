@@ -235,6 +235,23 @@ def _hybrid_search(
     return [SearchChunk(**r) for r in rows]
 
 
+def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
+    """Quick BM25-only search for confidence checking. Returns up to top_k results."""
+    table = _open_table(CHUNKS_TABLE)
+    if table is None:
+        return []
+    if not _fts.ready:
+        ensure_fts_index()
+    if not _fts.ready:
+        return []  # pragma: no cover
+    try:
+        rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
+        return [SearchChunk(**r) for r in rows]
+    except Exception:
+        log.debug("BM25 probe failed", exc_info=True)
+        return []
+
+
 def search(
     query_vector: list[float],
     top_k: int | None = None,
