@@ -2,7 +2,6 @@
 
 from unittest import mock
 
-import ollama
 import pytest
 
 from lilbee.query import (
@@ -152,11 +151,11 @@ class TestSearchContext:
 
 
 class TestAskRaw:
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_structured_result(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="5 quarts."))
+    def test_returns_structured_result(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "5 quarts."
         result = ask_raw("oil capacity?")
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
@@ -169,25 +168,23 @@ class TestAskRaw:
         assert "No relevant documents" in result.answer
         assert result.sources == []
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_with_history(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_raw_with_history(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "answer"
         history = [{"role": "user", "content": "prev"}]
         ask_raw("new q", history=history)
-        messages = mock_chat.call_args[1]["messages"]
+        messages = mock_provider.return_value.chat.call_args[0][0]
         assert len(messages) == 3  # system + history + user
 
 
 class TestAsk:
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_answer_with_citations(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(
-            message=mock.MagicMock(content="The oil capacity is 5 quarts.")
-        )
+    def test_returns_answer_with_citations(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "The oil capacity is 5 quarts."
         answer = ask("oil capacity?")
         assert "5 quarts" in answer
         assert "Sources:" in answer
@@ -199,33 +196,28 @@ class TestAsk:
         answer = ask("anything")
         assert "No relevant documents" in answer
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_with_history(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_with_history(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "answer"
         history = [
             {"role": "user", "content": "prev q"},
             {"role": "assistant", "content": "prev a"},
         ]
         ask("new q", history=history)
-        messages = mock_chat.call_args[1]["messages"]
+        messages = mock_provider.return_value.chat.call_args[0][0]
         # System + 2 history + user = 4
         assert len(messages) == 4
         assert messages[1]["content"] == "prev q"
 
 
 class TestAskStream:
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = iter(
-            [
-                mock.MagicMock(message=mock.MagicMock(content="Hello")),
-                mock.MagicMock(message=mock.MagicMock(content=" world")),
-            ]
-        )
+    def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = iter(["Hello", " world"])
         tokens = list(ask_stream("test"))
         combined = "".join(tokens)
         assert "Hello world" in combined
@@ -237,33 +229,28 @@ class TestAskStream:
         tokens = list(ask_stream("anything"))
         assert any("No relevant documents" in t for t in tokens)
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_with_history(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = iter([mock.MagicMock(message=mock.MagicMock(content="response"))])
+    def test_ask_stream_with_history(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = iter(["response"])
         history = [
             {"role": "user", "content": "previous question"},
             {"role": "assistant", "content": "previous answer"},
         ]
         list(ask_stream("new question", history=history))
-        call_args = mock_chat.call_args
-        messages = call_args[1]["messages"]
+        call_args = mock_provider.return_value.chat.call_args
+        messages = call_args[0][0]
         # System + 2 history + user = 4 messages
         assert len(messages) == 4
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "previous question"
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_skips_empty_tokens(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = iter(
-            [
-                mock.MagicMock(message=mock.MagicMock(content="")),
-                mock.MagicMock(message=mock.MagicMock(content="data")),
-            ]
-        )
+    def test_skips_empty_tokens(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = iter(["", "data"])
         tokens = list(ask_stream("test"))
         # Empty string token should not appear as a separate yield
         non_source_tokens = [t for t in tokens if "Sources:" not in t]
@@ -271,20 +258,20 @@ class TestAskStream:
 
 
 class TestGenerationOptions:
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_passes_options(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_raw_passes_options(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "answer"
         opts = {"temperature": 0.3, "seed": 42}
         ask_raw("q", options=opts)
-        assert mock_chat.call_args[1]["options"] == opts
+        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_defaults_to_cfg_options(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_raw_defaults_to_cfg_options(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "answer"
         from lilbee.config import cfg
 
         cfg.temperature = 0.7
@@ -295,34 +282,34 @@ class TestGenerationOptions:
         cfg.num_ctx = None
         try:
             ask_raw("q")
-            assert mock_chat.call_args[1]["options"] == {"temperature": 0.7}
+            assert mock_provider.return_value.chat.call_args[1]["options"] == {"temperature": 0.7}
         finally:
             cfg.temperature = None
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_passes_options(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = iter([mock.MagicMock(message=mock.MagicMock(content="token"))])
+    def test_ask_stream_passes_options(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = iter(["token"])
         opts = {"temperature": 0.1}
         list(ask_stream("q", options=opts))
-        assert mock_chat.call_args[1]["options"] == opts
+        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_passes_options_through(self, mock_embed, mock_search, mock_chat):
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_passes_options_through(self, mock_embed, mock_search, mock_provider):
+        mock_provider.return_value.chat.return_value = "answer"
         opts = {"num_ctx": 4096}
         ask("q", options=opts)
-        assert mock_chat.call_args[1]["options"] == opts
+        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_empty_options_passes_none(self, mock_embed, mock_search, mock_chat):
-        """When cfg has no generation options set, passes None to ollama."""
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="answer"))
+    def test_ask_raw_empty_options_passes_none(self, mock_embed, mock_search, mock_provider):
+        """When cfg has no generation options set, passes None to provider."""
+        mock_provider.return_value.chat.return_value = "answer"
         from lilbee.config import cfg
 
         cfg.temperature = None
@@ -332,52 +319,59 @@ class TestGenerationOptions:
         cfg.num_ctx = None
         cfg.seed = None
         ask_raw("q")
-        assert mock_chat.call_args[1]["options"] is None
+        assert mock_provider.return_value.chat.call_args[1]["options"] is None
 
 
 class TestAskStreamError:
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_stream_handles_disconnect(self, mock_embed, mock_search, mock_chat):
+    def test_stream_handles_disconnect(self, mock_embed, mock_search, mock_provider):
         def failing_stream():
-            yield mock.MagicMock(message=mock.MagicMock(content="partial"))
+            yield "partial"
             raise ConnectionError("lost connection")
 
-        mock_chat.return_value = failing_stream()
+        mock_provider.return_value.chat.return_value = failing_stream()
         tokens = list(ask_stream("test"))
         combined = "".join(tokens)
         assert "partial" in combined
         assert "Connection lost" in combined
 
 
-class TestModelNotFound:
-    """ResponseError from Ollama (e.g. model not found) should raise RuntimeError."""
+class TestProviderError:
+    """ProviderError from the provider should propagate."""
 
-    @mock.patch("ollama.chat", side_effect=ollama.ResponseError("model 'bad' not found", 404))
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_model_not_found(self, mock_embed, mock_search, mock_chat):
-        with pytest.raises(RuntimeError, match="not found"):
+    def test_ask_raw_provider_error(self, mock_embed, mock_search, mock_provider):
+        from lilbee.providers.base import ProviderError
+
+        mock_provider.return_value.chat.side_effect = ProviderError("model 'bad' not found")
+        with pytest.raises(ProviderError, match="not found"):
             ask_raw("hello")
 
-    @mock.patch("ollama.chat", side_effect=ollama.ResponseError("model 'bad' not found", 404))
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_model_not_found(self, mock_embed, mock_search, mock_chat):
-        with pytest.raises(RuntimeError, match="not found"):
+    def test_ask_stream_provider_error(self, mock_embed, mock_search, mock_provider):
+        from lilbee.providers.base import ProviderError
+
+        mock_provider.return_value.chat.side_effect = ProviderError("model 'bad' not found")
+        with pytest.raises(ProviderError, match="not found"):
             list(ask_stream("hello"))
 
-    @mock.patch("ollama.chat")
+    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_model_not_found_mid_stream(self, mock_embed, mock_search, mock_chat):
-        """ResponseError raised during iteration should also become RuntimeError."""
+    def test_ask_stream_provider_error_mid_stream(self, mock_embed, mock_search, mock_provider):
+        """ProviderError raised during iteration should propagate."""
+        from lilbee.providers.base import ProviderError
 
         def failing_mid_stream():
-            yield mock.MagicMock(message=mock.MagicMock(content="partial"))
-            raise ollama.ResponseError("model 'bad' not found", 404)
+            yield "partial"
+            raise ProviderError("model 'bad' not found")
 
-        mock_chat.return_value = failing_mid_stream()
-        with pytest.raises(RuntimeError, match="not found"):
+        mock_provider.return_value.chat.return_value = failing_mid_stream()
+        with pytest.raises(ProviderError, match="not found"):
             list(ask_stream("hello"))

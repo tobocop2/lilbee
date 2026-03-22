@@ -11,9 +11,10 @@ import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
+from lilbee.providers import get_provider
 
 log = logging.getLogger(__name__)
 
@@ -85,16 +86,10 @@ def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
     """Send a page image to a vision model and return extracted text."""
-    import ollama  # lazy: heavy dependency
-
     try:
+        provider = get_provider()
         messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
-        if timeout is not None and timeout > 0:
-            client = ollama.Client(timeout=timeout)
-            response = client.chat(model=model, messages=messages)
-        else:
-            response = ollama.chat(model=model, messages=messages)
-        return str(response.message.content or "")
+        return cast(str, provider.chat(messages, stream=False, model=model))
     except Exception as exc:
         log.warning("Vision OCR: page skipped (%s: %s)", type(exc).__name__, exc)
         log.debug("Vision OCR traceback for model %s", model, exc_info=True)

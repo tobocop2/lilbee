@@ -1,33 +1,15 @@
-"""Thin wrapper around Ollama embeddings API."""
+"""Thin wrapper around LLM provider embeddings API."""
 
 import logging
 import math
-import time
-from typing import Any
-
-import ollama
 
 from lilbee.config import cfg
-from lilbee.models import pull_with_progress
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
+from lilbee.providers import get_provider
 
 log = logging.getLogger(__name__)
 
 MAX_BATCH_CHARS = 6000
-
-
-def _call_with_retry(fn: Any, *args: Any, **kwargs: Any) -> Any:
-    """Retry fn up to 3 times with exponential backoff on connection errors."""
-    delays = [1, 2, 4]
-    last_err: Exception | None = None
-    for attempt, delay in enumerate(delays):
-        try:
-            return fn(*args, **kwargs)  # type: ignore[operator]
-        except (ConnectionError, OSError) as exc:
-            last_err = exc
-            log.warning("Ollama call failed (attempt %d/3): %s", attempt + 1, exc)
-            time.sleep(delay)
-    raise last_err  # type: ignore[misc]
 
 
 def truncate(text: str) -> str:
@@ -51,22 +33,21 @@ def validate_vector(vector: list[float]) -> None:
 
 def validate_model() -> None:
     """Ensure the configured embedding model is available, pulling if needed."""
+    from lilbee.model_manager import get_model_manager
+
     try:
-        models = ollama.list()
-        names = {m.model for m in models.models if m.model}
-        # Also match without :latest tag
-        base_names = {n.split(":")[0] for n in names}
-        if cfg.embedding_model not in names and cfg.embedding_model not in base_names:
-            log.info("Pulling embedding model '%s' from Ollama...", cfg.embedding_model)
-            pull_with_progress(cfg.embedding_model)
+        if not get_model_manager().is_installed(cfg.embedding_model):
+            log.info("Pulling embedding model '%s'...", cfg.embedding_model)
+            get_provider().pull_model(cfg.embedding_model, on_progress=lambda _: None)
     except (ConnectionError, OSError) as exc:
         raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
 
 
 def embed(text: str) -> list[float]:
     """Embed a single text string, return vector."""
-    response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=truncate(text))
-    result: list[float] = response.embeddings[0]
+    provider = get_provider()
+    vectors = provider.embed([truncate(text)])
+    result: list[float] = vectors[0]
     validate_vector(result)
     return result
 
@@ -84,6 +65,7 @@ def embed_batch(
     if not texts:
         return []
     total_chunks = len(texts)
+    provider = get_provider()
     vectors: list[list[float]] = []
     batch: list[str] = []
     batch_chars = 0
@@ -91,8 +73,7 @@ def embed_batch(
         truncated = truncate(text)
         chunk_len = len(truncated)
         if batch and batch_chars + chunk_len > MAX_BATCH_CHARS:
-            response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
-            vectors.extend(response.embeddings)
+            vectors.extend(provider.embed(batch))
             on_progress(
                 EventType.EMBED,
                 {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
@@ -102,8 +83,7 @@ def embed_batch(
         batch.append(truncated)
         batch_chars += chunk_len
     if batch:
-        response = _call_with_retry(ollama.embed, model=cfg.embedding_model, input=batch)
-        vectors.extend(response.embeddings)
+        vectors.extend(provider.embed(batch))
         on_progress(
             EventType.EMBED,
             {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
