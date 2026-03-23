@@ -302,16 +302,18 @@ def _get_installed_models(model_manager: Any) -> set[str]:
         return set()
 
 
+_SORT_KEYS: dict[str, tuple] = {
+    "downloads": (lambda m: m.downloads, True),
+    "size_asc": (lambda m: m.size_gb, False),
+    "size_desc": (lambda m: m.size_gb, True),
+    "featured": (lambda m: (not m.featured, -m.downloads), False),
+}
+
+
 def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     """Sort models according to the specified sort order."""
-    if sort == "downloads":
-        return sorted(models, key=lambda m: m.downloads, reverse=True)
-    elif sort == "size_asc":
-        return sorted(models, key=lambda m: m.size_gb)
-    elif sort == "size_desc":
-        return sorted(models, key=lambda m: m.size_gb, reverse=True)
-    else:  # "featured" — featured first, then by downloads desc
-        return sorted(models, key=lambda m: (not m.featured, -m.downloads))
+    key_fn, reverse = _SORT_KEYS.get(sort, _SORT_KEYS["featured"])
+    return sorted(models, key=key_fn, reverse=reverse)
 
 
 # Maps Ollama-style names to catalog display names for lookup

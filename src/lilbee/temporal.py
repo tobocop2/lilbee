@@ -8,6 +8,7 @@ by document ingestion date or frontmatter date.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
@@ -48,37 +49,53 @@ def detect_temporal(query: str) -> str | None:
     return None
 
 
+def _today(now: datetime, today_start: datetime) -> DateRange:
+    return DateRange(start=today_start, end=now)
+
+
+def _yesterday(now: datetime, today_start: datetime) -> DateRange:
+    return DateRange(start=today_start - timedelta(days=1), end=today_start)
+
+
+def _this_week(now: datetime, today_start: datetime) -> DateRange:
+    return DateRange(start=today_start - timedelta(days=now.weekday()), end=now)
+
+
+def _last_week(now: datetime, today_start: datetime) -> DateRange:
+    this_week_start = today_start - timedelta(days=now.weekday())
+    return DateRange(start=this_week_start - timedelta(weeks=1), end=this_week_start)
+
+
+def _this_month(now: datetime, today_start: datetime) -> DateRange:
+    return DateRange(start=today_start.replace(day=1), end=now)
+
+
+def _last_month(now: datetime, today_start: datetime) -> DateRange:
+    this_month_start = today_start.replace(day=1)
+    return DateRange(
+        start=(this_month_start - timedelta(days=1)).replace(day=1), end=this_month_start
+    )
+
+
+def _recent(now: datetime, today_start: datetime) -> DateRange:
+    return DateRange(start=now - timedelta(days=30), end=now)
+
+
+_RANGE_RESOLVERS: dict[str, Callable[[datetime, datetime], DateRange]] = {
+    "today": _today,
+    "yesterday": _yesterday,
+    "this_week": _this_week,
+    "last_week": _last_week,
+    "this_month": _this_month,
+    "last_month": _last_month,
+    "recent": _recent,
+}
+
+
 def resolve_date_range(keyword: str, now: datetime | None = None) -> DateRange:
     """Convert a temporal keyword to a concrete date range."""
     if now is None:
         now = datetime.now(tz=UTC)
-
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    if keyword == "today":
-        return DateRange(start=today_start, end=now)
-
-    if keyword == "yesterday":
-        yesterday = today_start - timedelta(days=1)
-        return DateRange(start=yesterday, end=today_start)
-
-    if keyword == "this_week":
-        week_start = today_start - timedelta(days=now.weekday())
-        return DateRange(start=week_start, end=now)
-
-    if keyword == "last_week":
-        this_week_start = today_start - timedelta(days=now.weekday())
-        last_week_start = this_week_start - timedelta(weeks=1)
-        return DateRange(start=last_week_start, end=this_week_start)
-
-    if keyword == "this_month":
-        month_start = today_start.replace(day=1)
-        return DateRange(start=month_start, end=now)
-
-    if keyword == "last_month":
-        this_month_start = today_start.replace(day=1)
-        last_month_start = (this_month_start - timedelta(days=1)).replace(day=1)
-        return DateRange(start=last_month_start, end=this_month_start)
-
-    # "recent" = last 30 days
-    return DateRange(start=now - timedelta(days=30), end=now)
+    resolver = _RANGE_RESOLVERS.get(keyword, _recent)
+    return resolver(now, today_start)

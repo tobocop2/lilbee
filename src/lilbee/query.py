@@ -25,7 +25,7 @@ class ChatMessage(TypedDict):
     content: str
 
 
-_CONTEXT_TEMPLATE = """Context:
+CONTEXT_TEMPLATE = """Context:
 {context}
 
 Question: {question}"""
@@ -110,13 +110,9 @@ def _apply_temporal_filter(results: list[SearchChunk], question: str) -> list[Se
     date_range = resolve_date_range(keyword)
     # Filter by ingestion date (stored in sources table, not on chunks directly).
     # Since chunks don't carry dates, we filter by source ingestion time via store.
+    source_dates = {s["filename"]: s.get("ingested_at", "") for s in store.get_sources()}
     filtered: list[SearchChunk] = []
-    source_dates: dict[str, str] = {}
     for r in results:
-        if r.source not in source_dates:
-            sources = store.get_sources()
-            for s in sources:
-                source_dates[s["filename"]] = s.get("ingested_at", "")
         ingested_at = source_dates.get(r.source, "")
         if not ingested_at:
             filtered.append(r)  # keep if no date info
@@ -493,7 +489,7 @@ def ask_raw(
     results = _apply_temporal_filter(results, question)
     results = select_context(results, question)
     context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
+    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
 
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
@@ -549,7 +545,7 @@ def ask_stream(
     results = _apply_temporal_filter(results, question)
     results = select_context(results, question)
     context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
+    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
 
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
