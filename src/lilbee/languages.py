@@ -4,8 +4,8 @@ Maps file extensions to language names recognized by
 tree-sitter-language-pack's process() API. The full list of
 170+ supported languages is available via manifest_languages().
 
-This map covers common file extensions. Languages without
-entries here fall back to token-based chunking.
+This map covers 170+ file extensions across 120+ languages.
+Files with unmapped extensions fall back to token-based chunking.
 """
 
 EXT_TO_LANG: dict[str, str] = {
@@ -181,4 +181,14 @@ EXT_TO_LANG: dict[str, str] = {
     ".lds": "linkerscript",
     ".wat": "wat",
     ".wast": "wast",
+    # Build / misc
+    ".mk": "make",
+    ".makefile": "make",
+    ".ino": "arduino",
+    ".bat": "batch",
+    ".cmd": "batch",
+    ".mod": "gomod",
+    ".diff": "diff",
+    ".patch": "diff",
+    ".gitignore": "gitignore",
 }
