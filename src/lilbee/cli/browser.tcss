@@ -1,0 +1,31 @@
+CatalogBrowser {
+    background: $surface;
+}
+
+#search-input {
+    dock: top;
+    margin: 0 1;
+    width: 100%;
+}
+
+ListView {
+    height: 1fr;
+}
+
+.section-header {
+    color: $text-muted;
+    text-style: bold underline;
+    padding: 1 0 0 1;
+}
+
+.model-row-text {
+    padding: 0 1;
+}
+
+ModelRow.--highlight {
+    background: $accent;
+}
+
+Footer {
+    dock: bottom;
+}

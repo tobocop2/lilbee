@@ -41,6 +41,7 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "textual>=0.75",
 ]
 
 [project.optional-dependencies]

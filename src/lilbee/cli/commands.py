@@ -643,3 +643,8 @@ def mcp_cmd() -> None:
     from lilbee.mcp import main
 
     main()
+
+
+from lilbee.cli.models_cmd import models_app  # noqa: E402  # must be after app definition
+
+app.add_typer(models_app, name="models")
