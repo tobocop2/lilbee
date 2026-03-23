@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -162,6 +162,8 @@ async def ask_stream(
     error_holder: list[str] = []
 
     def _generate() -> None:
+        from lilbee.reasoning import filter_reasoning
+
         try:
             provider = get_provider()
             stream = provider.chat(
@@ -170,11 +172,12 @@ async def ask_stream(
                 options=opts or None,
                 model=cfg.chat_model,
             )
-            for token in stream:
+            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
                 if cancel.is_set():
                     break
-                if token:
-                    queue.put_nowait(sse_event("token", {"token": token}))
+                if st.content:
+                    event_type = "reasoning" if st.is_reasoning else "token"
+                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
         except Exception as exc:
             error_holder.append(str(exc))
         finally:
@@ -257,6 +260,8 @@ async def chat_stream(
     error_holder: list[str] = []
 
     def _generate() -> None:
+        from lilbee.reasoning import filter_reasoning
+
         try:
             provider = get_provider()
             stream = provider.chat(
@@ -265,11 +270,12 @@ async def chat_stream(
                 options=opts or None,
                 model=cfg.chat_model,
             )
-            for token in stream:
+            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
                 if cancel.is_set():
                     break
-                if token:
-                    queue.put_nowait(sse_event("token", {"token": token}))
+                if st.content:
+                    event_type = "reasoning" if st.is_reasoning else "token"
+                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
         except Exception as exc:
             error_holder.append(str(exc))
         finally:
@@ -528,6 +534,7 @@ async def get_config() -> dict[str, Any]:
         "candidate_multiplier": cfg.candidate_multiplier,
         "query_expansion_count": cfg.query_expansion_count,
         "adaptive_threshold_step": cfg.adaptive_threshold_step,
+        "show_reasoning": cfg.show_reasoning,
     }
 
 

@@ -50,6 +50,7 @@ _SETTINGS_MAP: dict[str, _SettingDef] = {
     "num_ctx": _SettingDef("num_ctx", int, nullable=True),
     "seed": _SettingDef("seed", int, nullable=True),
     "system_prompt": _SettingDef("system_prompt", str, nullable=False, render=RenderStyle.FULL),
+    "show_reasoning": _SettingDef("show_reasoning", bool, nullable=False),
 }
 
 
