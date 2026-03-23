@@ -300,3 +300,45 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, ollama, litellm | auto = use Ollama if reachable, otherwise llama-cpp |
 | `LILBEE_OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint | Also reads `OLLAMA_HOST` for backwards compatibility. Supports remote Ollama servers. |
 
+
+---
+
+## Feature requests for upstream dependencies
+
+### kreuzberg: Heading-aware markdown chunking with hierarchy prepending
+
+**Current behavior:** kreuzberg extracts markdown text content but returns `chunks: None` for `.md` files regardless of `ChunkingConfig` settings. tree-sitter-language-pack 1.0 splits markdown at heading boundaries but does not prepend the heading hierarchy path.
+
+**What lilbee needs (and currently implements itself):**
+
+1. **Split at heading boundaries** — chunks should break at `#`, `##`, `###` etc., not at arbitrary character counts. A chunk should never split a section in half.
+
+2. **Prepend heading hierarchy to each chunk** — each chunk should include its full heading path as a prefix. For example, a chunk under `## Install` which is under `# Setup` should be prefixed with `# Setup > ## Install`. This gives the LLM context about where the chunk came from in the document structure.
+
+**Why this matters:** Anthropic's Contextual Retrieval research (2024) showed that adding document context to chunks reduces retrieval failures by 49%. The heading path is a lightweight way to achieve this without requiring an extra LLM call per chunk (which is what Anthropic's full contextual chunking does).
+
+**Example:**
+
+Input markdown:
+```markdown
+# Configuration
+
+## Chunking
+
+### Chunk Size
+
+The default value is 512 tokens.
+```
+
+Current kreuzberg output: raw text, no chunks.
+
+Desired output chunk:
+```
+# Configuration > ## Chunking > ### Chunk Size
+
+The default value is 512 tokens.
+```
+
+This would allow lilbee to remove its custom `chunk_markdown()` function (~60 lines) and delegate entirely to kreuzberg's `ChunkingConfig`.
+
+**Reference:** [Anthropic — Introducing Contextual Retrieval (2024)](https://www.anthropic.com/news/contextual-retrieval)
