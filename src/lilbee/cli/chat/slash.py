@@ -51,6 +51,8 @@ _SETTINGS_MAP: dict[str, _SettingDef] = {
     "seed": _SettingDef("seed", int, nullable=True),
     "system_prompt": _SettingDef("system_prompt", str, nullable=False, render=RenderStyle.FULL),
     "show_reasoning": _SettingDef("show_reasoning", bool, nullable=False),
+    "reranker_model": _SettingDef("reranker_model", str, nullable=True),
+    "rerank_candidates": _SettingDef("rerank_candidates", int, nullable=False),
 }
 
 
@@ -317,9 +319,14 @@ def _format_setting_value(value: object, model_default: str | None = None) -> st
 
 
 def handle_slash_settings(args: str, con: Console) -> None:
+    from lilbee.reranker import reranker_available
+
     defaults = _get_model_defaults()
+    skip_reranker = not reranker_available()
     table = Table(show_header=False, box=None, padding=(0, 2))
     for name, defn in _SETTINGS_MAP.items():
+        if skip_reranker and name in ("reranker_model", "rerank_candidates"):
+            continue
         value = getattr(cfg, defn.cfg_attr)
         if defn.render == RenderStyle.FULL:
             con.print(
@@ -371,6 +378,16 @@ def handle_slash_set(args: str, con: Console) -> None:
         con.print(f"[{theme.ERROR}]Unknown setting:[/{theme.ERROR}] {name}")
         con.print(f"Available: {', '.join(_SETTINGS_MAP)}")
         return
+
+    if name == "reranker_model":
+        from lilbee.reranker import reranker_available
+
+        if not reranker_available():
+            con.print(
+                f"[{theme.ERROR}]Reranker not available.[/{theme.ERROR}] "
+                "Install with: pip install lilbee[reranker]"
+            )
+            return
 
     if len(parts) == 1:
         value = getattr(cfg, defn.cfg_attr)

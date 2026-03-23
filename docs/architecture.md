@@ -58,7 +58,7 @@ flowchart LR
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
 - **File discovery**: recursive walk of `documents/`, SHA-256 hash-based change detection — only re-indexes modified files
-- **Markdown**: heading-aware chunking (split at `#`/`##`/`###` boundaries, prepend section hierarchy to each chunk)
+- **Markdown**: heading-aware chunking with hierarchy path prepending. kreuzberg doesn't chunk markdown at all (returns raw text). tree-sitter-language-pack splits at heading boundaries but doesn't prepend the hierarchy path. Our `chunk_markdown()` does both: splits at headings AND prepends the full path (e.g., "# Setup > ## Install") so the LLM knows each chunk's section context. Inspired by Anthropic's Contextual Retrieval (2024) which showed adding context to chunks reduces retrieval failures by 49%.
 - **Code**: tree-sitter AST splitting by function/class for 40+ languages, with symbol name, type, and line range in chunk headers
 - **PDF**: kreuzberg 4.5 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model)
 - **Structured files**: CSV/JSON/XML preprocessors → token-based recursive chunking
@@ -299,3 +299,4 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 |---------|---------|-------------|---------|
 | `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, ollama, litellm | auto = use Ollama if reachable, otherwise llama-cpp |
 | `LILBEE_OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint | Also reads `OLLAMA_HOST` for backwards compatibility. Supports remote Ollama servers. |
+

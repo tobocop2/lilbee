@@ -80,7 +80,7 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     return _callback
 
 
-async def _sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
+async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
     """Yield SSE-formatted bytes from a queue until sentinel (None) is received."""
     while True:
         item = await queue.get()
@@ -129,32 +129,24 @@ async def ask(
     }
 
 
-async def ask_stream(
-    question: str, top_k: int = 0, options: dict[str, Any] | None = None
+async def _stream_rag_response(
+    question: str,
+    history: list[ChatMessage] | None = None,
+    top_k: int = 0,
+    options: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield SSE events: token, sources, done."""
+    """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
     from lilbee.cli.helpers import clean_result
     from lilbee.config import cfg
-    from lilbee.query import (
-        _CONTEXT_TEMPLATE,
-        build_context,
-        prepare_results,
-        search_context,
-        select_context,
-    )
+    from lilbee.query import _build_rag_context
 
-    results = search_context(question, top_k=top_k)
-    if not results:
+    rag = _build_rag_context(question, top_k=top_k, history=history)
+    if rag is None:
         yield sse_event("error", {"message": "No relevant documents found."})
         return
 
-    results = prepare_results(results)
-    results = select_context(results, question)
-    context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
-    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
-    messages.append({"role": "user", "content": prompt})
+    results, messages = rag
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -202,6 +194,13 @@ async def ask_stream(
 
     yield sse_event("sources", [clean_result(s) for s in results])
     yield sse_event("done", {})
+
+
+def ask_stream(
+    question: str, top_k: int = 0, options: dict[str, Any] | None = None
+) -> AsyncGenerator[str, None]:
+    """Yield SSE events: token, sources, done."""
+    return _stream_rag_response(question, top_k=top_k, options=options)
 
 
 async def chat(
@@ -223,83 +222,14 @@ async def chat(
     }
 
 
-async def chat_stream(
+def chat_stream(
     question: str,
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Yield SSE events with chat history support."""
-    yield ""  # force generator
-    from lilbee.cli.helpers import clean_result
-    from lilbee.config import cfg
-    from lilbee.query import (
-        _CONTEXT_TEMPLATE,
-        build_context,
-        prepare_results,
-        search_context,
-        select_context,
-    )
-
-    results = search_context(question, top_k=top_k)
-    if not results:
-        yield sse_event("error", {"message": "No relevant documents found."})
-        return
-
-    results = prepare_results(results)
-    results = select_context(results, question)
-    context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
-    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
-    opts = cfg.generation_options(**options) if options else cfg.generation_options()
-
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cancel = threading.Event()
-    error_holder: list[str] = []
-
-    def _generate() -> None:
-        from lilbee.reasoning import filter_reasoning
-
-        try:
-            provider = get_provider()
-            stream = provider.chat(
-                cast("list[dict[str, Any]]", messages),
-                stream=True,
-                options=opts or None,
-                model=cfg.chat_model,
-            )
-            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
-                if cancel.is_set():
-                    break
-                if st.content:
-                    event_type = "reasoning" if st.is_reasoning else "token"
-                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
-        except Exception as exc:
-            error_holder.append(str(exc))
-        finally:
-            queue.put_nowait(None)
-
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _generate)
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        log.info("Stream cancelled by client")
-        cancel.set()
-        return
-
-    if error_holder:
-        yield sse_event("error", {"message": error_holder[0]})
-        return
-
-    yield sse_event("sources", [clean_result(s) for s in results])
-    yield sse_event("done", {})
+    return _stream_rag_response(question, history=history, top_k=top_k, options=options)
 
 
 async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None]:
@@ -457,26 +387,10 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.config import cfg
-    from lilbee.store import delete_by_source, delete_source, get_sources
+    from lilbee.store import remove_documents
 
-    known = {s["filename"] for s in get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        delete_by_source(name)
-        delete_source(name)
-        removed.append(name)
-        if delete_files:
-            path = cfg.documents_dir / name
-            if path.exists():
-                path.unlink()
-
-    return {"removed": removed, "not_found": not_found}
+    result = remove_documents(names, delete_files=delete_files)
+    return {"removed": result.removed, "not_found": result.not_found}
 
 
 async def list_documents(
@@ -511,8 +425,9 @@ async def list_documents(
 async def get_config() -> dict[str, Any]:
     """Return all user-facing configuration values."""
     from lilbee.config import cfg
+    from lilbee.reranker import reranker_available
 
-    return {
+    result: dict[str, Any] = {
         "chat_model": cfg.chat_model,
         "embedding_model": cfg.embedding_model,
         "vision_model": cfg.vision_model,
@@ -536,6 +451,10 @@ async def get_config() -> dict[str, Any]:
         "adaptive_threshold_step": cfg.adaptive_threshold_step,
         "show_reasoning": cfg.show_reasoning,
     }
+    if reranker_available():
+        result["reranker_model"] = cfg.reranker_model
+        result["rerank_candidates"] = cfg.rerank_candidates
+    return result
 
 
 async def models_show(model: str) -> dict[str, Any]:

@@ -1,12 +1,13 @@
-"""Language data for tree-sitter code chunking.
+"""File extension to tree-sitter language mapping.
 
-tree-sitter-language-pack provides only ``get_parser(language_name)`` — it has no
-extension-to-language mapping or per-language definition-type metadata. These dicts
-must be maintained manually when adding support for new languages.
+Maps file extensions to language names recognized by
+tree-sitter-language-pack's process() API. The full list of
+170+ supported languages is available via manifest_languages().
+
+This map covers 170+ file extensions across 120+ languages.
+Files with unmapped extensions fall back to token-based chunking.
 """
 
-# Extension -> tree-sitter language name.
-# Languages without DEFINITION_TYPES entries fall back to token-based chunking.
 EXT_TO_LANG: dict[str, str] = {
     # Systems / compiled
     ".c": "c",
@@ -16,7 +17,6 @@ EXT_TO_LANG: dict[str, str] = {
     ".cc": "cpp",
     ".hpp": "cpp",
     ".hxx": "cpp",
-    ".cs": "csharp",
     ".d": "d",
     ".go": "go",
     ".java": "java",
@@ -42,11 +42,6 @@ EXT_TO_LANG: dict[str, str] = {
     ".cobol": "cobol",
     ".cob": "cobol",
     ".cbl": "cobol",
-    ".vhdl": "vhdl",
-    ".vhd": "vhdl",
-    ".sv": "verilog",
-    ".svh": "verilog",
-    ".verilog": "verilog",
     # Scripting / dynamic
     ".py": "python",
     ".pyi": "python",
@@ -125,7 +120,7 @@ EXT_TO_LANG: dict[str, str] = {
     ".twig": "twig",
     ".md": "markdown",
     ".markdown": "markdown",
-    # Functional / blockchain / smart contracts
+    # Functional / blockchain
     ".sol": "solidity",
     ".cairo": "cairo",
     ".fc": "func",
@@ -135,8 +130,6 @@ EXT_TO_LANG: dict[str, str] = {
     ".json": "json",
     ".jsonnet": "jsonnet",
     ".libsonnet": "jsonnet",
-    ".yaml": "yaml",
-    ".yml": "yaml",
     ".toml": "toml",
     ".ini": "ini",
     ".cfg": "ini",
@@ -165,7 +158,14 @@ EXT_TO_LANG: dict[str, str] = {
     ".tex": "latex",
     ".bib": "bibtex",
     ".typst": "typst",
-    # HDL / embedded
+    ".dockerfile": "dockerfile",
+    ".bicep": "bicep",
+    # HDL / embedded / GPU
+    ".vhdl": "vhdl",
+    ".vhd": "vhdl",
+    ".sv": "verilog",
+    ".svh": "verilog",
+    ".verilog": "verilog",
     ".cuda": "cuda",
     ".cu": "cuda",
     ".glsl": "glsl",
@@ -178,101 +178,14 @@ EXT_TO_LANG: dict[str, str] = {
     ".lds": "linkerscript",
     ".wat": "wat",
     ".wast": "wast",
-    # Docker / infra
-    ".dockerfile": "dockerfile",
-    ".bicep": "bicep",
-}
-
-# AST node types that represent extractable definitions, per language.
-DEFINITION_TYPES: dict[str, frozenset[str]] = {
-    "python": frozenset(
-        {
-            "function_definition",
-            "class_definition",
-            "decorated_definition",
-        }
-    ),
-    "javascript": frozenset(
-        {
-            "function_declaration",
-            "class_declaration",
-            "export_statement",
-            "lexical_declaration",
-        }
-    ),
-    "typescript": frozenset(
-        {
-            "function_declaration",
-            "class_declaration",
-            "export_statement",
-            "lexical_declaration",
-            "interface_declaration",
-            "type_alias_declaration",
-        }
-    ),
-    "go": frozenset(
-        {
-            "function_declaration",
-            "method_declaration",
-            "type_declaration",
-        }
-    ),
-    "rust": frozenset(
-        {
-            "function_item",
-            "impl_item",
-            "struct_item",
-            "enum_item",
-            "trait_item",
-        }
-    ),
-    "java": frozenset(
-        {
-            "class_declaration",
-            "method_declaration",
-            "interface_declaration",
-        }
-    ),
-    "c": frozenset({"function_definition", "struct_specifier"}),
-    "cpp": frozenset(
-        {
-            "function_definition",
-            "class_specifier",
-            "struct_specifier",
-        }
-    ),
-    "ruby": frozenset({"method", "class", "module", "singleton_method"}),
-    "php": frozenset({"function_definition", "class_declaration", "method_declaration"}),
-    "csharp": frozenset({"method_declaration", "class_declaration", "interface_declaration"}),
-    "bash": frozenset({"function_definition"}),
-    "kotlin": frozenset({"function_declaration", "class_declaration", "object_declaration"}),
-    "swift": frozenset({"function_declaration", "class_declaration", "protocol_declaration"}),
-    "scala": frozenset(
-        {"function_definition", "class_definition", "object_definition", "trait_definition"}
-    ),
-    "lua": frozenset({"function_declaration", "function_definition_statement"}),
-    "elixir": frozenset({"call"}),
-    "haskell": frozenset({"function", "type_alias", "newtype", "adt"}),
-    "dart": frozenset({"function_signature", "class_definition", "method_signature"}),
-    "ocaml": frozenset({"let_binding", "type_definition", "module_binding"}),
-    "erlang": frozenset({"function_clause"}),
-    "clojure": frozenset({"list_lit"}),
-    "elm": frozenset({"function_declaration_left", "type_alias_declaration", "type_declaration"}),
-    "julia": frozenset({"function_definition", "struct_definition", "module_definition"}),
-    "r": frozenset({"function_definition"}),
-    "perl": frozenset({"function_definition"}),
-    "groovy": frozenset({"function_definition", "class_definition", "method_declaration"}),
-    "fortran": frozenset({"function", "subroutine", "module"}),
-    "pascal": frozenset({"function_declaration", "procedure_declaration"}),
-    "d": frozenset({"function_declaration", "class_declaration", "struct_declaration"}),
-    "nim": frozenset({"proc_declaration", "func_declaration", "type_section"}),
-    "zig": frozenset({"function_declaration"}),
-    "v": frozenset({"function_declaration", "struct_declaration"}),
-    "odin": frozenset({"procedure_declaration"}),
-    "solidity": frozenset({"function_definition", "contract_declaration"}),
-    "terraform": frozenset({"block"}),
-    "sql": frozenset({"create_function_statement", "create_table_statement"}),
-    "objc": frozenset({"function_definition", "class_interface", "class_implementation"}),
-    "cuda": frozenset({"function_definition", "struct_specifier"}),
-    "fsharp": frozenset({"function_or_value_defn", "type_definition", "module_defn"}),
+    # Build / misc
+    ".mk": "make",
+    ".makefile": "make",
+    ".ino": "arduino",
+    ".bat": "batch",
+    ".cmd": "batch",
+    ".mod": "gomod",
+    ".diff": "diff",
+    ".patch": "diff",
+    ".gitignore": "gitignore",
 }

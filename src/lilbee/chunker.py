@@ -1,4 +1,11 @@
-"""Token-based recursive text chunking with markdown-aware heading splitting."""
+"""Token-based recursive text chunking with markdown-aware heading splitting.
+
+Heading path prepending inspired by Anthropic's Contextual Retrieval
+research (2024), which showed that adding document context to chunks
+reduces retrieval failures by 49%. Our approach prepends the heading
+hierarchy (e.g. "# Setup > ## Install") so the LLM knows each
+chunk's section context without requiring an extra LLM call per chunk.
+"""
 
 import re
 

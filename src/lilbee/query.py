@@ -25,7 +25,7 @@ class ChatMessage(TypedDict):
     content: str
 
 
-_CONTEXT_TEMPLATE = """Context:
+CONTEXT_TEMPLATE = """Context:
 {context}
 
 Question: {question}"""
@@ -110,13 +110,9 @@ def _apply_temporal_filter(results: list[SearchChunk], question: str) -> list[Se
     date_range = resolve_date_range(keyword)
     # Filter by ingestion date (stored in sources table, not on chunks directly).
     # Since chunks don't carry dates, we filter by source ingestion time via store.
+    source_dates = {s["filename"]: s.get("ingested_at", "") for s in store.get_sources()}
     filtered: list[SearchChunk] = []
-    source_dates: dict[str, str] = {}
     for r in results:
-        if r.source not in source_dates:
-            sources = store.get_sources()
-            for s in sources:
-                source_dates[s["filename"]] = s.get("ingested_at", "")
         ingested_at = source_dates.get(r.source, "")
         if not ingested_at:
             filtered.append(r)  # keep if no date info
@@ -451,12 +447,15 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                     results.append(r)
                     seen.add(key)
 
-    # HyDE: search with hypothetical document embedding (if enabled)
+    # HyDE: search with hypothetical document embedding (if enabled).
+    # Discount distances by hyde_weight since these are from a fabricated passage.
     if cfg.hyde:
         hyde_results = _hyde_search(question, top_k)
         for r in hyde_results:
             key = (r.source, r.chunk_index)
             if key not in seen:
+                if r.distance is not None and cfg.hyde_weight > 0:
+                    r.distance = r.distance / cfg.hyde_weight
                 results.append(r)
                 seen.add(key)
 
@@ -471,19 +470,18 @@ class AskResult(BaseModel):
     sources: list[SearchChunk]
 
 
-def ask_raw(
+def _build_rag_context(
     question: str,
     top_k: int = 0,
     history: list[ChatMessage] | None = None,
-    options: dict[str, Any] | None = None,
-) -> AskResult:
-    """One-shot question returning structured answer + raw sources."""
+) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+    """Shared RAG pipeline: search → prepare → rerank → filter → select → build.
+
+    Returns (results, messages) or None if no results found.
+    """
     results = search_context(question, top_k=top_k)
     if not results:
-        return AskResult(
-            answer="No relevant documents found. Try ingesting some documents first.",
-            sources=[],
-        )
+        return None
 
     results = prepare_results(results)
     if cfg.reranker_model:
@@ -493,13 +491,30 @@ def ask_raw(
     results = _apply_temporal_filter(results, question)
     results = select_context(results, question)
     context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
+    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
 
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
+    return results, messages
 
+
+def ask_raw(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+    options: dict[str, Any] | None = None,
+) -> AskResult:
+    """One-shot question returning structured answer + raw sources."""
+    rag = _build_rag_context(question, top_k=top_k, history=history)
+    if rag is None:
+        return AskResult(
+            answer="No relevant documents found. Try ingesting some documents first.",
+            sources=[],
+        )
+
+    results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
     answer = provider.chat(cast(list[dict[str, Any]], messages), options=opts or None)
@@ -533,29 +548,15 @@ def ask_stream(
     """
     from lilbee.reasoning import StreamToken, filter_reasoning
 
-    results = search_context(question, top_k=top_k)
-    if not results:
+    rag = _build_rag_context(question, top_k=top_k, history=history)
+    if rag is None:
         yield StreamToken(
             content="No relevant documents found. Try ingesting some documents first.",
             is_reasoning=False,
         )
         return
 
-    results = prepare_results(results)
-    if cfg.reranker_model:
-        from lilbee.reranker import rerank
-
-        results = rerank(question, results)
-    results = _apply_temporal_filter(results, question)
-    results = select_context(results, question)
-    context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
-
-    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
-
+    results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
     raw_stream = provider.chat(

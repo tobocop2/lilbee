@@ -4,6 +4,7 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TypedDict
 
 import lancedb
 import pyarrow as pa
@@ -100,6 +101,15 @@ def mmr_rerank(
         selected.append(remaining.pop(best_idx))
 
     return selected
+
+
+class SourceRecord(TypedDict):
+    """A tracked source document record."""
+
+    filename: str
+    file_hash: str
+    ingested_at: str
+    chunk_count: int
 
 
 def _chunks_schema() -> pa.Schema:
@@ -337,12 +347,12 @@ def delete_by_source(source: str) -> None:
             _safe_delete_unlocked(table, f"source = '{_escape_sql_string(source)}'")
 
 
-def get_sources() -> list[dict]:
+def get_sources() -> list[SourceRecord]:
     """Get all tracked source file records."""
     table = _open_table(SOURCES_TABLE)
     if table is None:
         return []
-    result: list[dict] = table.to_arrow().to_pylist()
+    result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
     return result
 
 
