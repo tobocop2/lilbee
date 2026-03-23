@@ -322,9 +322,8 @@ async def add_files(data: dict[str, Any]) -> AddResult:
 
 async def list_models() -> dict[str, Any]:
     """Return chat and vision model catalogs with installed status."""
-    from lilbee.cli.chat import list_installed_models
     from lilbee.config import cfg
-    from lilbee.models import MODEL_CATALOG, VISION_CATALOG
+    from lilbee.models import MODEL_CATALOG, VISION_CATALOG, list_installed_models
 
     installed = set(list_installed_models())
     chat_installed = set(list_installed_models(exclude_vision=True))

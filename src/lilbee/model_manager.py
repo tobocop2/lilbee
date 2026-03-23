@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -167,6 +168,60 @@ class ModelManager:
             return False
         except httpx.ConnectError as exc:
             raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+
+
+_EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
+_VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
+
+
+@dataclass
+class OllamaModel:
+    """An Ollama model with inferred task classification."""
+
+    name: str
+    task: str  # "chat", "embedding", "vision"
+    family: str
+    parameter_size: str
+
+
+def _classify_ollama_task(name: str, family: str) -> str:
+    """Classify an Ollama model as chat, embedding, or vision."""
+    family_lower = family.lower()
+    if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
+        return "embedding"
+    name_lower = name.lower()
+    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
+        return "vision"
+    return "chat"
+
+
+def classify_ollama_models(ollama_url: str = "http://localhost:11434") -> list[OllamaModel]:
+    """Discover and classify all Ollama models by task.
+
+    Uses /api/tags family metadata for embedding detection and
+    name patterns for vision detection.
+    """
+    try:
+        resp = httpx.get(f"{ollama_url}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+        raw_models = resp.json().get("models", [])
+    except Exception:
+        return []
+
+    result: list[OllamaModel] = []
+    for model in raw_models:
+        name = model.get("name", "")
+        details = model.get("details", {})
+        family = details.get("family", "")
+        param_size = details.get("parameter_size", "")
+        task = _classify_ollama_task(name, family)
+        result.append(OllamaModel(name=name, task=task, family=family, parameter_size=param_size))
+    return result
+
+
+def detect_ollama_embedding_models(ollama_url: str = "http://localhost:11434") -> list[str]:
+    """Return names of Ollama models classified as embedding."""
+    return [m.name for m in classify_ollama_models(ollama_url) if m.task == "embedding"]
 
 
 _manager: ModelManager | None = None

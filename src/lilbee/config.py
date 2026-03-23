@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_int
+from lilbee.platform import canonical_models_dir, default_data_dir, env, env_int
 
 log = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ class Config(BaseModel):
             documents_dir=data_root / "documents",
             data_dir=data_root / "data",
             lancedb_dir=data_root / "data" / "lancedb",
-            models_dir=data_root / "models",
+            models_dir=canonical_models_dir(),
             chat_model=chat_model,
             embedding_model=_load_setting(
                 data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str

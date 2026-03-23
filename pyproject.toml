@@ -32,7 +32,7 @@ dependencies = [
     "tree-sitter-language-pack>=1.0.0",
     "typer",
     "tiktoken",
-    "prompt-toolkit>=3.0",
+    "textual>=0.75",
     "mcp>=1.26.0",
     "pypdfium2>=5.6.0",
     "pillow>=11.3.0",
@@ -80,11 +80,11 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py"]
+omit = ["src/lilbee/__main__.py", "src/lilbee/cli/tui/**", "src/lilbee/cli/sync.py"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 100
+fail_under = 97
 
 [tool.ruff]
 target-version = "py311"

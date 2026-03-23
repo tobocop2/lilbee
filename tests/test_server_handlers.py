@@ -562,7 +562,7 @@ class TestSyncStream:
 
 
 class TestListModels:
-    @patch("lilbee.cli.chat.list_installed_models")
+    @patch("lilbee.models.list_installed_models")
     async def test_returns_catalogs(self, mock_list):
         mock_list.return_value = ["qwen3:8b", "mistral:7b"]
         result = await handlers.list_models()
@@ -575,7 +575,7 @@ class TestListModels:
         assert isinstance(result["vision"]["catalog"], list)
         assert isinstance(result["vision"]["installed"], list)
 
-    @patch("lilbee.cli.chat.list_installed_models")
+    @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:8b"]
         result = await handlers.list_models()

@@ -6,7 +6,6 @@ Three levels:
 3. Combined catalog — featured first, then HF results
 """
 
-import fnmatch
 import logging
 import time
 from dataclasses import dataclass
@@ -215,7 +214,7 @@ def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
             max_bytes = max(max_bytes, size)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
-    return 5.0  # fallback
+    return 0.0  # unknown — display as "?" in UI
 
 
 def get_catalog(
@@ -360,32 +359,41 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     return dest
 
 
-def _resolve_filename(entry: CatalogModel) -> str:
-    """Resolve a GGUF filename pattern to a concrete filename.
+_QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
 
-    For patterns like '*Q4_K_M.gguf', we need to find the actual file on HF.
-    For exact filenames, return as-is.
+
+def _resolve_filename(entry: CatalogModel) -> str:
+    """Resolve a GGUF filename pattern to the best concrete filename.
+
+    For exact filenames, return as-is. For wildcards, query the HF API
+    and pick the best quantization (prefer Q4_K_M for balance of size/quality).
     """
     if "*" not in entry.gguf_filename:
         return entry.gguf_filename
 
-    # Query HF API for repo siblings to find matching file
     try:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{entry.hf_repo}",
             timeout=_DEFAULT_TIMEOUT,
         )
-        if resp.status_code >= 400:
-            log.warning("HuggingFace API returned HTTP %d for %s", resp.status_code, entry.hf_repo)
-        else:
-            data = resp.json()
-            siblings = data.get("siblings", [])
-            for sib in siblings:
-                rfilename: str = sib.get("rfilename", "")
-                if fnmatch.fnmatch(rfilename, entry.gguf_filename):
-                    return rfilename
-    except (httpx.HTTPError, ValueError) as exc:
-        log.warning("Failed to resolve filename for %s: %s", entry.hf_repo, exc)
+        resp.raise_for_status()
+        siblings = resp.json().get("siblings", [])
+    except Exception as exc:
+        raise RuntimeError(f"Cannot query files for {entry.hf_repo}: {exc}") from exc
 
-    # Fallback: strip wildcards and use a best guess
-    return entry.gguf_filename.replace("*", "")
+    gguf_files = [
+        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")
+    ]
+    if not gguf_files:
+        raise RuntimeError(f"No GGUF files found in {entry.hf_repo}")
+
+    return _pick_best_gguf(gguf_files)
+
+
+def _pick_best_gguf(filenames: list[str]) -> str:
+    """Pick the best GGUF file by quantization preference."""
+    for quant in _QUANT_PREFERENCE:
+        for f in filenames:
+            if quant in f:
+                return f
+    return filenames[0]
