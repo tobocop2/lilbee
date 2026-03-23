@@ -874,3 +874,16 @@ class TestListDocuments:
         result = await handlers.list_documents(search="readme")
         assert result["total"] == 2
         assert all("readme" in d["filename"] for d in result["documents"])
+
+
+class TestGetConfigReranker:
+    @patch("lilbee.reranker.reranker_available", return_value=False)
+    async def test_hides_reranker_when_not_installed(self, mock_avail):
+        result = await handlers.get_config()
+        assert "reranker_model" not in result
+
+    @patch("lilbee.reranker.reranker_available", return_value=True)
+    async def test_shows_reranker_when_installed(self, mock_avail):
+        result = await handlers.get_config()
+        assert "reranker_model" in result
+        assert "rerank_candidates" in result

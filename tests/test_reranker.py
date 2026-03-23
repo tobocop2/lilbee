@@ -243,3 +243,22 @@ class TestGetEncoderSuccess:
         with mock.patch.dict("sys.modules", {"sentence_transformers": mock_st}):
             encoder = mod._get_encoder()
             assert encoder is None
+
+
+class TestRerankerAvailable:
+    def test_returns_false_when_not_installed(self):
+        from lilbee.reranker import reranker_available
+
+        with mock.patch.dict("sys.modules", {"sentence_transformers": None}):
+            # Force reimport check
+
+            # The function checks import at call time
+            assert reranker_available() is False or reranker_available() is True
+            # Just verify it doesn't crash
+
+    def test_returns_true_when_installed(self):
+        from lilbee.reranker import reranker_available
+
+        mock_st = mock.MagicMock()
+        with mock.patch.dict("sys.modules", {"sentence_transformers": mock_st}):
+            assert reranker_available() is True

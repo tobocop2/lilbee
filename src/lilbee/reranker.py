@@ -21,6 +21,17 @@ from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
 
+
+def reranker_available() -> bool:
+    """Check if sentence-transformers is installed."""
+    try:
+        import sentence_transformers  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 # Position-aware blend weights: (fusion_weight, rerank_weight)
 # Top positions already have strong signal from hybrid search.
 _BLEND_SCHEDULE = {
