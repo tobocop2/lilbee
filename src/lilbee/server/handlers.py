@@ -80,7 +80,7 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     return _callback
 
 
-async def _sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
+async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
     """Yield SSE-formatted bytes from a queue until sentinel (None) is received."""
     while True:
         item = await queue.get()
@@ -137,7 +137,7 @@ async def ask_stream(
     from lilbee.cli.helpers import clean_result
     from lilbee.config import cfg
     from lilbee.query import (
-        _CONTEXT_TEMPLATE,
+        CONTEXT_TEMPLATE,
         build_context,
         prepare_results,
         search_context,
@@ -152,7 +152,7 @@ async def ask_stream(
     results = prepare_results(results)
     results = select_context(results, question)
     context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
+    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     messages.append({"role": "user", "content": prompt})
     opts = cfg.generation_options(**options) if options else cfg.generation_options()
@@ -234,7 +234,7 @@ async def chat_stream(
     from lilbee.cli.helpers import clean_result
     from lilbee.config import cfg
     from lilbee.query import (
-        _CONTEXT_TEMPLATE,
+        CONTEXT_TEMPLATE,
         build_context,
         prepare_results,
         search_context,
@@ -249,7 +249,7 @@ async def chat_stream(
     results = prepare_results(results)
     results = select_context(results, question)
     context = build_context(results)
-    prompt = _CONTEXT_TEMPLATE.format(context=context, question=question)
+    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
@@ -457,26 +457,10 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.config import cfg
-    from lilbee.store import delete_by_source, delete_source, get_sources
+    from lilbee.store import remove_documents
 
-    known = {s["filename"] for s in get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        delete_by_source(name)
-        delete_source(name)
-        removed.append(name)
-        if delete_files:
-            path = cfg.documents_dir / name
-            if path.exists():
-                path.unlink()
-
-    return {"removed": removed, "not_found": not_found}
+    result = remove_documents(names, delete_files=delete_files)
+    return {"removed": result.removed, "not_found": result.not_found}
 
 
 async def list_documents(

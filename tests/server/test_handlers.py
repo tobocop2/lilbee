@@ -259,14 +259,14 @@ class TestMakeSseCallback:
 class TestSseGenerator:
     async def test_generator_yields_until_sentinel(self):
         """The SSE generator yields items and stops at None."""
-        from lilbee.server.handlers import _sse_generator
+        from lilbee.server.handlers import sse_generator
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         queue.put_nowait("event: test\ndata: {}\n\n")
         queue.put_nowait(None)
 
         chunks = []
-        async for chunk in _sse_generator(queue):
+        async for chunk in sse_generator(queue):
             chunks.append(chunk)
         assert len(chunks) == 1
         assert chunks[0] == b"event: test\ndata: {}\n\n"

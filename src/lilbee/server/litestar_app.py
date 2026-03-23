@@ -16,7 +16,7 @@ from lilbee.cli.helpers import get_version
 from lilbee.config import cfg
 from lilbee.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
-from lilbee.server.handlers import _sse_generator
+from lilbee.server.handlers import sse_generator
 from lilbee.server.models import (
     AddRequest,
     AskRequest,
@@ -138,7 +138,7 @@ async def add_route(data: AddRequest) -> Stream:
         raise ValidationException(str(exc)) from exc
 
     async def _stream() -> AsyncGenerator[bytes, None]:
-        async for chunk in _sse_generator(queue):
+        async for chunk in sse_generator(queue):
             yield chunk
         await task
 
