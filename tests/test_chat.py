@@ -142,7 +142,10 @@ class TestSlashSettings:
         con, buf = _make_console()
         handle_slash_settings("", con)
         output = buf.getvalue()
+        # Reranker settings are hidden when sentence-transformers not installed
         for name in _SETTINGS_MAP:
+            if name in ("reranker_model", "rerank_candidates"):
+                continue
             assert name in output
 
     @mock.patch("lilbee.cli.chat.slash._get_model_defaults", return_value={})
@@ -815,3 +818,17 @@ class TestRenderStyle:
 
         assert RenderStyle.COMPACT == "compact"
         assert RenderStyle.FULL == "full"
+
+
+class TestRerankerSettingsGuard:
+    def test_set_reranker_warns_when_not_installed(self):
+        con, buf = _make_console()
+        with mock.patch("lilbee.reranker.reranker_available", return_value=False):
+            dispatch_slash("/set reranker_model test", con)
+        assert "not available" in buf.getvalue().lower() or "install" in buf.getvalue().lower()
+
+    def test_settings_hides_reranker_when_not_installed(self):
+        con, buf = _make_console()
+        with mock.patch("lilbee.reranker.reranker_available", return_value=False):
+            dispatch_slash("/settings", con)
+        assert "reranker_model" not in buf.getvalue()

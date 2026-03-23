@@ -467,19 +467,18 @@ class AskResult(BaseModel):
     sources: list[SearchChunk]
 
 
-def ask_raw(
+def _build_rag_context(
     question: str,
     top_k: int = 0,
     history: list[ChatMessage] | None = None,
-    options: dict[str, Any] | None = None,
-) -> AskResult:
-    """One-shot question returning structured answer + raw sources."""
+) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+    """Shared RAG pipeline: search → prepare → rerank → filter → select → build.
+
+    Returns (results, messages) or None if no results found.
+    """
     results = search_context(question, top_k=top_k)
     if not results:
-        return AskResult(
-            answer="No relevant documents found. Try ingesting some documents first.",
-            sources=[],
-        )
+        return None
 
     results = prepare_results(results)
     if cfg.reranker_model:
@@ -495,7 +494,24 @@ def ask_raw(
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
+    return results, messages
 
+
+def ask_raw(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+    options: dict[str, Any] | None = None,
+) -> AskResult:
+    """One-shot question returning structured answer + raw sources."""
+    rag = _build_rag_context(question, top_k=top_k, history=history)
+    if rag is None:
+        return AskResult(
+            answer="No relevant documents found. Try ingesting some documents first.",
+            sources=[],
+        )
+
+    results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
     answer = provider.chat(cast(list[dict[str, Any]], messages), options=opts or None)
@@ -529,29 +545,15 @@ def ask_stream(
     """
     from lilbee.reasoning import StreamToken, filter_reasoning
 
-    results = search_context(question, top_k=top_k)
-    if not results:
+    rag = _build_rag_context(question, top_k=top_k, history=history)
+    if rag is None:
         yield StreamToken(
             content="No relevant documents found. Try ingesting some documents first.",
             is_reasoning=False,
         )
         return
 
-    results = prepare_results(results)
-    if cfg.reranker_model:
-        from lilbee.reranker import rerank
-
-        results = rerank(question, results)
-    results = _apply_temporal_filter(results, question)
-    results = select_context(results, question)
-    context = build_context(results)
-    prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-
-    messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
-
+    results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
     raw_stream = provider.chat(
