@@ -447,12 +447,15 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                     results.append(r)
                     seen.add(key)
 
-    # HyDE: search with hypothetical document embedding (if enabled)
+    # HyDE: search with hypothetical document embedding (if enabled).
+    # Discount distances by hyde_weight since these are from a fabricated passage.
     if cfg.hyde:
         hyde_results = _hyde_search(question, top_k)
         for r in hyde_results:
             key = (r.source, r.chunk_index)
             if key not in seen:
+                if r.distance is not None and cfg.hyde_weight > 0:
+                    r.distance = r.distance / cfg.hyde_weight
                 results.append(r)
                 seen.add(key)
 
