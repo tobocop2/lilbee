@@ -28,7 +28,10 @@ Add to your MCP client's MCP server configuration:
 | `lilbee_search(query, top_k)` | Search for relevant document chunks by vector similarity | No (uses pre-computed embeddings) |
 | `lilbee_status()` | Show indexed documents, config, and chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with the vector store | Yes (for embedding) |
+| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync them into the vector store | Yes (for embedding) |
 | `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base in a directory | No |
+| `lilbee_remove(names, delete_files)` | Remove documents from the index (optionally delete source files) | No |
+| `lilbee_list_documents()` | List all indexed documents with chunk counts | No |
 | `lilbee_reset()` | Delete all documents and data (factory reset) | No |
 
 ### Example responses
