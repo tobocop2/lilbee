@@ -26,6 +26,12 @@ runner = CliRunner()
 _SYNC_NOOP = SyncResult()
 
 
+def _mock_stream(*texts: str):
+    from lilbee.reasoning import StreamToken
+
+    return iter([StreamToken(content=t, is_reasoning=False) for t in texts])
+
+
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
     """CLI tests never need real Ollama model validation or chat model checks."""
@@ -258,7 +264,7 @@ class TestAsk:
     @mock.patch("lilbee.query.ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_stream):
-        mock_stream.return_value = iter(["answer"])
+        mock_stream.return_value = _mock_stream("answer")
         result = runner.invoke(app, ["ask", "question", "--model", "llama3"])
         assert result.exit_code == 0
 
@@ -287,7 +293,7 @@ class TestAutoSync:
         new_callable=AsyncMock,
         return_value=SyncResult(added=["new.pdf"]),
     )
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     def test_auto_sync_prints_summary(self, mock_ask_stream, mock_sync):
         result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0
@@ -295,20 +301,20 @@ class TestAutoSync:
 
 
 class TestChat:
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello", " world"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_quit(self, mock_sync, mock_ask_stream):
         result = runner.invoke(app, ["chat"], input="question\n/quit\n")
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_slash_quit(self, mock_sync, mock_ask_stream):
         """Bare /quit exits immediately."""
         result = runner.invoke(app, ["chat"], input="/quit\n")
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_chat_empty_input_skipped(self, mock_sync, mock_ask_stream):
         result = runner.invoke(app, ["chat"], input="\n/quit\n")
@@ -339,7 +345,7 @@ class TestChat:
                 assert len(history) == 2
                 assert history[0]["role"] == "user"
                 assert history[1]["role"] == "assistant"
-            return iter(["answer"])
+            return _mock_stream("answer")
 
         mock_stream.side_effect = fake_stream
         result = runner.invoke(app, ["chat"], input="first\nsecond\n/quit\n")
@@ -1166,7 +1172,7 @@ class TestSlashUnknown:
 class TestDefaultInvokesChatLoop:
     """Invoking `lilbee` with no subcommand enters chat mode."""
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_default_chat(self, mock_sync, mock_ask_stream):
         result = runner.invoke(app, [], input="question\n/quit\n")
@@ -2088,7 +2094,7 @@ class TestOllamaUnavailable:
 class TestEnsureChatModelWiring:
     """Verify that ask and chat call ensure_chat_model before running."""
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_ensure_chat_model(self, mock_sync, mock_ask_stream):
         with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
@@ -2108,7 +2114,7 @@ class TestEnsureChatModelWiring:
             runner.invoke(app, [], input="/quit\n")
             mock_ensure.assert_called_once()
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_validate_model(self, mock_sync, mock_ask_stream):
         with mock.patch("lilbee.embedder.validate_model") as mock_val:
@@ -2615,7 +2621,7 @@ class TestRunSyncBackground:
 
 
 class TestStreamResponseChatMode:
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     def test_chat_mode_uses_chat_console(self, mock_ask_stream):
         from lilbee.cli.chat.stream import stream_response
 
@@ -2627,7 +2633,7 @@ class TestStreamResponseChatMode:
         stream_response("test", history, con, chat_mode=True, chat_console=chat_con)
         chat_con.status.assert_called_once_with("Thinking...")
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     def test_chat_mode_fallback_creates_console(self, mock_ask_stream):
         from lilbee.cli.chat.stream import stream_response
 
@@ -2644,7 +2650,7 @@ class TestStreamResponseChatMode:
 
             assert mock_console_cls.call_args[1]["file"] is sys.__stdout__
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
     def test_non_chat_mode_uses_con(self, mock_ask_stream):
         from lilbee.cli.chat.stream import stream_response
 
@@ -2897,7 +2903,7 @@ class TestChatBackgroundSync:
             mock_bg.assert_called_once()
             assert mock_bg.call_args[1].get("chat_mode") is True
 
-    @mock.patch("lilbee.query.ask_stream", return_value=iter(["answer"]))
+    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch(
         "lilbee.ingest.sync",
         new_callable=AsyncMock,

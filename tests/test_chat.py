@@ -448,11 +448,13 @@ class TestSetTabCompletion:
 
 class TestStreamResponseCancellation:
     def test_keyboard_interrupt_prints_stopped(self):
+        from lilbee.reasoning import StreamToken
+
         con, buf = _make_console()
         history: list[dict] = []
 
         def interrupted_stream(*_args, **_kwargs):
-            yield "partial "
+            yield StreamToken(content="partial ", is_reasoning=False)
             raise KeyboardInterrupt
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_stream):
@@ -467,9 +469,11 @@ class TestStreamResponseCancellation:
         con, _buf = _make_console()
         history: list[dict] = []
 
+        from lilbee.reasoning import StreamToken
+
         def interrupted_stream(*_args, **_kwargs):
-            yield "partial "
-            yield "answer"
+            yield StreamToken(content="partial ", is_reasoning=False)
+            yield StreamToken(content="answer", is_reasoning=False)
             raise KeyboardInterrupt
 
         with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_stream):
@@ -516,13 +520,135 @@ class TestStreamResponseCancellation:
         con, _buf = _make_console()
         history: list[dict] = []
 
-        with mock.patch("lilbee.query.ask_stream", return_value=iter(["Hello", " world"])):
+        from lilbee.reasoning import StreamToken
+
+        tokens = iter(
+            [
+                StreamToken(content="Hello", is_reasoning=False),
+                StreamToken(content=" world", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.query.ask_stream", return_value=tokens):
             from lilbee.cli.chat.stream import stream_response
 
             stream_response("test", history, con)
 
         assert len(history) == 2
         assert history[1]["content"] == "Hello world"
+
+
+class TestStreamResponseReasoning:
+    def test_reasoning_rendered_dim(self):
+        from lilbee.config import cfg
+        from lilbee.reasoning import StreamToken
+
+        old = cfg.show_reasoning
+        cfg.show_reasoning = True
+        try:
+            con, buf = _make_console()
+            history: list[dict] = []
+            tokens = iter(
+                [
+                    StreamToken(content="thinking...", is_reasoning=True),
+                    StreamToken(content="answer", is_reasoning=False),
+                ]
+            )
+            with mock.patch("lilbee.query.ask_stream", return_value=tokens):
+                from lilbee.cli.chat.stream import stream_response
+
+                stream_response("test", history, con)
+            output = buf.getvalue()
+            assert "answer" in output
+        finally:
+            cfg.show_reasoning = old
+
+    def test_reasoning_then_response_transition(self):
+        from lilbee.reasoning import StreamToken
+
+        con = RichConsole(force_terminal=False, no_color=True, markup=False)
+        history: list[dict] = []
+        tokens = iter(
+            [
+                StreamToken(content="thought", is_reasoning=True),
+                StreamToken(content="more thought", is_reasoning=True),
+                StreamToken(content="answer", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.query.ask_stream", return_value=tokens):
+            from lilbee.cli.chat.stream import stream_response
+
+            stream_response("test", history, con)
+        assert history[1]["content"] == "answer"
+
+    def test_response_then_reasoning_then_response(self):
+        from lilbee.reasoning import StreamToken
+
+        con = RichConsole(force_terminal=False, no_color=True, markup=False)
+        history: list[dict] = []
+        tokens = iter(
+            [
+                StreamToken(content="intro ", is_reasoning=False),
+                StreamToken(content="thinking", is_reasoning=True),
+                StreamToken(content="answer", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.query.ask_stream", return_value=tokens):
+            from lilbee.cli.chat.stream import stream_response
+
+            stream_response("test", history, con)
+        assert history[1]["content"] == "intro answer"
+
+    def test_reasoning_only_response_parts_in_history(self):
+        from lilbee.reasoning import StreamToken
+
+        con, _buf = _make_console()
+        history: list[dict] = []
+        tokens = iter(
+            [
+                StreamToken(content="thinking...", is_reasoning=True),
+                StreamToken(content="answer", is_reasoning=False),
+            ]
+        )
+        with mock.patch("lilbee.query.ask_stream", return_value=tokens):
+            from lilbee.cli.chat.stream import stream_response
+
+            stream_response("test", history, con)
+        # Only non-reasoning content goes into history
+        assert history[1]["content"] == "answer"
+
+    def test_keyboard_interrupt_during_reasoning(self):
+        from lilbee.reasoning import StreamToken
+
+        con = RichConsole(force_terminal=False, no_color=True, markup=False)
+        history: list[dict] = []
+
+        def interrupted_reasoning(*_args, **_kwargs):
+            yield StreamToken(content="thinking", is_reasoning=True)
+            raise KeyboardInterrupt
+
+        with mock.patch("lilbee.query.ask_stream", side_effect=interrupted_reasoning):
+            from lilbee.cli.chat.stream import stream_response
+
+            stream_response("test", history, con)
+        # No crash — interrupt during reasoning handled gracefully
+        assert len(history) == 0
+
+    def test_error_during_reasoning(self):
+        from lilbee.reasoning import StreamToken
+
+        con = RichConsole(force_terminal=False, no_color=True, markup=False)
+        history: list[dict] = []
+
+        def error_reasoning(*_args, **_kwargs):
+            yield StreamToken(content="thinking", is_reasoning=True)
+            raise RuntimeError("boom")
+
+        with mock.patch("lilbee.query.ask_stream", side_effect=error_reasoning):
+            from lilbee.cli.chat.stream import stream_response
+
+            stream_response("test", history, con)
+        # No crash — error during reasoning handled gracefully
+        assert len(history) == 0
 
 
 class TestSyncToolbar:

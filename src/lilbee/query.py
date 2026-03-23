@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from typing import Any, cast
+from collections.abc import Generator, Iterator
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from lilbee.reasoning import StreamToken
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -214,11 +217,20 @@ def ask_stream(
     top_k: int = 0,
     history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
-) -> Generator[str, None, None]:
-    """Streaming question: yields answer tokens, then source citations."""
+) -> Generator[StreamToken, None, None]:
+    """Streaming question: yields classified tokens, then source citations.
+
+    Each yielded ``StreamToken`` has ``.content`` (text) and ``.is_reasoning``
+    (True for ``<think>...</think>`` blocks when ``cfg.show_reasoning`` is True).
+    """
+    from lilbee.reasoning import StreamToken, filter_reasoning
+
     results = search_context(question, top_k=top_k)
     if not results:
-        yield "No relevant documents found. Try ingesting some documents first."
+        yield StreamToken(
+            content="No relevant documents found. Try ingesting some documents first.",
+            is_reasoning=False,
+        )
         return
 
     results = sort_by_relevance(results)
@@ -233,14 +245,16 @@ def ask_stream(
 
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
-    stream = provider.chat(cast(list[dict[str, Any]], messages), stream=True, options=opts or None)
+    raw_stream = provider.chat(
+        cast(list[dict[str, Any]], messages), stream=True, options=opts or None
+    )
 
     try:
-        for token in stream:
-            if token:
-                yield token
+        for st in filter_reasoning(cast(Iterator[str], raw_stream), show=cfg.show_reasoning):
+            if st.content:
+                yield st
     except (ConnectionError, OSError) as exc:
-        yield f"\n\n[Connection lost: {exc}]"
+        yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
 
     citations = deduplicate_sources(results)
-    yield "\n\nSources:\n" + "\n".join(citations)
+    yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
