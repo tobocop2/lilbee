@@ -67,7 +67,7 @@ def _ensure_vision_model() -> None:
 
     import sys
 
-    from lilbee.cli.chat import list_installed_models
+    from lilbee.models import list_installed_models
 
     try:
         installed = set(list_installed_models())
@@ -86,8 +86,7 @@ def _ensure_vision_model() -> None:
 
 def _validate_configured_vision() -> None:
     """Check that a pre-configured vision model is available; pull if needed."""
-    from lilbee.cli.chat import list_installed_models
-    from lilbee.models import ensure_tag
+    from lilbee.models import ensure_tag, list_installed_models
 
     tagged = ensure_tag(cfg.vision_model)
     cfg.vision_model = tagged
@@ -496,9 +495,14 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
-    from lilbee.cli.chat import chat_loop
+    import sys
 
-    chat_loop(console, auto_sync_bg=True)
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Chat requires a terminal.")
+        raise SystemExit(1)
+    from lilbee.cli.tui import run_tui
+
+    run_tui(auto_sync=True)
 
 
 @app.command()

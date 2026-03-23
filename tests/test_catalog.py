@@ -143,8 +143,8 @@ class TestFetchHfModels:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
-        # Second model has no siblings -> fallback 5.0
-        assert models[1].size_gb == 5.0
+        # Second model has no siblings -> fallback 0.0 (unknown)
+        assert models[1].size_gb == 0.0
 
     def test_skips_entries_without_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [{"id": "", "downloads": 0}, {"downloads": 0}]
@@ -490,35 +490,43 @@ class TestResolveFilename:
                 {"rfilename": "Qwen3-0.6B-Q8_0.gguf"},
             ]
         }
-        mock_resp = httpx.Response(200, json=data)
+        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         result = catalog._resolve_filename(entry)
         assert result == "Qwen3-0.6B-Q4_K_M.gguf"
 
-    def test_wildcard_no_match_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
         data = {"siblings": [{"rfilename": "something-else.bin"}]}
-        mock_resp = httpx.Response(200, json=data)
+        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError, match="No GGUF files found"):
+            catalog._resolve_filename(entry)
 
-    def test_wildcard_api_error_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
 
         def raise_connect(*a: object, **kw: object) -> httpx.Response:
             raise httpx.ConnectError("x")
 
         monkeypatch.setattr(httpx, "get", raise_connect)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError, match="Cannot query files"):
+            catalog._resolve_filename(entry)
 
-    def test_wildcard_http_error_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
         mock_resp = httpx.Response(500)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError):
+            catalog._resolve_filename(entry)
+
+    def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
+        files = ["model-Q8_0.gguf", "model-Q4_K_M.gguf", "model-Q5_K_M.gguf"]
+        assert catalog._pick_best_gguf(files) == "model-Q4_K_M.gguf"
+
+    def test_pick_best_gguf_fallback_first(self) -> None:
+        files = ["model-weird.gguf"]
+        assert catalog._pick_best_gguf(files) == "model-weird.gguf"
 
 
 class TestTaskToPipeline:
