@@ -23,7 +23,6 @@ from lilbee import embedder, store
 from lilbee.chunk import chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
-from lilbee.frontmatter import parse_frontmatter
 from lilbee.platform import is_ignored_dir
 from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 from lilbee.progress import (
@@ -443,12 +442,8 @@ async def ingest_markdown(
     raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     if not raw_text.strip():
         return []
-    fm = parse_frontmatter(raw_text)
-    text = fm.body
-    if not text.strip():
-        return []
 
-    texts = chunk_text(text, mime_type="text/markdown", heading_context=True)
+    texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
     vectors = await asyncio.to_thread(
