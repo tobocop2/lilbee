@@ -20,7 +20,7 @@ from rich.progress import (
 )
 
 from lilbee import embedder, store
-from lilbee.chunker import chunk_markdown, chunk_text
+from lilbee.chunk import chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.frontmatter import parse_frontmatter
@@ -435,8 +435,12 @@ async def ingest_markdown(
     source_name: str,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
-    """Chunk a markdown file by heading boundaries, embed, return records."""
+    """Chunk a markdown file using kreuzberg with heading context prepending.
 
+    kreuzberg (>=4.5.4) handles heading-aware chunking natively via
+    prepend_heading_context, prepending the heading hierarchy path
+    (e.g. "# Setup > ## Install") to each chunk.
+    """
     raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     if not raw_text.strip():
         return []
@@ -444,7 +448,8 @@ async def ingest_markdown(
     text = fm.body
     if not text.strip():
         return []
-    texts = chunk_markdown(text)
+
+    texts = chunk_text(text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
     vectors = await asyncio.to_thread(

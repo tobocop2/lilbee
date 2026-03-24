@@ -1215,7 +1215,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "blank.md"
         md.write_text("some text")
-        with mock.patch("lilbee.ingest.chunk_markdown", return_value=[]):
+        with mock.patch("lilbee.ingest.chunk_text", return_value=[]):
             result = await ingest_markdown(md, "blank.md")
         assert result == []
 
@@ -1245,3 +1245,16 @@ class TestIngestStructuredEdgeCases:
         ):
             result = await ingest_structured(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
+
+
+class TestChunkViaKreuzberg:
+    def test_empty_returns_empty(self):
+        from lilbee.chunk import chunk_text
+
+        assert chunk_text("") == []
+
+    def test_returns_chunks(self):
+        from lilbee.chunk import chunk_text
+
+        result = chunk_text("Some text that should be chunked.")
+        assert len(result) >= 1

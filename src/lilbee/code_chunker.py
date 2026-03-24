@@ -13,7 +13,7 @@ from typing import Any
 
 from tree_sitter_language_pack import ProcessConfig, has_language, init, process
 
-from lilbee.chunker import chunk_text
+from lilbee.chunk import chunk_text
 from lilbee.config import cfg
 from lilbee.languages import EXT_TO_LANG
 
@@ -67,7 +67,7 @@ def find_line(needle: str, lines: list[str], start: int) -> int:
 
 
 def _fallback_chunks(text: str) -> list[CodeChunk]:
-    """Token-based chunking with approximate line tracking."""
+    """Fallback chunking via kreuzberg with approximate line tracking."""
     raw = chunk_text(text)
     lines = text.split("\n")
     results: list[CodeChunk] = []
