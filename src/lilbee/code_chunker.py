@@ -1,9 +1,7 @@
-"""Code chunking via tree-sitter-language-pack's process() API.
+"""Code chunking via tree-sitter AST analysis.
 
-Uses the Rust-based tree-sitter-language-pack (kreuzberg-dev) for
-AST-aware code analysis. The process() function extracts structured
-symbol information (functions, classes, imports) which we use to
-build enriched chunk headers with symbol metadata.
+Extracts structured symbol information (functions, classes, imports)
+and builds enriched chunk headers with symbol metadata.
 """
 
 import logging
@@ -13,7 +11,7 @@ from typing import Any
 
 from tree_sitter_language_pack import ProcessConfig, has_language, init, process
 
-from lilbee.chunker import chunk_text
+from lilbee.chunk import chunk_text
 from lilbee.config import cfg
 from lilbee.languages import EXT_TO_LANG
 
@@ -67,7 +65,7 @@ def find_line(needle: str, lines: list[str], start: int) -> int:
 
 
 def _fallback_chunks(text: str) -> list[CodeChunk]:
-    """Token-based chunking with approximate line tracking."""
+    """Fallback text chunking with approximate line tracking."""
     raw = chunk_text(text)
     lines = text.split("\n")
     results: list[CodeChunk] = []

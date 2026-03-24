@@ -27,7 +27,7 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.5.0",
+    "kreuzberg>=4.5.4",
     "filelock",
     "tree-sitter-language-pack>=1.0.0",
     "typer",
