@@ -428,6 +428,16 @@ class TestGetCompletions:
         r = get_completions("/foobar something")
         assert r == []
 
+    def test_add_arg_completions(self, tmp_path: object) -> None:
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "testfile.txt").touch()
+        r = get_completions(f"/add {d}/")
+        assert any("testfile.txt" in x for x in r)
+
 
 class TestModelOptions:
     def test_returns_models(self) -> None:
@@ -514,33 +524,83 @@ class TestThemeOptions:
 
 
 class TestPathOptions:
-    def test_returns_paths(self, tmp_path: object) -> None:
+    def test_returns_paths_no_partial(self, tmp_path: object) -> None:
+        from pathlib import Path as P
+
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
-        with mock.patch("lilbee.cli.tui.widgets.autocomplete.Path") as MockPath:
-            MockPath.return_value.iterdir.return_value = [
-                type("P", (), {"name": "file.txt", "__str__": lambda s: "file.txt"})()
-            ]
-            r = _path_options()
-            assert "file.txt" in r
+        d = P(str(tmp_path))
+        (d / "file.txt").touch()
+        (d / "subdir").mkdir()
+        r = _path_options(str(d) + "/")
+        assert any("file.txt" in x for x in r)
+        assert any("subdir/" in x for x in r)
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
-        with mock.patch("lilbee.cli.tui.widgets.autocomplete.Path") as MockPath:
-            MockPath.return_value.iterdir.side_effect = OSError("err")
-            assert _path_options() == []
+        r = _path_options("/nonexistent_xyzzy_path/abc")
+        assert r == []
 
-    def test_excludes_dotfiles(self) -> None:
+    def test_excludes_dotfiles(self, tmp_path: object) -> None:
+        from pathlib import Path as P
+
         from lilbee.cli.tui.widgets.autocomplete import _path_options
 
-        dot = type("P", (), {"name": ".hidden", "__str__": lambda s: ".hidden"})()
-        vis = type("P", (), {"name": "visible", "__str__": lambda s: "visible"})()
+        d = P(str(tmp_path))
+        (d / ".hidden").touch()
+        (d / "visible").touch()
+        r = _path_options(str(d) + "/")
+        assert all(".hidden" not in x for x in r)
+        assert any("visible" in x for x in r)
+
+    def test_partial_path_filters(self, tmp_path: object) -> None:
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        d = P(str(tmp_path))
+        (d / "abc.txt").touch()
+        (d / "xyz.txt").touch()
+        r = _path_options(str(d / "ab"))
+        assert any("abc.txt" in x for x in r)
+        assert all("xyz.txt" not in x for x in r)
+
+    def test_directory_trailing_slash(self, tmp_path: object) -> None:
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        d = P(str(tmp_path))
+        (d / "mydir").mkdir()
+        r = _path_options(str(d) + "/")
+        assert any(x.endswith("/") for x in r)
+
+    def test_nonexistent_parent_returns_empty(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        r = _path_options("/nonexistent/path/abc")
+        assert r == []
+
+    def test_tilde_expansion(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        r = _path_options("~")
+        assert isinstance(r, list)
+
+    def test_empty_partial_uses_cwd(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        r = _path_options("")
+        assert isinstance(r, list)
+
+    def test_exception_returns_empty(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.Path") as MockPath:
-            MockPath.return_value.iterdir.return_value = [dot, vis]
-            r = _path_options()
-            assert ".hidden" not in r
-            assert "visible" in r
+            MockPath.side_effect = RuntimeError("boom")
+            r = _path_options("something")
+        assert r == []
 
 
 # ---------------------------------------------------------------------------
