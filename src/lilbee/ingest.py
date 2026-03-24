@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -21,10 +20,9 @@ from rich.progress import (
 
 from lilbee import embedder, store
 from lilbee.chunk import chunk_text
-from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
+from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
-from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 from lilbee.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -109,57 +107,16 @@ class _IngestResult:
     error: Exception | None
 
 
-# File extensions routed to the code chunker (tree-sitter)
-_CODE_EXTENSIONS = supported_extensions()
-
-# All document extensions handled by extraction or structured preprocessors
-_DOCUMENT_EXTENSIONS = frozenset(
-    {
-        ".md",
-        ".txt",
-        ".html",
-        ".rst",
-        ".pdf",
-        ".docx",
-        ".xlsx",
-        ".pptx",
-        ".epub",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".tiff",
-        ".tif",
-        ".bmp",
-        ".webp",
-        ".csv",
-        ".tsv",
-        ".xml",
-        ".json",
-        ".jsonl",
-        ".yaml",
-        ".yml",
-    }
-)
-
-# Extension → content_type string for metadata
-_EXTENSION_MAP: dict[str, str] = {
+# Extension → content_type string for document formats handled by kreuzberg
+_DOCUMENT_EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
     ".pdf": "pdf",
-    **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
     **{ext: "data" for ext in (".csv", ".tsv")},
     ".xml": "xml",
     **{ext: "json" for ext in (".json", ".jsonl")},
-}
-
-
-# Preprocessors for structured formats: content_type → callable(Path) → str
-_PREPROCESSORS: dict[str, Callable[[Path], str]] = {
-    "xml": preprocess_xml,
-    "json": preprocess_json,
-    "data": preprocess_csv,
 }
 
 
@@ -188,14 +145,19 @@ def discover_files() -> dict[str, Path]:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if path.suffix.lower() in _EXTENSION_MAP:
+            if classify_file(path) is not None:
                 files[_relative_name(path)] = path
     return files
 
 
 def classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
-    return _EXTENSION_MAP.get(path.suffix.lower())
+    doc_type = _DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
+    if doc_type is not None:
+        return doc_type
+    if is_code_file(path):
+        return "code"
+    return None
 
 
 def extraction_config(content_type: str) -> object:
@@ -396,39 +358,6 @@ def ingest_code_sync(
     ]
 
 
-async def ingest_structured(
-    path: Path,
-    source_name: str,
-    content_type: str,
-    on_progress: DetailedProgressCallback = noop_callback,
-) -> list[ChunkRecord]:
-    """Preprocess a structured file, chunk, embed, and return store-ready records."""
-    preprocessor = _PREPROCESSORS[content_type]
-    text = await asyncio.to_thread(preprocessor, path)
-    if not text.strip():
-        return []
-    texts = chunk_text(text)
-    if not texts:
-        return []
-    vectors = await asyncio.to_thread(
-        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
-    )
-    return [
-        ChunkRecord(
-            source=source_name,
-            content_type=content_type,
-            page_start=0,
-            page_end=0,
-            line_start=0,
-            line_end=0,
-            chunk=text,
-            chunk_index=idx,
-            vector=vec,
-        )
-        for idx, (text, vec) in enumerate(zip(texts, vectors, strict=True))
-    ]
-
-
 async def ingest_markdown(
     path: Path,
     source_name: str,
@@ -478,8 +407,6 @@ async def _ingest_file(
     records: list[ChunkRecord]
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
-    elif content_type in _PREPROCESSORS:
-        records = await ingest_structured(path, source_name, content_type, on_progress)
     elif path.suffix.lower() == ".md":
         records = await ingest_markdown(path, source_name, on_progress)
     else:

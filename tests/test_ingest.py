@@ -678,19 +678,13 @@ class TestClassifyStructuredFormats:
         assert classify_file(Path(filename)) == expected
 
 
-def _fake_preprocess(path: Path) -> str:
-    return f"Preprocessed content from {path.name}. " * 20
-
-
 @mock.patch("lilbee.embedder.validate_model")
 @mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
 @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestSyncStructuredFormats:
-    @mock.patch("lilbee.preprocessors.preprocess_xml", side_effect=_fake_preprocess)
     async def test_xml_file_ingested(
         self,
-        mock_preprocess_xml,
         mock_extract_file,
         mock_embed_batch,
         mock_embed,
@@ -703,10 +697,8 @@ class TestSyncStructuredFormats:
         result = await sync()
         assert "data.xml" in result.added
 
-    @mock.patch("lilbee.preprocessors.preprocess_json", side_effect=_fake_preprocess)
     async def test_json_file_ingested(
         self,
-        mock_preprocess_json,
         mock_extract_file,
         mock_embed_batch,
         mock_embed,
@@ -719,10 +711,8 @@ class TestSyncStructuredFormats:
         result = await sync()
         assert "data.json" in result.added
 
-    @mock.patch("lilbee.preprocessors.preprocess_json", side_effect=_fake_preprocess)
     async def test_jsonl_file_ingested(
         self,
-        mock_preprocess_json,
         mock_extract_file,
         mock_embed_batch,
         mock_embed,
@@ -735,10 +725,8 @@ class TestSyncStructuredFormats:
         result = await sync()
         assert "data.jsonl" in result.added
 
-    @mock.patch("lilbee.preprocessors.preprocess_csv", side_effect=_fake_preprocess)
-    async def test_csv_file_ingested_via_preprocessor(
+    async def test_csv_file_ingested(
         self,
-        mock_preprocess_csv,
         mock_extract_file,
         mock_embed_batch,
         mock_embed,
@@ -1228,22 +1216,24 @@ class TestIngestMarkdownEdgeCases:
         assert result == []
 
 
-class TestIngestStructuredEdgeCases:
-    async def test_empty_preprocessed_text_returns_empty(self, isolated_env):
-        from lilbee.ingest import _PREPROCESSORS, ingest_structured
+class TestIngestDocumentEdgeCases:
+    async def test_empty_extraction_returns_empty(self, isolated_env):
+        """Structured formats now go through kreuzberg — empty result yields no chunks."""
+        from lilbee.ingest import ingest_document
 
-        with mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "   "}):
-            result = await ingest_structured(isolated_env / "e.xml", "e.xml", "xml")
+        empty_result = mock.MagicMock(chunks=[])
+        mock_extract = AsyncMock(return_value=empty_result)
+        with mock.patch("kreuzberg.extract_file", mock_extract):
+            result = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
-        from lilbee.ingest import _PREPROCESSORS, ingest_structured
+        from lilbee.ingest import ingest_document
 
-        with (
-            mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "some content here"}),
-            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
-        ):
-            result = await ingest_structured(isolated_env / "s.xml", "s.xml", "xml")
+        no_chunks_result = mock.MagicMock(chunks=[])
+        mock_extract = AsyncMock(return_value=no_chunks_result)
+        with mock.patch("kreuzberg.extract_file", mock_extract):
+            result = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
