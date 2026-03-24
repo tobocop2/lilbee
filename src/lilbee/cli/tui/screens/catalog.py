@@ -222,11 +222,6 @@ class CatalogScreen(Screen[None]):
                 for m in featured:
                     lv.append(ModelRow(m))
 
-            if ollama:
-                lv.append(ListItem(Label("INSTALLED (Ollama)", classes="section-header")))
-                for om in ollama:
-                    lv.append(OllamaRow(om))
-
             if hf:
                 grouped = _group_by_size(sorted(hf, key=lambda x: x.downloads, reverse=True))
                 for group_label, group_models in grouped:
@@ -239,13 +234,23 @@ class CatalogScreen(Screen[None]):
                 if self._hf_has_more and not search:
                     lv.append(LoadMoreRow())
 
+            if ollama:
+                lv.append(ListItem(Label("INSTALLED (Ollama)", classes="section-header")))
+                for om in ollama:
+                    lv.append(OllamaRow(om))
+
             if not featured and not ollama and not hf:
                 lv.append(ListItem(Label("No models match your filters.")))
 
-        count = len(self._featured) + len(self._hf_models)
+        n_featured = len(self._featured)
+        n_hf = len(self._hf_models)
+        n_ollama = len(self._ollama_models)
+        total = n_featured + n_hf + n_ollama
         more = "+" if self._hf_has_more else ""
         self.query_one("#sort-label", Static).update(
-            f"Sort: {_SORT_LABELS[self._current_sort]}  |  {count}{more} models"
+            f"Sort: {_SORT_LABELS[self._current_sort]}  |  "
+            f"Showing {total}{more} models "
+            f"({n_featured} featured, {n_hf} HF, {n_ollama} Ollama)"
         )
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
