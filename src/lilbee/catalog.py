@@ -296,13 +296,14 @@ def _task_to_pipeline(task: str | None) -> str:
 def _get_installed_models(model_manager: Any) -> set[str]:
     """Get set of installed model names from model_manager."""
     try:
-        return {m.name for m in model_manager.list_models()}
+        return set(model_manager.list_installed())
     except Exception:
         return set()
 
 
 _SORT_KEYS: dict[str, tuple] = {
     "downloads": (lambda m: m.downloads, True),
+    "name": (lambda m: m.name.lower(), False),
     "size_asc": (lambda m: m.size_gb, False),
     "size_desc": (lambda m: m.size_gb, True),
     "featured": (lambda m: (not m.featured, -m.downloads), False),
@@ -397,3 +398,31 @@ def _pick_best_gguf(filenames: list[str]) -> str:
             if quant in f:
                 return f
     return filenames[0]
+
+
+def fetch_model_file_size(hf_repo: str) -> float:
+    """Fetch the best GGUF file size from HuggingFace tree API.
+
+    Returns size in GB, or 0.0 if unavailable.
+    """
+    try:
+        resp = httpx.get(
+            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        resp.raise_for_status()
+        files = resp.json()
+    except Exception:
+        return 0.0
+
+    gguf_files = [
+        (f.get("path", ""), f.get("size", 0) or f.get("lfs", {}).get("size", 0))
+        for f in files
+        if isinstance(f, dict) and f.get("path", "").endswith(".gguf")
+    ]
+    if not gguf_files:
+        return 0.0
+
+    best_name = _pick_best_gguf([name for name, _ in gguf_files])
+    size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
+    return round(size_bytes / (1024**3), 1) if size_bytes else 0.0

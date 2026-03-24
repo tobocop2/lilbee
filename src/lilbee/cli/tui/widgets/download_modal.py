@@ -44,7 +44,12 @@ class DownloadModal(ModalScreen[bool]):
 
             from lilbee.catalog import download_model
 
-            download_model(self._model)
+            def on_progress(downloaded: int, total: int) -> None:
+                if total > 0:
+                    pct = min(int(downloaded * 100 / total), 100)
+                    self.app.call_from_thread(self._update_progress, pct)
+
+            download_model(self._model, on_progress=on_progress)
             self.app.call_from_thread(self._on_success)
         except Exception as exc:
             self.app.call_from_thread(self._on_error, str(exc))
@@ -52,9 +57,11 @@ class DownloadModal(ModalScreen[bool]):
     def _set_status(self, text: str) -> None:
         self.query_one("#dl-status", Label).update(text)
 
+    def _update_progress(self, pct: int) -> None:
+        self.query_one("#dl-progress", ProgressBar).update(total=100, progress=pct)
+
     def _on_success(self) -> None:
-        progress = self.query_one("#dl-progress", ProgressBar)
-        progress.update(total=100, progress=100)
+        self._update_progress(100)
         self._set_status(f"{self._model.name} installed!")
         self._dismiss_result = True
         self.call_later(self._do_dismiss)
