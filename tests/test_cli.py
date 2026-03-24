@@ -296,6 +296,51 @@ class TestAutoSync:
         assert result.exit_code == 0
         assert "Synced:" in result.output
 
+    def test_auto_sync_background(self) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+
+        con = Console()
+        with mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg:
+            auto_sync(con, background=True)
+            mock_bg.assert_called_once_with(con)
+
+
+class TestAddPathsBackground:
+    def test_add_paths_background_mode(self, isolated_env, tmp_path) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        con = Console()
+        with (
+            mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
+            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+        ):
+            add_paths([src], con, background=True)
+            mock_bg.assert_called_once()
+
+    def test_add_paths_chat_mode_prints(self, isolated_env, tmp_path, capsys) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        con = Console()
+        with (
+            mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+        ):
+            add_paths([src], con, chat_mode=True)
+            captured = capsys.readouterr()
+            assert "Copied 1 path(s)" in captured.out
+
 
 class TestChat:
     def test_chat_non_tty_exits_with_error(self) -> None:
@@ -453,6 +498,85 @@ class TestDefaultRequiresTerminal:
     def test_non_tty_exits_with_error(self) -> None:
         result = runner.invoke(app, [])
         assert result.exit_code == 1
+
+    def test_tty_launches_tui(self) -> None:
+        """When stdin/stdout are TTYs, the default command launches TUI."""
+        from lilbee.cli.tui import run_tui as original_run_tui
+
+        called = []
+
+        def fake_run_tui(**kwargs: object) -> None:
+            called.append(kwargs)
+
+        import lilbee.cli.tui
+
+        lilbee.cli.tui.run_tui = fake_run_tui  # type: ignore[assignment]
+        try:
+            # The runner's isatty check happens on sys.stdin, so we need to
+            # make isatty return True on whatever stream the code actually reads.
+            import sys
+
+            orig_sin = sys.stdin.isatty
+            orig_sout = sys.stdout.isatty
+            sys.stdin.isatty = lambda: True  # type: ignore[method-assign]
+            sys.stdout.isatty = lambda: True  # type: ignore[method-assign]
+            try:
+                from lilbee.cli.app import _default
+
+                ctx = mock.MagicMock()
+                ctx.invoked_subcommand = None
+                _default(
+                    ctx,
+                    data_dir=None,
+                    model=None,
+                    json_output=False,
+                    use_global=False,
+                    log_level=None,
+                    show_version=False,
+                )
+            finally:
+                sys.stdin.isatty = orig_sin  # type: ignore[method-assign]
+                sys.stdout.isatty = orig_sout  # type: ignore[method-assign]
+        finally:
+            lilbee.cli.tui.run_tui = original_run_tui
+        assert called == [{"auto_sync": True}]
+
+
+class TestChatLaunchesTui:
+    """The chat subcommand launches TUI when on a TTY."""
+
+    def test_chat_tty_launches_tui(self) -> None:
+        from lilbee.cli.tui import run_tui as original_run_tui
+
+        called = []
+
+        def fake_run_tui(**kwargs: object) -> None:
+            called.append(kwargs)
+
+        import lilbee.cli.tui
+
+        lilbee.cli.tui.run_tui = fake_run_tui  # type: ignore[assignment]
+        try:
+            with mock.patch("sys.stdin") as mock_in, mock.patch("sys.stdout") as mock_out:
+                mock_in.isatty.return_value = True
+                mock_out.isatty.return_value = True
+                from lilbee.cli.commands import chat
+
+                # Call with minimal defaults
+                chat(
+                    data_dir=None,
+                    model=None,
+                    use_global=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k_sampling=None,
+                    repeat_penalty=None,
+                    num_ctx=None,
+                    seed=None,
+                )
+        finally:
+            lilbee.cli.tui.run_tui = original_run_tui
+        assert called == [{"auto_sync": True}]
 
 
 # ---------------------------------------------------------------------------
@@ -1201,6 +1325,217 @@ class TestEnsureChatModelWiring:
         with mock.patch("lilbee.embedder.validate_model") as mock_val:
             runner.invoke(app, ["ask", "test"])
             mock_val.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Vision model setup tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureVisionModel:
+    """Tests for _ensure_vision_model and helpers."""
+
+    def test_returns_early_if_vision_configured(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.cli.commands._validate_configured_vision") as mock_val:
+            _ensure_vision_model()
+            mock_val.assert_called_once()
+
+    def test_restores_saved_model_from_settings(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value="saved-model"),
+            mock.patch("lilbee.cli.commands._validate_configured_vision") as mock_val,
+        ):
+            _ensure_vision_model()
+            assert cfg.vision_model == "saved-model"
+            mock_val.assert_called_once()
+
+    def test_ollama_unreachable_disables_vision(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", side_effect=RuntimeError("fail")),
+        ):
+            _ensure_vision_model()
+            assert cfg.vision_model == ""
+
+    def test_tty_calls_interactive_picker(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", return_value=["m1"]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.cli.commands._pick_vision_interactive") as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+            mock_pick.assert_called_once()
+
+    def test_non_tty_calls_auto_picker(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", return_value=["m1"]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.cli.commands._pick_vision_auto") as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = False
+            _ensure_vision_model()
+            mock_pick.assert_called_once()
+
+
+class TestValidateConfiguredVision:
+    def test_already_installed_noop(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.models.list_installed_models", return_value=["llava:7b"]):
+            _validate_configured_vision()
+            assert cfg.vision_model == "llava:7b"
+
+    def test_not_installed_pulls(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with (
+            mock.patch("lilbee.models.list_installed_models", return_value=[]),
+            mock.patch("lilbee.cli.commands._try_pull", return_value=True) as mock_pull,
+        ):
+            _validate_configured_vision()
+            mock_pull.assert_called_once_with("llava:7b")
+
+    def test_pull_fails_clears_vision(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with (
+            mock.patch("lilbee.models.list_installed_models", return_value=[]),
+            mock.patch("lilbee.cli.commands._try_pull", return_value=False),
+        ):
+            _validate_configured_vision()
+            assert cfg.vision_model == ""
+
+    def test_ollama_unreachable_keeps_config(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.models.list_installed_models", side_effect=RuntimeError):
+            _validate_configured_vision()
+            assert cfg.vision_model == "llava:7b"
+
+
+class TestPickVisionInteractive:
+    @pytest.fixture(autouse=True)
+    def _patch_vision_deps(self):
+        from lilbee.models import VISION_CATALOG
+
+        with (
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("lilbee.models.display_vision_picker", return_value=VISION_CATALOG[0]),
+        ):
+            yield
+
+    def test_default_choice(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with (
+            mock.patch("builtins.input", return_value=""),
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            _pick_vision_interactive(set())
+            mock_save.assert_called_once()
+
+    def test_eof_cancels(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", side_effect=EOFError):
+            _pick_vision_interactive(set())
+
+    def test_invalid_input(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", return_value="abc"):
+            _pick_vision_interactive(set())
+
+    def test_out_of_range(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", return_value="999"):
+            _pick_vision_interactive(set())
+
+    def test_valid_numeric_choice(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with (
+            mock.patch("builtins.input", return_value="1"),
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            _pick_vision_interactive(set())
+            mock_save.assert_called_once()
+
+
+class TestPickVisionAuto:
+    def test_auto_selects_and_pulls(self) -> None:
+        from lilbee.cli.commands import _pick_vision_auto
+
+        with (
+            mock.patch("lilbee.models.pick_default_vision_model") as mock_pick,
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            mock_pick.return_value = mock.MagicMock(name="llava:7b")
+            _pick_vision_auto(set())
+            mock_save.assert_called_once()
+
+
+class TestTryPull:
+    def test_success(self) -> None:
+        from lilbee.cli.commands import _try_pull
+
+        with mock.patch("lilbee.models.pull_with_progress"):
+            assert _try_pull("model") is True
+
+    def test_failure(self) -> None:
+        from lilbee.cli.commands import _try_pull
+
+        with mock.patch("lilbee.models.pull_with_progress", side_effect=RuntimeError("fail")):
+            assert _try_pull("model") is False
+
+
+class TestPullAndSaveVision:
+    def test_already_installed(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        _pull_and_save_vision("llava:7b", {"llava:7b"})
+        assert cfg.vision_model == "llava:7b"
+
+    def test_pull_needed_succeeds(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        with mock.patch("lilbee.cli.commands._try_pull", return_value=True):
+            _pull_and_save_vision("llava:7b", set())
+        assert cfg.vision_model == "llava:7b"
+
+    def test_pull_fails(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        with mock.patch("lilbee.cli.commands._try_pull", return_value=False):
+            _pull_and_save_vision("llava:7b", set())
+        assert cfg.vision_model == ""
 
 
 # ---------------------------------------------------------------------------
