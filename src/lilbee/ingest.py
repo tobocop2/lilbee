@@ -20,7 +20,7 @@ from rich.progress import (
 )
 
 from lilbee import embedder, store
-from lilbee.chunker import chunk_markdown, chunk_text
+from lilbee.chunk import chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.frontmatter import parse_frontmatter
@@ -40,18 +40,18 @@ from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
 
-# Minimum total chars for kreuzberg text to be considered meaningful.
+# Minimum total chars for extracted text to be considered meaningful.
 # 50 chars ≈ 12 words — if a PDF yields less, it's almost certainly a scanned
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
 _MIN_MEANINGFUL_CHARS = 50
 
-# Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
+# Approximate chars-per-token ratio (extraction uses chars, not tokens)
 _CHARS_PER_TOKEN = 4
 
 
 def _has_meaningful_text(result: Any) -> bool:
-    """Check if kreuzberg extraction produced meaningful text."""
+    """Check if extraction produced meaningful text."""
     if hasattr(result, "chunks") and result.chunks:
         total = sum(len(c.content.strip()) for c in result.chunks)
         return total > _MIN_MEANINGFUL_CHARS
@@ -113,7 +113,7 @@ class _IngestResult:
 # File extensions routed to the code chunker (tree-sitter)
 _CODE_EXTENSIONS = supported_extensions()
 
-# All document extensions handled by kreuzberg or structured preprocessors
+# All document extensions handled by extraction or structured preprocessors
 _DOCUMENT_EXTENSIONS = frozenset(
     {
         ".md",
@@ -199,8 +199,8 @@ def classify_file(path: Path) -> str | None:
     return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def kreuzberg_config(content_type: str) -> object:
-    """Build kreuzberg ExtractionConfig for a given content type."""
+def extraction_config(content_type: str) -> object:
+    """Build ExtractionConfig for a given content type."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
     chunking = ChunkingConfig(
@@ -216,8 +216,8 @@ def kreuzberg_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
-def kreuzberg_ocr_config() -> object:
-    """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
+def ocr_extraction_config() -> object:
+    """Build ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
 
     chunking = ChunkingConfig(
@@ -243,7 +243,7 @@ async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> 
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 2)
         try:
-            return await extract_file(str(path), config=kreuzberg_ocr_config())
+            return await extract_file(str(path), config=ocr_extraction_config())
         finally:
             os.dup2(old_stderr, 2)
             os.close(devnull)
@@ -307,7 +307,7 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
-    """Extract and chunk a document via kreuzberg, embed, return records.
+    """Extract and chunk a document, embed, return records.
 
     When *force_vision* is True (CLI ``--vision``) or a vision model is
     configured, Tesseract OCR is skipped and we go straight to the vision
@@ -317,7 +317,7 @@ async def ingest_document(
 
     use_vision = force_vision or bool(cfg.vision_model)
 
-    config = kreuzberg_config(content_type)
+    config = extraction_config(content_type)
     result = await extract_file(str(path), config=config)
 
     # Scanned PDF fallback chain: Tesseract OCR → vision model
@@ -435,8 +435,11 @@ async def ingest_markdown(
     source_name: str,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
-    """Chunk a markdown file by heading boundaries, embed, return records."""
+    """Chunk a markdown file with heading context prepended to each chunk.
 
+    Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
+    prepended for better retrieval context.
+    """
     raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     if not raw_text.strip():
         return []
@@ -444,7 +447,8 @@ async def ingest_markdown(
     text = fm.body
     if not text.strip():
         return []
-    texts = chunk_markdown(text)
+
+    texts = chunk_text(text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
     vectors = await asyncio.to_thread(
