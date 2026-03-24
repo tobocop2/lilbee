@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 
 from textual import work
@@ -11,12 +12,39 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Input
 
+from lilbee.cli.helpers import get_version
+from lilbee.cli.tui.screens.catalog import CatalogScreen
+from lilbee.cli.tui.screens.settings import SettingsScreen
+from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
 from lilbee.query import ChatMessage
+
+# Maps slash command names to handler method names.
+_SLASH_COMMANDS: dict[str, str] = {
+    "/quit": "_cmd_quit",
+    "/q": "_cmd_quit",
+    "/exit": "_cmd_quit",
+    "/cancel": "_cmd_cancel",
+    "/help": "_cmd_help",
+    "/h": "_cmd_help",
+    "/models": "_cmd_catalog",
+    "/m": "_cmd_catalog",
+    "/model": "_cmd_model",
+    "/status": "_cmd_status",
+    "/settings": "_cmd_settings",
+    "/set": "_cmd_set",
+    "/theme": "_cmd_theme",
+    "/add": "_cmd_add",
+    "/vision": "_cmd_vision",
+    "/version": "_cmd_version",
+    "/delete": "_cmd_delete",
+    "/reset": "_cmd_reset",
+}
 
 
 class ChatScreen(Screen[None]):
@@ -97,102 +125,21 @@ class ChatScreen(Screen[None]):
         self._send_message(text)
 
     def _handle_slash(self, text: str) -> None:
-        """Dispatch slash commands."""
+        """Dispatch slash commands via _SLASH_COMMANDS map."""
         cmd = text.split()[0].lower()
         args = text[len(cmd) :].strip()
+        handler_name = _SLASH_COMMANDS.get(cmd)
+        if handler_name:
+            getattr(self, handler_name)(args)
+        else:
+            self.notify(f"Unknown command: {cmd}", severity="warning")
 
-        if cmd in ("/quit", "/q", "/exit"):
-            self.app.exit()
+    # -- Slash command handlers (alphabetical) --------------------------------
+
+    def _cmd_add(self, args: str) -> None:
+        if not args:
             return
-
-        if cmd == "/cancel":
-            for worker in self.workers:
-                worker.cancel()
-            self.notify("Cancelled active operations")
-            return
-
-        if cmd in ("/help", "/h"):
-            from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-            self.app.push_screen(HelpModal())
-            return
-
-        if cmd in ("/models", "/m"):
-            from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-            self.app.push_screen(CatalogScreen())
-            return
-
-        if cmd == "/status":
-            from lilbee.cli.tui.screens.status import StatusScreen
-
-            self.app.push_screen(StatusScreen())
-            return
-
-        if cmd == "/settings":
-            from lilbee.cli.tui.screens.settings import SettingsScreen
-
-            self.app.push_screen(SettingsScreen())
-            return
-
-        if cmd == "/set" and args:
-            self._handle_set(args)
-            return
-
-        if cmd == "/model":
-            if args:
-                cfg.chat_model = args
-                self.app.title = f"lilbee — {cfg.chat_model}"
-                self.notify(f"Model set to {args}")
-                self._refresh_model_bar()
-            else:
-                from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-                self.app.push_screen(CatalogScreen())
-            return
-
-        if cmd == "/theme":
-            from lilbee.cli.tui.app import _DARK_THEMES, LilbeeApp
-
-            if args and isinstance(self.app, LilbeeApp):
-                self.app.set_theme(args)
-                self.notify(f"Theme: {args}")
-            else:
-                self.notify(f"Themes: {', '.join(_DARK_THEMES)}", severity="information")
-            return
-
-        if cmd == "/add" and args:
-            self._handle_add(args)
-            return
-
-        if cmd == "/vision":
-            self._handle_vision(args)
-            return
-
-        if cmd == "/version":
-            from lilbee.cli.helpers import get_version
-
-            self.notify(f"lilbee {get_version()}")
-            return
-
-        if cmd == "/delete":
-            self._handle_delete(args)
-            return
-
-        if cmd == "/reset":
-            if args == "confirm":
-                self._handle_reset()
-            else:
-                self.notify("Type '/reset confirm' to delete all data", severity="warning")
-            return
-
-        self.notify(f"Unknown command: {cmd}", severity="warning")
-
-    def _handle_add(self, path_str: str) -> None:
-        """Add files to the knowledge base and trigger sync."""
-        from pathlib import Path
-
-        path = Path(path_str).expanduser()
+        path = Path(args).expanduser()
         if not path.exists():
             self.notify(f"Not found: {path}", severity="error")
             return
@@ -206,33 +153,15 @@ class ChatScreen(Screen[None]):
         except Exception as exc:
             self.notify(f"Error: {exc}", severity="error")
 
-    def _handle_vision(self, args: str) -> None:
-        """Set or show vision model."""
-        from lilbee import settings
+    def _cmd_cancel(self, _args: str) -> None:
+        for worker in self.workers:
+            worker.cancel()
+        self.notify("Cancelled active operations")
 
-        if args == "off":
-            cfg.vision_model = ""
-            settings.set_value(cfg.data_root, "vision_model", "")
-            self.notify("Vision OCR disabled")
-            self._refresh_model_bar()
-            return
+    def _cmd_catalog(self, _args: str) -> None:
+        self.app.push_screen(CatalogScreen())
 
-        if args:
-            cfg.vision_model = args
-            settings.set_value(cfg.data_root, "vision_model", args)
-            self.notify(f"Vision model: {args}")
-            self._refresh_model_bar()
-            return
-
-        current = cfg.vision_model or "disabled"
-        self.notify(
-            f"Vision: {current}\n"
-            "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
-            "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
-        )
-
-    def _handle_delete(self, args: str) -> None:
-        """Delete a document from the knowledge base."""
+    def _cmd_delete(self, args: str) -> None:
         from lilbee.store import get_sources
 
         try:
@@ -261,18 +190,36 @@ class ChatScreen(Screen[None]):
         delete_source(name)
         self.notify(f"Deleted {name}")
 
-    def _handle_reset(self) -> None:
-        """Factory reset the knowledge base."""
-        from lilbee.cli.helpers import perform_reset
+    def _cmd_help(self, _args: str) -> None:
+        self.app.push_screen(HelpModal())
 
-        try:
-            perform_reset()
-            self.notify("Knowledge base reset")
-        except Exception as exc:
-            self.notify(f"Reset failed: {exc}", severity="error")
+    def _cmd_model(self, args: str) -> None:
+        if args:
+            cfg.chat_model = args
+            self.app.title = f"lilbee — {cfg.chat_model}"
+            self.notify(f"Model set to {args}")
+            self._refresh_model_bar()
+        else:
+            self.app.push_screen(CatalogScreen())
 
-    def _handle_set(self, args: str) -> None:
-        """Handle /set key value."""
+    def _cmd_quit(self, _args: str) -> None:
+        self.app.exit()
+
+    def _cmd_reset(self, args: str) -> None:
+        if args == "confirm":
+            from lilbee.cli.helpers import perform_reset
+
+            try:
+                perform_reset()
+                self.notify("Knowledge base reset")
+            except Exception as exc:
+                self.notify(f"Reset failed: {exc}", severity="error")
+        else:
+            self.notify("Type '/reset confirm' to delete all data", severity="warning")
+
+    def _cmd_set(self, args: str) -> None:
+        if not args:
+            return
         parts = args.split(None, 1)
         key = parts[0]
         value = parts[1] if len(parts) > 1 else ""
@@ -295,6 +242,50 @@ class ChatScreen(Screen[None]):
             self.notify(f"{key} = {parsed}")
         except (ValueError, TypeError) as exc:
             self.notify(f"Invalid value for {key}: {exc}", severity="error")
+
+    def _cmd_settings(self, _args: str) -> None:
+        self.app.push_screen(SettingsScreen())
+
+    def _cmd_status(self, _args: str) -> None:
+        self.app.push_screen(StatusScreen())
+
+    def _cmd_theme(self, args: str) -> None:
+        from lilbee.cli.tui.app import _DARK_THEMES, LilbeeApp
+
+        if args and isinstance(self.app, LilbeeApp):
+            self.app.set_theme(args)
+            self.notify(f"Theme: {args}")
+        else:
+            self.notify(f"Themes: {', '.join(_DARK_THEMES)}", severity="information")
+
+    def _cmd_version(self, _args: str) -> None:
+        self.notify(f"lilbee {get_version()}")
+
+    def _cmd_vision(self, args: str) -> None:
+        from lilbee import settings
+
+        if args == "off":
+            cfg.vision_model = ""
+            settings.set_value(cfg.data_root, "vision_model", "")
+            self.notify("Vision OCR disabled")
+            self._refresh_model_bar()
+            return
+
+        if args:
+            cfg.vision_model = args
+            settings.set_value(cfg.data_root, "vision_model", args)
+            self.notify(f"Vision model: {args}")
+            self._refresh_model_bar()
+            return
+
+        current = cfg.vision_model or "disabled"
+        self.notify(
+            f"Vision: {current}\n"
+            "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
+            "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
+        )
+
+    # -- Core chat logic ------------------------------------------------------
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""

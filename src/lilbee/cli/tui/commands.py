@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from textual.command import Hit, Hits, Provider
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -68,7 +71,7 @@ class LilbeeCommandProvider(Provider):
                     )
                 )
         except Exception:
-            pass
+            log.debug("Failed to list installed models", exc_info=True)
 
         try:
             from lilbee.models import VISION_CATALOG
@@ -89,7 +92,7 @@ class LilbeeCommandProvider(Provider):
                 )
             )
         except Exception:
-            pass
+            log.debug("Failed to load vision catalog", exc_info=True)
 
         return commands
 
@@ -110,7 +113,7 @@ class LilbeeCommandProvider(Provider):
                         )
                     )
         except Exception:
-            pass
+            log.debug("Failed to list documents", exc_info=True)
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:

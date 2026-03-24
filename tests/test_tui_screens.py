@@ -666,7 +666,7 @@ async def test_chat_slash_vision_set(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.settings.set_value"):
-            app.screen._handle_vision("maternion/LightOnOCR-2:latest")
+            app.screen._cmd_vision("maternion/LightOnOCR-2:latest")
             assert cfg.vision_model == "maternion/LightOnOCR-2:latest"
 
 
@@ -676,7 +676,7 @@ async def test_chat_slash_vision_off(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         cfg.vision_model = "some-model"
         with patch("lilbee.settings.set_value"):
-            app.screen._handle_vision("off")
+            app.screen._cmd_vision("off")
             assert cfg.vision_model == ""
 
 
@@ -684,7 +684,7 @@ async def test_chat_slash_vision_off(mock_check):
 async def test_chat_slash_vision_no_arg(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_vision("")
+        app.screen._cmd_vision("")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -697,7 +697,7 @@ async def test_chat_slash_delete_with_match(mock_check):
             patch("lilbee.store.delete_source") as mock_del_src,
         ):
             mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
-            app.screen._handle_delete("notes.md")
+            app.screen._cmd_delete("notes.md")
             mock_del_chunks.assert_called_once_with("notes.md")
             mock_del_src.assert_called_once_with("notes.md")
 
@@ -710,7 +710,7 @@ async def test_chat_slash_delete_not_found(mock_check):
             "lilbee.store.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
-            app.screen._handle_delete("nonexistent.md")
+            app.screen._cmd_delete("nonexistent.md")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -721,7 +721,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
             "lilbee.store.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
-            app.screen._handle_delete("")
+            app.screen._cmd_delete("")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -729,7 +729,7 @@ async def test_chat_slash_delete_store_error(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.store.get_sources", side_effect=Exception("no store")):
-            app.screen._handle_delete("x")
+            app.screen._cmd_delete("x")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -737,7 +737,7 @@ async def test_chat_slash_delete_empty_sources(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.store.get_sources", return_value=[]):
-            app.screen._handle_delete("x")
+            app.screen._cmd_delete("x")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -769,7 +769,7 @@ async def test_chat_slash_reset_error(mock_check):
 async def test_chat_slash_set_valid(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_set("top_k 10")
+        app.screen._cmd_set("top_k 10")
         assert cfg.top_k == 10
 
 
@@ -777,7 +777,7 @@ async def test_chat_slash_set_valid(mock_check):
 async def test_chat_slash_set_bool(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_set("show_reasoning true")
+        app.screen._cmd_set("show_reasoning true")
         assert cfg.show_reasoning is True
 
 
@@ -785,7 +785,7 @@ async def test_chat_slash_set_bool(mock_check):
 async def test_chat_slash_set_nullable_none(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_set("temperature none")
+        app.screen._cmd_set("temperature none")
         assert cfg.temperature is None
 
 
@@ -793,14 +793,14 @@ async def test_chat_slash_set_nullable_none(mock_check):
 async def test_chat_slash_set_unknown_key(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_set("bogus_key 42")
+        app.screen._cmd_set("bogus_key 42")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
 async def test_chat_slash_set_invalid_value(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_set("top_k not-a-number")
+        app.screen._cmd_set("top_k not-a-number")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -810,16 +810,32 @@ async def test_chat_slash_set_no_value(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         # chat_model has a min_length=1 validator, so empty string is rejected;
         # test that the code path runs without crashing.
-        app.screen._handle_set("chat_model")
+        app.screen._cmd_set("chat_model")
         # Value remains unchanged because pydantic rejects ""
         assert cfg.chat_model == "test-model:latest"
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_add_empty_args(mock_check):
+    """Cover early return when /add has no args."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_add("")
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_set_empty_args(mock_check):
+    """Cover early return when /set has no args."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_set("")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
 async def test_chat_slash_add_nonexistent(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_add("/nonexistent/path/abc.txt")
+        app.screen._cmd_add("/nonexistent/path/abc.txt")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -832,7 +848,7 @@ async def test_chat_slash_add_existing(mock_check, tmp_path):
             patch("lilbee.cli.helpers.copy_paths", return_value=["test.txt"]),
             patch.object(app.screen, "_run_sync"),
         ):
-            app.screen._handle_add(str(test_file))
+            app.screen._cmd_add(str(test_file))
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -842,7 +858,7 @@ async def test_chat_slash_add_error(mock_check, tmp_path):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.copy_paths", side_effect=Exception("copy failed")):
-            app.screen._handle_add(str(test_file))
+            app.screen._cmd_add(str(test_file))
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
