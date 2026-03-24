@@ -145,3 +145,93 @@ class Greeter:
         assert ".js" in EXT_TO_LANG
         assert ".rs" in EXT_TO_LANG
         assert EXT_TO_LANG[".py"] == "python"
+
+    def test_ensure_language_exception_returns_false(self):
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import _ensure_language
+
+        with patch("lilbee.code_chunker.has_language", side_effect=RuntimeError("boom")):
+            assert _ensure_language("python") is False
+
+    def test_find_line_no_match_returns_start(self):
+        from lilbee.code_chunker import find_line
+
+        lines = ["aaa", "bbb", "ccc"]
+        assert find_line("zzz", lines, 0) == 1
+
+    def test_extract_symbols_non_list_structure(self):
+        from lilbee.code_chunker import _extract_symbols
+
+        assert _extract_symbols({"structure": "not a list"}, "code") == []
+
+    def test_extract_symbols_non_dict_entry(self):
+        from lilbee.code_chunker import _extract_symbols
+
+        result = {"structure": ["not a dict", {"name": "fn", "kind": "function", "span": {}}]}
+        symbols = _extract_symbols(result, "code")
+        assert len(symbols) == 1
+        assert symbols[0].name == "fn"
+
+    def test_ensure_language_false_triggers_fallback(self):
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n" * 20)
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with patch("lilbee.code_chunker._ensure_language", return_value=False):
+                chunks = chunk_code(path)
+                assert isinstance(chunks, list)
+        finally:
+            path.unlink()
+
+    def test_process_exception_triggers_fallback(self):
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n" * 20)
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with patch("lilbee.code_chunker.process", side_effect=RuntimeError("parse fail")):
+                chunks = chunk_code(path)
+                assert isinstance(chunks, list)
+        finally:
+            path.unlink()
+
+    def test_empty_symbols_triggers_fallback(self):
+        from unittest.mock import patch
+
+        from lilbee.code_chunker import chunk_code
+
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n" * 20)
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with patch("lilbee.code_chunker._extract_symbols", return_value=[]):
+                chunks = chunk_code(path)
+                assert isinstance(chunks, list)
+        finally:
+            path.unlink()
+
+
+class TestChunkTextEmptyResult:
+    def test_returns_empty_when_no_chunks(self):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.chunk import chunk_text
+
+        mock_result = MagicMock()
+        mock_result.chunks = []
+        with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
+            assert chunk_text("some text") == []
