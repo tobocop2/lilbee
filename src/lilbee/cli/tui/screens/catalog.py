@@ -23,6 +23,7 @@ from textual.widgets import (
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import FEATURED_ALL, CatalogModel, get_catalog
+from lilbee.config import cfg
 from lilbee.model_manager import OllamaModel
 
 TASK_TABS = ("All", "Chat", "Embedding", "Vision")
@@ -168,7 +169,6 @@ class CatalogScreen(Screen[None]):
 
     @work(thread=True)
     def _fetch_ollama_models(self) -> list[OllamaModel]:
-        from lilbee.config import cfg
         from lilbee.model_manager import classify_ollama_models
 
         return classify_ollama_models(cfg.ollama_url)
@@ -234,10 +234,7 @@ class CatalogScreen(Screen[None]):
                         ListItem(Label(f"HUGGINGFACE — {group_label}", classes="section-header"))
                     )
                     for m in group_models:
-                        cached = self._size_cache.get(m.hf_repo)
-                        row = ModelRow(m)
-                        row._cached_size = cached  # type: ignore[attr-defined]
-                        lv.append(row)
+                        lv.append(ModelRow(m))
 
                 if self._hf_has_more and not search:
                     lv.append(LoadMoreRow())
@@ -259,8 +256,6 @@ class CatalogScreen(Screen[None]):
         if isinstance(item, ModelRow):
             self._install_model(item.model)
         elif isinstance(item, OllamaRow):
-            from lilbee.config import cfg
-
             cfg.chat_model = item.ollama_model.name
             self.notify(f"Using {item.ollama_model.name} (Ollama)")
             self.app.title = f"lilbee — {item.ollama_model.name}"
