@@ -294,25 +294,31 @@ class TestGetCatalog:
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
+    def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        result = get_catalog(sort="name")
+        names = [m.name.lower() for m in result.models]
+        assert names == sorted(names)
+
     def test_installed_filter_with_model_manager(self) -> None:
         class FakeManager:
-            def list_models(self) -> list:
-                return [type("M", (), {"name": "Qwen3 8B"})()]
+            def list_installed(self) -> list[str]:
+                return ["Qwen3 8B"]
 
         result = get_catalog(installed=True, model_manager=FakeManager())
         assert all(m.name == "Qwen3 8B" for m in result.models)
 
     def test_installed_filter_not_installed(self) -> None:
         class FakeManager:
-            def list_models(self) -> list:
-                return [type("M", (), {"name": "Qwen3 8B"})()]
+            def list_installed(self) -> list[str]:
+                return ["Qwen3 8B"]
 
         result = get_catalog(installed=False, model_manager=FakeManager())
         assert all(m.name != "Qwen3 8B" for m in result.models)
 
     def test_installed_filter_manager_error(self) -> None:
         class BadManager:
-            def list_models(self) -> list:
+            def list_installed(self) -> list[str]:
                 raise RuntimeError("no manager")
 
         result = get_catalog(installed=True, model_manager=BadManager())
@@ -565,7 +571,46 @@ class TestSortModels:
         downloads = [m.downloads for m in sorted_m]
         assert downloads == sorted(downloads, reverse=True)
 
+    def test_name_sort(self) -> None:
+        models = list(FEATURED_ALL)
+        sorted_m = catalog._sort_models(models, "name")
+        names = [m.name.lower() for m in sorted_m]
+        assert names == sorted(names)
+
     def test_featured_default(self) -> None:
         models = list(FEATURED_ALL)
         sorted_m = catalog._sort_models(models, "featured")
         assert len(sorted_m) == len(models)
+
+
+class TestFetchModelFileSize:
+    def test_returns_size_from_tree_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"path": "model-Q4_K_M.gguf", "size": 5_000_000_000},
+            {"path": "model-Q8_0.gguf", "size": 9_000_000_000},
+            {"path": "README.md", "size": 100},
+        ]
+        mock_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        result = catalog.fetch_model_file_size("user/repo")
+        assert result == round(5_000_000_000 / (1024**3), 1)
+
+    def test_returns_zero_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.catalog.httpx.get", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail"))
+        )
+        assert catalog.fetch_model_file_size("user/repo") == 0.0
+
+    def test_returns_zero_no_gguf_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [{"path": "README.md", "size": 100}]
+        mock_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        assert catalog.fetch_model_file_size("user/repo") == 0.0
