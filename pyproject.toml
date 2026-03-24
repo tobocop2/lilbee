@@ -80,11 +80,12 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py", "src/lilbee/cli/tui/**", "src/lilbee/cli/sync.py"]
+omit = ["src/lilbee/__main__.py"]
+concurrency = ["thread"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 97
+fail_under = 100
 
 [tool.ruff]
 target-version = "py311"
