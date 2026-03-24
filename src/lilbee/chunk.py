@@ -1,4 +1,4 @@
-"""Text chunking — delegates to kreuzberg for splitting and heading context."""
+"""Text chunking with optional heading-aware splitting."""
 
 from __future__ import annotations
 
