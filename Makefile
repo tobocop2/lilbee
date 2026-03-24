@@ -19,7 +19,7 @@ test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v
 
 imports-check:
-	uv run python -c "import lilbee; from lilbee import cli, config, chunker, code_chunker, embedder, store, ingest, query"
+	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
