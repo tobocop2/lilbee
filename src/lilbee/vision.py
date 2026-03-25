@@ -5,7 +5,6 @@ via Ollama, and concatenates the extracted text.
 """
 
 import contextlib
-import io
 import logging
 import sys
 from collections.abc import Iterator
@@ -56,32 +55,18 @@ class _SharedTask:
 
 def pdf_page_count(path: Path) -> int:
     """Return the number of pages in a PDF without rasterizing."""
-    import pypdfium2 as pdfium  # lazy: heavy dependency
+    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
 
-    pdf = pdfium.PdfDocument(path)
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
+    it = PdfPageIterator(str(path), dpi=_RASTER_DPI)
+    return len(it)
 
 
 def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
     """Yield (0-based index, PNG bytes) for each page of a PDF."""
-    import pypdfium2 as pdfium  # lazy: heavy dependency
+    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
 
-    pdf = pdfium.PdfDocument(path)
-    try:
-        scale = _RASTER_DPI / 72
-        for i in range(len(pdf)):
-            page = pdf[i]
-            bitmap = page.render(scale=scale)
-            pil_image = bitmap.to_pil()
-            buf = io.BytesIO()
-            pil_image.save(buf, format="PNG")
-            page.close()
-            yield (i, buf.getvalue())
-    finally:
-        pdf.close()
+    with PdfPageIterator(str(path), dpi=_RASTER_DPI) as pages:
+        yield from pages
 
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
