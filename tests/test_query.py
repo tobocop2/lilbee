@@ -946,14 +946,16 @@ class TestConceptBoosting:
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
         try:
-            mock_graph = mock.MagicMock()
-            mock_graph.boost_results.return_value = [_make_result(distance=0.3)]
             with (
-                mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+                mock.patch("lilbee.concepts.get_graph", return_value=True),
                 mock.patch("lilbee.concepts.extract_concepts", return_value=["python"]),
+                mock.patch(
+                    "lilbee.concepts.boost_results",
+                    return_value=[_make_result(distance=0.3)],
+                ) as mock_boost,
             ):
                 results = search_context("python code")
-            mock_graph.boost_results.assert_called_once()
+            mock_boost.assert_called_once()
             assert results[0].distance == 0.3
         finally:
             cfg.concept_graph = old
@@ -1000,7 +1002,7 @@ class TestConceptBoosting:
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
         try:
-            with mock.patch("lilbee.concepts.get_graph", return_value=None):
+            with mock.patch("lilbee.concepts.get_graph", return_value=False):
                 results = search_context("python code")
             assert results[0].distance == 0.5
         finally:
@@ -1023,13 +1025,17 @@ class TestConceptQueryExpansion:
         cfg.concept_graph = True
         mock_provider.return_value.chat.return_value = "variant query about python"
         try:
-            mock_graph = mock.MagicMock()
-            mock_graph.expand_query.return_value = ["django", "flask"]
+            # Use concept terms that share tokens with the original query
+            # so they survive the guardrails overlap check
             with (
-                mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+                mock.patch("lilbee.concepts.get_graph", return_value=True),
+                mock.patch(
+                    "lilbee.concepts.expand_query",
+                    return_value=["python web frameworks"],
+                ),
             ):
                 variants = _expand_query("python frameworks")
-            assert "django" in variants or "flask" in variants
+            assert "python web frameworks" in variants
         finally:
             cfg.concept_graph = old_graph
 

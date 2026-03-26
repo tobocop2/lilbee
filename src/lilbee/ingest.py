@@ -406,12 +406,11 @@ async def _rebuild_concept_clusters() -> None:
     if not cfg.concept_graph:
         return
     try:
-        from lilbee.concepts import get_graph
+        from lilbee.concepts import get_graph, rebuild_clusters
 
-        graph = get_graph()
-        if graph is None:
+        if not get_graph():
             return
-        await asyncio.to_thread(graph.rebuild_clusters)
+        await asyncio.to_thread(rebuild_clusters)
     except Exception:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
@@ -421,15 +420,12 @@ async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
     if not cfg.concept_graph or not records:
         return
     try:
-        from lilbee.concepts import extract_concepts_batch, get_graph
+        from lilbee.concepts import build_from_chunks, extract_concepts_batch
 
-        graph = get_graph()
-        if graph is None:
-            return
         texts = [r["chunk"] for r in records]
         concept_lists = await asyncio.to_thread(extract_concepts_batch, texts)
         chunk_ids = [(source_name, r["chunk_index"]) for r in records]
-        await asyncio.to_thread(graph.build_from_chunks, chunk_ids, concept_lists)
+        await asyncio.to_thread(build_from_chunks, chunk_ids, concept_lists)
     except Exception:
         log.warning("Concept indexing failed for %s", source_name, exc_info=True)
 

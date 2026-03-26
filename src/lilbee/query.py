@@ -286,8 +286,8 @@ def _expand_query(question: str) -> list[str]:
             return []
         variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
         variants = variants[:count]
-        variants = _apply_guardrails(variants, question)
         variants.extend(_concept_query_expansion(question))
+        variants = _apply_guardrails(variants, question)
         return variants
     except Exception:
         return []
@@ -421,13 +421,12 @@ def _apply_concept_boost(results: list[SearchChunk], question: str) -> list[Sear
     if not cfg.concept_graph:
         return results
     try:
-        from lilbee.concepts import extract_concepts, get_graph
+        from lilbee.concepts import boost_results, extract_concepts, get_graph
 
-        graph = get_graph()
-        if graph is None:
+        if not get_graph():
             return results
         query_concepts = extract_concepts(question)
-        return graph.boost_results(results, query_concepts)
+        return boost_results(results, query_concepts)
     except Exception:
         return results
 
@@ -437,12 +436,11 @@ def _concept_query_expansion(question: str) -> list[str]:
     if not cfg.concept_graph:
         return []
     try:
-        from lilbee.concepts import get_graph
+        from lilbee.concepts import expand_query, get_graph
 
-        graph = get_graph()
-        if graph is None:
+        if not get_graph():
             return []
-        return graph.expand_query(question)
+        return expand_query(question)
     except Exception:
         return []
 
