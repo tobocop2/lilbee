@@ -1,5 +1,6 @@
 """Tests for the concept graph module."""
 
+from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,7 @@ from lilbee.store import SearchChunk
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths to temp dir for every test."""
-    snapshot = cfg.model_copy()
+    snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir()
     cfg.data_dir = tmp_path / "data"
@@ -20,8 +21,8 @@ def isolated_env(tmp_path):
     cfg.concept_max_per_chunk = 10
     cfg.concept_boost_weight = 0.3
     yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
+    for name, val in snapshot.items():
+        setattr(cfg, name, val)
 
 
 @pytest.fixture(autouse=True)
@@ -213,114 +214,113 @@ class TestEnsureSpacyModel:
         assert result is not None
 
 
-class TestConceptGraph:
-    def test_build_from_chunks(self):
-        from lilbee.concepts import ConceptGraph
+class TestBuildFromChunks:
+    @patch("lilbee.lock.write_lock")
+    def test_build_from_chunks(self, mock_lock):
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
+        from lilbee.concepts import build_from_chunks
 
-        graph = ConceptGraph()
         chunk_ids = [("doc.md", 0), ("doc.md", 1)]
         concept_lists = [["python", "machine learning"], ["python", "deep learning"]]
-        graph.build_from_chunks(chunk_ids, concept_lists)
+        build_from_chunks(chunk_ids, concept_lists)
 
     def test_build_empty_chunks(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import build_from_chunks
 
-        graph = ConceptGraph()
-        graph.build_from_chunks([], [])
+        build_from_chunks([], [])
 
+
+class TestBoostResults:
     def test_boost_results_with_overlap(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import boost_results
 
-        graph = ConceptGraph()
         results = [_make_result(distance=0.5, chunk_index=0)]
-        with patch.object(graph, "_get_chunk_concepts", return_value=["python", "ml"]):
-            boosted = graph.boost_results(results, ["python", "java"])
+        with patch("lilbee.concepts.get_chunk_concepts", return_value=["python", "ml"]):
+            boosted = boost_results(results, ["python", "java"])
         assert boosted[0].distance < 0.5
 
     def test_boost_results_relevance_score(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import boost_results
 
-        graph = ConceptGraph()
         results = [_make_result(distance=None, relevance_score=0.8, chunk_index=0)]
-        with patch.object(graph, "_get_chunk_concepts", return_value=["python"]):
-            boosted = graph.boost_results(results, ["python"])
+        with patch("lilbee.concepts.get_chunk_concepts", return_value=["python"]):
+            boosted = boost_results(results, ["python"])
         assert boosted[0].relevance_score > 0.8
 
     def test_boost_results_no_overlap(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import boost_results
 
-        graph = ConceptGraph()
         results = [_make_result(distance=0.5, chunk_index=0)]
-        with patch.object(graph, "_get_chunk_concepts", return_value=["java"]):
-            boosted = graph.boost_results(results, ["python"])
+        with patch("lilbee.concepts.get_chunk_concepts", return_value=["java"]):
+            boosted = boost_results(results, ["python"])
         assert boosted[0].distance == 0.5
 
     def test_boost_results_empty_query_concepts(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import boost_results
 
-        graph = ConceptGraph()
         results = [_make_result()]
-        boosted = graph.boost_results(results, [])
+        boosted = boost_results(results, [])
         assert boosted == results
 
     def test_boost_results_empty_results(self):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import boost_results
 
-        graph = ConceptGraph()
-        boosted = graph.boost_results([], ["python"])
+        boosted = boost_results([], ["python"])
         assert boosted == []
 
-    @patch("lilbee.concepts.extract_concepts", return_value=["python"])
-    def test_expand_query(self, mock_extract):
-        from lilbee.concepts import ConceptGraph
 
-        graph = ConceptGraph()
-        with patch.object(graph, "get_related_concepts", return_value=["django", "flask"]):
-            related = graph.expand_query("python frameworks")
+class TestExpandQuery:
+    @patch("lilbee.concepts.extract_concepts", return_value=["python"])
+    @patch("lilbee.concepts.get_related_concepts", return_value=["django", "flask"])
+    def test_expand_query(self, mock_related, mock_extract):
+        from lilbee.concepts import expand_query
+
+        related = expand_query("python frameworks")
         assert "django" in related
         assert "flask" in related
 
     @patch("lilbee.concepts.extract_concepts", return_value=[])
     def test_expand_query_no_concepts(self, mock_extract):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import expand_query
 
-        graph = ConceptGraph()
-        assert graph.expand_query("???") == []
+        assert expand_query("???") == []
 
-    @patch("lilbee.store._open_table")
+
+class TestGetRelatedConcepts:
+    @patch("lilbee.store.open_table")
     def test_get_related_concepts(self, mock_open):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"source": "python", "target": "django", "weight": 1.0},
         ]
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_related_concepts
 
-        graph = ConceptGraph()
-        related = graph.get_related_concepts("python")
+        related = get_related_concepts("python")
         assert "django" in related
 
-    @patch("lilbee.store._open_table", return_value=None)
+    @patch("lilbee.store.open_table", return_value=None)
     def test_get_related_concepts_no_table(self, mock_open):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_related_concepts
 
-        graph = ConceptGraph()
-        assert graph.get_related_concepts("python") == []
+        assert get_related_concepts("python") == []
 
-    @patch("lilbee.store._open_table")
+    @patch("lilbee.store.open_table")
     def test_get_related_concepts_query_exception(self, mock_open):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
             "query failed"
         )
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_related_concepts
 
-        graph = ConceptGraph()
-        result = graph.get_related_concepts("python")
+        result = get_related_concepts("python")
         assert result == []
 
-    @patch("lilbee.store._open_table")
+
+class TestTopCommunities:
+    @patch("lilbee.store.open_table")
     def test_top_communities(self, mock_open):
         mock_table = MagicMock()
         mock_table.to_arrow.return_value.to_pylist.return_value = [
@@ -329,22 +329,22 @@ class TestConceptGraph:
             {"concept": "web", "cluster_id": 1, "degree": 2},
         ]
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import top_communities
 
-        graph = ConceptGraph()
-        communities = graph.top_communities(k=2)
+        communities = top_communities(k=2)
         assert len(communities) == 2
-        assert communities[0]["size"] == 2
-        assert communities[0]["cluster_id"] == 0
+        assert communities[0].size == 2
+        assert communities[0].cluster_id == 0
 
-    @patch("lilbee.store._open_table", return_value=None)
+    @patch("lilbee.store.open_table", return_value=None)
     def test_top_communities_no_table(self, mock_open):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import top_communities
 
-        graph = ConceptGraph()
-        assert graph.top_communities() == []
+        assert top_communities() == []
 
-    @patch("lilbee.store._open_table")
+
+class TestGetChunkConcepts:
+    @patch("lilbee.store.open_table")
     def test_get_chunk_concepts(self, mock_open):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
@@ -352,57 +352,55 @@ class TestConceptGraph:
             {"concept": "ml"},
         ]
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_chunk_concepts
 
-        graph = ConceptGraph()
-        concepts = graph._get_chunk_concepts("doc.md", 0)
+        concepts = get_chunk_concepts("doc.md", 0)
         assert concepts == ["python", "ml"]
 
-    @patch("lilbee.store._open_table", return_value=None)
+    @patch("lilbee.store.open_table", return_value=None)
     def test_get_chunk_concepts_no_table(self, mock_open):
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_chunk_concepts
 
-        graph = ConceptGraph()
-        assert graph._get_chunk_concepts("doc.md", 0) == []
+        assert get_chunk_concepts("doc.md", 0) == []
 
-    @patch("lilbee.store._open_table")
+    @patch("lilbee.store.open_table")
     def test_get_chunk_concepts_exception(self, mock_open):
         mock_table = MagicMock()
         mock_table.search.side_effect = RuntimeError("query failed")
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import get_chunk_concepts
 
-        graph = ConceptGraph()
-        assert graph._get_chunk_concepts("doc.md", 0) == []
+        assert get_chunk_concepts("doc.md", 0) == []
 
 
 class TestRebuildClusters:
-    @patch("lilbee.store._open_table")
+    @patch("lilbee.store.open_table")
     def test_rebuild_no_table(self, mock_open):
         mock_open.return_value = None
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import rebuild_clusters
 
-        graph = ConceptGraph()
-        graph.rebuild_clusters()
+        rebuild_clusters()
 
-    @patch("lilbee.store._open_table")
+    @patch("lilbee.store.open_table")
     def test_rebuild_empty_edges(self, mock_open):
         mock_table = MagicMock()
         mock_table.to_arrow.return_value.to_pylist.return_value = []
         mock_open.return_value = mock_table
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import rebuild_clusters
 
-        graph = ConceptGraph()
-        graph.rebuild_clusters()
+        rebuild_clusters()
 
+    @patch("lilbee.lock.write_lock")
     @patch("lilbee.store.safe_delete")
     @patch("lilbee.store.ensure_table")
     @patch("lilbee.store.get_db")
     @patch("lilbee.concepts._leiden_partition")
-    @patch("lilbee.store._open_table")
+    @patch("lilbee.store.open_table")
     def test_rebuild_with_edges(
-        self, mock_open, mock_leiden, mock_get_db, mock_ensure, mock_safe_del
+        self, mock_open, mock_leiden, mock_get_db, mock_ensure, mock_safe_del, mock_lock
     ):
+        mock_lock.return_value.__enter__ = MagicMock()
+        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
         mock_table = MagicMock()
         edge_rows = [
             {"source": "python", "target": "ml", "weight": 2.0},
@@ -417,50 +415,48 @@ class TestRebuildClusters:
         mock_nodes_table = MagicMock()
         mock_ensure.return_value = mock_nodes_table
 
-        from lilbee.concepts import ConceptGraph
+        from lilbee.concepts import rebuild_clusters
 
-        graph = ConceptGraph()
-        graph.rebuild_clusters()
+        rebuild_clusters()
         mock_leiden.assert_called_once_with(edge_rows)
         mock_nodes_table.add.assert_called_once()
 
 
 class TestGetGraph:
-    def test_returns_graph_when_enabled(self):
+    @patch("lilbee.store.open_table")
+    def test_returns_true_when_enabled(self, mock_open):
+        mock_open.return_value = MagicMock()
         from lilbee.concepts import get_graph
 
         cfg.concept_graph = True
-        graph = get_graph()
-        assert graph is not None
+        assert get_graph() is True
 
-    def test_returns_none_when_disabled(self):
+    def test_returns_false_when_disabled(self):
         from lilbee.concepts import get_graph
 
         cfg.concept_graph = False
-        assert get_graph() is None
+        assert get_graph() is False
 
-    def test_singleton(self):
+    @patch("lilbee.store.open_table", return_value=None)
+    def test_returns_false_when_no_tables(self, mock_open):
         from lilbee.concepts import get_graph
 
         cfg.concept_graph = True
-        g1 = get_graph()
-        g2 = get_graph()
-        assert g1 is g2
+        assert get_graph() is False
 
 
 class TestResetGraph:
-    def test_clears_singleton(self):
-        from lilbee.concepts import get_graph, reset_graph
+    def test_clears_nlp_cache(self):
+        """reset_graph clears the spaCy model cache."""
+        import lilbee.concepts as concepts_mod
 
-        cfg.concept_graph = True
-        g1 = get_graph()
-        reset_graph()
-        g2 = get_graph()
-        assert g1 is not g2
+        concepts_mod._nlp = MagicMock()
+        concepts_mod.reset_graph()
+        assert concepts_mod._nlp is None
 
 
 class TestComputePmi:
-    def test_basic_pmi(self):
+    def test_basic_ppmi(self):
         from collections import Counter
 
         from lilbee.concepts import _compute_pmi
@@ -469,7 +465,20 @@ class TestComputePmi:
         concept_counts = Counter({"a": 8, "b": 6})
         pmi = _compute_pmi(cooccurrences, concept_counts, 10)
         assert ("a", "b") in pmi
-        assert isinstance(pmi[("a", "b")], float)
+        # PPMI: all values >= 0
+        assert pmi[("a", "b")] >= 0.0
+
+    def test_ppmi_clamps_negative(self):
+        """Anti-correlated pairs should get PPMI = 0."""
+        from collections import Counter
+
+        from lilbee.concepts import _compute_pmi
+
+        # a and b rarely co-occur but each appear often -> negative PMI -> clamped to 0
+        cooccurrences = Counter({("a", "b"): 1})
+        concept_counts = Counter({"a": 9, "b": 9})
+        pmi = _compute_pmi(cooccurrences, concept_counts, 10)
+        assert pmi[("a", "b")] == 0.0
 
 
 class TestLeidenPartition:
@@ -487,3 +496,47 @@ class TestLeidenPartition:
         assert degrees["a"] == 1
         assert degrees["b"] == 2
         assert degrees["c"] == 1
+
+    @patch("graspologic_native.leiden")
+    def test_clamps_low_weights(self, mock_leiden):
+        """Weights below _MIN_LEIDEN_WEIGHT are clamped up."""
+        mock_leiden.return_value = (0.5, {"a": 0, "b": 0})
+        from lilbee.concepts import _MIN_LEIDEN_WEIGHT, _leiden_partition
+
+        edge_rows = [{"source": "a", "target": "b", "weight": 0.0}]
+        _leiden_partition(edge_rows)
+        # Check that the edges passed to leiden have clamped weight
+        call_args = mock_leiden.call_args
+        edges_passed = call_args[1]["edges"]
+        assert edges_passed[0][2] == _MIN_LEIDEN_WEIGHT
+
+
+class TestCommunityDataclass:
+    def test_community_fields(self):
+        from lilbee.concepts import Community
+
+        c = Community(cluster_id=0, size=3, concepts=["a", "b", "c"])
+        assert c.cluster_id == 0
+        assert c.size == 3
+        assert c.concepts == ["a", "b", "c"]
+
+    def test_community_is_dataclass(self):
+        from lilbee.concepts import Community
+
+        assert len(fields(Community)) == 3
+
+
+class TestFilterNounChunks:
+    def test_filter_noun_chunks(self):
+        from lilbee.concepts import _filter_noun_chunks
+
+        doc = _make_mock_doc(["Hello World", "a", "Good Stuff", "Hello World"])
+        result = _filter_noun_chunks(doc, max_concepts=10)
+        assert result == ["hello world", "good stuff"]
+
+    def test_filter_noun_chunks_max(self):
+        from lilbee.concepts import _filter_noun_chunks
+
+        doc = _make_mock_doc(["aa", "bb", "cc"])
+        result = _filter_noun_chunks(doc, max_concepts=2)
+        assert len(result) == 2

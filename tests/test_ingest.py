@@ -1266,9 +1266,10 @@ class TestConceptIndexing:
 
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]) as m_ext,
-            mock.patch("lilbee.concepts.get_graph") as m_graph,
+            mock.patch("lilbee.concepts.build_from_chunks"),
+            mock.patch("lilbee.concepts.get_graph", return_value=True),
+            mock.patch("lilbee.concepts.rebuild_clusters"),
         ):
-            m_graph.return_value = mock.MagicMock()
             from lilbee.ingest import sync
 
             await sync(quiet=True)
@@ -1308,9 +1309,9 @@ class TestConceptIndexing:
             mock.patch(
                 "lilbee.concepts.extract_concepts_batch", side_effect=RuntimeError("spacy broke")
             ),
-            mock.patch("lilbee.concepts.get_graph") as m_graph,
+            mock.patch("lilbee.concepts.get_graph", return_value=True),
+            mock.patch("lilbee.concepts.rebuild_clusters"),
         ):
-            m_graph.return_value = mock.MagicMock()
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
@@ -1328,15 +1329,16 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "test.txt").write_text("Some test content.")
 
-        mock_graph = mock.MagicMock()
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
-            mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+            mock.patch("lilbee.concepts.build_from_chunks"),
+            mock.patch("lilbee.concepts.get_graph", return_value=True),
+            mock.patch("lilbee.concepts.rebuild_clusters") as mock_rebuild,
         ):
             from lilbee.ingest import sync
 
             await sync(quiet=True)
-        mock_graph.rebuild_clusters.assert_called()
+        mock_rebuild.assert_called()
 
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
@@ -1350,11 +1352,14 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "test.txt").write_text("Some test content.")
 
-        mock_graph = mock.MagicMock()
-        mock_graph.rebuild_clusters.side_effect = RuntimeError("leiden broke")
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
-            mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+            mock.patch("lilbee.concepts.build_from_chunks"),
+            mock.patch("lilbee.concepts.get_graph", return_value=True),
+            mock.patch(
+                "lilbee.concepts.rebuild_clusters",
+                side_effect=RuntimeError("leiden broke"),
+            ),
         ):
             from lilbee.ingest import sync
 
@@ -1373,7 +1378,11 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "test.txt").write_text("Some test content.")
 
-        with mock.patch("lilbee.concepts.get_graph", return_value=None):
+        with (
+            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
+            mock.patch("lilbee.concepts.build_from_chunks"),
+            mock.patch("lilbee.concepts.get_graph", return_value=False),
+        ):
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)

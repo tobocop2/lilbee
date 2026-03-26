@@ -10,8 +10,6 @@ import typer
 
 if TYPE_CHECKING:
     import uvicorn
-
-    from lilbee.concepts import ConceptGraph
 from rich.table import Table
 
 from lilbee import settings
@@ -661,8 +659,7 @@ def topics(
 
     from lilbee.concepts import get_graph
 
-    graph = get_graph()
-    if graph is None:
+    if not get_graph():
         if cfg.json_mode:
             json_output({"error": "Concept graph not available"})
             raise SystemExit(1)
@@ -670,19 +667,17 @@ def topics(
         raise SystemExit(1)
 
     if query:
-        _topics_for_query(graph, query)
+        _topics_for_query(query)
     else:
-        _topics_overview(graph, top_k)
+        _topics_overview(top_k)
 
 
-def _topics_for_query(graph: ConceptGraph, query: str) -> None:
+def _topics_for_query(query: str) -> None:
     """Show concepts related to a query."""
-    from lilbee.concepts import extract_concepts
+    from lilbee.concepts import expand_query, extract_concepts
 
     concepts = extract_concepts(query)
-    related: list[str] = []
-    for c in concepts:
-        related.extend(graph.get_related_concepts(c))
+    related = expand_query(query)
     all_concepts = concepts + [r for r in related if r not in concepts]
 
     if cfg.json_mode:
@@ -696,11 +691,15 @@ def _topics_for_query(graph: ConceptGraph, query: str) -> None:
         console.print(f"  {c}")
 
 
-def _topics_overview(graph: ConceptGraph, top_k: int) -> None:
+def _topics_overview(top_k: int) -> None:
     """Show top concept communities."""
-    communities = graph.top_communities(k=top_k)
+    from dataclasses import asdict
+
+    from lilbee.concepts import top_communities
+
+    communities = top_communities(k=top_k)
     if cfg.json_mode:
-        json_output({"command": "topics", "communities": communities})
+        json_output({"command": "topics", "communities": [asdict(c) for c in communities]})
         return
     if not communities:
         console.print("No concept communities found. Try syncing some documents first.")
@@ -710,10 +709,10 @@ def _topics_overview(graph: ConceptGraph, top_k: int) -> None:
     table.add_column("Size", justify="right")
     table.add_column("Top Concepts", style=theme.ACCENT)
     for comm in communities:
-        preview = ", ".join(comm["concepts"][:5])
-        if len(comm["concepts"]) > 5:
-            preview += f" (+{len(comm['concepts']) - 5} more)"
-        table.add_row(str(comm["cluster_id"]), str(comm["size"]), preview)
+        preview = ", ".join(comm.concepts[:5])
+        if len(comm.concepts) > 5:
+            preview += f" (+{len(comm.concepts) - 5} more)"
+        table.add_row(str(comm.cluster_id), str(comm.size), preview)
     console.print(table)
 
 
