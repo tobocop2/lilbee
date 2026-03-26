@@ -10,6 +10,7 @@ from lilbee.ingest import SyncResult
 from lilbee.mcp import (
     clean,
     lilbee_add,
+    lilbee_crawl,
     lilbee_init,
     lilbee_list_documents,
     lilbee_remove,
@@ -336,6 +337,66 @@ class TestMain:
     def test_main_calls_run(self, mock_mcp):
         main()
         mock_mcp.run.assert_called_once()
+
+
+class TestLilbeeAddWithUrls:
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_url(self, mock_crawl, mock_sync, isolated_env):
+        """URLs in paths list are routed to the crawler."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path(str(isolated_env / "documents" / "_web" / "page.md"))]
+        result = await lilbee_add(paths=["https://example.com"])
+        assert result["crawled"] == 1
+        mock_crawl.assert_awaited_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, isolated_env):
+        """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
+        mock_crawl.return_value = []
+        result = await lilbee_add(paths=["https://example.com", "/nonexistent"])
+        assert result["crawled"] == 0
+        assert "/nonexistent" in result["errors"]
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_add_url_with_vision(self, mock_crawl, mock_sync, isolated_env):
+        """Vision model is temporarily applied during sync."""
+        mock_crawl.return_value = []
+        old_vision = cfg.vision_model
+        await lilbee_add(paths=["https://example.com"], vision_model="test-vision:latest")
+        # Vision model should be restored after sync
+        assert cfg.vision_model == old_vision
+
+
+class TestLilbeeCrawl:
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_single_page_crawl(self, mock_crawl, mock_sync, isolated_env):
+        """Single page crawl returns page count and triggers sync."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("/tmp/page.md")]
+        result = await lilbee_crawl(url="https://example.com")
+        assert result["command"] == "crawl"
+        assert result["pages_crawled"] == 1
+        assert "sync" in result
+        mock_sync.assert_awaited_once()
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    async def test_recursive_crawl(self, mock_crawl, mock_sync, isolated_env):
+        """Recursive crawl passes depth and max_pages."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("/tmp/a.md"), Path("/tmp/b.md")]
+        result = await lilbee_crawl(url="https://example.com", depth=2, max_pages=10)
+        assert result["pages_crawled"] == 2
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["depth"] == 2
+        assert call_kwargs["max_pages"] == 10
 
 
 class TestMcpSubcommand:
