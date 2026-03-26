@@ -40,6 +40,9 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "spacy>=3.8",
+    "networkx>=3.0",
+    "graspologic-native>=1.2",
 ]
 
 [project.optional-dependencies]
