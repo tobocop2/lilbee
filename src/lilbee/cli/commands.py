@@ -659,7 +659,7 @@ def topics(
         )
         raise SystemExit(1)
 
-    from lilbee.concepts import ConceptGraph, extract_concepts, get_graph
+    from lilbee.concepts import get_graph
 
     graph = get_graph()
     if graph is None:
@@ -675,7 +675,7 @@ def topics(
         _topics_overview(graph, top_k)
 
 
-def _topics_for_query(graph: "ConceptGraph", query: str) -> None:
+def _topics_for_query(graph: ConceptGraph, query: str) -> None:
     """Show concepts related to a query."""
     from lilbee.concepts import extract_concepts
 
@@ -696,7 +696,7 @@ def _topics_for_query(graph: "ConceptGraph", query: str) -> None:
         console.print(f"  {c}")
 
 
-def _topics_overview(graph: "ConceptGraph", top_k: int) -> None:
+def _topics_overview(graph: ConceptGraph, top_k: int) -> None:
     """Show top concept communities."""
     communities = graph.top_communities(k=top_k)
     if cfg.json_mode:

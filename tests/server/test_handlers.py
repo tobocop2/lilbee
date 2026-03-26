@@ -23,6 +23,7 @@ def isolated_env(tmp_path: Path):
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.concept_graph = False
     yield docs
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
