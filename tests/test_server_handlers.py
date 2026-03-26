@@ -887,3 +887,36 @@ class TestGetConfigReranker:
         result = await handlers.get_config()
         assert "reranker_model" in result
         assert "rerank_candidates" in result
+
+
+class TestCrawlUrl:
+    @patch("lilbee.crawl_task.start_crawl", return_value="abc123")
+    async def test_returns_task_id(self, mock_start):
+        result = await handlers.crawl_url("https://example.com", depth=1, max_pages=10)
+        assert result == {"task_id": "abc123"}
+        mock_start.assert_called_once_with("https://example.com", depth=1, max_pages=10)
+
+
+class TestCrawlStatus:
+    async def test_task_not_found(self):
+        result = await handlers.crawl_status("nonexistent")
+        assert "error" in result
+
+    @patch("lilbee.crawl_task.get_task")
+    async def test_returns_task_info(self, mock_get):
+        from lilbee.crawl_task import CrawlTask, TaskStatus
+
+        mock_get.return_value = CrawlTask(
+            task_id="abc",
+            url="https://example.com",
+            depth=1,
+            max_pages=50,
+            status=TaskStatus.RUNNING,
+            pages_crawled=5,
+            pages_total=10,
+        )
+        result = await handlers.crawl_status("abc")
+        assert result["task_id"] == "abc"
+        assert result["url"] == "https://example.com"
+        assert result["status"] == "running"
+        assert result["pages_crawled"] == 5

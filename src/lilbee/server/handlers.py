@@ -560,3 +560,28 @@ async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]
     src = _parse_source(source)
     deleted = manager.remove(model, src)
     return {"deleted": deleted, "model": model, "freed_gb": 0.0}
+
+
+async def crawl_url(url: str, depth: int = 0, max_pages: int = 50) -> dict[str, str]:
+    """Start a background crawl and return the task_id."""
+    from lilbee.crawl_task import start_crawl
+
+    task_id = start_crawl(url, depth=depth, max_pages=max_pages)
+    return {"task_id": task_id}
+
+
+async def crawl_status(task_id: str) -> dict[str, Any]:
+    """Return the current status of a crawl task."""
+    from lilbee.crawl_task import get_task
+
+    task = get_task(task_id)
+    if task is None:
+        return {"error": f"Task not found: {task_id}"}
+    return {
+        "task_id": task.task_id,
+        "url": task.url,
+        "status": task.status,
+        "pages_crawled": task.pages_crawled,
+        "pages_total": task.pages_total,
+        "error": task.error,
+    }

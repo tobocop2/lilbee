@@ -23,6 +23,8 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
     CleanedChunk,
+    CrawlRequest,
+    CrawlStatusResponse,
     HealthResponse,
     SetModelRequest,
     SetModelResponse,
@@ -240,6 +242,19 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
+@post("/api/crawl")
+async def crawl_route(data: CrawlRequest) -> dict[str, Any]:
+    """Start a web crawl and return a task_id for status polling."""
+    return await handlers.crawl_url(url=data.url, depth=data.depth, max_pages=data.max_pages)
+
+
+@get("/api/crawl/{task_id:str}")
+async def crawl_status_route(task_id: str) -> CrawlStatusResponse:
+    """Poll the status of a running or completed crawl task."""
+    raw = await handlers.crawl_status(task_id)
+    return CrawlStatusResponse(**raw)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -270,6 +285,8 @@ def create_app() -> Litestar:
             models_delete_route,
             documents_list_route,
             documents_remove_route,
+            crawl_route,
+            crawl_status_route,
         ],
         cors_config=cors,
         openapi_config=OpenAPIConfig(

@@ -405,6 +405,37 @@ class TestCors:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+class TestCrawlRoute:
+    @mock.patch(
+        "lilbee.server.handlers.crawl_url",
+        new_callable=mock.AsyncMock,
+        return_value={"task_id": "abc123"},
+    )
+    def test_post_crawl(self, mock_crawl, client):
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "depth": 1})
+        assert resp.status_code == 201
+        assert resp.json()["task_id"] == "abc123"
+
+    @mock.patch(
+        "lilbee.server.handlers.crawl_status",
+        new_callable=mock.AsyncMock,
+        return_value={
+            "task_id": "abc",
+            "url": "https://example.com",
+            "status": "done",
+            "pages_crawled": 5,
+            "pages_total": 5,
+            "error": None,
+        },
+    )
+    def test_get_crawl_status(self, mock_status, client):
+        resp = client.get("/api/crawl/abc")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "done"
+        assert body["pages_crawled"] == 5
+
+
 class TestCreateAppReexport:
     @mock.patch("lilbee.server.litestar_app.create_app")
     def test_lazy_import(self, mock_create):
