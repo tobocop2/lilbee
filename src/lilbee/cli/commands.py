@@ -10,6 +10,8 @@ import typer
 
 if TYPE_CHECKING:
     import uvicorn
+
+    from lilbee.concepts import ConceptGraph
 from rich.table import Table
 
 from lilbee import settings
@@ -635,6 +637,84 @@ def serve(
     config = uvicorn.Config(create_app(), host=cfg.server_host, port=cfg.server_port)
     server = uvicorn.Server(config)
     asyncio.run(_run_server(server, config, cfg.server_host))
+
+
+@app.command()
+def topics(
+    query: str = typer.Argument(None, help="Optional query to find related concepts."),
+    top_k: int = typer.Option(10, "--top-k", "-k", help="Number of results."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Show top concept communities or concepts related to a query."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+
+    if not cfg.concept_graph:
+        if cfg.json_mode:
+            json_output({"error": "Concept graph is disabled (LILBEE_CONCEPT_GRAPH=false)"})
+            raise SystemExit(1)
+        console.print(
+            f"[{theme.ERROR}]Concept graph is disabled.[/{theme.ERROR}] "
+            "Enable with LILBEE_CONCEPT_GRAPH=true"
+        )
+        raise SystemExit(1)
+
+    from lilbee.concepts import ConceptGraph, extract_concepts, get_graph
+
+    graph = get_graph()
+    if graph is None:
+        if cfg.json_mode:
+            json_output({"error": "Concept graph not available"})
+            raise SystemExit(1)
+        console.print(f"[{theme.ERROR}]Concept graph not available.[/{theme.ERROR}]")
+        raise SystemExit(1)
+
+    if query:
+        _topics_for_query(graph, query)
+    else:
+        _topics_overview(graph, top_k)
+
+
+def _topics_for_query(graph: "ConceptGraph", query: str) -> None:
+    """Show concepts related to a query."""
+    from lilbee.concepts import extract_concepts
+
+    concepts = extract_concepts(query)
+    related: list[str] = []
+    for c in concepts:
+        related.extend(graph.get_related_concepts(c))
+    all_concepts = concepts + [r for r in related if r not in concepts]
+
+    if cfg.json_mode:
+        json_output({"command": "topics", "query": query, "concepts": all_concepts})
+        return
+    if not all_concepts:
+        console.print("No concepts found for this query.")
+        return
+    console.print(f"Concepts related to [{theme.ACCENT}]{query}[/{theme.ACCENT}]:")
+    for c in all_concepts:
+        console.print(f"  {c}")
+
+
+def _topics_overview(graph: "ConceptGraph", top_k: int) -> None:
+    """Show top concept communities."""
+    communities = graph.top_communities(k=top_k)
+    if cfg.json_mode:
+        json_output({"command": "topics", "communities": communities})
+        return
+    if not communities:
+        console.print("No concept communities found. Try syncing some documents first.")
+        return
+    table = Table(title="Concept Communities")
+    table.add_column("Cluster", justify="right", style=theme.MUTED)
+    table.add_column("Size", justify="right")
+    table.add_column("Top Concepts", style=theme.ACCENT)
+    for comm in communities:
+        preview = ", ".join(comm["concepts"][:5])
+        if len(comm["concepts"]) > 5:
+            preview += f" (+{len(comm['concepts']) - 5} more)"
+        table.add_row(str(comm["cluster_id"]), str(comm["size"]), preview)
+    console.print(table)
 
 
 @app.command(name="mcp")

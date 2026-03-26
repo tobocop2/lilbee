@@ -2937,3 +2937,113 @@ class TestSlashAddBackground:
         assert len(all_calls) >= 1
         for call in all_calls:
             assert call[1].get("chat_mode") is True
+
+
+class TestTopicsCommand:
+    def test_disabled_shows_error(self):
+        cfg.concept_graph = False
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 1
+        assert "disabled" in result.output.lower()
+
+    def test_disabled_json_mode(self):
+        cfg.concept_graph = False
+        result = runner.invoke(app, ["--json", "topics"])
+        assert result.exit_code == 1
+        output = json.loads(result.output)
+        assert "error" in output
+
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_overview_shows_communities(self, mock_get_graph):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.top_communities.return_value = [
+            {"cluster_id": 0, "size": 3, "concepts": ["python", "django", "flask"]},
+        ]
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0
+        assert "python" in result.output
+
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_overview_json_mode(self, mock_get_graph):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.top_communities.return_value = [
+            {"cluster_id": 0, "size": 2, "concepts": ["ml", "ai"]},
+        ]
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["--json", "topics"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["command"] == "topics"
+        assert len(output["communities"]) == 1
+
+    @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_query_shows_related_concepts(self, mock_get_graph, mock_extract):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.get_related_concepts.return_value = ["django", "flask"]
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["topics", "python"])
+        assert result.exit_code == 0
+        assert "django" in result.output
+
+    @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_query_json_mode(self, mock_get_graph, mock_extract):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.get_related_concepts.return_value = ["django"]
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["--json", "topics", "python"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert "python" in output["concepts"]
+        assert "django" in output["concepts"]
+
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_no_communities(self, mock_get_graph):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.top_communities.return_value = []
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0
+        assert "No concept communities" in result.output
+
+    @mock.patch("lilbee.concepts.extract_concepts", return_value=[])
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_query_no_concepts(self, mock_get_graph, mock_extract):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.get_related_concepts.return_value = []
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["topics", "???"])
+        assert result.exit_code == 0
+        assert "No concepts found" in result.output
+
+    @mock.patch("lilbee.concepts.get_graph", return_value=None)
+    def test_graph_none_shows_error(self, mock_get_graph):
+        cfg.concept_graph = True
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 1
+        assert "not available" in result.output.lower()
+
+    @mock.patch("lilbee.concepts.get_graph", return_value=None)
+    def test_graph_none_json_mode(self, mock_get_graph):
+        cfg.concept_graph = True
+        result = runner.invoke(app, ["--json", "topics"])
+        assert result.exit_code == 1
+        output = json.loads(result.output)
+        assert "error" in output
+
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_top_k_option(self, mock_get_graph):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        mock_graph.top_communities.return_value = []
+        mock_get_graph.return_value = mock_graph
+        runner.invoke(app, ["topics", "--top-k", "5"])
+        mock_graph.top_communities.assert_called_once_with(k=5)
