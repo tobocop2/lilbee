@@ -1010,14 +1010,14 @@ wheels = [
 
 [[package]]
 name = "kreuzberg"
-version = "4.5.4"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d6/8b/bb3223a8ae711a781ef428f910847a7d98f88c7ba15904b21475912192b7/kreuzberg-4.5.4.tar.gz", hash = "sha256:a2dce8c409ff7a9d08cbf7eff65c40d2613b5cef980175b25471151bfb8b314d", size = 2023059 }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/24/2df0e8dd4c9ad6d498f82e766dd78a223e2cd4ac9f7750de63e6d1422903/kreuzberg-4.6.0.tar.gz", hash = "sha256:dac32833bc2a390e8da1bca5e1ce00934776ce83f99d413b8c11acc3f2ccef5c", size = 2132162 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/6c/2dbc0eaae96e2fd549709df242ff999fcaf65c92ea7300f67b623d250107/kreuzberg-4.5.4-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:c7ed6cf0ccf6f7a1ca090f038692caf5533f15bb8bbd4b306a4c4143d896c061", size = 49131537 },
-    { url = "https://files.pythonhosted.org/packages/8e/b9/5cd7de97f1a6f456c9262abbb7c67f127693027b0c35d328170055dafb0a/kreuzberg-4.5.4-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:d25d93a29cb2882f8fcdb3b68a3ccef03203e49c9e3c6649880aa0f834f2afd2", size = 57160506 },
-    { url = "https://files.pythonhosted.org/packages/c6/5b/81897cf1b4fb41834d513cb03cb5be05f451cdc6e3067ac7e3d5a518fe0d/kreuzberg-4.5.4-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:54ae34563673b51cae67eea82f3360bbdfe448e67d3d367a4c5cfaf4962368d0", size = 56774553 },
-    { url = "https://files.pythonhosted.org/packages/42/9a/b0d1187b85b129981c7d1e26d826225173031240d87cb9d0fa2cdd57f459/kreuzberg-4.5.4-cp310-abi3-win_amd64.whl", hash = "sha256:366ab54263e07ae6ed97d7eaa924da4f3eefd9122c2bf8532d5d0e2698e60187", size = 56507995 },
+    { url = "https://files.pythonhosted.org/packages/21/a6/62fa2782652df3e9926d8c9b1c0f93e86183c49bef40ba6a20c7960c73ce/kreuzberg-4.6.0-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:c04c56c4c602150e99b234645e871f10fd1e9ed7f8306cc3fb205d21448dcc25", size = 49852884 },
+    { url = "https://files.pythonhosted.org/packages/5d/8f/1763c751acc9c4ef4b68b5d3ea7d0b06074675a7abe6896d20e14719c086/kreuzberg-4.6.0-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:32cbe855b06aebbf25fb21684daa8a1e937ddcc1c7c1deeaf4afdddbe92d9822", size = 57918790 },
+    { url = "https://files.pythonhosted.org/packages/07/2c/0ec08c044bd111269d445440d6827beda9f85ff9d2481cbc92eadc6b2bd3/kreuzberg-4.6.0-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:c86cceb349852123b34edb630dbd896f4b8fc0276ea94ea4267c4737e715ed18", size = 57575831 },
+    { url = "https://files.pythonhosted.org/packages/60/5c/ac2d2bb25201a0b7abc15fdf8af70c2cc60a7850a18649dac90974cf97b1/kreuzberg-4.6.0-cp310-abi3-win_amd64.whl", hash = "sha256:cc573d911d856bc8e3a257cbaa19bf4f4ac0600c8bf80a65bec3d81f715a24e2", size = 57407009 },
 ]
 
 [[package]]
@@ -1183,7 +1183,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "reportlab" },
     { name = "ruff" },
-    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -1191,7 +1190,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "httpx" },
     { name = "huggingface-hub" },
-    { name = "kreuzberg", specifier = ">=4.5.4" },
+    { name = "kreuzberg", specifier = ">=4.6.0" },
     { name = "lancedb" },
     { name = "litellm" },
     { name = "litestar", specifier = ">=2.0" },
@@ -1202,7 +1201,7 @@ requires-dist = [
     { name = "pypdfium2", specifier = ">=5.6.0" },
     { name = "sentence-transformers", marker = "extra == 'reranker'" },
     { name = "tiktoken" },
-    { name = "tree-sitter-language-pack", specifier = ">=1.0.0" },
+    { name = "tree-sitter-language-pack", specifier = ">=1.1.4" },
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
@@ -1218,7 +1217,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "reportlab" },
     { name = "ruff", specifier = ">=0.15.4" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 
 [[package]]
@@ -3354,16 +3352,16 @@ wheels = [
 
 [[package]]
 name = "tree-sitter-language-pack"
-version = "1.0.0"
+version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "tree-sitter" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/14/68ac021fd3dd8ef7741e8a825647e068195627fbe714019114d2dc4ab028/tree_sitter_language_pack-1.0.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:02f91aeec73268a1cf1697fe7560700435ce1e076cc166c7a2bb627f4fdc2f0f", size = 2001573 },
-    { url = "https://files.pythonhosted.org/packages/19/35/226e0a6bd1736ec55b9e865589cf4571c43cd70e5ebe3c35e89d55035fe7/tree_sitter_language_pack-1.0.0-cp310-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:53853d16a55af46c1722dbd4c9adcae11411c8c5a6c5db3968ad98bca125d9db", size = 2175827 },
-    { url = "https://files.pythonhosted.org/packages/7e/d3/f5db913afebd54798c7e3d12e6db7dec88e09f3c9782169ec5c0bfb137d4/tree_sitter_language_pack-1.0.0-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:78ba52ea0b500ba61810743fcb2678023a6850ebb09ed8214665d29fafa044b6", size = 2318525 },
-    { url = "https://files.pythonhosted.org/packages/7c/33/9a9bb95d62778ec8f1e710b99a7cf829e4c8b5a4a0474791742bc4108a8f/tree_sitter_language_pack-1.0.0-cp310-abi3-win_amd64.whl", hash = "sha256:76423b911b100e79d3c078e21fd024d2c470db3355e7dc3a3bddc2a2007ce250", size = 2110285 },
+    { url = "https://files.pythonhosted.org/packages/ce/77/e85ceadf5d69aa13773e96bd340875a606d2c69cf18730e0c3295b8abc67/tree_sitter_language_pack-1.1.4-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:705943eb6ac4564be8ebf34d3fde9d3701da1a98f3ecb1a9fd5664e613e4cc87", size = 2137966 },
+    { url = "https://files.pythonhosted.org/packages/2f/e6/79b1b332aaf644318fe4a984bcb0dd0aaea19ac9a4c430ded7e6ef46da6b/tree_sitter_language_pack-1.1.4-cp310-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:b9f2217b9c4b361dfae6a8a6fff282d1c95c5ec1168e4ad0e6e814a37124b61d", size = 2308801 },
+    { url = "https://files.pythonhosted.org/packages/fd/f5/338eb6d816122f4c371be8bd5f1ab6eb2bbbd88e7c1b4b0eeccdd169a6e6/tree_sitter_language_pack-1.1.4-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:168d4ed7c3dbadfc346e3f908ca4a3dccfbe79858b46af9826e03d71f4c396fa", size = 2447171 },
+    { url = "https://files.pythonhosted.org/packages/ea/56/5fa0e45f52578f38a5b81353d7b0b2ca6aee9b9ddbd736fa5c0f5d8cd437/tree_sitter_language_pack-1.1.4-cp310-abi3-win_amd64.whl", hash = "sha256:625ede0dce0de053aeb48a0d75a3d15c23461b2a5a2f30852baa33c91a6d6ba4", size = 2241087 },
 ]
 
 [[package]]
@@ -3392,15 +3390,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085 },
-]
-
-[[package]]
-name = "types-pyyaml"
-version = "6.0.12.20250915"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338 },
 ]
 
 [[package]]
