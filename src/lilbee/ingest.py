@@ -401,6 +401,39 @@ async def ingest_markdown(
     ]
 
 
+async def _rebuild_concept_clusters() -> None:
+    """Re-run Leiden clustering after sync. No-op if disabled."""
+    if not cfg.concept_graph:
+        return
+    try:
+        from lilbee.concepts import get_graph
+
+        graph = get_graph()
+        if graph is None:
+            return
+        await asyncio.to_thread(graph.rebuild_clusters)
+    except Exception:
+        log.warning("Concept cluster rebuild failed", exc_info=True)
+
+
+async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
+    """Extract and index concepts for ingested chunks. No-op if disabled."""
+    if not cfg.concept_graph or not records:
+        return
+    try:
+        from lilbee.concepts import extract_concepts_batch, get_graph
+
+        graph = get_graph()
+        if graph is None:
+            return
+        texts = [r["chunk"] for r in records]
+        concept_lists = await asyncio.to_thread(extract_concepts_batch, texts)
+        chunk_ids = [(source_name, r["chunk_index"]) for r in records]
+        await asyncio.to_thread(graph.build_from_chunks, chunk_ids, concept_lists)
+    except Exception:
+        log.warning("Concept indexing failed for %s", source_name, exc_info=True)
+
+
 async def _ingest_file(
     path: Path,
     source_name: str,
@@ -425,7 +458,9 @@ async def _ingest_file(
             quiet=quiet,
             on_progress=on_progress,
         )
-    return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    await _index_concepts(records, source_name)
+    return chunk_count
 
 
 async def sync(
@@ -500,6 +535,7 @@ async def sync(
 
     if files_to_process or removed:
         store.ensure_fts_index()
+        await _rebuild_concept_clusters()
 
     result = SyncResult(
         added=added,
