@@ -40,6 +40,7 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/set": "_cmd_set",
     "/theme": "_cmd_theme",
     "/add": "_cmd_add",
+    "/crawl": "_cmd_crawl",
     "/vision": "_cmd_vision",
     "/version": "_cmd_version",
     "/delete": "_cmd_delete",
@@ -139,6 +140,10 @@ class ChatScreen(Screen[None]):
     def _cmd_add(self, args: str) -> None:
         if not args:
             return
+        # Auto-detect URLs and route to crawl logic
+        if args.startswith("http://") or args.startswith("https://"):
+            self._cmd_crawl(args)
+            return
         path = Path(args).expanduser()
         if not path.exists():
             self.notify(f"Not found: {path}", severity="error")
@@ -157,6 +162,69 @@ class ChatScreen(Screen[None]):
         for worker in self.workers:
             worker.cancel()
         self.notify("Cancelled active operations")
+
+    def _cmd_crawl(self, args: str) -> None:
+        if not args:
+            self.notify("Usage: /crawl <url> [--depth N] [--max-pages N]", severity="warning")
+            return
+        parts = args.split()
+        url = parts[0]
+        if not (url.startswith("http://") or url.startswith("https://")):
+            self.notify("URL must start with http:// or https://", severity="error")
+            return
+        depth, max_pages = self._parse_crawl_flags(parts[1:])
+        self.notify(f"Crawling {url}...")
+        self._run_crawl_background(url, depth, max_pages)
+
+    @staticmethod
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
+        """Extract --depth and --max-pages from argument tokens."""
+        import contextlib
+
+        depth = 0
+        max_pages = 0
+        i = 0
+        while i < len(tokens):
+            if tokens[i] == "--depth" and i + 1 < len(tokens):
+                with contextlib.suppress(ValueError):
+                    depth = int(tokens[i + 1])
+                i += 2
+            elif tokens[i] == "--max-pages" and i + 1 < len(tokens):
+                with contextlib.suppress(ValueError):
+                    max_pages = int(tokens[i + 1])
+                i += 2
+            else:
+                i += 1
+        return depth, max_pages
+
+    @work(thread=True)
+    def _run_crawl_background(self, url: str, depth: int, max_pages: int) -> None:
+        """Run a crawl in a background thread, then trigger sync."""
+        import asyncio
+
+        from lilbee.crawler import crawl_and_save
+
+        sync_bar = self.query_one("#sync-bar", SyncBar)
+        self.app.call_from_thread(sync_bar.set_status, f"Crawling {url}...")
+
+        try:
+
+            def on_progress(crawled: int, total: int, current_url: str) -> None:
+                msg = f"Crawling [{crawled}/{total}]: {current_url}"
+                self.app.call_from_thread(sync_bar.set_status, msg)
+
+            paths = asyncio.run(
+                crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+            )
+            self.app.call_from_thread(self.notify, f"Crawled {len(paths)} page(s) from {url}")
+        except Exception as exc:
+            self.app.call_from_thread(self.notify, f"Crawl failed: {exc}", severity="error")
+            self.app.call_from_thread(sync_bar.set_status, "Crawl failed")
+            return
+
+        # Trigger sync to ingest the crawled markdown files
+        self.app.call_from_thread(sync_bar.set_status, "Syncing crawled pages...")
+        self._run_sync()
 
     def _cmd_catalog(self, _args: str) -> None:
         self.app.push_screen(CatalogScreen())
