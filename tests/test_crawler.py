@@ -8,14 +8,14 @@ from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
-    _content_hash,
-    _update_metadata,
+    content_hash,
     crawl_and_save,
     crawl_recursive,
     crawl_single,
     load_crawl_metadata,
     save_crawl_metadata,
     save_crawl_results,
+    update_metadata,
     url_to_filename,
 )
 
@@ -74,6 +74,15 @@ class TestUrlToFilename:
         result = url_to_filename("https://docs.python.org/3/library/os.html")
         assert result == "docs.python.org/3/library/os.md"
 
+    def test_path_traversal_neutralized(self):
+        result = url_to_filename("https://evil.com/../../etc/passwd")
+        assert ".." not in result
+        assert "etc" in result
+
+    def test_path_traversal_double_dots(self):
+        result = url_to_filename("https://evil.com/a/../b")
+        assert ".." not in result
+
 
 class TestSaveCrawlResults:
     def test_saves_successful_results(self, isolated_env):
@@ -116,6 +125,18 @@ class TestSaveCrawlResults:
         paths = save_crawl_results(results)
         assert paths[0].read_text(encoding="utf-8") == content
 
+    def test_path_traversal_blocked(self, isolated_env):
+        """Symlinks or crafted filenames that escape _web/ are skipped."""
+        results = [
+            CrawlResult(url="https://evil.com/../../etc/passwd", markdown="# Malicious"),
+        ]
+        paths = save_crawl_results(results)
+        # File is saved because url_to_filename neutralizes .., but let's verify
+        # the containment check itself by mocking url_to_filename
+        with patch("lilbee.crawler.url_to_filename", return_value="../../etc/passwd"):
+            paths = save_crawl_results(results)
+        assert paths == []
+
 
 class TestCrawlMetadata:
     def test_load_empty(self, isolated_env):
@@ -146,7 +167,7 @@ class TestCrawlMetadata:
             CrawlResult(url="https://example.com/p1", markdown="Content 1"),
             CrawlResult(url="https://example.com/p2", success=False, error="oops"),
         ]
-        _update_metadata(results)
+        update_metadata(results)
         meta = load_crawl_metadata()
         assert "https://example.com/p1" in meta
         assert "https://example.com/p2" not in meta
@@ -154,10 +175,10 @@ class TestCrawlMetadata:
 
 class TestContentHash:
     def test_consistent(self):
-        assert _content_hash("hello") == _content_hash("hello")
+        assert content_hash("hello") == content_hash("hello")
 
     def test_different_for_different_content(self):
-        assert _content_hash("hello") != _content_hash("world")
+        assert content_hash("hello") != content_hash("world")
 
 
 def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=True, error=None):

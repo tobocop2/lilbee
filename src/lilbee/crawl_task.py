@@ -3,11 +3,15 @@
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
 log = logging.getLogger(__name__)
+
+# Maximum completed tasks to retain in memory before evicting oldest.
+_MAX_COMPLETED_TASKS = 100
 
 
 class TaskStatus(StrEnum):
@@ -33,18 +37,19 @@ class CrawlTask:
     error: str | None = None
     started_at: str = ""
     finished_at: str = ""
+    _async_task: asyncio.Task[None] | None = field(default=None, repr=False, init=False)
 
 
 # In-memory registry of active/completed tasks
 _active_tasks: dict[str, CrawlTask] = {}
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
     """Current UTC time as ISO 8601 string."""
     return datetime.now(UTC).isoformat()
 
 
-def _make_progress_updater(task: CrawlTask):  # type: ignore[no-untyped-def]
+def make_progress_updater(task: CrawlTask) -> Callable[[int, int, str], None]:
     """Return a progress callback that updates task fields."""
 
     def _on_progress(crawled: int, total: int, _url: str) -> None:
@@ -54,13 +59,13 @@ def _make_progress_updater(task: CrawlTask):  # type: ignore[no-untyped-def]
     return _on_progress
 
 
-async def _run_crawl(task: CrawlTask) -> None:
+async def run_crawl(task: CrawlTask) -> None:
     """Execute crawl, save results, and trigger sync."""
     from lilbee.crawler import crawl_and_save
 
     task.status = TaskStatus.RUNNING
-    task.started_at = _now_iso()
-    progress = _make_progress_updater(task)
+    task.started_at = now_iso()
+    progress = make_progress_updater(task)
 
     try:
         paths = await crawl_and_save(
@@ -77,7 +82,19 @@ async def _run_crawl(task: CrawlTask) -> None:
         task.error = str(exc)
         log.warning("Crawl failed: %s — %s", task.url, exc)
     finally:
-        task.finished_at = _now_iso()
+        task.finished_at = now_iso()
+
+
+def _evict_completed() -> None:
+    """Remove oldest completed tasks when the limit is exceeded."""
+    done_statuses = (TaskStatus.DONE, TaskStatus.FAILED)
+    completed = [(tid, t) for tid, t in _active_tasks.items() if t.status in done_statuses]
+    excess = len(completed) - _MAX_COMPLETED_TASKS
+    if excess <= 0:
+        return
+    completed.sort(key=lambda pair: pair[1].finished_at)
+    for tid, _ in completed[:excess]:
+        del _active_tasks[tid]
 
 
 def start_crawl(
@@ -89,6 +106,7 @@ def start_crawl(
 
     Returns the task_id for status polling.
     """
+    _evict_completed()
     task_id = uuid.uuid4().hex[:12]
     task = CrawlTask(
         task_id=task_id,
@@ -97,8 +115,7 @@ def start_crawl(
         max_pages=max_pages,
     )
     _active_tasks[task_id] = task
-    # Store reference to prevent garbage collection (RUF006)
-    task._async_task = asyncio.create_task(_run_crawl(task))  # type: ignore[attr-defined]
+    task._async_task = asyncio.create_task(run_crawl(task))
     return task_id
 
 

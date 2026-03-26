@@ -6,14 +6,16 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.crawl_task import (
+    _MAX_COMPLETED_TASKS,
     CrawlTask,
     TaskStatus,
-    _make_progress_updater,
-    _now_iso,
-    _run_crawl,
+    _active_tasks,
     clear_tasks,
     get_task,
     list_tasks,
+    make_progress_updater,
+    now_iso,
+    run_crawl,
     start_crawl,
 )
 
@@ -63,7 +65,7 @@ class TestCrawlTask:
 
 class TestNowIso:
     def test_returns_string(self):
-        result = _now_iso()
+        result = now_iso()
         assert isinstance(result, str)
         assert "T" in result
 
@@ -71,7 +73,7 @@ class TestNowIso:
 class TestMakeProgressUpdater:
     def test_updates_task_fields(self):
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
-        updater = _make_progress_updater(task)
+        updater = make_progress_updater(task)
         updater(5, 10, "https://example.com/page5")
         assert task.pages_crawled == 5
         assert task.pages_total == 10
@@ -85,7 +87,7 @@ class TestRunCrawl:
         mock_crawl.return_value = [Path("/tmp/a.md"), Path("/tmp/b.md")]
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
 
-        await _run_crawl(task)
+        await run_crawl(task)
         assert task.status == TaskStatus.DONE
         assert task.started_at != ""
         assert task.finished_at != ""
@@ -96,14 +98,14 @@ class TestRunCrawl:
         mock_crawl.side_effect = RuntimeError("network error")
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
 
-        await _run_crawl(task)
+        await run_crawl(task)
         assert task.status == TaskStatus.FAILED
         assert "network error" in task.error
         assert task.finished_at != ""
 
 
 class TestTaskRegistry:
-    @patch("lilbee.crawl_task._run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.run_crawl", new_callable=AsyncMock)
     async def test_start_and_get(self, mock_run):
         task_id = start_crawl("https://example.com", depth=1, max_pages=10)
         assert task_id is not None
@@ -116,21 +118,21 @@ class TestTaskRegistry:
     def test_get_nonexistent(self):
         assert get_task("nonexistent") is None
 
-    @patch("lilbee.crawl_task._run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.run_crawl", new_callable=AsyncMock)
     async def test_list_tasks(self, mock_run):
         start_crawl("https://a.com")
         start_crawl("https://b.com")
         tasks = list_tasks()
         assert len(tasks) == 2
 
-    @patch("lilbee.crawl_task._run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.run_crawl", new_callable=AsyncMock)
     async def test_clear_tasks(self, mock_run):
         start_crawl("https://example.com")
         assert len(list_tasks()) == 1
         clear_tasks()
         assert len(list_tasks()) == 0
 
-    @patch("lilbee.crawl_task._run_crawl", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.run_crawl", new_callable=AsyncMock)
     async def test_concurrent_tasks(self, mock_run):
         id1 = start_crawl("https://a.com")
         id2 = start_crawl("https://b.com")
@@ -139,3 +141,23 @@ class TestTaskRegistry:
         t2 = get_task(id2)
         assert t1.url == "https://a.com"
         assert t2.url == "https://b.com"
+
+
+class TestEviction:
+    @patch("lilbee.crawl_task.run_crawl", new_callable=AsyncMock)
+    async def test_evicts_oldest_completed_tasks(self, mock_run):
+        """When completed tasks exceed _MAX_COMPLETED_TASKS, oldest are evicted."""
+        for i in range(_MAX_COMPLETED_TASKS + 5):
+            task = CrawlTask(
+                task_id=f"t{i:04d}",
+                url=f"https://example.com/{i}",
+                depth=0,
+                max_pages=10,
+                status=TaskStatus.DONE,
+                finished_at=f"2026-01-01T00:{i:02d}:00+00:00",
+            )
+            _active_tasks[task.task_id] = task
+
+        start_crawl("https://example.com/new")
+        completed = [t for t in _active_tasks.values() if t.status == TaskStatus.DONE]
+        assert len(completed) <= _MAX_COMPLETED_TASKS

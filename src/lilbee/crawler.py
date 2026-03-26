@@ -35,10 +35,6 @@ CrawlProgressCallback = Callable[[int, int, str], None]
 """(pages_crawled, pages_total, current_url) → None"""
 
 
-def _noop_progress(_crawled: int, _total: int, _url: str) -> None:
-    """Default no-op progress callback."""
-
-
 def url_to_filename(url: str) -> str:
     """Convert a URL to a safe filesystem path ending in .md.
 
@@ -56,6 +52,9 @@ def url_to_filename(url: str) -> str:
 
     # Strip leading slash
     path = path.lstrip("/")
+
+    # Neutralize path traversal segments
+    path = re.sub(r"\.\.+", "_", path)
 
     # Replace unsafe filesystem characters
     path = re.sub(r'[<>:"|?*]', "_", path)
@@ -90,11 +89,15 @@ def save_crawl_results(results: list[CrawlResult]) -> list[Path]:
     """
     written: list[Path] = []
     web_dir = _web_dir()
+    resolved_web_dir = web_dir.resolve()
     for result in results:
         if not result.success or not result.markdown.strip():
             continue
         rel = url_to_filename(result.url)
         dest = web_dir / rel
+        if not dest.resolve().is_relative_to(resolved_web_dir):
+            log.warning("Path traversal blocked: %s → %s", result.url, dest)
+            continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(result.markdown, encoding="utf-8")
         written.append(dest)
@@ -138,12 +141,12 @@ def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
     path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
 
-def _content_hash(text: str) -> str:
+def content_hash(text: str) -> str:
     """SHA-256 hex digest of text content."""
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _update_metadata(results: list[CrawlResult]) -> None:
+def update_metadata(results: list[CrawlResult]) -> None:
     """Update crawl metadata with successful results."""
     meta = load_crawl_metadata()
     now = datetime.now(UTC).isoformat()
@@ -151,7 +154,7 @@ def _update_metadata(results: list[CrawlResult]) -> None:
         if r.success and r.markdown.strip():
             meta[r.url] = CrawlMeta(
                 file=url_to_filename(r.url),
-                content_hash=_content_hash(r.markdown),
+                content_hash=content_hash(r.markdown),
                 crawled_at=now,
             )
     save_crawl_metadata(meta)
@@ -187,7 +190,7 @@ async def crawl_recursive(
     url: str,
     max_depth: int = 0,
     max_pages: int = 0,
-    on_progress: CrawlProgressCallback = _noop_progress,
+    on_progress: CrawlProgressCallback | None = None,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, returning results for all pages.
 
@@ -217,7 +220,8 @@ async def crawl_recursive(
             if not isinstance(crawl_results, list):
                 crawl_results = [crawl_results]
             for i, cr in enumerate(crawl_results):
-                on_progress(i + 1, len(crawl_results), cr.url)
+                if on_progress:
+                    on_progress(i + 1, len(crawl_results), cr.url)
                 if cr.success:
                     results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
                 else:
@@ -241,7 +245,7 @@ async def crawl_and_save(
     *,
     depth: int = 0,
     max_pages: int = 0,
-    on_progress: CrawlProgressCallback = _noop_progress,
+    on_progress: CrawlProgressCallback | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written."""
     if depth > 0:
@@ -253,5 +257,5 @@ async def crawl_and_save(
         results = [result]
 
     paths = save_crawl_results(results)
-    _update_metadata(results)
+    update_metadata(results)
     return paths

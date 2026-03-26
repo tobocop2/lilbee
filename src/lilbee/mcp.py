@@ -140,6 +140,9 @@ async def lilbee_crawl(
         depth: Maximum link-following depth (0 = single page only).
         max_pages: Maximum number of pages to fetch (default: 50).
     """
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return {"error": "URL must start with http:// or https://"}
+
     from lilbee.crawler import crawl_and_save
     from lilbee.ingest import sync
 

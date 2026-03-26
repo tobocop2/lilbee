@@ -7,7 +7,7 @@ from typing import Any
 
 from litestar import Litestar, delete, get, post, put
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import ValidationException
+from litestar.exceptions import NotFoundException, ValidationException
 from litestar.openapi import OpenAPIConfig
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -242,16 +242,22 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
-@post("/api/crawl")
+@post("/api/crawl", status_code=201)
 async def crawl_route(data: CrawlRequest) -> dict[str, Any]:
     """Start a web crawl and return a task_id for status polling."""
-    return await handlers.crawl_url(url=data.url, depth=data.depth, max_pages=data.max_pages)
+    try:
+        return await handlers.crawl_url(url=data.url, depth=data.depth, max_pages=data.max_pages)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
 
 
 @get("/api/crawl/{task_id:str}")
 async def crawl_status_route(task_id: str) -> CrawlStatusResponse:
     """Poll the status of a running or completed crawl task."""
-    raw = await handlers.crawl_status(task_id)
+    try:
+        raw = await handlers.crawl_status(task_id)
+    except KeyError as exc:
+        raise NotFoundException(str(exc)) from exc
     return CrawlStatusResponse(**raw)
 
 

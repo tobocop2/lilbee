@@ -398,6 +398,10 @@ class TestLilbeeCrawl:
         assert call_kwargs["depth"] == 2
         assert call_kwargs["max_pages"] == 10
 
+    async def test_rejects_invalid_url(self):
+        result = await lilbee_crawl(url="ftp://bad.com")
+        assert "error" in result
+
 
 class TestMcpSubcommand:
     @mock.patch("lilbee.mcp.main")
