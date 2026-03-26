@@ -177,8 +177,7 @@ def _pull_and_save_vision(model_name: str, installed: set[str]) -> None:
 
 _paths_argument = typer.Argument(
     ...,
-    exists=True,
-    help="Files or directories to add to the knowledge base.",
+    help="Files, directories, or URLs to add to the knowledge base.",
 )
 
 
@@ -280,32 +279,129 @@ def rebuild(
 
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
+_crawl_option = typer.Option(False, "--crawl", help="Recursively crawl URLs (follow links).")
+_depth_option = typer.Option(None, "--depth", help="Maximum crawl depth (default: from config).")
+_max_pages_option = typer.Option(
+    None, "--max-pages", help="Maximum pages to crawl (default: from config)."
+)
+
+
+def _is_url(value: str) -> bool:
+    """Check if a string looks like a URL."""
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
+    """Split inputs into file paths and URLs."""
+    paths: list[Path] = []
+    urls: list[str] = []
+    for inp in inputs:
+        if _is_url(inp):
+            urls.append(inp)
+        else:
+            paths.append(Path(inp))
+    return paths, urls
+
+
+def _crawl_urls_blocking(
+    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
+) -> list[Path]:
+    """Crawl URLs synchronously (for CLI), returning paths written."""
+    from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
+
+    from lilbee.crawler import crawl_and_save
+
+    effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
+    effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
+
+    all_paths: list[Path] = []
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
+        for url in urls:
+            ptask = progress.add_task(f"Crawling {url}...", total=None)
+
+            def on_progress(crawled: int, total: int, current_url: str, _t: TaskID = ptask) -> None:
+                progress.update(_t, description=f"Crawled {crawled}/{total}: {current_url}")
+
+            paths = asyncio.run(
+                crawl_and_save(
+                    url,
+                    depth=effective_depth,
+                    max_pages=effective_pages,
+                    on_progress=on_progress,
+                )
+            )
+            all_paths.extend(paths)
+            progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
+    return all_paths
 
 
 @app.command()
 def add(
-    paths: list[Path] = _paths_argument,
+    paths: list[str] = _paths_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
     force: bool = _force_option,
     vision: bool = _vision_option,
     vision_timeout: float | None = _vision_timeout_option,
+    crawl: bool = _crawl_option,
+    depth: int | None = _depth_option,
+    max_pages: int | None = _max_pages_option,
 ) -> None:
-    """Copy files into the knowledge base and ingest them."""
+    """Copy files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if vision_timeout is not None:
         cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
+
+    file_paths, urls = _partition_inputs(paths)
+    # Validate file paths exist
+    for fp in file_paths:
+        if not fp.exists():
+            if cfg.json_mode:
+                json_output({"error": f"Path not found: {fp}"})
+                raise SystemExit(1)
+            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
+            raise SystemExit(1)
+
     try:
+        # Crawl URLs first (saves .md files into documents/_web/)
+        crawled_paths: list[Path] = []
+        if urls:
+            crawled_paths = _crawl_urls_blocking(
+                urls, crawl=crawl, depth=depth, max_pages=max_pages
+            )
+            if not cfg.json_mode:
+                console.print(
+                    f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
+                    f" from {len(urls)} URL(s)[/{theme.MUTED}]"
+                )
+
         if cfg.json_mode:
             from lilbee.ingest import sync
 
-            copied = copy_paths(paths, console, force=force)
+            copied: list[str] = []
+            if file_paths:
+                copied = copy_paths(file_paths, console, force=force)
             result = asyncio.run(sync(quiet=True, force_vision=vision))
-            json_output({"command": "add", "copied": copied, "sync": sync_result_to_json(result)})
+            json_output(
+                {
+                    "command": "add",
+                    "copied": copied,
+                    "crawled": len(crawled_paths),
+                    "sync": sync_result_to_json(result),
+                }
+            )
             return
-        add_paths(paths, console, force=force, force_vision=vision)
+
+        if file_paths:
+            add_paths(file_paths, console, force=force, force_vision=vision)
+        elif urls:
+            # URLs already saved; just trigger sync
+            from lilbee.ingest import sync
+
+            result = asyncio.run(sync(force_vision=vision))
+            console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
