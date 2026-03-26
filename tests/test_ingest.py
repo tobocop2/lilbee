@@ -19,6 +19,7 @@ def isolated_env(tmp_path):
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.concept_graph = False
 
     yield docs
 
@@ -1248,3 +1249,108 @@ class TestChunkViaKreuzberg:
 
         result = chunk_text("Some text that should be chunked.")
         assert len(result) >= 1
+
+
+class TestConceptIndexing:
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_concept_extraction_called_during_ingest(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """When concept_graph is enabled, extraction is called after ingest."""
+        cfg.concept_graph = True
+        (isolated_env / "test.txt").write_text("Some test content for concepts.")
+
+        with mock.patch(
+            "lilbee.concepts.extract_concepts_batch", return_value=[["test"]]
+        ) as m_ext:
+            with mock.patch("lilbee.concepts.get_graph") as m_graph:
+                m_graph.return_value = mock.MagicMock()
+                from lilbee.ingest import sync
+
+                await sync(quiet=True)
+        m_ext.assert_called()
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_concept_disabled_skips_extraction(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """When concept_graph is disabled, extraction is not called."""
+        cfg.concept_graph = False
+        (isolated_env / "test.txt").write_text("Some test content.")
+
+        with mock.patch("lilbee.concepts.extract_concepts_batch") as m_ext:
+            from lilbee.ingest import sync
+
+            await sync(quiet=True)
+        m_ext.assert_not_called()
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_concept_failure_does_not_break_ingest(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """When concept extraction raises, ingest still succeeds."""
+        cfg.concept_graph = True
+        (isolated_env / "test.txt").write_text("Some test content.")
+
+        with mock.patch(
+            "lilbee.concepts.extract_concepts_batch", side_effect=RuntimeError("spacy broke")
+        ):
+            with mock.patch("lilbee.concepts.get_graph") as m_graph:
+                m_graph.return_value = mock.MagicMock()
+                from lilbee.ingest import sync
+
+                result = await sync(quiet=True)
+        assert "test.txt" in result.added
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_cluster_rebuild_called_after_sync(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """After sync completes, rebuild_clusters is called."""
+        cfg.concept_graph = True
+        (isolated_env / "test.txt").write_text("Some test content.")
+
+        mock_graph = mock.MagicMock()
+        with mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]):
+            with mock.patch("lilbee.concepts.get_graph", return_value=mock_graph):
+                from lilbee.ingest import sync
+
+                await sync(quiet=True)
+        mock_graph.rebuild_clusters.assert_called()
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_cluster_rebuild_failure_does_not_break_sync(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """When cluster rebuild raises, sync still succeeds."""
+        cfg.concept_graph = True
+        (isolated_env / "test.txt").write_text("Some test content.")
+
+        mock_graph = mock.MagicMock()
+        mock_graph.rebuild_clusters.side_effect = RuntimeError("leiden broke")
+        with mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]):
+            with mock.patch("lilbee.concepts.get_graph", return_value=mock_graph):
+                from lilbee.ingest import sync
+
+                result = await sync(quiet=True)
+        assert "test.txt" in result.added
