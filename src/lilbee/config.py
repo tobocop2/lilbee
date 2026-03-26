@@ -136,6 +136,22 @@ class Config(BaseModel):
     # separate SSE events (event: reasoning) for UI rendering.
     show_reasoning: bool = False
 
+    # Web crawling settings
+    # Maximum link-following depth for recursive crawls.
+    crawl_max_depth: int = Field(default=2, ge=0)
+
+    # Maximum pages to fetch in a single crawl operation.
+    crawl_max_pages: int = Field(default=50, ge=1)
+
+    # Seconds to wait between HTTP requests (rate limiting).
+    crawl_rate_limit: float = Field(default=1.0, ge=0.0)
+
+    # Per-page timeout in seconds for fetching a URL.
+    crawl_timeout: int = Field(default=30, ge=1)
+
+    # Respect robots.txt directives when crawling.
+    crawl_respect_robots: bool = True
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
 
@@ -257,6 +273,15 @@ class Config(BaseModel):
             ),
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool
+            ),
+            crawl_max_depth=_load_setting(data_root, "crawl_max_depth", "CRAWL_MAX_DEPTH", 2, int),
+            crawl_max_pages=_load_setting(data_root, "crawl_max_pages", "CRAWL_MAX_PAGES", 50, int),
+            crawl_rate_limit=_load_setting(
+                data_root, "crawl_rate_limit", "CRAWL_RATE_LIMIT", 1.0, float
+            ),
+            crawl_timeout=_load_setting(data_root, "crawl_timeout", "CRAWL_TIMEOUT", 30, int),
+            crawl_respect_robots=_load_setting(
+                data_root, "crawl_respect_robots", "CRAWL_RESPECT_ROBOTS", True, bool
             ),
         )
 

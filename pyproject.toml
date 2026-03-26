@@ -41,6 +41,7 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "crawl4ai>=0.8.0",
 ]
 
 [project.optional-dependencies]
