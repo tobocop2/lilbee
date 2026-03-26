@@ -181,21 +181,18 @@ class ChatScreen(Screen[None]):
         """Extract --depth and --max-pages from argument tokens."""
         import contextlib
 
-        depth = 0
-        max_pages = 0
+        flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
+        parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
         i = 0
         while i < len(tokens):
-            if tokens[i] == "--depth" and i + 1 < len(tokens):
+            key = flag_map.get(tokens[i])
+            if key and i + 1 < len(tokens):
                 with contextlib.suppress(ValueError):
-                    depth = int(tokens[i + 1])
-                i += 2
-            elif tokens[i] == "--max-pages" and i + 1 < len(tokens):
-                with contextlib.suppress(ValueError):
-                    max_pages = int(tokens[i + 1])
+                    parsed[key] = int(tokens[i + 1])
                 i += 2
             else:
                 i += 1
-        return depth, max_pages
+        return parsed["depth"], parsed["max_pages"]
 
     @work(thread=True)
     def _run_crawl_background(self, url: str, depth: int, max_pages: int) -> None:

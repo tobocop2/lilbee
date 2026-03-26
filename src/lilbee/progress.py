@@ -17,10 +17,6 @@ class EventType(StrEnum):
     DONE = "done"
     EMBED = "embed"
     EXTRACT = "extract"
-    CRAWL_START = "crawl_start"
-    CRAWL_PAGE = "crawl_page"
-    CRAWL_DONE = "crawl_done"
-    CRAWL_ERROR = "crawl_error"
 
 
 DetailedProgressCallback = Callable[[EventType, dict[str, Any]], None]
@@ -74,34 +70,3 @@ class SyncDoneEvent(BaseModel):
     updated: int
     removed: int
     failed: int
-
-
-class CrawlStartEvent(BaseModel):
-    """Emitted when a crawl operation begins."""
-
-    url: str
-    depth: int
-    max_pages: int
-
-
-class CrawlPageEvent(BaseModel):
-    """Emitted after each page is fetched during a crawl."""
-
-    url: str
-    pages_crawled: int
-    pages_total: int
-
-
-class CrawlDoneEvent(BaseModel):
-    """Emitted when a crawl operation completes successfully."""
-
-    url: str
-    pages_crawled: int
-    files_written: int
-
-
-class CrawlErrorEvent(BaseModel):
-    """Emitted when a crawl operation fails."""
-
-    url: str
-    error: str

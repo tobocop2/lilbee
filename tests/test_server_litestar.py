@@ -417,6 +417,15 @@ class TestCrawlRoute:
         assert resp.json()["task_id"] == "abc123"
 
     @mock.patch(
+        "lilbee.server.handlers.crawl_url",
+        new_callable=mock.AsyncMock,
+        side_effect=ValueError("URL must start with http:// or https://"),
+    )
+    def test_post_crawl_invalid_url(self, mock_crawl, client):
+        resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
+        assert resp.status_code == 400
+
+    @mock.patch(
         "lilbee.server.handlers.crawl_status",
         new_callable=mock.AsyncMock,
         return_value={
@@ -434,6 +443,15 @@ class TestCrawlRoute:
         body = resp.json()
         assert body["status"] == "done"
         assert body["pages_crawled"] == 5
+
+    @mock.patch(
+        "lilbee.server.handlers.crawl_status",
+        new_callable=mock.AsyncMock,
+        side_effect=KeyError("Task not found: xyz"),
+    )
+    def test_get_crawl_status_not_found(self, mock_status, client):
+        resp = client.get("/api/crawl/xyz")
+        assert resp.status_code == 404
 
 
 class TestCreateAppReexport:

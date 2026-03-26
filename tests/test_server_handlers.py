@@ -896,11 +896,19 @@ class TestCrawlUrl:
         assert result == {"task_id": "abc123"}
         mock_start.assert_called_once_with("https://example.com", depth=1, max_pages=10)
 
+    async def test_rejects_invalid_url(self):
+        with pytest.raises(ValueError, match="http"):
+            await handlers.crawl_url("ftp://bad.com")
+
+    async def test_rejects_non_url(self):
+        with pytest.raises(ValueError, match="http"):
+            await handlers.crawl_url("not-a-url")
+
 
 class TestCrawlStatus:
-    async def test_task_not_found(self):
-        result = await handlers.crawl_status("nonexistent")
-        assert "error" in result
+    async def test_task_not_found_raises_key_error(self):
+        with pytest.raises(KeyError, match="nonexistent"):
+            await handlers.crawl_status("nonexistent")
 
     @patch("lilbee.crawl_task.get_task")
     async def test_returns_task_info(self, mock_get):
