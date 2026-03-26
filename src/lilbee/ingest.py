@@ -1,12 +1,17 @@
 """Document sync engine — keeps documents/ dir in sync with LanceDB."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+if TYPE_CHECKING:
+    from kreuzberg import ExtractionConfig, ExtractionResult
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -160,7 +165,7 @@ def classify_file(path: Path) -> str | None:
     return None
 
 
-def extraction_config(content_type: str) -> object:
+def extraction_config(content_type: str) -> ExtractionConfig:
     """Build ExtractionConfig for a given content type."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
@@ -177,7 +182,7 @@ def extraction_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
-def ocr_extraction_config() -> object:
+def ocr_extraction_config() -> ExtractionConfig:
     """Build ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
 
@@ -192,7 +197,9 @@ def ocr_extraction_config() -> object:
     )
 
 
-async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
+async def _try_tesseract_ocr(
+    path: Path, source_name: str, fallback: ExtractionResult
+) -> ExtractionResult:
     """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
     try:
         from kreuzberg import extract_file
