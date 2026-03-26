@@ -58,6 +58,7 @@ def isolated_env(tmp_path, monkeypatch):
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.json_mode = False
+    cfg.concept_graph = False
 
     yield tmp_path
 
@@ -3047,3 +3048,18 @@ class TestTopicsCommand:
         mock_get_graph.return_value = mock_graph
         runner.invoke(app, ["topics", "--top-k", "5"])
         mock_graph.top_communities.assert_called_once_with(k=5)
+
+    @mock.patch("lilbee.concepts.get_graph")
+    def test_large_community_shows_more_count(self, mock_get_graph):
+        cfg.concept_graph = True
+        mock_graph = mock.MagicMock()
+        many_concepts = [f"concept_{i}" for i in range(8)]
+        mock_graph.top_communities.return_value = [
+            {"cluster_id": 0, "size": 8, "concepts": many_concepts},
+        ]
+        mock_get_graph.return_value = mock_graph
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0
+        # Rich table may wrap text across lines, so check for the key parts
+        assert "concept_0" in result.output
+        assert "more)" in result.output

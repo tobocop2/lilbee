@@ -1,6 +1,5 @@
 """Tests for the concept graph module."""
 
-from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -98,9 +97,7 @@ class TestExtractConcepts:
 
     @patch("lilbee.concepts._get_nlp")
     def test_deduplication(self, mock_get_nlp):
-        mock_get_nlp.return_value = _make_mock_nlp(
-            {"text": ["Concept", "concept", "Other"]}
-        )
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["Concept", "concept", "Other"]})
         from lilbee.concepts import extract_concepts
 
         result = extract_concepts("text")
@@ -108,9 +105,7 @@ class TestExtractConcepts:
 
     @patch("lilbee.concepts._get_nlp")
     def test_max_cap(self, mock_get_nlp):
-        mock_get_nlp.return_value = _make_mock_nlp(
-            {"text": ["alpha", "beta", "gamma", "delta"]}
-        )
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
         from lilbee.concepts import extract_concepts
 
         result = extract_concepts("text", max_concepts=2)
@@ -126,9 +121,7 @@ class TestExtractConcepts:
 
     @patch("lilbee.concepts._get_nlp")
     def test_filters_short_concepts(self, mock_get_nlp):
-        mock_get_nlp.return_value = _make_mock_nlp(
-            {"text": ["a", "ok", "good concept"]}
-        )
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["a", "ok", "good concept"]})
         from lilbee.concepts import extract_concepts
 
         result = extract_concepts("text")
@@ -157,6 +150,46 @@ class TestExtractConceptsBatch:
         result = extract_concepts_batch([])
         assert result == []
         mock_get_nlp.assert_not_called()
+
+    @patch("lilbee.concepts._get_nlp")
+    def test_batch_filters_short_concepts(self, mock_get_nlp):
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["a", "ok", "good"]})
+        from lilbee.concepts import extract_concepts_batch
+
+        result = extract_concepts_batch(["text"])
+        assert result == [["ok", "good"]]
+
+    @patch("lilbee.concepts._get_nlp")
+    def test_batch_deduplicates(self, mock_get_nlp):
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["Alpha", "alpha", "Beta"]})
+        from lilbee.concepts import extract_concepts_batch
+
+        result = extract_concepts_batch(["text"])
+        assert result == [["alpha", "beta"]]
+
+    @patch("lilbee.concepts._get_nlp")
+    def test_batch_caps_at_max(self, mock_get_nlp):
+        cfg.concept_max_per_chunk = 2
+        mock_get_nlp.return_value = _make_mock_nlp({"text": ["aa", "bb", "cc", "dd"]})
+        from lilbee.concepts import extract_concepts_batch
+
+        result = extract_concepts_batch(["text"])
+        assert len(result[0]) == 2
+
+
+class TestGetNlp:
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_caches_nlp_model(self, mock_ensure):
+        """_get_nlp calls _ensure_spacy_model on first call and caches."""
+        mock_ensure.return_value = MagicMock()
+        from lilbee.concepts import _get_nlp, reset_graph
+
+        reset_graph()
+        nlp1 = _get_nlp()
+        nlp2 = _get_nlp()
+        mock_ensure.assert_called_once()
+        assert nlp1 is nlp2
+        reset_graph()
 
 
 class TestEnsureSpacyModel:
@@ -273,6 +306,19 @@ class TestConceptGraph:
 
         graph = ConceptGraph()
         assert graph.get_related_concepts("python") == []
+
+    @patch("lilbee.store._open_table")
+    def test_get_related_concepts_query_exception(self, mock_open):
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
+            "query failed"
+        )
+        mock_open.return_value = mock_table
+        from lilbee.concepts import ConceptGraph
+
+        graph = ConceptGraph()
+        result = graph.get_related_concepts("python")
+        assert result == []
 
     @patch("lilbee.store._open_table")
     def test_top_communities(self, mock_open):
@@ -424,3 +470,20 @@ class TestComputePmi:
         pmi = _compute_pmi(cooccurrences, concept_counts, 10)
         assert ("a", "b") in pmi
         assert isinstance(pmi[("a", "b")], float)
+
+
+class TestLeidenPartition:
+    @patch("graspologic_native.leiden")
+    def test_returns_partition_and_degrees(self, mock_leiden):
+        mock_leiden.return_value = (0.5, {"a": 0, "b": 0, "c": 1})
+        from lilbee.concepts import _leiden_partition
+
+        edge_rows = [
+            {"source": "a", "target": "b", "weight": 2.0},
+            {"source": "b", "target": "c", "weight": 1.5},
+        ]
+        partition, degrees = _leiden_partition(edge_rows)
+        assert partition == {"a": 0, "b": 0, "c": 1}
+        assert degrees["a"] == 1
+        assert degrees["b"] == 2
+        assert degrees["c"] == 1

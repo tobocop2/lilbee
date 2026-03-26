@@ -274,9 +274,7 @@ class Config(BaseModel):
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool
             ),
-            concept_graph=_load_setting(
-                data_root, "concept_graph", "CONCEPT_GRAPH", True, bool
-            ),
+            concept_graph=_load_setting(data_root, "concept_graph", "CONCEPT_GRAPH", True, bool),
             concept_boost_weight=_load_setting(
                 data_root, "concept_boost_weight", "CONCEPT_BOOST_WEIGHT", 0.3, float
             ),

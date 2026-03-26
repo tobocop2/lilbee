@@ -1264,14 +1264,14 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "test.txt").write_text("Some test content for concepts.")
 
-        with mock.patch(
-            "lilbee.concepts.extract_concepts_batch", return_value=[["test"]]
-        ) as m_ext:
-            with mock.patch("lilbee.concepts.get_graph") as m_graph:
-                m_graph.return_value = mock.MagicMock()
-                from lilbee.ingest import sync
+        with (
+            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]) as m_ext,
+            mock.patch("lilbee.concepts.get_graph") as m_graph,
+        ):
+            m_graph.return_value = mock.MagicMock()
+            from lilbee.ingest import sync
 
-                await sync(quiet=True)
+            await sync(quiet=True)
         m_ext.assert_called()
 
     @mock.patch("lilbee.embedder.validate_model")
@@ -1304,14 +1304,16 @@ class TestConceptIndexing:
         cfg.concept_graph = True
         (isolated_env / "test.txt").write_text("Some test content.")
 
-        with mock.patch(
-            "lilbee.concepts.extract_concepts_batch", side_effect=RuntimeError("spacy broke")
+        with (
+            mock.patch(
+                "lilbee.concepts.extract_concepts_batch", side_effect=RuntimeError("spacy broke")
+            ),
+            mock.patch("lilbee.concepts.get_graph") as m_graph,
         ):
-            with mock.patch("lilbee.concepts.get_graph") as m_graph:
-                m_graph.return_value = mock.MagicMock()
-                from lilbee.ingest import sync
+            m_graph.return_value = mock.MagicMock()
+            from lilbee.ingest import sync
 
-                result = await sync(quiet=True)
+            result = await sync(quiet=True)
         assert "test.txt" in result.added
 
     @mock.patch("lilbee.embedder.validate_model")
@@ -1327,11 +1329,13 @@ class TestConceptIndexing:
         (isolated_env / "test.txt").write_text("Some test content.")
 
         mock_graph = mock.MagicMock()
-        with mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]):
-            with mock.patch("lilbee.concepts.get_graph", return_value=mock_graph):
-                from lilbee.ingest import sync
+        with (
+            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
+            mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+        ):
+            from lilbee.ingest import sync
 
-                await sync(quiet=True)
+            await sync(quiet=True)
         mock_graph.rebuild_clusters.assert_called()
 
     @mock.patch("lilbee.embedder.validate_model")
@@ -1348,9 +1352,29 @@ class TestConceptIndexing:
 
         mock_graph = mock.MagicMock()
         mock_graph.rebuild_clusters.side_effect = RuntimeError("leiden broke")
-        with mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]):
-            with mock.patch("lilbee.concepts.get_graph", return_value=mock_graph):
-                from lilbee.ingest import sync
+        with (
+            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
+            mock.patch("lilbee.concepts.get_graph", return_value=mock_graph),
+        ):
+            from lilbee.ingest import sync
 
-                result = await sync(quiet=True)
+            result = await sync(quiet=True)
+        assert "test.txt" in result.added
+
+    @mock.patch("lilbee.embedder.validate_model")
+    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_graph_none_skips_indexing(
+        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+    ):
+        """When get_graph() returns None, concept indexing is skipped gracefully."""
+        cfg.concept_graph = True
+        (isolated_env / "test.txt").write_text("Some test content.")
+
+        with mock.patch("lilbee.concepts.get_graph", return_value=None):
+            from lilbee.ingest import sync
+
+            result = await sync(quiet=True)
         assert "test.txt" in result.added

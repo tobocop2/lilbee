@@ -981,15 +981,26 @@ class TestConceptBoosting:
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     def test_boost_failure_returns_original(self, mock_embed, mock_bm25, mock_search):
-        from lilbee.config import cfg
-
         old = cfg.concept_graph
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
         try:
-            with mock.patch(
-                "lilbee.concepts.get_graph", side_effect=RuntimeError("broken")
-            ):
+            with mock.patch("lilbee.concepts.get_graph", side_effect=RuntimeError("broken")):
+                results = search_context("python code")
+            assert results[0].distance == 0.5
+        finally:
+            cfg.concept_graph = old
+            cfg.query_expansion_count = 3
+
+    @mock.patch("lilbee.store.search", return_value=[_make_result(distance=0.5)])
+    @mock.patch("lilbee.store.bm25_probe", return_value=[])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    def test_boost_graph_none_returns_original(self, mock_embed, mock_bm25, mock_search):
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        cfg.query_expansion_count = 0
+        try:
+            with mock.patch("lilbee.concepts.get_graph", return_value=None):
                 results = search_context("python code")
             assert results[0].distance == 0.5
         finally:
@@ -1035,15 +1046,24 @@ class TestConceptQueryExpansion:
             cfg.concept_graph = old
 
     def test_expansion_failure_returns_empty(self):
-        from lilbee.config import cfg
         from lilbee.query import _concept_query_expansion
 
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
-            with mock.patch(
-                "lilbee.concepts.get_graph", side_effect=RuntimeError("broken")
-            ):
+            with mock.patch("lilbee.concepts.get_graph", side_effect=RuntimeError("broken")):
+                result = _concept_query_expansion("test query")
+            assert result == []
+        finally:
+            cfg.concept_graph = old
+
+    def test_expansion_graph_none_returns_empty(self):
+        from lilbee.query import _concept_query_expansion
+
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            with mock.patch("lilbee.concepts.get_graph", return_value=None):
                 result = _concept_query_expansion("test query")
             assert result == []
         finally:

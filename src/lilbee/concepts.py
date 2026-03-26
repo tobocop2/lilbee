@@ -168,10 +168,9 @@ def _leiden_partition(
     from graspologic_native import leiden
 
     edges: list[tuple[str, str, float]] = [
-        (row["source"], row["target"], max(0.01, row["weight"]))
-        for row in edge_rows
+        (row["source"], row["target"], max(0.01, row["weight"])) for row in edge_rows
     ]
-    partition = leiden(edges)
+    _modularity, partition = leiden(edges=edges)  # type: ignore[call-arg]
 
     degree_map: dict[str, int] = Counter()
     for row in edge_rows:
@@ -212,13 +211,11 @@ class ConceptGraph:
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, len(chunk_ids))
 
         edge_records = [
-            {"source": a, "target": b, "weight": w}
-            for (a, b), w in pmi_weights.items()
+            {"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()
         ]
 
         node_records = [
-            {"concept": c, "cluster_id": 0, "degree": count}
-            for c, count in concept_counts.items()
+            {"concept": c, "cluster_id": 0, "degree": count} for c, count in concept_counts.items()
         ]
 
         db = get_db()
