@@ -62,13 +62,14 @@ async def lilbee_add(
     force: bool = False,
     vision_model: str = "",
 ) -> dict:
-    """Add files or directories to the knowledge base and sync.
+    """Add files, directories, or URLs to the knowledge base and sync.
 
     Copies the given paths into the documents directory, then ingests them.
+    URLs (http:// or https://) are fetched as markdown and saved to _web/.
     Paths must be absolute and accessible from this machine.
 
     Args:
-        paths: Absolute file or directory paths to add.
+        paths: Absolute file/directory paths or URLs to add.
         force: Overwrite files that already exist in the knowledge base.
         vision_model: Ollama vision model for scanned PDF OCR
             (e.g. "maternion/LightOnOCR-2:latest"). If empty, uses
@@ -81,12 +82,25 @@ async def lilbee_add(
 
     errors: list[str] = []
     valid: list[Path] = []
+    urls: list[str] = []
     for p_str in paths:
-        p = Path(p_str)
-        if not p.exists():
-            errors.append(p_str)
+        if p_str.startswith("http://") or p_str.startswith("https://"):
+            urls.append(p_str)
         else:
-            valid.append(p)
+            p = Path(p_str)
+            if not p.exists():
+                errors.append(p_str)
+            else:
+                valid.append(p)
+
+    # Crawl URLs
+    crawled_count = 0
+    if urls:
+        from lilbee.crawler import crawl_and_save
+
+        for url in urls:
+            crawled_paths = await crawl_and_save(url)
+            crawled_count += len(crawled_paths)
 
     copy_result = copy_files(valid, force=force)
 
@@ -103,7 +117,39 @@ async def lilbee_add(
         "command": "add",
         "copied": copy_result.copied,
         "skipped": copy_result.skipped,
+        "crawled": crawled_count,
         "errors": errors,
+        "sync": sync_result,
+    }
+
+
+@mcp.tool()
+async def lilbee_crawl(
+    url: str,
+    depth: int = 0,
+    max_pages: int = 50,
+) -> dict:
+    """Crawl a web page and add it to the knowledge base.
+
+    Fetches the URL as markdown and saves it to the documents directory.
+    When depth > 0, follows links recursively up to the specified depth.
+    After crawling, triggers a sync to index the new content.
+
+    Args:
+        url: The URL to crawl (must start with http:// or https://).
+        depth: Maximum link-following depth (0 = single page only).
+        max_pages: Maximum number of pages to fetch (default: 50).
+    """
+    from lilbee.crawler import crawl_and_save
+    from lilbee.ingest import sync
+
+    paths = await crawl_and_save(url, depth=depth, max_pages=max_pages)
+    sync_result = (await sync(quiet=True)).model_dump()
+
+    return {
+        "command": "crawl",
+        "url": url,
+        "pages_crawled": len(paths),
         "sync": sync_result,
     }
 
