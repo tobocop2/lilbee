@@ -286,7 +286,9 @@ def _expand_query(question: str) -> list[str]:
             return []
         variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
         variants = variants[:count]
-        return _apply_guardrails(variants, question)
+        variants = _apply_guardrails(variants, question)
+        variants.extend(_concept_query_expansion(question))
+        return variants
     except Exception:
         return []
 
@@ -414,6 +416,37 @@ def _search_structured(mode: str, query: str, top_k: int) -> list[SearchChunk]:
     return []
 
 
+def _apply_concept_boost(results: list[SearchChunk], question: str) -> list[SearchChunk]:
+    """Boost search results by concept overlap. No-op if disabled."""
+    if not cfg.concept_graph:
+        return results
+    try:
+        from lilbee.concepts import extract_concepts, get_graph
+
+        graph = get_graph()
+        if graph is None:
+            return results
+        query_concepts = extract_concepts(question)
+        return graph.boost_results(results, query_concepts)
+    except Exception:
+        return results
+
+
+def _concept_query_expansion(question: str) -> list[str]:
+    """Get additional query terms from concept graph. Returns empty on failure."""
+    if not cfg.concept_graph:
+        return []
+    try:
+        from lilbee.concepts import get_graph
+
+        graph = get_graph()
+        if graph is None:
+            return []
+        return graph.expand_query(question)
+    except Exception:
+        return []
+
+
 def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
     """Embed question and return top-K matching chunks.
 
@@ -458,6 +491,8 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                     r.distance = r.distance / cfg.hyde_weight
                 results.append(r)
                 seen.add(key)
+
+    results = _apply_concept_boost(results, question)
 
     # Cap total results to prevent context overflow from expansion
     return results[: top_k * 2]
