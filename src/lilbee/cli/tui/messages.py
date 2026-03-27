@@ -1,0 +1,38 @@
+"""Centralized user-facing messages for the TUI.
+
+All notification strings live here so they can be updated in one place
+and tested by matching against constants rather than fragile substrings.
+"""
+
+from __future__ import annotations
+
+CMD_UNKNOWN = "Unknown command: {cmd}"
+CMD_ADD_NOT_FOUND = "Not found: {path}"
+CMD_ADD_SUCCESS = "Added {count} file(s), syncing..."
+CMD_ADD_ERROR = "Error: {error}"
+CMD_DELETE_NO_DOCS = "No documents indexed"
+CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
+CMD_DELETE_NOT_FOUND = "Not found: {name}"
+CMD_DELETE_SUCCESS = "Deleted {name}"
+CMD_RESET_CONFIRM = "Type '/reset confirm' to delete all data"
+CMD_RESET_SUCCESS = "Knowledge base reset"
+CMD_RESET_FAILED = "Reset failed: {error}"
+CMD_SET_UNKNOWN = "Unknown setting: {key}"
+CMD_SET_SUCCESS = "{key} = {value}"
+CMD_SET_INVALID = "Invalid value for {key}: {error}"
+CMD_MODEL_SET = "Model set to {name}"
+CMD_VISION_DISABLED = "Vision OCR disabled"
+CMD_VISION_SET = "Vision model: {name}"
+CMD_VISION_STATUS = (
+    "Vision: {current}\n"
+    "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
+    "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
+)
+CMD_CANCEL = "Cancelled active operations"
+CMD_THEME_LIST = "Themes: {names}"
+STREAM_ERROR = "\n\n*Error: {error}*"
+SYNC_STATUS_SYNCING = "Syncing..."
+SYNC_STATUS_DONE = "Synced ({count} docs)"
+SYNC_STATUS_FAILED = "Sync failed"
+SYNC_FILE_PROGRESS = "Syncing [{current}/{total}]: {file}"
+EMBEDDING_SET = "Embedding model: {name}"

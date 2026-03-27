@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import ClassVar
 
@@ -13,6 +14,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Input
 
 from lilbee.cli.helpers import get_version
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -25,7 +27,11 @@ from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
 from lilbee.query import ChatMessage
 
+log = logging.getLogger(__name__)
+
 _DISPATCH = build_dispatch_dict()
+
+_MAX_HISTORY_MESSAGES = 200
 
 
 class ChatScreen(Screen[None]):
@@ -86,7 +92,7 @@ class ChatScreen(Screen[None]):
         def on_setup_complete(name: str | None) -> None:
             if name:
                 cfg.embedding_model = name
-                self.notify(f"Embedding model: {name}")
+                self.notify(msg.EMBEDDING_SET.format(name=name))
                 self._refresh_model_bar()
 
         self.app.push_screen(SetupModal(ollama_embeddings=ollama_embeds), on_setup_complete)
@@ -113,7 +119,7 @@ class ChatScreen(Screen[None]):
         if handler_name:
             getattr(self, handler_name)(args)
         else:
-            self.notify(f"Unknown command: {cmd}", severity="warning")
+            self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
 
     # -- Slash command handlers (alphabetical) --------------------------------
 
@@ -122,22 +128,23 @@ class ChatScreen(Screen[None]):
             return
         path = Path(args).expanduser()
         if not path.exists():
-            self.notify(f"Not found: {path}", severity="error")
+            self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
         try:
             from lilbee.cli.app import console
             from lilbee.cli.helpers import copy_paths
 
             copied = copy_paths([path], console)
-            self.notify(f"Added {len(copied)} file(s), syncing...")
+            self.notify(msg.CMD_ADD_SUCCESS.format(count=len(copied)))
             self._run_sync()
         except Exception as exc:
-            self.notify(f"Error: {exc}", severity="error")
+            log.warning("Failed to add %s", path, exc_info=True)
+            self.notify(msg.CMD_ADD_ERROR.format(error=exc), severity="error")
 
     def _cmd_cancel(self, _args: str) -> None:
         for worker in self.workers:
             worker.cancel()
-        self.notify("Cancelled active operations")
+        self.notify(msg.CMD_CANCEL)
 
     def _cmd_catalog(self, _args: str) -> None:
         self.app.push_screen(CatalogScreen())
@@ -148,28 +155,29 @@ class ChatScreen(Screen[None]):
         try:
             sources = get_sources()
         except Exception:
-            self.notify("No documents indexed", severity="warning")
+            log.debug("Failed to list documents for /delete", exc_info=True)
+            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         known = {s.get("filename", s.get("source", "?")) for s in sources}
         if not known:
-            self.notify("No documents indexed", severity="warning")
+            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
         name = args.strip()
         if not name:
-            self.notify(f"Documents: {', '.join(sorted(known))}\nUsage: /delete <filename>")
+            self.notify(msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known))))
             return
 
         if name not in known:
-            self.notify(f"Not found: {name}", severity="error")
+            self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
 
         from lilbee.store import delete_by_source, delete_source
 
         delete_by_source(name)
         delete_source(name)
-        self.notify(f"Deleted {name}")
+        self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
         self.app.push_screen(HelpModal())
@@ -178,7 +186,7 @@ class ChatScreen(Screen[None]):
         if args:
             cfg.chat_model = args
             self.app.title = f"lilbee — {cfg.chat_model}"
-            self.notify(f"Model set to {args}")
+            self.notify(msg.CMD_MODEL_SET.format(name=args))
             self._refresh_model_bar()
         else:
             self.app.push_screen(CatalogScreen())
@@ -192,11 +200,12 @@ class ChatScreen(Screen[None]):
 
             try:
                 perform_reset()
-                self.notify("Knowledge base reset")
+                self.notify(msg.CMD_RESET_SUCCESS)
             except Exception as exc:
-                self.notify(f"Reset failed: {exc}", severity="error")
+                log.warning("Reset failed", exc_info=True)
+                self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
         else:
-            self.notify("Type '/reset confirm' to delete all data", severity="warning")
+            self.notify(msg.CMD_RESET_CONFIRM, severity="warning")
 
     def _cmd_set(self, args: str) -> None:
         if not args:
@@ -208,7 +217,7 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.settings_map import SETTINGS_MAP
 
         if key not in SETTINGS_MAP:
-            self.notify(f"Unknown setting: {key}", severity="warning")
+            self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
             return
 
         defn = SETTINGS_MAP[key]
@@ -220,9 +229,9 @@ class ChatScreen(Screen[None]):
             else:
                 parsed = defn.type(value)
             setattr(cfg, defn.cfg_attr, parsed)
-            self.notify(f"{key} = {parsed}")
+            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
-            self.notify(f"Invalid value for {key}: {exc}", severity="error")
+            self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.push_screen(SettingsScreen())
@@ -231,13 +240,14 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
-        from lilbee.cli.tui.app import _DARK_THEMES, LilbeeApp
+        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
         if args and isinstance(self.app, LilbeeApp):
             self.app.set_theme(args)
             self.notify(f"Theme: {args}")
         else:
-            self.notify(f"Themes: {', '.join(_DARK_THEMES)}", severity="information")
+            theme_list = msg.CMD_THEME_LIST.format(names=", ".join(DARK_THEMES))
+            self.notify(theme_list, severity="information")
 
     def _cmd_version(self, _args: str) -> None:
         self.notify(f"lilbee {get_version()}")
@@ -248,23 +258,19 @@ class ChatScreen(Screen[None]):
         if args == "off":
             cfg.vision_model = ""
             settings.set_value(cfg.data_root, "vision_model", "")
-            self.notify("Vision OCR disabled")
+            self.notify(msg.CMD_VISION_DISABLED)
             self._refresh_model_bar()
             return
 
         if args:
             cfg.vision_model = args
             settings.set_value(cfg.data_root, "vision_model", args)
-            self.notify(f"Vision model: {args}")
+            self.notify(msg.CMD_VISION_SET.format(name=args))
             self._refresh_model_bar()
             return
 
         current = cfg.vision_model or "disabled"
-        self.notify(
-            f"Vision: {current}\n"
-            "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
-            "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
-        )
+        self.notify(msg.CMD_VISION_STATUS.format(current=current))
 
     # -- Core chat logic ------------------------------------------------------
 
@@ -298,14 +304,21 @@ class ChatScreen(Screen[None]):
                     response_parts.append(token.content)
                     self.app.call_from_thread(widget.append_content, token.content)
         except Exception as exc:
-            self.app.call_from_thread(widget.append_content, f"\n\n*Error: {exc}*")
+            log.warning("Stream error", exc_info=True)
+            self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
             self._streaming = False
             full_response = "".join(response_parts)
             if full_response:
                 self._history.append({"role": "assistant", "content": full_response})
+                self._trim_history()
             self.app.call_from_thread(widget.finish, sources)
             self.app.call_from_thread(self._scroll_to_bottom)
+
+    def _trim_history(self) -> None:
+        """Drop oldest messages when history exceeds the cap."""
+        if len(self._history) > _MAX_HISTORY_MESSAGES:
+            self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
 
     def _scroll_to_bottom(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_end(animate=False)
@@ -324,7 +337,11 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_sync(self) -> None:
-        """Run background document sync."""
+        """Run background document sync.
+
+        Uses asyncio.run() because Textual workers run in threads, not the
+        async event loop, so we need a fresh loop for the async sync() call.
+        """
         import asyncio
 
         sync_bar = self.query_one("#sync-bar", SyncBar)
@@ -332,20 +349,23 @@ class ChatScreen(Screen[None]):
             from lilbee.ingest import sync
             from lilbee.progress import EventType
 
-            self.app.call_from_thread(sync_bar.set_status, "Syncing...")
+            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_SYNCING)
 
             def on_progress(event_type: EventType, data: dict[str, object]) -> None:
                 if event_type == EventType.FILE_START:
-                    cur = data.get("current_file", "?")
-                    total = data.get("total_files", "?")
-                    msg = f"Syncing [{cur}/{total}]: {data.get('file', '')}"
-                    self.app.call_from_thread(sync_bar.set_status, msg)
+                    status = msg.SYNC_FILE_PROGRESS.format(
+                        current=data.get("current_file", "?"),
+                        total=data.get("total_files", "?"),
+                        file=data.get("file", ""),
+                    )
+                    self.app.call_from_thread(sync_bar.set_status, status)
 
             result = asyncio.run(sync(on_progress=on_progress))
             added = result.get("added", 0) if isinstance(result, dict) else 0
-            self.app.call_from_thread(sync_bar.set_status, f"Synced ({added} docs)")
+            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_DONE.format(count=added))
         except Exception:
-            self.app.call_from_thread(sync_bar.set_status, "Sync failed")
+            log.warning("Background sync failed", exc_info=True)
+            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_FAILED)
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

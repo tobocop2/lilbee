@@ -12,7 +12,7 @@ from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.config import cfg
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
-_DARK_THEMES = (
+DARK_THEMES = (
     "monokai",
     "dracula",
     "tokyo-night",
@@ -57,8 +57,8 @@ class LilbeeApp(App[None]):
         self.push_screen(ChatScreen(auto_sync=self._auto_sync))
 
     def action_cycle_theme(self) -> None:
-        self._theme_index = (self._theme_index + 1) % len(_DARK_THEMES)
-        name = _DARK_THEMES[self._theme_index]
+        self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
+        name = DARK_THEMES[self._theme_index]
         self.theme = name
         self.notify(f"Theme: {name}")
 

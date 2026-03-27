@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual import work
@@ -12,6 +13,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView, ProgressBar, Static
 
 from lilbee.catalog import FEATURED_EMBEDDING, CatalogModel
+
+log = logging.getLogger(__name__)
 
 
 class _EmbeddingRow(ListItem):
@@ -48,6 +51,7 @@ class SetupModal(ModalScreen[str | None]):
     def __init__(self, ollama_embeddings: list[str] | None = None) -> None:
         super().__init__()
         self._ollama_embeddings = ollama_embeddings or []
+        self._downloaded_name: str | None = None
 
     def compose(self) -> ComposeResult:
         items: list[ListItem] = []
@@ -84,6 +88,7 @@ class SetupModal(ModalScreen[str | None]):
             pull_with_progress(model.name)
             self.app.call_from_thread(self._on_downloaded, model.name)
         except Exception as exc:
+            log.warning("Embedding download failed for %s", model.name, exc_info=True)
             self.app.call_from_thread(self._set_status, f"Error: {exc}")
 
     def _set_status(self, text: str) -> None:
@@ -97,7 +102,7 @@ class SetupModal(ModalScreen[str | None]):
         self.call_later(self._finish_dismiss)
 
     def _finish_dismiss(self) -> None:
-        self.dismiss(getattr(self, "_downloaded_name", None))
+        self.dismiss(self._downloaded_name)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

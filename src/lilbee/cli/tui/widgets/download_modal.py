@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual import work
@@ -12,6 +13,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Label, ProgressBar
 
 from lilbee.catalog import CatalogModel
+
+log = logging.getLogger(__name__)
 
 
 class DownloadModal(ModalScreen[bool]):
@@ -24,6 +27,7 @@ class DownloadModal(ModalScreen[bool]):
     def __init__(self, model: CatalogModel) -> None:
         super().__init__()
         self._model = model
+        self._dismiss_result: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -52,6 +56,7 @@ class DownloadModal(ModalScreen[bool]):
             download_model(self._model, on_progress=on_progress)
             self.app.call_from_thread(self._on_success)
         except Exception as exc:
+            log.warning("Download failed for %s", self._model.name, exc_info=True)
             self.app.call_from_thread(self._on_error, str(exc))
 
     def _set_status(self, text: str) -> None:
@@ -72,7 +77,7 @@ class DownloadModal(ModalScreen[bool]):
         self.call_later(self._do_dismiss)
 
     def _do_dismiss(self) -> None:
-        self.dismiss(getattr(self, "_dismiss_result", False))
+        self.dismiss(self._dismiss_result)
 
     def action_cancel(self) -> None:
         for worker in self.workers:
