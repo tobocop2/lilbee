@@ -260,9 +260,10 @@ log = logging.getLogger(__name__)
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
     try:
-        from lilbee.providers.factory import get_provider
+        from lilbee.server.handlers import _get_bee
 
-        get_provider()
+        bee = _get_bee()
+        _ = bee.provider  # force lazy init
         log.info("LLM provider pre-loaded")
     except Exception:
         log.warning("Failed to pre-load LLM provider", exc_info=True)

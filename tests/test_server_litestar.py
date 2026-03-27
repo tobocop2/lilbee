@@ -436,36 +436,47 @@ class TestCreateAppReexport:
 
 
 class TestLifespan:
+    def _reset_bee(self):
+        from lilbee.server import handlers
+
+        handlers._bee = None
+
     @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.providers.factory.get_provider")
+    @mock.patch("lilbee.providers.factory.create_provider")
     async def test_calls_both(self, mock_provider, mock_validate):
+        self._reset_bee()
         from lilbee.server.litestar_app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
         mock_provider.assert_called_once()
         mock_validate.assert_called_once()
+        self._reset_bee()
 
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch(
-        "lilbee.providers.factory.get_provider",
+        "lilbee.providers.factory.create_provider",
         side_effect=RuntimeError("no provider"),
     )
     async def test_provider_failure_does_not_block(self, mock_provider, mock_validate):
+        self._reset_bee()
         from lilbee.server.litestar_app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
         mock_validate.assert_called_once()
+        self._reset_bee()
 
     @mock.patch(
         "lilbee.embedder.validate_model",
         side_effect=RuntimeError("no model"),
     )
-    @mock.patch("lilbee.providers.factory.get_provider")
+    @mock.patch("lilbee.providers.factory.create_provider")
     async def test_validate_model_failure_does_not_block(self, mock_provider, mock_validate):
+        self._reset_bee()
         from lilbee.server.litestar_app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
         mock_provider.assert_called_once()
+        self._reset_bee()

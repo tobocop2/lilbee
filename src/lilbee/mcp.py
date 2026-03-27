@@ -10,30 +10,43 @@ from mcp.server.fastmcp import FastMCP
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
-from lilbee.store import delete_by_source, delete_source, get_sources
 
 if TYPE_CHECKING:
+    from lilbee.api import Lilbee
     from lilbee.store import SearchChunk
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
+
+_bee: Lilbee | None = None
+
+
+def _get_bee() -> Lilbee:
+    """Return a module-level Lilbee instance backed by the global cfg."""
+    global _bee
+    if _bee is None:
+        from lilbee.api import Lilbee
+
+        _bee = Lilbee(config=cfg)
+    return _bee
 
 
 @mcp.tool()
 def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
     """Search the knowledge base for relevant document chunks.
 
-    Returns chunks sorted by relevance. No LLM call — uses pre-computed embeddings.
+    Returns chunks sorted by relevance. No LLM call -- uses pre-computed embeddings.
     """
-    from lilbee.query import search_context
-
-    results = search_context(query, top_k=top_k)
+    bee = _get_bee()
+    results = bee.search(query, top_k=top_k)
     return [clean(r) for r in results]
 
 
 @mcp.tool()
 def lilbee_status() -> dict:
     """Show indexed documents, configuration, and chunk counts."""
-    sources = get_sources()
+    from lilbee.store import SourceRecord, get_sources
+
+    sources: list[SourceRecord] = get_sources()
     return {
         "config": {
             "documents_dir": str(cfg.documents_dir),
@@ -79,7 +92,6 @@ async def lilbee_add(
             scanned PDFs are skipped.
     """
     from lilbee.cli.helpers import copy_files
-    from lilbee.ingest import sync
 
     errors: list[str] = []
     valid: list[Path] = []
@@ -94,7 +106,6 @@ async def lilbee_add(
             else:
                 valid.append(p)
 
-    # Crawl URLs
     crawled_count = 0
     if urls:
         from lilbee.crawler import crawler_available
@@ -117,6 +128,8 @@ async def lilbee_add(
     old_vision = cfg.vision_model
     if vision_model:
         cfg.vision_model = vision_model
+    from lilbee.ingest import sync
+
     try:
         sync_result = (await sync(quiet=True, force_vision=bool(vision_model))).model_dump()
     finally:
@@ -212,26 +225,16 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         names: Source filenames to remove (as shown by lilbee_status).
         delete_files: Also delete the physical files from the documents directory.
     """
-    known = {s["filename"] for s in get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        delete_by_source(name)
-        delete_source(name)
-        removed.append(name)
-        if delete_files:
-            path = cfg.documents_dir / name
-            if path.exists():
-                path.unlink()
-    return {"command": "remove", "removed": removed, "not_found": not_found}
+    bee = _get_bee()
+    result = bee.remove_documents(names, delete_files=delete_files)
+    return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 
 @mcp.tool()
 def lilbee_list_documents() -> dict:
     """List all indexed documents with their chunk counts."""
+    from lilbee.store import get_sources
+
     sources = get_sources()
     return {
         "documents": [

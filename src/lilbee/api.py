@@ -1,8 +1,4 @@
-"""Programmatic access to lilbee's retrieval pipeline.
-
-Retrieval only -- no LLM chat. Search your indexed documents from Python.
-Optional features (concept graph, reranker) activate automatically when
-their dependencies are installed.
+"""Programmatic access to lilbee's knowledge base pipeline.
 
 Usage::
 
@@ -16,23 +12,28 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lilbee.config import Config, cfg
 
 if TYPE_CHECKING:
     from lilbee.ingest import SyncResult
-    from lilbee.store import SearchChunk
+    from lilbee.providers.base import LLMProvider
+    from lilbee.query import AskResult, ChatMessage
+    from lilbee.reasoning import StreamToken
+    from lilbee.store import RemoveResult, SearchChunk
 
 
 @contextmanager
 def _swap_config(target: Config) -> Iterator[None]:
     """Temporarily replace the global cfg fields with *target*'s values.
 
-    Not thread-safe -- sequential use only.
+    Not thread-safe -- sequential use only.  Used by methods that call
+    into sub-modules still reading the global ``cfg`` singleton (e.g.
+    ingest, store).  Will be removed once store/ingest accept explicit config.
     """
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     for name in type(target).model_fields:
@@ -45,11 +46,10 @@ def _swap_config(target: Config) -> Iterator[None]:
 
 
 class Lilbee:
-    """Programmatic access to lilbee's retrieval pipeline.
+    """Single entry point for all lilbee pipeline operations.
 
-    Retrieval only -- no LLM chat. Search your indexed documents from Python.
-    Optional features (concept graph, reranker) activate automatically when
-    their dependencies are installed.
+    Owns a ``Config`` instance and a lazily-created ``LLMProvider``.
+    All pipeline methods use dependency injection internally.
 
     Usage::
 
@@ -58,6 +58,7 @@ class Lilbee:
         bee = Lilbee("./docs")
         bee.sync()
         results = bee.search("authentication")
+        answer = bee.ask_raw("How does auth work?")
     """
 
     def __init__(
@@ -66,16 +67,6 @@ class Lilbee:
         *,
         config: Config | None = None,
     ) -> None:
-        """Create a lilbee instance.
-
-        Args:
-            documents_dir: Path to documents folder. Creates a default Config
-                with derived data and lancedb directories.
-            config: Full Config instance for complete control.
-
-        Pass one or the other, not both. If neither is given, uses
-        ``Config.from_env()`` (same defaults as the CLI).
-        """
         if documents_dir is not None and config is not None:
             raise ValueError("Pass documents_dir or config, not both")
 
@@ -96,38 +87,109 @@ class Lilbee:
 
         self._config.documents_dir.mkdir(parents=True, exist_ok=True)
         self._config.data_dir.mkdir(parents=True, exist_ok=True)
+        self._provider: LLMProvider | None = None
 
     @property
     def config(self) -> Config:
         """The Config instance backing this Lilbee."""
         return self._config
 
-    def sync(self, *, quiet: bool = True) -> SyncResult:
-        """Sync documents to the vector store. Returns what changed."""
-        from lilbee.ingest import sync as _sync
+    @property
+    def provider(self) -> LLMProvider:
+        """Lazily-created LLM provider."""
+        if self._provider is None:
+            from lilbee.providers.factory import create_provider
 
-        with _swap_config(self._config):
-            return asyncio.run(_sync(quiet=quiet))
+            self._provider = create_provider(self._config)
+        return self._provider
 
     def search(self, query: str, *, top_k: int = 0) -> list[SearchChunk]:
         """Search indexed documents. Returns ranked chunks."""
-        from lilbee.query import search_context
+        from lilbee.query import _search_context
 
         with _swap_config(self._config):
-            return search_context(query, top_k=top_k)
+            return _search_context(query, top_k=top_k, config=self._config, provider=self.provider)
 
-    def add(self, paths: list[str | Path]) -> SyncResult:
-        """Add files to the knowledge base and sync.
+    def ask_raw(
+        self,
+        question: str,
+        *,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> AskResult:
+        """One-shot question returning structured answer + raw sources."""
+        from lilbee.query import _ask_raw
 
-        Copies each path into the documents directory, then syncs.
-        """
+        with _swap_config(self._config):
+            return _ask_raw(
+                question,
+                top_k=top_k,
+                history=history,
+                options=options,
+                config=self._config,
+                provider=self.provider,
+            )
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> Generator[StreamToken, None, None]:
+        """Streaming question: yields classified tokens, then source citations."""
+        from lilbee.query import _ask_stream
+
+        with _swap_config(self._config):
+            yield from _ask_stream(
+                question,
+                top_k=top_k,
+                history=history,
+                options=options,
+                config=self._config,
+                provider=self.provider,
+            )
+
+    def sync(
+        self,
+        *,
+        quiet: bool = True,
+        force_rebuild: bool = False,
+        force_vision: bool = False,
+        on_progress: Any = None,
+    ) -> SyncResult:
+        """Sync documents to the vector store. Returns what changed."""
+        from lilbee.ingest import sync as _sync
+        from lilbee.progress import noop_callback
+
+        callback = on_progress if on_progress is not None else noop_callback
+        with _swap_config(self._config):
+            return asyncio.run(
+                _sync(
+                    force_rebuild=force_rebuild,
+                    quiet=quiet,
+                    force_vision=force_vision,
+                    on_progress=callback,
+                )
+            )
+
+    def add(
+        self,
+        paths: list[str | Path],
+        *,
+        force: bool = True,
+        force_vision: bool = False,
+    ) -> SyncResult:
+        """Add files to the knowledge base and sync."""
         from lilbee.cli.helpers import copy_files
         from lilbee.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
         with _swap_config(self._config):
-            copy_files(resolved, force=True)
-            return asyncio.run(_sync(quiet=True))
+            copy_files(resolved, force=force)
+            return asyncio.run(_sync(quiet=True, force_vision=force_vision))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name."""
@@ -139,6 +201,15 @@ class Lilbee:
             doc_path = self._config.documents_dir / name
             if doc_path.exists():
                 doc_path.unlink()
+
+    def remove_documents(self, names: list[str], *, delete_files: bool = False) -> RemoveResult:
+        """Remove documents from the knowledge base by source name."""
+        from lilbee.store import remove_documents
+
+        with _swap_config(self._config):
+            return remove_documents(
+                names, delete_files=delete_files, documents_dir=self._config.documents_dir
+            )
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""
@@ -155,7 +226,4 @@ class Lilbee:
 
     def rebuild(self) -> SyncResult:
         """Rebuild the entire index from scratch."""
-        from lilbee.ingest import sync as _sync
-
-        with _swap_config(self._config):
-            return asyncio.run(_sync(force_rebuild=True, quiet=True))
+        return self.sync(force_rebuild=True, quiet=True)

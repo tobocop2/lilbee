@@ -21,6 +21,7 @@ from lilbee.cli.app import (
     apply_overrides,
     console,
     data_dir_option,
+    get_bee,
     model_option,
     num_ctx_option,
     repeat_penalty_option,
@@ -43,7 +44,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
-from lilbee.store import delete_by_source, delete_source, get_chunks_by_source, get_sources
+from lilbee.store import get_chunks_by_source
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -188,9 +189,8 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.query import search_context
-
-    results = search_context(query, top_k=top_k or cfg.top_k)
+    bee = get_bee()
+    results = bee.search(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -231,10 +231,9 @@ def sync_cmd(
         cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
-    from lilbee.ingest import sync
-
+    bee = get_bee()
     try:
-        result = asyncio.run(sync(quiet=cfg.json_mode, force_vision=vision))
+        result = bee.sync(quiet=cfg.json_mode, force_vision=vision)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -260,10 +259,9 @@ def rebuild(
         cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
-    from lilbee.ingest import sync
-
+    bee = get_bee()
     try:
-        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode, force_vision=vision))
+        result = bee.sync(force_rebuild=True, quiet=cfg.json_mode, force_vision=vision)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -388,13 +386,12 @@ def add(
                     f" from {len(urls)} URL(s)[/{theme.MUTED}]"
                 )
 
+        bee = get_bee()
         if cfg.json_mode:
-            from lilbee.ingest import sync
-
             copied: list[str] = []
             if file_paths:
                 copied = copy_paths(file_paths, console, force=force)
-            result = asyncio.run(sync(quiet=True, force_vision=vision))
+            result = bee.sync(quiet=True, force_vision=vision)
             json_output(
                 {
                     "command": "add",
@@ -408,10 +405,7 @@ def add(
         if file_paths:
             add_paths(file_paths, console, force=force, force_vision=vision)
         elif urls:
-            # URLs already saved; just trigger sync
-            from lilbee.ingest import sync
-
-            result = asyncio.run(sync(force_vision=vision))
+            result = bee.sync(force_vision=vision)
             console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:
@@ -432,6 +426,7 @@ def chunks(
 ) -> None:
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.store import get_sources
 
     known = {s["filename"] for s in get_sources()}
     if source not in known:
@@ -481,22 +476,10 @@ def remove(
 ) -> None:
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
-    known = {s["filename"] for s in get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        delete_by_source(name)
-        delete_source(name)
-        removed.append(name)
-        if delete_file:
-            path = cfg.documents_dir / name
-            if path.exists():
-                path.unlink()
+    bee = get_bee()
+    result = bee.remove_documents(names, delete_files=delete_file)
+    removed = result.removed
+    not_found = result.not_found
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": removed}
@@ -546,11 +529,10 @@ def ask(
     validate_model()
     auto_sync(console)
 
+    bee = get_bee()
     try:
         if cfg.json_mode:
-            from lilbee.query import ask_raw
-
-            result = ask_raw(question)
+            result = bee.ask_raw(question)
             json_output(
                 {
                     "command": "ask",
@@ -561,9 +543,7 @@ def ask(
             )
             return
 
-        from lilbee.query import ask_stream
-
-        for token in ask_stream(question):
+        for token in bee.ask_stream(question):
             console.print(token, end="")
         console.print()
     except RuntimeError as exc:

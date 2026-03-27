@@ -5,9 +5,32 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from lilbee.config import cfg
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def _reset_bee_singletons() -> None:
+    """Reset all cached Lilbee instances and provider singletons."""
+    import lilbee.cli.app as cli_app
+    import lilbee.mcp as mcp_mod
+    import lilbee.providers.factory as factory_mod
+    import lilbee.server.handlers as handlers_mod
+
+    cli_app._bee = None
+    mcp_mod._bee = None
+    handlers_mod._bee = None
+    factory_mod._provider = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_singletons():
+    """Reset cached Lilbee singletons before and after every test."""
+    _reset_bee_singletons()
+    yield
+    _reset_bee_singletons()
 
 
 @contextmanager

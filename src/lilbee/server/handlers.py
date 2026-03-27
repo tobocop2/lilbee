@@ -20,14 +20,26 @@ from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
-from lilbee.providers import get_provider
-from lilbee.query import build_rag_context, search_context
 from lilbee.results import group, to_dicts
 from lilbee.store import get_sources, remove_documents
 
 if TYPE_CHECKING:
+    from lilbee.api import Lilbee
     from lilbee.model_manager import ModelSource
     from lilbee.query import ChatMessage
+
+_bee: Lilbee | None = None
+
+
+def _get_bee() -> Lilbee:
+    """Return a module-level Lilbee instance backed by the global cfg."""
+    global _bee
+    if _bee is None:
+        from lilbee.api import Lilbee
+
+        _bee = Lilbee(config=cfg)
+    return _bee
+
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +134,8 @@ async def status() -> dict[str, Any]:
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search and return grouped DocumentResults as dicts."""
-    results = search_context(q, top_k=top_k)
+    bee = _get_bee()
+    results = bee.search(q, top_k=top_k)
     grouped = group(results)
     return to_dicts(grouped)
 
@@ -131,10 +144,9 @@ async def ask(
     question: str, top_k: int = 0, options: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """One-shot RAG answer. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
-
+    bee = _get_bee()
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, options=opts)
+    result = bee.ask_raw(question, top_k=top_k, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -152,8 +164,8 @@ def _run_llm_stream(
     from lilbee.reasoning import filter_reasoning
 
     try:
-        provider = get_provider()
-        stream = provider.chat(
+        bee = _get_bee()
+        stream = bee.provider.chat(
             cast("list[dict[str, Any]]", messages),
             stream=True,
             options=opts or None,
@@ -188,8 +200,16 @@ async def _stream_rag_response(
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
+    from lilbee.query import _build_rag_context
 
-    rag = build_rag_context(question, top_k=top_k, history=history)
+    bee = _get_bee()
+    rag = _build_rag_context(
+        question,
+        top_k=top_k,
+        history=history,
+        config=bee.config,
+        provider=bee.provider,
+    )
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
@@ -233,10 +253,9 @@ async def chat(
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Chat with history. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
-
+    bee = _get_bee()
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, history=history, options=opts)
+    result = bee.ask_raw(question, top_k=top_k, history=history, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -466,8 +485,8 @@ async def get_config() -> dict[str, Any]:
 
 async def models_show(model: str) -> dict[str, Any]:
     """Return model metadata/parameters. Returns empty dict if unavailable."""
-    provider = get_provider()
-    result = provider.show_model(model)
+    bee = _get_bee()
+    result = bee.provider.show_model(model)
     return result if result is not None else {}
 
 
@@ -501,8 +520,8 @@ async def models_catalog(
         limit=limit,
         offset=offset,
     )
-    provider = get_provider()
-    installed_names = set(provider.list_models())
+    bee = _get_bee()
+    installed_names = set(bee.provider.list_models())
 
     models = []
     for m in result.models:

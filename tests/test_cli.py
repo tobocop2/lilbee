@@ -42,6 +42,8 @@ def _skip_model_validation():
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     """Redirect config paths for all CLI tests."""
+    import lilbee.cli.app as cli_app
+
     monkeypatch.delenv("LILBEE_DATA", raising=False)
     monkeypatch.delenv("LILBEE_LOG_LEVEL", raising=False)
     snapshot = cfg.model_copy()
@@ -57,8 +59,12 @@ def isolated_env(tmp_path, monkeypatch):
     cfg.json_mode = False
     cfg.concept_graph = False
 
+    # Reset the cached Lilbee singleton so each test gets a fresh one
+    cli_app._bee = None
+
     yield tmp_path
 
+    cli_app._bee = None
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
     root.setLevel(old_level)
@@ -252,14 +258,14 @@ class TestAddIgnoresDirs:
 
 
 class TestAsk:
-    @mock.patch("lilbee.query.ask_stream")
+    @mock.patch("lilbee.query._ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_prints_response(self, mock_sync, mock_stream):
         mock_stream.return_value = iter(["Hello", " world"])
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.query.ask_stream")
+    @mock.patch("lilbee.query._ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_stream):
         mock_stream.return_value = _mock_stream("answer")
@@ -291,7 +297,7 @@ class TestAutoSync:
         new_callable=AsyncMock,
         return_value=SyncResult(added=["new.pdf"]),
     )
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
+    @mock.patch("lilbee.query._ask_stream", return_value=_mock_stream("answer"))
     def test_auto_sync_prints_summary(self, mock_ask_stream, mock_sync):
         result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0
@@ -689,7 +695,7 @@ _MOCK_SEARCH_RESULTS = [
 
 
 class TestSearch:
-    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    @mock.patch("lilbee.query._search_context", return_value=_MOCK_SEARCH_RESULTS)
     def test_search_json_with_results(self, mock_search):
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
@@ -700,21 +706,21 @@ class TestSearch:
         assert "vector" not in data["results"][0]
         assert "distance" in data["results"][0]
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
+    @mock.patch("lilbee.query._search_context", return_value=[])
     def test_search_json_empty_results(self, mock_search):
         result = runner.invoke(app, ["--json", "search", "nothing"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
-    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
+    @mock.patch("lilbee.query._search_context", return_value=_MOCK_SEARCH_RESULTS)
     def test_search_human_output(self, mock_search):
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "manual.pdf" in result.output
 
     @mock.patch(
-        "lilbee.query.search_context",
+        "lilbee.query._search_context",
         return_value=[_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})],
     )
     def test_search_human_truncates_long_chunks(self, mock_search):
@@ -723,14 +729,14 @@ class TestSearch:
         # Chunk is truncated (100 chars doesn't all appear, Rich truncates with …)
         assert result.output.count("x") < 100
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
+    @mock.patch("lilbee.query._search_context", return_value=[])
     def test_search_human_no_results(self, mock_search):
         result = runner.invoke(app, ["search", "nothing"])
         assert result.exit_code == 0
         assert "No results found" in result.output
 
     @mock.patch(
-        "lilbee.query.search_context",
+        "lilbee.query._search_context",
         return_value=[
             _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
         ],
@@ -742,7 +748,7 @@ class TestSearch:
         assert "0.85" in result.output
 
     @mock.patch(
-        "lilbee.query.search_context",
+        "lilbee.query._search_context",
         return_value=[
             _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
         ],
@@ -1189,7 +1195,7 @@ class TestAddJson:
 
 
 class TestAskJson:
-    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.query._ask_raw")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json(self, mock_sync, mock_ask_raw):
         from lilbee.query import AskResult
@@ -1221,7 +1227,7 @@ class TestAskJson:
         assert "vector" not in data["sources"][0]
         assert "distance" in data["sources"][0]
 
-    @mock.patch("lilbee.query.ask_raw")
+    @mock.patch("lilbee.query._ask_raw")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_ask_raw):
         from lilbee.query import AskResult
@@ -1237,14 +1243,14 @@ class TestAskJson:
 class TestAskModelNotFound:
     """CLI should show a friendly error when the model doesn't exist."""
 
-    @mock.patch("lilbee.query.ask_stream", side_effect=RuntimeError("Model 'bad' not found"))
+    @mock.patch("lilbee.query._ask_stream", side_effect=RuntimeError("Model 'bad' not found"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_human(self, mock_sync, mock_ask_stream):
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @mock.patch("lilbee.query.ask_raw", side_effect=RuntimeError("Model 'bad' not found"))
+    @mock.patch("lilbee.query._ask_raw", side_effect=RuntimeError("Model 'bad' not found"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_model_not_found_json(self, mock_sync, mock_ask_raw):
         result = runner.invoke(app, ["--json", "ask", "hello"])
@@ -1313,14 +1319,14 @@ class TestBackendUnavailable:
 class TestEnsureChatModelWiring:
     """Verify that ask and chat call ensure_chat_model before running."""
 
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
+    @mock.patch("lilbee.query._ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_ensure_chat_model(self, mock_sync, mock_ask_stream):
         with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
+    @mock.patch("lilbee.query._ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_validate_model(self, mock_sync, mock_ask_stream):
         with mock.patch("lilbee.embedder.validate_model") as mock_val:

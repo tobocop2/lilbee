@@ -139,11 +139,14 @@ def _sources_schema() -> pa.Schema:
     )
 
 
+def get_db_at(lancedb_dir: Path) -> lancedb.DBConnection:
+    """Open a LanceDB connection at an explicit path."""
+    lancedb_dir.mkdir(parents=True, exist_ok=True)
+    return lancedb.connect(str(lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL)
+
+
 def get_db() -> lancedb.DBConnection:
-    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(
-        str(cfg.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
-    )
+    return get_db_at(cfg.lancedb_dir)
 
 
 def _table_names(db: lancedb.DBConnection) -> list[str]:

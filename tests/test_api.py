@@ -8,7 +8,7 @@ import pytest
 from lilbee.config import cfg
 
 
-def _fake_embed(text):
+def _fake_embed(text, **kwargs):
     return [0.1] * 768
 
 
@@ -16,13 +16,25 @@ def _fake_embed_batch(texts, **kwargs):
     return [[0.1] * 768 for _ in texts]
 
 
+def _fake_provider():
+    """Create a mock provider that handles embed and chat calls."""
+    p = mock.MagicMock()
+    p.embed.side_effect = lambda texts: [[0.1] * 768 for _ in texts]
+    p.chat.return_value = "mock answer"
+    return p
+
+
 @pytest.fixture(autouse=True)
 def _mock_embedder():
     """Mock embedding calls so tests run without a live model."""
     with (
         mock.patch("lilbee.embedder.embed", side_effect=_fake_embed),
+        mock.patch("lilbee.embedder.embed_di", side_effect=_fake_embed),
         mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch),
+        mock.patch("lilbee.embedder.embed_batch_di", side_effect=_fake_embed_batch),
         mock.patch("lilbee.embedder.validate_model"),
+        mock.patch("lilbee.embedder.validate_model_di"),
+        mock.patch("lilbee.providers.factory.create_provider", return_value=_fake_provider()),
     ):
         yield
 

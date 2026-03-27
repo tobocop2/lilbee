@@ -1,9 +1,12 @@
 """App creation, console, and global callback."""
 
+from __future__ import annotations
+
 import logging
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -12,6 +15,9 @@ from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
 from lilbee.models import ensure_tag
+
+if TYPE_CHECKING:
+    from lilbee.api import Lilbee
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -56,6 +62,23 @@ top_k_sampling_option = typer.Option(None, "--top-k-sampling", help="Top-k sampl
 repeat_penalty_option = typer.Option(None, "--repeat-penalty", help="Repeat penalty factor.")
 num_ctx_option = typer.Option(None, "--num-ctx", help="Context window size (tokens).")
 seed_option = typer.Option(None, "--seed", help="Random seed for reproducibility.")
+
+_bee = None
+
+
+def get_bee() -> Lilbee:
+    """Return a Lilbee instance backed by the global cfg singleton.
+
+    The instance is created lazily and cached for the process lifetime.
+    CLI overrides mutate ``cfg`` before any command runs, so the Lilbee
+    instance always sees the current config.
+    """
+    global _bee
+    if _bee is None:
+        from lilbee.api import Lilbee as _LilbeeCls
+
+        _bee = _LilbeeCls(config=cfg)
+    return _bee
 
 
 def _apply_data_root(root: Path) -> None:

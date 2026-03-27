@@ -692,9 +692,9 @@ async def test_chat_slash_delete_with_match(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.tui.screens.chat.get_sources") as mock_get,
-            patch("lilbee.cli.tui.screens.chat.delete_by_source") as mock_del_chunks,
-            patch("lilbee.cli.tui.screens.chat.delete_source") as mock_del_src,
+            patch("lilbee.store.get_sources") as mock_get,
+            patch("lilbee.store.delete_by_source") as mock_del_chunks,
+            patch("lilbee.store.delete_source") as mock_del_src,
         ):
             mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
             app.screen._cmd_delete("notes.md")
@@ -707,7 +707,7 @@ async def test_chat_slash_delete_not_found(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.cli.tui.screens.chat.get_sources",
+            "lilbee.store.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("nonexistent.md")
@@ -718,7 +718,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.cli.tui.screens.chat.get_sources",
+            "lilbee.store.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("")
@@ -728,7 +728,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
 async def test_chat_slash_delete_store_error(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_sources", side_effect=Exception("no store")):
+        with patch("lilbee.store.get_sources", side_effect=Exception("no store")):
             app.screen._cmd_delete("x")
 
 
@@ -736,7 +736,7 @@ async def test_chat_slash_delete_store_error(mock_check):
 async def test_chat_slash_delete_empty_sources(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_sources", return_value=[]):
+        with patch("lilbee.store.get_sources", return_value=[]):
             app.screen._cmd_delete("x")
 
 
@@ -2140,7 +2140,7 @@ async def test_chat_stream_response_worker(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("Hello"), FakeToken(" world")]
-        with patch("lilbee.query.ask_stream", return_value=iter(tokens)):
+        with patch("lilbee.query._ask_stream", return_value=iter(tokens)):
             from textual.widgets import Input
 
             inp = app.screen.query_one("#chat-input", Input)
@@ -2158,7 +2158,7 @@ async def test_chat_stream_response_error_worker(mock_check):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.query.ask_stream", side_effect=Exception("LLM error")):
+        with patch("lilbee.query._ask_stream", side_effect=Exception("LLM error")):
             from textual.widgets import Input
 
             inp = app.screen.query_one("#chat-input", Input)
@@ -2182,7 +2182,7 @@ async def test_chat_stream_response_reasoning_worker(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("thinking", is_reasoning=True), FakeToken("answer")]
-        with patch("lilbee.query.ask_stream", return_value=iter(tokens)):
+        with patch("lilbee.query._ask_stream", return_value=iter(tokens)):
             from textual.widgets import Input
 
             inp = app.screen.query_one("#chat-input", Input)
@@ -2253,7 +2253,7 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_check):
             time.sleep(5)  # long enough to cancel
             yield FakeToken("end")
 
-        with patch("lilbee.query.ask_stream", side_effect=slow_stream):
+        with patch("lilbee.query._ask_stream", side_effect=slow_stream):
             from textual.widgets import Input
 
             inp = app.screen.query_one("#chat-input", Input)
@@ -2452,7 +2452,7 @@ async def test_chat_cancel_with_active_worker(mock_check):
             barrier.wait(timeout=5)
             yield FakeToken("end")
 
-        with patch("lilbee.query.ask_stream", side_effect=slow_stream):
+        with patch("lilbee.query._ask_stream", side_effect=slow_stream):
             from textual.widgets import Input
 
             inp = app.screen.query_one("#chat-input", Input)

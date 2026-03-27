@@ -16,6 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Input
 
 from lilbee import settings
+from lilbee.cli.app import get_bee
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
@@ -32,7 +33,6 @@ from lilbee.config import cfg
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.progress import EventType
 from lilbee.query import ChatMessage
-from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
@@ -223,14 +223,16 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
+        bee = get_bee()
         try:
-            sources = get_sources()
+            status = bee.status()
+            source_names: list[str] = status["sources"]  # type: ignore[assignment]
+            known = set(source_names)
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
 
-        known = {s.get("filename", s.get("source", "?")) for s in sources}
         if not known:
             self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
@@ -244,8 +246,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
 
-        delete_by_source(name)
-        delete_source(name)
+        bee.remove(name)
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
@@ -355,13 +356,12 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
-        from lilbee.query import ask_stream
-
+        bee = get_bee()
         response_parts: list[str] = []
         sources: list[str] = []
 
         try:
-            stream = ask_stream(question, history=self._history[:-1])
+            stream = bee.ask_stream(question, history=self._history[:-1])
             for token in stream:
                 if token.is_reasoning:
                     self.app.call_from_thread(widget.append_reasoning, token.content)
@@ -404,15 +404,12 @@ class ChatScreen(Screen[None]):
     def _run_sync(self) -> None:
         """Run background document sync.
 
-        Uses asyncio.run() because Textual workers run in threads, not the
-        async event loop, so we need a fresh loop for the async sync() call.
+        Uses bee.sync() which internally calls asyncio.run() for the async
+        ingest pipeline.
         """
-        import asyncio
-
         sync_bar = self.query_one("#sync-bar", SyncBar)
         try:
-            from lilbee.ingest import sync
-
+            bee = get_bee()
             self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_SYNCING)
 
             def on_progress(event_type: EventType, data: dict[str, object]) -> None:
@@ -424,8 +421,8 @@ class ChatScreen(Screen[None]):
                     )
                     self.app.call_from_thread(sync_bar.set_status, status)
 
-            result = asyncio.run(sync(on_progress=on_progress))
-            added = result.get("added", 0) if isinstance(result, dict) else 0
+            result = bee.sync(on_progress=on_progress)
+            added = len(result.added)
             self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_DONE.format(count=added))
         except Exception:
             log.warning("Background sync failed", exc_info=True)

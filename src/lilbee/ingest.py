@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
+
 from pydantic import BaseModel
 from rich.progress import (
     BarColumn,

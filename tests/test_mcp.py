@@ -28,15 +28,20 @@ from lilbee.store import SearchChunk
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
+    import lilbee.mcp as mcp_mod
+
+    mcp_mod._bee = None
     snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
+    cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
 
     yield tmp_path
 
+    mcp_mod._bee = None
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -97,7 +102,7 @@ class TestClean:
 
 
 class TestLilbeeSearch:
-    @mock.patch("lilbee.query.search_context")
+    @mock.patch("lilbee.query._search_context")
     def test_returnscleaned_results(self, mock_search):
         mock_search.return_value = [
             SearchChunk(
@@ -117,9 +122,12 @@ class TestLilbeeSearch:
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_search.assert_called_once_with("test query", top_k=3)
+        mock_search.assert_called_once()
+        args, kwargs = mock_search.call_args
+        assert args[0] == "test query"
+        assert kwargs["top_k"] == 3
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
+    @mock.patch("lilbee.query._search_context", return_value=[])
     def test_empty_results(self, mock_search):
         assert lilbee_search("nothing") == []
 
@@ -170,24 +178,24 @@ class TestLilbeeSync:
 
 
 class TestLilbeeRemove:
-    @mock.patch("lilbee.mcp.get_sources")
-    @mock.patch("lilbee.mcp.delete_source")
-    @mock.patch("lilbee.mcp.delete_by_source")
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
     def test_removes_known_file(self, mock_del, mock_del_src, mock_sources):
         mock_sources.return_value = [{"filename": "a.md"}]
         result = lilbee_remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
 
-    @mock.patch("lilbee.mcp.get_sources")
+    @mock.patch("lilbee.store.get_sources")
     def test_not_found(self, mock_sources):
         mock_sources.return_value = []
         result = lilbee_remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    @mock.patch("lilbee.mcp.get_sources")
-    @mock.patch("lilbee.mcp.delete_source")
-    @mock.patch("lilbee.mcp.delete_by_source")
+    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.store.delete_source")
+    @mock.patch("lilbee.store.delete_by_source")
     def test_delete_files_removes_from_disk(self, mock_del, mock_del_src, mock_sources):
         mock_sources.return_value = [{"filename": "a.md"}]
         f = cfg.documents_dir / "a.md"
@@ -199,14 +207,14 @@ class TestLilbeeRemove:
 
 
 class TestLilbeeListDocuments:
-    @mock.patch("lilbee.mcp.get_sources")
+    @mock.patch("lilbee.store.get_sources")
     def test_returns_documents(self, mock_sources):
         mock_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
         result = lilbee_list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
 
-    @mock.patch("lilbee.mcp.get_sources")
+    @mock.patch("lilbee.store.get_sources")
     def test_empty(self, mock_sources):
         mock_sources.return_value = []
         result = lilbee_list_documents()

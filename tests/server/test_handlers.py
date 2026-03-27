@@ -17,14 +17,19 @@ from lilbee.server.handlers import MAX_ADD_FILES
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path: Path):
     """Redirect config paths to temp dir for every test."""
+    from lilbee.server import handlers as h
+
+    h._bee = None
     snapshot = cfg.model_copy()
     docs = tmp_path / "documents"
     docs.mkdir()
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
+    cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.concept_graph = False
     yield docs
+    h._bee = None
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -281,6 +286,7 @@ class TestOptionsPassthrough:
 
         with (
             mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768),
             mock.patch("lilbee.store.search", return_value=[]),
         ):
             async with AsyncTestClient(create_app()) as client:
@@ -297,6 +303,7 @@ class TestOptionsPassthrough:
 
         with (
             mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768),
             mock.patch("lilbee.store.search", return_value=[]),
         ):
             async with AsyncTestClient(create_app()) as client:
@@ -318,6 +325,7 @@ class TestOptionsPassthrough:
 
         with (
             mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
+            mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768),
             mock.patch("lilbee.store.search", return_value=[]),
         ):
             async with AsyncTestClient(create_app()) as client:

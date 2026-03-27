@@ -23,7 +23,8 @@ from lilbee.config import cfg  # noqa: E402
 from lilbee.ingest import sync  # noqa: E402
 from lilbee.model_manager import reset_model_manager  # noqa: E402
 from lilbee.providers.factory import reset_provider  # noqa: E402
-from lilbee.query import ask_raw, search_context  # noqa: E402
+from lilbee.query import _ask_raw as ask_raw  # noqa: E402
+from lilbee.query import _search_context as search_context  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

@@ -1,4 +1,4 @@
-"""Tests for the RAG query pipeline (mocked — no live server needed)."""
+"""Tests for the RAG query pipeline (mocked -- no live server needed)."""
 
 from unittest import mock
 
@@ -6,13 +6,16 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.query import (
-    ask,
-    ask_raw,
-    ask_stream,
+    _ask,
+    _ask_raw,
+    _ask_stream,
+    _expand_query,
+    _hyde_search,
+    _search_context,
+    _search_structured,
     build_context,
     deduplicate_sources,
     format_source,
-    search_context,
     sort_by_relevance,
 )
 from lilbee.store import SearchChunk
@@ -25,6 +28,14 @@ def _disable_concepts():
     cfg.concept_graph = False
     yield
     cfg.concept_graph = old
+
+
+def _make_provider(chat_return=None):
+    """Create a mock LLM provider."""
+    p = mock.MagicMock()
+    p.chat.return_value = chat_return
+    p.embed.return_value = [[0.1] * 768]
+    return p
 
 
 def _make_result(
@@ -189,223 +200,199 @@ class TestBuildContext:
 class TestSearchContext:
     @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_returns_results(self, mock_embed, mock_search, mock_expand):
-        results = search_context("question")
+        provider = _make_provider()
+        results = _search_context("question", config=cfg, provider=provider)
         assert len(results) == 1
-        mock_embed.assert_called_once_with("question")
+        mock_embed.assert_called_once_with("question", provider=provider, config=cfg)
 
     @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_passes_query_text(self, mock_embed, mock_search, mock_expand):
-        search_context("my question")
+        provider = _make_provider()
+        _search_context("my question", config=cfg, provider=provider)
         mock_search.assert_called_once()
         assert mock_search.call_args[1]["query_text"] == "my question"
 
     @mock.patch("lilbee.store.search")
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     @mock.patch("lilbee.query._expand_query", return_value=["alt query 1"])
     def test_expansion_merges_results(self, mock_expand, mock_embed, mock_search):
         original = _make_result(source="a.md", chunk_index=0)
         expanded = _make_result(source="b.md", chunk_index=0)
         mock_search.side_effect = [[original], [expanded]]
-        results = search_context("question")
+        provider = _make_provider()
+        results = _search_context("question", config=cfg, provider=provider)
         assert len(results) == 2
         sources = {r.source for r in results}
         assert "a.md" in sources
         assert "b.md" in sources
 
     @mock.patch("lilbee.store.search")
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     @mock.patch("lilbee.query._expand_query", return_value=["alt"])
     def test_expansion_deduplicates(self, mock_expand, mock_embed, mock_search):
         same = _make_result(source="a.md", chunk_index=0)
         mock_search.side_effect = [[same], [same]]
-        results = search_context("question")
+        provider = _make_provider()
+        results = _search_context("question", config=cfg, provider=provider)
         assert len(results) == 1
 
 
 class TestExpandQuery:
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_variants(self, mock_get_provider):
-        mock_provider = mock.MagicMock()
-        mock_provider.chat.return_value = "explain how X works in detail\nexplain the purpose of X"
-        mock_get_provider.return_value = mock_provider
-        from lilbee.query import _expand_query
-
-        variants = _expand_query("explain X in detail")
+    def test_returns_variants(self):
+        provider = _make_provider("explain how X works in detail\nexplain the purpose of X")
+        variants = _expand_query("explain X in detail", config=cfg, provider=provider)
         assert len(variants) == 2
 
-    @mock.patch("lilbee.query.get_provider")
-    def test_caps_at_three(self, mock_get_provider):
-        mock_provider = mock.MagicMock()
-        mock_provider.chat.return_value = "A\nB\nC\nD\nE"
-        mock_get_provider.return_value = mock_provider
-        from lilbee.query import _expand_query
+    def test_caps_at_three(self):
+        provider = _make_provider("A\nB\nC\nD\nE")
+        assert len(_expand_query("q", config=cfg, provider=provider)) == 3
 
-        assert len(_expand_query("q")) == 3
-
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_empty_on_error(self, mock_get_provider):
-        mock_get_provider.side_effect = RuntimeError("no provider")
-        from lilbee.query import _expand_query
-
-        assert _expand_query("q") == []
+    def test_returns_empty_on_error(self):
+        provider = _make_provider()
+        provider.chat.side_effect = RuntimeError("no provider")
+        assert _expand_query("q", config=cfg, provider=provider) == []
 
     def test_disabled_when_count_zero(self):
-        from lilbee.config import cfg
-        from lilbee.query import _expand_query
-
         old = cfg.query_expansion_count
         cfg.query_expansion_count = 0
         try:
-            assert _expand_query("anything") == []
+            provider = _make_provider()
+            assert _expand_query("anything", config=cfg, provider=provider) == []
         finally:
             cfg.query_expansion_count = old
 
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_empty_on_non_string(self, mock_get_provider):
-        mock_provider = mock.MagicMock()
-        mock_provider.chat.return_value = iter(["stream"])  # not a string
-        mock_get_provider.return_value = mock_provider
-        from lilbee.query import _expand_query
-
-        assert _expand_query("q") == []
+    def test_returns_empty_on_non_string(self):
+        provider = _make_provider(iter(["stream"]))  # not a string
+        assert _expand_query("q", config=cfg, provider=provider) == []
 
 
 class TestAskRaw:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_structured_result(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "5 quarts."
-        result = ask_raw("oil capacity?")
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_returns_structured_result(self, mock_embed, mock_search):
+        provider = _make_provider("5 quarts.")
+        result = _ask_raw("oil capacity?", config=cfg, provider=provider)
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
     @mock.patch("lilbee.store.search", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_no_results(self, mock_embed, mock_search):
-        result = ask_raw("anything")
+        provider = _make_provider()
+        result = _ask_raw("anything", config=cfg, provider=provider)
         assert "No relevant documents" in result.answer
         assert result.sources == []
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_with_history(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "answer"
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_raw_with_history(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         history = [{"role": "user", "content": "prev"}]
-        ask_raw("new q", history=history)
-        messages = mock_provider.return_value.chat.call_args[0][0]
+        _ask_raw("new q", history=history, config=cfg, provider=provider)
+        messages = provider.chat.call_args[0][0]
         assert len(messages) == 3  # system + history + user
 
 
 class TestAsk:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result(chunk="oil is 5 quarts")])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_answer_with_citations(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "The oil capacity is 5 quarts."
-        answer = ask("oil capacity?")
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_returns_answer_with_citations(self, mock_embed, mock_search):
+        provider = _make_provider("The oil capacity is 5 quarts.")
+        answer = _ask("oil capacity?", config=cfg, provider=provider)
         assert "5 quarts" in answer
         assert "Sources:" in answer
         assert "test.pdf" in answer
 
     @mock.patch("lilbee.store.search", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_no_results_message(self, mock_embed, mock_search):
-        answer = ask("anything")
+        provider = _make_provider()
+        answer = _ask("anything", config=cfg, provider=provider)
         assert "No relevant documents" in answer
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_with_history(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "answer"
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_with_history(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         history = [
             {"role": "user", "content": "prev q"},
             {"role": "assistant", "content": "prev a"},
         ]
-        ask("new q", history=history)
-        messages = mock_provider.return_value.chat.call_args[0][0]
+        _ask("new q", history=history, config=cfg, provider=provider)
+        messages = provider.chat.call_args[0][0]
         # System + 2 history + user = 4
         assert len(messages) == 4
         assert messages[1]["content"] == "prev q"
 
 
 class TestAskStream:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_yields_tokens_then_citations(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = iter(["Hello", " world"])
-        stream_tokens = list(ask_stream("test"))
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_yields_tokens_then_citations(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["Hello", " world"]))
+        stream_tokens = list(_ask_stream("test", config=cfg, provider=provider))
         combined = "".join(st.content for st in stream_tokens)
         assert "Hello world" in combined
         assert "Sources:" in combined
 
     @mock.patch("lilbee.store.search", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_empty_results_yields_message(self, mock_embed, mock_search):
-        stream_tokens = list(ask_stream("anything"))
+        provider = _make_provider()
+        stream_tokens = list(_ask_stream("anything", config=cfg, provider=provider))
         assert any("No relevant documents" in st.content for st in stream_tokens)
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_with_history(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = iter(["response"])
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_stream_with_history(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["response"]))
         history = [
             {"role": "user", "content": "previous question"},
             {"role": "assistant", "content": "previous answer"},
         ]
-        list(ask_stream("new question", history=history))
-        call_args = mock_provider.return_value.chat.call_args
+        list(_ask_stream("new question", history=history, config=cfg, provider=provider))
+        call_args = provider.chat.call_args
         messages = call_args[0][0]
         assert len(messages) == 4
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "previous question"
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_skips_empty_tokens(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = iter(["", "data"])
-        stream_tokens = list(ask_stream("test"))
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_skips_empty_tokens(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["", "data"]))
+        stream_tokens = list(_ask_stream("test", config=cfg, provider=provider))
         non_source = [st for st in stream_tokens if "Sources:" not in st.content]
         assert all(st.content != "" for st in non_source)
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_reasoning_stripped_by_default(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = iter(["<think>reasoning</think>answer"])
-        stream_tokens = list(ask_stream("test"))
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_reasoning_stripped_by_default(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["<think>reasoning</think>answer"]))
+        stream_tokens = list(_ask_stream("test", config=cfg, provider=provider))
         combined = "".join(st.content for st in stream_tokens if not st.is_reasoning)
         assert "reasoning" not in combined
         assert "answer" in combined
 
 
 class TestGenerationOptions:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_passes_options(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "answer"
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_raw_passes_options(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         opts = {"temperature": 0.3, "seed": 42}
-        ask_raw("q", options=opts)
-        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
+        _ask_raw("q", options=opts, config=cfg, provider=provider)
+        assert provider.chat.call_args[1]["options"] == opts
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_defaults_to_cfg_options(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "answer"
-        from lilbee.config import cfg
-
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_raw_defaults_to_cfg_options(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         cfg.temperature = 0.7
         cfg.seed = None
         cfg.top_p = None
@@ -413,58 +400,52 @@ class TestGenerationOptions:
         cfg.repeat_penalty = None
         cfg.num_ctx = None
         try:
-            ask_raw("q")
-            assert mock_provider.return_value.chat.call_args[1]["options"] == {"temperature": 0.7}
+            _ask_raw("q", config=cfg, provider=provider)
+            assert provider.chat.call_args[1]["options"] == {"temperature": 0.7}
         finally:
             cfg.temperature = None
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_passes_options(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = iter(["token"])
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_stream_passes_options(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["token"]))
         opts = {"temperature": 0.1}
-        list(ask_stream("q", options=opts))
-        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
+        list(_ask_stream("q", options=opts, config=cfg, provider=provider))
+        assert provider.chat.call_args[1]["options"] == opts
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_passes_options_through(self, mock_embed, mock_search, mock_provider):
-        mock_provider.return_value.chat.return_value = "answer"
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_passes_options_through(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         opts = {"num_ctx": 4096}
-        ask("q", options=opts)
-        assert mock_provider.return_value.chat.call_args[1]["options"] == opts
+        _ask("q", options=opts, config=cfg, provider=provider)
+        assert provider.chat.call_args[1]["options"] == opts
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_empty_options_passes_none(self, mock_embed, mock_search, mock_provider):
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_raw_empty_options_passes_none(self, mock_embed, mock_search):
         """When cfg has no generation options set, passes None to provider."""
-        mock_provider.return_value.chat.return_value = "answer"
-        from lilbee.config import cfg
-
+        provider = _make_provider("answer")
         cfg.temperature = None
         cfg.top_p = None
         cfg.top_k_sampling = None
         cfg.repeat_penalty = None
         cfg.num_ctx = None
         cfg.seed = None
-        ask_raw("q")
-        assert mock_provider.return_value.chat.call_args[1]["options"] is None
+        _ask_raw("q", config=cfg, provider=provider)
+        assert provider.chat.call_args[1]["options"] is None
 
 
 class TestAskStreamError:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_stream_handles_disconnect(self, mock_embed, mock_search, mock_provider):
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_stream_handles_disconnect(self, mock_embed, mock_search):
         def failing_stream():
             yield "partial"
             raise ConnectionError("lost connection")
 
-        mock_provider.return_value.chat.return_value = failing_stream()
-        stream_tokens = list(ask_stream("test"))
+        provider = _make_provider(failing_stream())
+        stream_tokens = list(_ask_stream("test", config=cfg, provider=provider))
         combined = "".join(st.content for st in stream_tokens)
         assert "partial" in combined
         assert "Connection lost" in combined
@@ -473,30 +454,29 @@ class TestAskStreamError:
 class TestProviderError:
     """ProviderError from the provider should propagate."""
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_raw_provider_error(self, mock_embed, mock_search, mock_provider):
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_raw_provider_error(self, mock_embed, mock_search):
         from lilbee.providers.base import ProviderError
 
-        mock_provider.return_value.chat.side_effect = ProviderError("model 'bad' not found")
+        provider = _make_provider()
+        provider.chat.side_effect = ProviderError("model 'bad' not found")
         with pytest.raises(ProviderError, match="not found"):
-            ask_raw("hello")
+            _ask_raw("hello", config=cfg, provider=provider)
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_provider_error(self, mock_embed, mock_search, mock_provider):
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_stream_provider_error(self, mock_embed, mock_search):
         from lilbee.providers.base import ProviderError
 
-        mock_provider.return_value.chat.side_effect = ProviderError("model 'bad' not found")
+        provider = _make_provider()
+        provider.chat.side_effect = ProviderError("model 'bad' not found")
         with pytest.raises(ProviderError, match="not found"):
-            list(ask_stream("hello"))
+            list(_ask_stream("hello", config=cfg, provider=provider))
 
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_ask_stream_provider_error_mid_stream(self, mock_embed, mock_search, mock_provider):
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_ask_stream_provider_error_mid_stream(self, mock_embed, mock_search):
         """ProviderError raised during iteration should propagate."""
         from lilbee.providers.base import ProviderError
 
@@ -504,9 +484,9 @@ class TestProviderError:
             yield "partial"
             raise ProviderError("model 'bad' not found")
 
-        mock_provider.return_value.chat.return_value = failing_mid_stream()
+        provider = _make_provider(failing_mid_stream())
         with pytest.raises(ProviderError, match="not found"):
-            list(ask_stream("hello"))
+            list(_ask_stream("hello", config=cfg, provider=provider))
 
 
 class TestApplyGuardrails:
@@ -526,7 +506,6 @@ class TestApplyGuardrails:
         assert len(result) >= 1
 
     def test_returns_all_when_guardrails_disabled(self):
-        from lilbee.config import cfg
         from lilbee.query import _apply_guardrails
 
         old = cfg.expansion_guardrails
@@ -634,7 +613,7 @@ class TestSelectContext:
             _make_result(chunk="alpha beta unique1", source="e.md"),
             _make_result(chunk="alpha beta unique1", source="f.md"),
         ]
-        # Query has "alpha beta unique1 unique2" — first chunk covers 3/4
+        # Query has "alpha beta unique1 unique2" -- first chunk covers 3/4
         # Remaining chunks add 0 new terms, so selection stops early
         result = select_context(chunks, "alpha beta unique1 unique2", max_sources=5)
         # Should stop after 1 or 2 chunks since no gain after first
@@ -687,7 +666,6 @@ class TestShouldSkipExpansion:
         assert _should_skip_expansion("test") is False
 
     def test_disabled_when_threshold_zero(self):
-        from lilbee.config import cfg
         from lilbee.query import _should_skip_expansion
 
         old = cfg.expansion_skip_threshold
@@ -734,36 +712,25 @@ class TestParseStructuredQuery:
 
 
 class TestHydeSearch:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_returns_results(self, mock_embed, mock_search, mock_provider):
-        from lilbee.query import _hyde_search
-
-        mock_provider.return_value.chat.return_value = "hypothetical document about X"
-        results = _hyde_search("explain X", top_k=5)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_returns_results(self, mock_embed, mock_search):
+        provider = _make_provider("hypothetical document about X")
+        results = _hyde_search("explain X", top_k=5, config=cfg, provider=provider)
         assert len(results) >= 1
 
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_empty_on_error(self, mock_provider):
-        from lilbee.query import _hyde_search
+    def test_returns_empty_on_error(self):
+        provider = _make_provider()
+        provider.chat.side_effect = RuntimeError("fail")
+        assert _hyde_search("test", top_k=5, config=cfg, provider=provider) == []
 
-        mock_provider.return_value.chat.side_effect = RuntimeError("fail")
-        assert _hyde_search("test", top_k=5) == []
+    def test_returns_empty_on_non_string(self):
+        provider = _make_provider(iter(["stream"]))
+        assert _hyde_search("test", top_k=5, config=cfg, provider=provider) == []
 
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_empty_on_non_string(self, mock_provider):
-        from lilbee.query import _hyde_search
-
-        mock_provider.return_value.chat.return_value = iter(["stream"])
-        assert _hyde_search("test", top_k=5) == []
-
-    @mock.patch("lilbee.query.get_provider")
-    def test_returns_empty_on_blank(self, mock_provider):
-        from lilbee.query import _hyde_search
-
-        mock_provider.return_value.chat.return_value = "   "
-        assert _hyde_search("test", top_k=5) == []
+    def test_returns_empty_on_blank(self):
+        provider = _make_provider("   ")
+        assert _hyde_search("test", top_k=5, config=cfg, provider=provider) == []
 
 
 class TestTemporalFilter:
@@ -789,7 +756,6 @@ class TestTemporalFilter:
         assert _apply_temporal_filter(results, "how does auth work") == results
 
     def test_disabled_via_config(self):
-        from lilbee.config import cfg
         from lilbee.query import _apply_temporal_filter
 
         old = cfg.temporal_filtering
@@ -833,50 +799,48 @@ class TestTemporalFilter:
 class TestSearchStructured:
     @mock.patch("lilbee.store.bm25_probe", return_value=[_make_result()])
     def test_term_mode(self, mock_probe):
-        from lilbee.query import _search_structured
-
-        results = _search_structured("term", "test query", 5)
+        provider = _make_provider()
+        results = _search_structured("term", "test query", 5, config=cfg, provider=provider)
         assert len(results) == 1
         mock_probe.assert_called_once_with("test query", top_k=5)
 
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_vec_mode(self, mock_embed, mock_search):
-        from lilbee.query import _search_structured
-
-        results = _search_structured("vec", "semantic query", 5)
+        provider = _make_provider()
+        results = _search_structured("vec", "semantic query", 5, config=cfg, provider=provider)
         assert len(results) == 1
 
     @mock.patch("lilbee.query._hyde_search", return_value=[_make_result()])
     def test_hyde_mode(self, mock_hyde):
-        from lilbee.query import _search_structured
-
-        results = _search_structured("hyde", "vague question", 5)
+        provider = _make_provider()
+        results = _search_structured("hyde", "vague question", 5, config=cfg, provider=provider)
         assert len(results) == 1
 
     def test_unknown_mode_returns_empty(self):
-        from lilbee.query import _search_structured
-
-        assert _search_structured("unknown", "test", 5) == []
+        provider = _make_provider()
+        assert _search_structured("unknown", "test", 5, config=cfg, provider=provider) == []
 
 
 class TestSearchContextIntegration:
     @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_structured_term_mode(self, mock_embed, mock_search, mock_probe, mock_expand):
         mock_probe.return_value = [_make_result()]
-        results = search_context("term: kubernetes pods")
+        provider = _make_provider()
+        results = _search_context("term: kubernetes pods", config=cfg, provider=provider)
         mock_probe.assert_called_once()
         assert len(results) >= 1
 
     @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.query._should_skip_expansion", return_value=True)
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_skips_expansion_when_confident(self, mock_embed, mock_search, mock_skip, mock_expand):
-        results = search_context("exact match query")
+        provider = _make_provider()
+        results = _search_context("exact match query", config=cfg, provider=provider)
         mock_expand.assert_not_called()
         assert len(results) >= 1
 
@@ -884,14 +848,13 @@ class TestSearchContextIntegration:
     @mock.patch("lilbee.query._expand_query", return_value=[])
     @mock.patch("lilbee.query._should_skip_expansion", return_value=False)
     @mock.patch("lilbee.store.search", return_value=[_make_result(source="normal.md")])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_hyde_merges_results(self, mock_embed, mock_search, mock_skip, mock_expand, mock_hyde):
-        from lilbee.config import cfg
-
         old = cfg.hyde
         cfg.hyde = True
         try:
-            results = search_context("vague question")
+            provider = _make_provider()
+            results = _search_context("vague question", config=cfg, provider=provider)
             sources = {r.source for r in results}
             assert "hyde.md" in sources
         finally:
@@ -899,18 +862,15 @@ class TestSearchContextIntegration:
 
 
 class TestAskRawWithReranker:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_reranker_called_when_configured(self, mock_embed, mock_search, mock_provider):
-        from lilbee.config import cfg
-
-        mock_provider.return_value.chat.return_value = "answer"
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_reranker_called_when_configured(self, mock_embed, mock_search):
+        provider = _make_provider("answer")
         old = cfg.reranker_model
         cfg.reranker_model = "test-reranker"
         try:
             with mock.patch("lilbee.reranker.rerank", return_value=[_make_result()]) as mock_rerank:
-                result = ask_raw("question")
+                result = _ask_raw("question", config=cfg, provider=provider)
                 mock_rerank.assert_called_once()
                 assert result.answer == "answer"
         finally:
@@ -918,18 +878,15 @@ class TestAskRawWithReranker:
 
 
 class TestAskStreamWithReranker:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_reranker_called_when_configured(self, mock_embed, mock_search, mock_provider):
-        from lilbee.config import cfg
-
-        mock_provider.return_value.chat.return_value = iter(["token"])
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_reranker_called_when_configured(self, mock_embed, mock_search):
+        provider = _make_provider(iter(["token"]))
         old = cfg.reranker_model
         cfg.reranker_model = "test-reranker"
         try:
             with mock.patch("lilbee.reranker.rerank", return_value=[_make_result()]) as mock_rerank:
-                list(ask_stream("question"))
+                list(_ask_stream("question", config=cfg, provider=provider))
                 mock_rerank.assert_called_once()
         finally:
             cfg.reranker_model = old
@@ -938,10 +895,8 @@ class TestAskStreamWithReranker:
 class TestConceptBoosting:
     @mock.patch("lilbee.store.search", return_value=[_make_result(distance=0.5)])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_boost_applied_when_enabled(self, mock_embed, mock_bm25, mock_search):
-        from lilbee.config import cfg
-
         old = cfg.concept_graph
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
@@ -954,7 +909,8 @@ class TestConceptBoosting:
                     return_value=[_make_result(distance=0.3)],
                 ) as mock_boost,
             ):
-                results = search_context("python code")
+                provider = _make_provider()
+                results = _search_context("python code", config=cfg, provider=provider)
             mock_boost.assert_called_once()
             assert results[0].distance == 0.3
         finally:
@@ -963,16 +919,15 @@ class TestConceptBoosting:
 
     @mock.patch("lilbee.store.search", return_value=[_make_result(distance=0.5)])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_boost_skipped_when_disabled(self, mock_embed, mock_bm25, mock_search):
-        from lilbee.config import cfg
-
         old = cfg.concept_graph
         cfg.concept_graph = False
         cfg.query_expansion_count = 0
         try:
             with mock.patch("lilbee.concepts.get_graph") as m_graph:
-                results = search_context("python code")
+                provider = _make_provider()
+                results = _search_context("python code", config=cfg, provider=provider)
             m_graph.assert_not_called()
             assert results[0].distance == 0.5
         finally:
@@ -981,14 +936,15 @@ class TestConceptBoosting:
 
     @mock.patch("lilbee.store.search", return_value=[_make_result(distance=0.5)])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_boost_failure_returns_original(self, mock_embed, mock_bm25, mock_search):
         old = cfg.concept_graph
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
         try:
             with mock.patch("lilbee.concepts.get_graph", side_effect=RuntimeError("broken")):
-                results = search_context("python code")
+                provider = _make_provider()
+                results = _search_context("python code", config=cfg, provider=provider)
             assert results[0].distance == 0.5
         finally:
             cfg.concept_graph = old
@@ -996,14 +952,15 @@ class TestConceptBoosting:
 
     @mock.patch("lilbee.store.search", return_value=[_make_result(distance=0.5)])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
     def test_boost_graph_none_returns_original(self, mock_embed, mock_bm25, mock_search):
         old = cfg.concept_graph
         cfg.concept_graph = True
         cfg.query_expansion_count = 0
         try:
             with mock.patch("lilbee.concepts.get_graph", return_value=False):
-                results = search_context("python code")
+                provider = _make_provider()
+                results = _search_context("python code", config=cfg, provider=provider)
             assert results[0].distance == 0.5
         finally:
             cfg.concept_graph = old
@@ -1011,22 +968,14 @@ class TestConceptBoosting:
 
 
 class TestConceptQueryExpansion:
-    @mock.patch("lilbee.query.get_provider")
     @mock.patch("lilbee.store.search", return_value=[_make_result()])
     @mock.patch("lilbee.store.bm25_probe", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_expansion_includes_concept_terms(
-        self, mock_embed, mock_bm25, mock_search, mock_provider
-    ):
-        from lilbee.config import cfg
-        from lilbee.query import _expand_query
-
+    @mock.patch("lilbee.embedder.embed_di", return_value=[0.1] * 768)
+    def test_expansion_includes_concept_terms(self, mock_embed, mock_bm25, mock_search):
         old_graph = cfg.concept_graph
         cfg.concept_graph = True
-        mock_provider.return_value.chat.return_value = "variant query about python"
+        provider = _make_provider("variant query about python")
         try:
-            # Use concept terms that share tokens with the original query
-            # so they survive the guardrails overlap check
             with (
                 mock.patch("lilbee.concepts.get_graph", return_value=True),
                 mock.patch(
@@ -1034,13 +983,12 @@ class TestConceptQueryExpansion:
                     return_value=["python web frameworks"],
                 ),
             ):
-                variants = _expand_query("python frameworks")
+                variants = _expand_query("python frameworks", config=cfg, provider=provider)
             assert "python web frameworks" in variants
         finally:
             cfg.concept_graph = old_graph
 
     def test_expansion_disabled_returns_empty(self):
-        from lilbee.config import cfg
         from lilbee.query import _concept_query_expansion
 
         old = cfg.concept_graph

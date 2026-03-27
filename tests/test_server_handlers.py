@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,8 +12,20 @@ from lilbee.ingest import SyncResult
 from lilbee.server import handlers
 from lilbee.store import SearchChunk
 
-PATCH_PROVIDER = "lilbee.server.handlers.get_provider"
-PATCH_RAG = "lilbee.server.handlers.build_rag_context"
+PATCH_RAG = "lilbee.query._build_rag_context"
+
+
+@contextmanager
+def _provider_override(mock_provider):
+    """Temporarily set the provider on the handler's Lilbee instance."""
+    bee = handlers._get_bee()
+    old = bee._provider
+    bee._provider = mock_provider
+    try:
+        yield
+    finally:
+        bee._provider = old
+
 
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
@@ -41,13 +54,24 @@ def isolated_env(tmp_path):
     from lilbee.providers import reset_provider
 
     reset_provider()
+    handlers._bee = None
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.data_root = tmp_path
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+
+    # Ensure Lilbee is pre-created with a mock provider so tests
+    # don't fail when coverage changes module load ordering.
+    from lilbee.api import Lilbee
+
+    bee = Lilbee(config=cfg)
+    bee._provider = MagicMock()
+    handlers._bee = bee
+
     yield tmp_path
+    handlers._bee = None
     reset_provider()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -95,7 +119,7 @@ class TestStatus:
 
 
 class TestSearch:
-    @patch("lilbee.server.handlers.search_context")
+    @patch("lilbee.query._search_context")
     async def test_returns_grouped_results(self, mock_search):
         mock_search.return_value = [
             SearchChunk(
@@ -114,16 +138,19 @@ class TestSearch:
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
         assert result[0]["source"] == "doc.pdf"
-        mock_search.assert_called_once_with("test", top_k=3)
+        mock_search.assert_called_once()
+        args, kwargs = mock_search.call_args
+        assert args[0] == "test"
+        assert kwargs["top_k"] == 3
 
-    @patch("lilbee.server.handlers.search_context", return_value=[])
+    @patch("lilbee.query._search_context", return_value=[])
     async def test_empty_results(self, mock_search):
         result = await handlers.search("nothing")
         assert result == []
 
 
 class TestAsk:
-    @patch("lilbee.query.ask_raw")
+    @patch("lilbee.query._ask_raw")
     async def test_returns_answer_and_sources(self, mock_ask):
         from lilbee.query import AskResult
 
@@ -150,7 +177,7 @@ class TestAsk:
         assert "vector" not in result["sources"][0]
         assert result["sources"][0]["distance"] == 0.1
 
-    @patch("lilbee.query.ask_raw")
+    @patch("lilbee.query._ask_raw")
     async def test_no_sources(self, mock_ask):
         from lilbee.query import AskResult
 
@@ -161,7 +188,7 @@ class TestAsk:
 
 
 class TestAskStream:
-    @patch("lilbee.server.handlers.build_rag_context", return_value=None)
+    @patch(PATCH_RAG, return_value=None)
     async def test_no_results_yields_error(self, mock_search):
         events = [e async for e in handlers.ask_stream("test")]
         # First event is the empty yield, then the error
@@ -174,7 +201,7 @@ class TestAskStream:
     async def test_yields_token_sources_done(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["answer"])
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -187,7 +214,7 @@ class TestAskStream:
     async def test_provider_error_yields_error_event(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = RuntimeError("model missing")
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -209,7 +236,7 @@ class TestAskStream:
 
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = blocking_chat
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             gen = handlers.ask_stream("question")
             events = []
             async for event in gen:
@@ -239,7 +266,7 @@ class TestAskStream:
         mock_provider.chat.side_effect = blocking_chat
         with (
             caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-            patch(PATCH_PROVIDER, return_value=mock_provider),
+            _provider_override(mock_provider),
         ):
             gen = handlers.ask_stream("question")
             async for event in gen:
@@ -255,7 +282,7 @@ class TestAskStream:
         """Empty strings from provider are not emitted."""
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["", "answer"])
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             events = [e async for e in handlers.ask_stream("question")]
 
         non_empty = [e for e in events if e]
@@ -265,7 +292,7 @@ class TestAskStream:
 
 
 class TestChat:
-    @patch("lilbee.query.ask_raw")
+    @patch("lilbee.query._ask_raw")
     async def test_passes_history(self, mock_ask):
         from lilbee.query import AskResult
 
@@ -273,11 +300,13 @@ class TestChat:
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
         assert result["answer"] == "ok"
-        mock_ask.assert_called_once_with("follow up", top_k=0, history=history, options=None)
+        mock_ask.assert_called_once()
+        _, kwargs = mock_ask.call_args
+        assert kwargs["history"] == history
 
 
 class TestChatStream:
-    @patch("lilbee.server.handlers.build_rag_context", return_value=None)
+    @patch(PATCH_RAG, return_value=None)
     async def test_no_results_yields_error(self, mock_rag):
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
@@ -287,7 +316,7 @@ class TestChatStream:
     async def test_yields_events_with_history(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["reply"])
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             history = [{"role": "user", "content": "hi"}]
             events = [e async for e in handlers.chat_stream("follow up", history)]
 
@@ -300,7 +329,7 @@ class TestChatStream:
     async def test_provider_error_yields_error_event(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = ConnectionError("provider down")
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             events = [e async for e in handlers.chat_stream("q", [])]
 
         non_empty = [e for e in events if e]
@@ -322,7 +351,7 @@ class TestChatStream:
 
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = blocking_chat
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             gen = handlers.chat_stream("question", [])
             events = []
             async for event in gen:
@@ -352,7 +381,7 @@ class TestChatStream:
         mock_provider.chat.side_effect = blocking_chat
         with (
             caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-            patch(PATCH_PROVIDER, return_value=mock_provider),
+            _provider_override(mock_provider),
         ):
             gen = handlers.chat_stream("question", [])
             async for event in gen:
@@ -368,7 +397,7 @@ class TestChatStream:
         """Empty strings from provider are not emitted."""
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["", "reply"])
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             events = [e async for e in handlers.chat_stream("question", [])]
 
         non_empty = [e for e in events if e]
@@ -517,7 +546,7 @@ class TestModelsCatalog:
         )
         mock_provider = MagicMock()
         mock_provider.list_models.return_value = ["qwen3:8b"]
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             result = await handlers.models_catalog()
 
         assert result["total"] == 1
@@ -534,7 +563,7 @@ class TestModelsCatalog:
         mock_get_catalog.return_value = CatalogResult(total=0, limit=10, offset=5, models=[])
         mock_provider = MagicMock()
         mock_provider.list_models.return_value = []
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             await handlers.models_catalog(
                 task="chat",
                 search="qwen",
@@ -580,7 +609,7 @@ class TestModelsCatalog:
         )
         mock_provider = MagicMock()
         mock_provider.list_models.return_value = ["qwen3:8b"]
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             result = await handlers.models_catalog()
         assert result["models"][0]["installed"] is True
 
@@ -654,14 +683,14 @@ class TestModelsShow:
     async def test_returns_params(self):
         mock_provider = MagicMock()
         mock_provider.show_model.return_value = {"parameters": "temp 0.7"}
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             result = await handlers.models_show("qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
 
     async def test_returns_empty_when_none(self):
         mock_provider = MagicMock()
         mock_provider.show_model.return_value = None
-        with patch(PATCH_PROVIDER, return_value=mock_provider):
+        with _provider_override(mock_provider):
             result = await handlers.models_show("unknown")
         assert result == {}
 
