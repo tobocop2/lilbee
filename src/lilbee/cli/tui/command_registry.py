@@ -47,6 +47,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         has_arg_completion=True,
     ),
     SlashCommand(
+        "/crawl",
+        "_cmd_crawl",
+        aliases=(),
+        args_hint="url",
+        help_text="Crawl a URL into knowledge base",
+    ),
+    SlashCommand(
         "/delete",
         "_cmd_delete",
         aliases=(),

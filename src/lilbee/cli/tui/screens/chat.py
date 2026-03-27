@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any, ClassVar
@@ -15,6 +17,7 @@ from textual.widgets import Footer, Input
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
+from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.screens.catalog import CatalogScreen
