@@ -31,7 +31,7 @@ def _mock_stream(*texts: str):
 
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
-    """CLI tests never need real Ollama model validation or chat model checks."""
+    """CLI tests never need real model validation or chat model checks."""
     with (
         mock.patch("lilbee.embedder.validate_model"),
         mock.patch("lilbee.models.ensure_chat_model"),
@@ -1253,61 +1253,61 @@ class TestAskModelNotFound:
         assert "not found" in data["error"]
 
 
-class TestOllamaUnavailable:
-    """CLI commands should show friendly errors when Ollama is unreachable."""
+class TestBackendUnavailable:
+    """CLI commands should show friendly errors when the backend is unreachable."""
 
-    _ERR = RuntimeError("Cannot connect to Ollama: Connection refused")
+    _ERR = RuntimeError("Connection refused")
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_sync_ollama_unavailable(self, mock_sync):
+    def test_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_sync_ollama_unavailable_json(self, mock_sync):
+    def test_sync_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_rebuild_ollama_unavailable(self, mock_sync):
+    def test_rebuild_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_rebuild_ollama_unavailable_json(self, mock_sync):
+    def test_rebuild_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "rebuild"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_add_ollama_unavailable(self, mock_sync, isolated_env, tmp_path):
+    def test_add_backend_unavailable(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
         src.write_text("content")
         result = runner.invoke(app, ["add", str(src)])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_add_ollama_unavailable_json(self, mock_sync, isolated_env, tmp_path):
+    def test_add_backend_unavailable_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
         src.write_text("content")
         result = runner.invoke(app, ["--json", "add", str(src)])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_auto_sync_ollama_unavailable(self, mock_sync):
+    def test_auto_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
 
 class TestEnsureChatModelWiring:
@@ -1356,7 +1356,7 @@ class TestEnsureVisionModel:
             assert cfg.vision_model == "saved-model"
             mock_val.assert_called_once()
 
-    def test_ollama_unreachable_disables_vision(self) -> None:
+    def test_backend_unreachable_disables_vision(self) -> None:
         from lilbee.cli.commands import _ensure_vision_model
 
         cfg.vision_model = ""
@@ -1427,7 +1427,7 @@ class TestValidateConfiguredVision:
             _validate_configured_vision()
             assert cfg.vision_model == ""
 
-    def test_ollama_unreachable_keeps_config(self) -> None:
+    def test_backend_unreachable_keeps_config(self) -> None:
         from lilbee.cli.commands import _validate_configured_vision
 
         cfg.vision_model = "llava:7b"
@@ -1715,6 +1715,13 @@ class TestAddWithUrls:
         assert result.exit_code == 0
         mock_crawl.assert_called_once()
 
+    def test_add_url_without_crawler_installed(self):
+        """Adding a URL when crawl4ai is not installed shows install message."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(app, ["add", "https://example.com"])
+            assert result.exit_code == 1
+            assert "pip install" in result.output.lower()
+
     def test_add_nonexistent_path_fails(self):
         """Adding a nonexistent file path fails with error."""
         result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
@@ -1813,13 +1820,28 @@ class TestCrawlUrlsBlocking:
 
 
 class TestTopicsCommand:
-    def test_disabled_shows_error(self):
+    def test_not_installed_shows_error(self):
+        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+            result = runner.invoke(app, ["topics"])
+            assert result.exit_code == 1
+            assert "pip install" in result.output.lower()
+
+    def test_not_installed_json_mode(self):
+        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+            result = runner.invoke(app, ["--json", "topics"])
+            assert result.exit_code == 1
+            output = json.loads(result.output)
+            assert "error" in output
+
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_disabled_shows_error(self, _mock_avail):
         cfg.concept_graph = False
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 1
         assert "disabled" in result.output.lower()
 
-    def test_disabled_json_mode(self):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_disabled_json_mode(self, _mock_avail):
         cfg.concept_graph = False
         result = runner.invoke(app, ["--json", "topics"])
         assert result.exit_code == 1
@@ -1828,7 +1850,8 @@ class TestTopicsCommand:
 
     @mock.patch("lilbee.concepts.top_communities")
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_overview_shows_communities(self, mock_get_graph, mock_top):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_overview_shows_communities(self, _mock_avail, mock_get_graph, mock_top):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True
@@ -1841,7 +1864,8 @@ class TestTopicsCommand:
 
     @mock.patch("lilbee.concepts.top_communities")
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_overview_json_mode(self, mock_get_graph, mock_top):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_overview_json_mode(self, _mock_avail, mock_get_graph, mock_top):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True
@@ -1857,7 +1881,10 @@ class TestTopicsCommand:
     @mock.patch("lilbee.concepts.expand_query", return_value=["django", "flask"])
     @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_query_shows_related_concepts(self, mock_get_graph, mock_extract, mock_expand):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_query_shows_related_concepts(
+        self, _mock_avail, mock_get_graph, mock_extract, mock_expand
+    ):
         cfg.concept_graph = True
         result = runner.invoke(app, ["topics", "python"])
         assert result.exit_code == 0
@@ -1866,7 +1893,8 @@ class TestTopicsCommand:
     @mock.patch("lilbee.concepts.expand_query", return_value=["django"])
     @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_query_json_mode(self, mock_get_graph, mock_extract, mock_expand):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_query_json_mode(self, _mock_avail, mock_get_graph, mock_extract, mock_expand):
         cfg.concept_graph = True
         result = runner.invoke(app, ["--json", "topics", "python"])
         assert result.exit_code == 0
@@ -1876,7 +1904,8 @@ class TestTopicsCommand:
 
     @mock.patch("lilbee.concepts.top_communities", return_value=[])
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_no_communities(self, mock_get_graph, mock_top):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_no_communities(self, _mock_avail, mock_get_graph, mock_top):
         cfg.concept_graph = True
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 0
@@ -1885,21 +1914,24 @@ class TestTopicsCommand:
     @mock.patch("lilbee.concepts.expand_query", return_value=[])
     @mock.patch("lilbee.concepts.extract_concepts", return_value=[])
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_query_no_concepts(self, mock_get_graph, mock_extract, mock_expand):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_query_no_concepts(self, _mock_avail, mock_get_graph, mock_extract, mock_expand):
         cfg.concept_graph = True
         result = runner.invoke(app, ["topics", "???"])
         assert result.exit_code == 0
         assert "No concepts found" in result.output
 
     @mock.patch("lilbee.concepts.get_graph", return_value=False)
-    def test_graph_none_shows_error(self, mock_get_graph):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_graph_none_shows_error(self, _mock_avail, mock_get_graph):
         cfg.concept_graph = True
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 1
         assert "not available" in result.output.lower()
 
     @mock.patch("lilbee.concepts.get_graph", return_value=False)
-    def test_graph_none_json_mode(self, mock_get_graph):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_graph_none_json_mode(self, _mock_avail, mock_get_graph):
         cfg.concept_graph = True
         result = runner.invoke(app, ["--json", "topics"])
         assert result.exit_code == 1
@@ -1908,14 +1940,16 @@ class TestTopicsCommand:
 
     @mock.patch("lilbee.concepts.top_communities", return_value=[])
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_top_k_option(self, mock_get_graph, mock_top):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_top_k_option(self, _mock_avail, mock_get_graph, mock_top):
         cfg.concept_graph = True
         runner.invoke(app, ["topics", "--top-k", "5"])
         mock_top.assert_called_once_with(k=5)
 
     @mock.patch("lilbee.concepts.top_communities")
     @mock.patch("lilbee.concepts.get_graph", return_value=True)
-    def test_large_community_shows_more_count(self, mock_get_graph, mock_top):
+    @mock.patch("lilbee.concepts.concepts_available", return_value=True)
+    def test_large_community_shows_more_count(self, _mock_avail, mock_get_graph, mock_top):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True

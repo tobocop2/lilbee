@@ -73,7 +73,7 @@ async def lilbee_add(
     Args:
         paths: Absolute file/directory paths or URLs to add.
         force: Overwrite files that already exist in the knowledge base.
-        vision_model: Ollama vision model for scanned PDF OCR
+        vision_model: Vision model for scanned PDF OCR
             (e.g. "maternion/LightOnOCR-2:latest"). If empty, uses
             the configured default. If no model is configured,
             scanned PDFs are skipped.
@@ -97,6 +97,10 @@ async def lilbee_add(
     # Crawl URLs
     crawled_count = 0
     if urls:
+        from lilbee.crawler import crawler_available
+
+        if not crawler_available():
+            return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
         from lilbee.crawler import crawl_and_save
 
         for url in urls:
@@ -145,6 +149,10 @@ def lilbee_crawl(
         depth: Maximum link-following depth (0 = single page only).
         max_pages: Maximum number of pages to fetch (default: 50).
     """
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
     try:
         require_valid_crawl_url(url)
     except ValueError as exc:

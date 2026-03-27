@@ -4,7 +4,8 @@ Extracts noun-phrase concepts from chunks via spaCy, builds a PPMI-weighted
 co-occurrence graph, and clusters with Leiden (graspologic-native). Used to
 boost search results by concept overlap and expand queries via graph traversal.
 
-Heavy dependencies (spacy, networkx, graspologic) are lazy-imported.
+Requires optional ``graph`` extra: ``pip install lilbee[graph]``.
+When dependencies are missing, all public functions degrade gracefully.
 """
 
 from __future__ import annotations
@@ -32,6 +33,17 @@ _MIN_CONCEPT_LEN = 2
 # Minimum edge weight for Leiden clustering — avoids zero/negative weights
 # which graspologic-native rejects
 _MIN_LEIDEN_WEIGHT = 0.01
+
+
+def concepts_available() -> bool:
+    """Check if concept graph dependencies (spacy, graspologic) are installed."""
+    try:
+        import graspologic_native  # noqa: F401
+        import spacy  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 @dataclass

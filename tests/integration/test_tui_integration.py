@@ -251,7 +251,7 @@ class TestSlashCommandIntegration:
             await pilot.pause()
             with (
                 patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             ):
                 app.screen._handle_slash("/model")
                 await pilot.pause()
@@ -471,7 +471,7 @@ class TestGlobalKeybindings:
             await pilot.pause()
             with (
                 patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             ):
                 app.action_push_catalog()
                 await pilot.pause()
@@ -588,7 +588,7 @@ class TestCatalogKeybindings:
         async with app.run_test(size=(120, 40)) as pilot:
             with (
                 patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             ):
                 screen = CatalogScreen()
                 app.push_screen(screen)
@@ -604,7 +604,7 @@ class TestCatalogKeybindings:
         async with app.run_test(size=(120, 40)) as pilot:
             with (
                 patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             ):
                 screen = CatalogScreen()
                 app.push_screen(screen)
@@ -621,7 +621,7 @@ class TestCatalogKeybindings:
         async with app.run_test(size=(120, 40)) as pilot:
             with (
                 patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             ):
                 screen = CatalogScreen()
                 app.push_screen(screen)

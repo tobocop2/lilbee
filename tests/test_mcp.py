@@ -53,7 +53,7 @@ def _no_dns():
 
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
-    """MCP tests never need real Ollama model validation."""
+    """MCP tests never need real model validation."""
     with mock.patch("lilbee.embedder.validate_model"):
         yield
 
@@ -352,6 +352,13 @@ class TestMain:
 
 
 class TestLilbeeAddWithUrls:
+    async def test_add_url_without_crawler(self, isolated_env):
+        """Adding URLs when crawl4ai not installed returns error."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = await lilbee_add(paths=["https://example.com"])
+            assert "error" in result
+            assert "pip install" in result["error"].lower()
+
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url(self, mock_crawl, mock_sync, isolated_env):
@@ -414,6 +421,13 @@ class TestLilbeeCrawl:
     def test_rejects_invalid_url(self):
         result = lilbee_crawl(url="ftp://bad.com")
         assert "error" in result
+
+    def test_crawler_not_installed(self):
+        """Returns error when crawl4ai is not installed."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = lilbee_crawl(url="https://example.com")
+            assert "error" in result
+            assert "pip install" in result["error"].lower()
 
 
 class TestLilbeeCrawlStatus:

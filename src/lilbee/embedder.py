@@ -40,7 +40,9 @@ def validate_model() -> None:
             log.info("Pulling embedding model '%s'...", cfg.embedding_model)
             get_provider().pull_model(cfg.embedding_model, on_progress=lambda _: None)
     except (ConnectionError, OSError) as exc:
-        raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+        raise RuntimeError(
+            f"Cannot connect to embedding backend: {exc}. Is the server running?"
+        ) from exc
 
 
 def embed(text: str) -> list[float]:

@@ -156,7 +156,7 @@ class TestDisplayModelPicker:
     def test_shows_browse_link(self, capsys):
         models.display_model_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestPromptModelChoice:
@@ -261,13 +261,19 @@ class TestEnsureChatModel:
     def test_non_interactive_auto_picks(
         self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
     ):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
-        mock_get_manager.return_value = mock_manager
-        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
-            models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
-        mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
+        # Pin embedding model so the filter correctly excludes it from chat models
+        old_embed = cfg.embedding_model
+        cfg.embedding_model = "nomic-embed-text"
+        try:
+            mock_manager = mock.MagicMock()
+            mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+            mock_get_manager.return_value = mock_manager
+            with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
+                models.ensure_chat_model()
+            mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
+            mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
+        finally:
+            cfg.embedding_model = old_embed
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
@@ -399,7 +405,7 @@ class TestDisplayVisionPicker:
     def test_shows_browse_link(self, capsys: pytest.CaptureFixture[str]) -> None:
         models.display_vision_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestEnsureTag:

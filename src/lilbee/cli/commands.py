@@ -74,7 +74,7 @@ def _ensure_vision_model() -> None:
         installed = set(list_installed_models())
     except Exception:
         console.print(
-            f"[{theme.WARNING}]Warning: Cannot connect to Ollama."
+            f"[{theme.WARNING}]Warning: Cannot list models."
             f" Vision OCR disabled.[/{theme.WARNING}]"
         )
         return
@@ -95,7 +95,7 @@ def _validate_configured_vision() -> None:
     try:
         installed = set(list_installed_models())
     except Exception:
-        # Can't reach Ollama — keep the config and let downstream handle errors
+        # Can't reach model backend — keep the config and let downstream handle errors
         return
 
     if tagged in installed:
@@ -372,6 +372,14 @@ def add(
         # Crawl URLs first (saves .md files into documents/_web/)
         crawled_paths: list[Path] = []
         if urls:
+            from lilbee.crawler import crawler_available
+
+            if not crawler_available():
+                console.print(
+                    f"[{theme.ERROR}]Web crawling requires: "
+                    f"pip install 'lilbee[crawler]'[/{theme.ERROR}]"
+                )
+                raise SystemExit(1)
             crawled_paths = _crawl_urls_blocking(
                 urls, crawl=crawl, depth=depth, max_pages=max_pages
             )
@@ -743,6 +751,16 @@ def topics(
 ) -> None:
     """Show top concept communities or concepts related to a query."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
+        msg = "Concept graph requires: pip install 'lilbee[graph]'"
+        if cfg.json_mode:
+            json_output({"error": msg})
+            raise SystemExit(1)
+        console.print(f"[{theme.ERROR}]{msg}[/{theme.ERROR}]")
+        raise SystemExit(1)
 
     if not cfg.concept_graph:
         if cfg.json_mode:

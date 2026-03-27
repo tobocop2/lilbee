@@ -30,15 +30,15 @@ class _EmbeddingRow(ListItem):
         yield Static(f"  {self.model.name}  {self.model.size_gb:.1f} GB{suffix}")
 
 
-class _OllamaRow(ListItem):
-    """An Ollama embedding model (no download needed)."""
+class _RemoteRow(ListItem):
+    """A remote embedding model (no download needed)."""
 
     def __init__(self, name: str) -> None:
         super().__init__()
-        self.ollama_name = name
+        self.remote_name = name
 
     def compose(self) -> ComposeResult:
-        yield Static(f"  {self.ollama_name}  (Ollama, no download)")
+        yield Static(f"  {self.remote_name}  (remote, no download)")
 
 
 class SetupModal(ModalScreen[str | None]):
@@ -50,16 +50,16 @@ class SetupModal(ModalScreen[str | None]):
 
     def __init__(self, ollama_embeddings: list[str] | None = None) -> None:
         super().__init__()
-        self._ollama_embeddings = ollama_embeddings or []
+        self._remote_embeddings = ollama_embeddings or []
         self._downloaded_name: str | None = None
 
     def compose(self) -> ComposeResult:
         items: list[ListItem] = []
 
-        if self._ollama_embeddings:
-            items.append(ListItem(Label("Found in Ollama:")))
-            for name in self._ollama_embeddings:
-                items.append(_OllamaRow(name))
+        if self._remote_embeddings:
+            items.append(ListItem(Label("Found remotely:")))
+            for name in self._remote_embeddings:
+                items.append(_RemoteRow(name))
             items.append(ListItem(Label("\nOr download:")))
 
         for i, model in enumerate(FEATURED_EMBEDDING):
@@ -73,8 +73,8 @@ class SetupModal(ModalScreen[str | None]):
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
-        if isinstance(item, _OllamaRow):
-            self.dismiss(item.ollama_name)
+        if isinstance(item, _RemoteRow):
+            self.dismiss(item.remote_name)
         elif isinstance(item, _EmbeddingRow):
             self._download_model(item.model)
 

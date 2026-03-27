@@ -70,7 +70,7 @@ class Config(BaseModel):
     num_ctx: int | None = Field(default=None, ge=1)
     seed: int | None = None
     llm_provider: str = "auto"
-    ollama_url: str = "http://localhost:11434"
+    litellm_base_url: str = "http://localhost:11434"
     llm_api_key: str = ""
 
     # Retrieval quality knobs — defaults chosen from academic research and grantflow
@@ -169,10 +169,10 @@ class Config(BaseModel):
     concept_max_per_chunk: int = Field(default=10, ge=1)
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
-        """Build Ollama generation options from config fields and overrides.
+        """Build LLM generation options from config fields and overrides.
 
-        Remaps ``top_k_sampling`` to Ollama's ``top_k`` key.
-        Filters out ``None`` values so Ollama uses its model defaults.
+        Remaps ``top_k_sampling`` to the provider's ``top_k`` key.
+        Filters out ``None`` values so the provider uses its model defaults.
         """
         mapping: dict[str, Any] = {
             "temperature": self.temperature,
@@ -247,9 +247,9 @@ class Config(BaseModel):
             num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
             seed=_load_setting(data_root, "seed", "SEED", None, int),
             llm_provider=env("LLM_PROVIDER", "auto"),
-            ollama_url=env(
-                "OLLAMA_URL",
-                # Fall back to OLLAMA_HOST for backwards compat
+            litellm_base_url=env(
+                "LITELLM_BASE_URL",
+                # Fall back to OLLAMA_HOST for backwards compat (deprecated)
                 os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
             ),
             llm_api_key=env("LLM_API_KEY", ""),
