@@ -41,6 +41,7 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
+    "crawl4ai>=0.8.0",
 ]
 
 [project.optional-dependencies]
@@ -72,6 +73,7 @@ dev = [
     "reportlab",
     "ruff>=0.15.4",
     "httpx>=0.27",
+    "pytest-httpserver",
 ]
 
 [tool.pytest.ini_options]

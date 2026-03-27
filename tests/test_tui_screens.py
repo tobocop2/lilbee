@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -692,9 +692,9 @@ async def test_chat_slash_delete_with_match(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.store.get_sources") as mock_get,
-            patch("lilbee.store.delete_by_source") as mock_del_chunks,
-            patch("lilbee.store.delete_source") as mock_del_src,
+            patch("lilbee.cli.tui.screens.chat.get_sources") as mock_get,
+            patch("lilbee.cli.tui.screens.chat.delete_by_source") as mock_del_chunks,
+            patch("lilbee.cli.tui.screens.chat.delete_source") as mock_del_src,
         ):
             mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
             app.screen._cmd_delete("notes.md")
@@ -707,7 +707,7 @@ async def test_chat_slash_delete_not_found(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.store.get_sources",
+            "lilbee.cli.tui.screens.chat.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("nonexistent.md")
@@ -718,7 +718,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.store.get_sources",
+            "lilbee.cli.tui.screens.chat.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("")
@@ -728,7 +728,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
 async def test_chat_slash_delete_store_error(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", side_effect=Exception("no store")):
+        with patch("lilbee.cli.tui.screens.chat.get_sources", side_effect=Exception("no store")):
             app.screen._cmd_delete("x")
 
 
@@ -736,7 +736,7 @@ async def test_chat_slash_delete_store_error(mock_check):
 async def test_chat_slash_delete_empty_sources(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", return_value=[]):
+        with patch("lilbee.cli.tui.screens.chat.get_sources", return_value=[]):
             app.screen._cmd_delete("x")
 
 
@@ -2692,3 +2692,118 @@ async def test_command_provider_vision_catalog_error(mock_check):
                 assert any("m1" in c[0] for c in cmds)
         finally:
             models_mod.VISION_CATALOG = original_vision  # type: ignore[assignment]
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_crawl_no_args(mock_check):
+    """Cover /crawl with no URL showing usage hint."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_crawl("")
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_crawl_invalid_url(mock_check):
+    """Cover /crawl with non-URL argument."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._cmd_crawl("not-a-url")
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_crawl_valid_url(mock_check):
+    """Cover /crawl dispatching to background crawler."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_run_crawl_background"):
+            app.screen._cmd_crawl("https://example.com")
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_crawl_with_flags(mock_check):
+    """Cover /crawl with --depth and --max-pages flags."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_run_crawl_background") as mock_crawl:
+            app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
+            mock_crawl.assert_called_once_with("https://example.com", 3, 20)
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_slash_add_url_routes_to_crawl(mock_check):
+    """Cover /add with a URL argument routing to _cmd_crawl."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_cmd_crawl") as mock_crawl:
+            app.screen._cmd_add("https://example.com")
+            mock_crawl.assert_called_once_with("https://example.com")
+
+
+class TestParseCrawlFlags:
+    def test_empty(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags([]) == (0, 0)
+
+    def test_depth_only(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--depth", "3"]) == (3, 0)
+
+    def test_max_pages_only(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--max-pages", "20"]) == (0, 20)
+
+    def test_both(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--depth", "2", "--max-pages", "15"]) == (2, 15)
+
+    def test_invalid_values(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--depth", "abc"]) == (0, 0)
+
+    def test_missing_value(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--depth"]) == (0, 0)
+
+    def test_unknown_flags_skipped(self):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (0, 0)
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_run_crawl_background_success(mock_check):
+    """Cover _run_crawl_background success path including progress callback."""
+    from pathlib import Path
+
+    async def _fake_crawl(url, **kwargs):
+        cb = kwargs.get("on_progress")
+        if cb:
+            cb("crawl_page", {"current": 1, "total": 2, "url": url})
+        return [Path("/tmp/a.md")]
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with (
+            patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl,
+            patch.object(app.screen, "_run_sync"),
+        ):
+            mock_crawl.side_effect = _fake_crawl
+            app.screen._run_crawl_background("https://example.com", 0, 50)
+            await pilot.pause(delay=0.5)
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_run_crawl_background_error(mock_check):
+    """Cover _run_crawl_background error path."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl:
+            mock_crawl.side_effect = RuntimeError("network error")
+            app.screen._run_crawl_background("https://example.com", 0, 50)
+            await pilot.pause(delay=0.5)

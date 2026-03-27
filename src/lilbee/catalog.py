@@ -122,12 +122,12 @@ FEATURED_EMBEDDING: tuple[CatalogModel, ...] = (
 
 FEATURED_VISION: tuple[CatalogModel, ...] = (
     CatalogModel(
-        "LLaVA 1.6 7B",
-        "mys/ggml-model-llava-v1.6-7b",
+        "LightOnOCR-2",
+        "LightOnIO/LightOnOCR-2-0.5B-GGUF",
         "*Q4_K_M.gguf",
-        4.1,
-        8,
-        "Strong vision model",
+        1.5,
+        4,
+        "Fast OCR — clean markdown output, tiny footprint",
         True,
         0,
         "vision",
@@ -187,6 +187,7 @@ def _fetch_hf_models(
         model_desc = item.get("description") or card_data.get("description") or ""
         # Estimate size from siblings — find largest GGUF file
         size_gb = _estimate_size_from_siblings(item.get("siblings", []))
+        task = _pipeline_to_task(item.get("pipeline_tag", ""))
         models.append(
             CatalogModel(
                 name=repo_id.split("/")[-1],
@@ -197,7 +198,7 @@ def _fetch_hf_models(
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
                 downloads=downloads,
-                task="chat",
+                task=task,
             )
         )
     _hf_cache[cache_key] = (now, models)
@@ -291,6 +292,19 @@ def _task_to_pipeline(task: str | None) -> str:
         "vision": "image-text-to-text",
     }
     return mapping.get(task or "chat", "text-generation")
+
+
+_PIPELINE_TO_TASK: dict[str, str] = {
+    "text-generation": "chat",
+    "feature-extraction": "embedding",
+    "image-text-to-text": "vision",
+    "image-to-text": "vision",
+}
+
+
+def _pipeline_to_task(pipeline_tag: str) -> str:
+    """Map HuggingFace pipeline tag to internal task name."""
+    return _PIPELINE_TO_TASK.get(pipeline_tag, "chat")
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:

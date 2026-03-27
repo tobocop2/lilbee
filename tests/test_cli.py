@@ -1648,3 +1648,164 @@ class TestIngestShutdownError:
                 )
 
         asyncio.run(_run())
+
+
+class TestAddWithUrls:
+    """Tests for URL crawling through the add CLI command."""
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl):
+        """Adding a URL calls the crawler instead of copying files."""
+        result = runner.invoke(app, ["add", "https://example.com"])
+        assert result.exit_code == 0
+        mock_crawl.assert_called_once()
+        args = mock_crawl.call_args
+        assert args[0][0] == ["https://example.com"]
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl):
+        """--crawl flag is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["crawl"] is True
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_with_depth(self, mock_sync, mock_crawl):
+        """--depth is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "--depth", "3", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["depth"] == 3
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_with_max_pages(self, mock_sync, mock_crawl):
+        """--max-pages is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "--max-pages", "10", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["max_pages"] == 10
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_json_mode(self, mock_sync, mock_crawl, isolated_env):
+        """URL add in JSON mode returns structured output."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("/tmp/a.md")]
+        result = runner.invoke(app, ["--json", "add", "https://example.com"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "add"
+        assert data["crawled"] == 1
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    def test_add_mixed_urls_and_files(
+        self, mock_crawl, mock_embed, mock_embed_batch, isolated_env, tmp_path
+    ):
+        """Mixing URLs and file paths in one add command."""
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("file content")
+        result = runner.invoke(app, ["add", str(src), "https://example.com"])
+        assert result.exit_code == 0
+        mock_crawl.assert_called_once()
+
+    def test_add_nonexistent_path_fails(self):
+        """Adding a nonexistent file path fails with error."""
+        result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        assert result.exit_code != 0
+
+    def test_add_nonexistent_path_json_fails(self):
+        """Adding a nonexistent file path in JSON mode returns error."""
+        result = runner.invoke(app, ["--json", "add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        assert result.exit_code != 0
+
+
+class TestIsUrl:
+    def test_http(self):
+        from lilbee.crawler import is_url
+
+        assert is_url("http://example.com")
+
+    def test_https(self):
+        from lilbee.crawler import is_url
+
+        assert is_url("https://example.com")
+
+    def test_not_url(self):
+        from lilbee.crawler import is_url
+
+        assert not is_url("/tmp/file.txt")
+
+    def test_ftp_not_url(self):
+        from lilbee.crawler import is_url
+
+        assert not is_url("ftp://example.com")
+
+
+class TestPartitionInputs:
+    def test_separates_urls_and_paths(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["/tmp/a.txt", "https://example.com", "/tmp/b.txt"])
+        assert len(paths) == 2
+        assert urls == ["https://example.com"]
+
+    def test_all_urls(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["https://a.com", "http://b.com"])
+        assert len(paths) == 0
+        assert len(urls) == 2
+
+    def test_all_paths(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["/a.txt", "/b.txt"])
+        assert len(paths) == 2
+        assert len(urls) == 0
+
+
+class TestCrawlUrlsBlocking:
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_single_url(self, mock_crawl, isolated_env):
+        from pathlib import Path
+
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        async def _fake_crawl(url, **kwargs):
+            # Call the on_progress callback to cover the closure body
+            cb = kwargs.get("on_progress")
+            if cb:
+                cb("crawl_page", {"current": 1, "total": 1, "url": url})
+            return [Path("/tmp/page.md")]
+
+        mock_crawl.side_effect = _fake_crawl
+        result = _crawl_urls_blocking(
+            ["https://example.com"], crawl=False, depth=None, max_pages=None
+        )
+        assert len(result) == 1
+        mock_crawl.assert_called_once()
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_with_crawl_flag(self, mock_crawl, isolated_env):
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["depth"] == cfg.crawl_max_depth
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_with_explicit_depth(self, mock_crawl, isolated_env):
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=5, max_pages=20)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["depth"] == 5
+        assert call_kwargs["max_pages"] == 20
