@@ -29,19 +29,12 @@ def crawler_available() -> bool:
         return False
 
 
-_crawl_semaphore: asyncio.Semaphore | None = None
-
-
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
-    """Return the concurrency semaphore, or None if unlimited (0)."""
-    global _crawl_semaphore
-    if _crawl_semaphore is not None:
-        return _crawl_semaphore
+    """Return a new concurrency semaphore for the current call, or None if unlimited (0)."""
     limit = cfg.crawl_max_concurrent
     if limit <= 0:
         return None
-    _crawl_semaphore = asyncio.Semaphore(limit)
-    return _crawl_semaphore
+    return asyncio.Semaphore(limit)
 
 
 # Maximum filename length before truncation (most filesystems cap at 255 bytes)
@@ -51,7 +44,7 @@ _MAX_FILENAME_LEN = 200
 _INDEX_FILENAME = "index.md"
 
 
-_DEFAULT_BLOCKED_NETWORKS = (
+_BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -60,9 +53,10 @@ _DEFAULT_BLOCKED_NETWORKS = (
     ipaddress.ip_network("::1/128"),
 )
 
-blocked_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = list(
-    _DEFAULT_BLOCKED_NETWORKS
-)
+
+def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Return blocked network list. Override in tests via monkeypatch."""
+    return _BLOCKED_NETWORKS
 
 
 def is_url(value: str) -> bool:
@@ -91,7 +85,7 @@ def validate_crawl_url(url: str) -> None:
 
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        for network in blocked_networks:
+        for network in get_blocked_networks():
             if ip in network:
                 raise ValueError(f"Crawling private/reserved IP {ip} is not allowed")
 
@@ -205,18 +199,30 @@ def load_crawl_metadata() -> dict[str, CrawlMeta]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    return {url: CrawlMeta(**data) for url, data in raw.items()}
+    result: dict[str, CrawlMeta] = {}
+    for url, data in raw.items():
+        try:
+            result[url] = CrawlMeta(**data)
+        except (TypeError, KeyError):
+            log.warning("Skipping malformed crawl metadata entry: %s", url)
+    return result
 
 
 def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
-    """Persist URL→metadata mapping to the JSON sidecar."""
+    """Persist URL→metadata mapping to the JSON sidecar (atomic write)."""
     path = _crawl_meta_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     serializable = {
         url: {"file": m.file, "content_hash": m.content_hash, "crawled_at": m.crawled_at}
         for url, m in meta.items()
     }
-    path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+        tmp.rename(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def content_hash(text: str) -> str:
@@ -323,7 +329,7 @@ async def crawl_recursive(
 
 
 _last_sync_time: float = 0.0
-_sync_running: bool = False
+_sync_lock = asyncio.Lock()
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -332,27 +338,24 @@ async def _maybe_periodic_sync() -> None:
 
     Skips if a sync is already running or periodic sync is disabled (interval=0).
     """
-    global _last_sync_time, _sync_running
+    global _last_sync_time
     interval = cfg.crawl_sync_interval
-    if interval <= 0 or _sync_running:
+    if interval <= 0 or _sync_lock.locked():
         return
     now = time.monotonic()
     if now - _last_sync_time < interval:
         return
 
     _last_sync_time = now
-    _sync_running = True
 
     async def _run_sync() -> None:
-        global _sync_running
-        try:
-            from lilbee.ingest import sync
+        async with _sync_lock:
+            try:
+                from lilbee.ingest import sync
 
-            await sync(quiet=True)
-        except Exception as exc:
-            log.warning("Periodic sync during crawl failed: %s", exc)
-        finally:
-            _sync_running = False
+                await sync(quiet=True)
+            except Exception as exc:
+                log.warning("Periodic sync during crawl failed: %s", exc)
 
     task = asyncio.create_task(_run_sync())
     _background_tasks.add(task)

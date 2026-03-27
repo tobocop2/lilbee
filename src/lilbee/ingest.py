@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
@@ -143,6 +144,7 @@ def discover_files() -> dict[str, Path]:
     """Scan documents/ recursively, return {relative_name: absolute_path}."""
     if not cfg.documents_dir.exists():
         return {}
+    docs_resolved = cfg.documents_dir.resolve()
     files: dict[str, Path] = {}
     for root, dirs, filenames in os.walk(cfg.documents_dir, topdown=True):
         dirs[:] = [d for d in dirs if not is_ignored_dir(d, cfg.ignore_dirs)]
@@ -150,6 +152,9 @@ def discover_files() -> dict[str, Path]:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
+            if not path.resolve().is_relative_to(docs_resolved):
+                log.warning("Symlink escapes documents dir, skipping: %s", path)
+                continue
             if classify_file(path) is not None:
                 files[_relative_name(path)] = path
     return files
@@ -375,7 +380,7 @@ async def ingest_markdown(
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
     prepended for better retrieval context.
     """
-    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
     if not raw_text.strip():
         return []
 
@@ -689,6 +694,12 @@ async def _collect_results_with_progress(
         )
 
 
+def _discard_from_list(lst: list[str], value: str) -> None:
+    """Remove *value* from *lst* if present."""
+    with contextlib.suppress(ValueError):
+        lst.remove(value)
+
+
 def _apply_result(
     result: _IngestResult,
     added: list[str],
@@ -698,19 +709,15 @@ def _apply_result(
     """Record an ingestion result — update store on success, track failure."""
     if result.error is not None:
         log.exception("Failed to ingest %s", result.name, exc_info=result.error)
-        if result.name in added:
-            added.remove(result.name)
-        if result.name in updated:
-            updated.remove(result.name)
+        _discard_from_list(added, result.name)
+        _discard_from_list(updated, result.name)
         failed.append(result.name)
         return
     if result.chunk_count == 0:
         # No chunks produced (e.g. scanned PDF without vision model).
         # Don't record as a source so it gets retried on next sync.
-        if result.name in added:
-            added.remove(result.name)
-        if result.name in updated:
-            updated.remove(result.name)
+        _discard_from_list(added, result.name)
+        _discard_from_list(updated, result.name)
         return
     store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
 

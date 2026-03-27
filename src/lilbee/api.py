@@ -164,6 +164,8 @@ class Lilbee:
             store.delete_by_source(name)
             store.delete_source(name)
             doc_path = self._config.documents_dir / name
+            if not doc_path.resolve().is_relative_to(self._config.documents_dir.resolve()):
+                return
             if doc_path.exists():
                 doc_path.unlink()
 

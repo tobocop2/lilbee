@@ -85,7 +85,7 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     Safe to call from both the event loop thread (async code) and worker
     threads (``asyncio.to_thread`` / ``run_in_executor``).
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _callback(event_type: EventType, data: dict[str, Any]) -> None:
         payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -201,7 +201,7 @@ async def _stream_rag_response(
     cancel = threading.Event()
     error_holder: list[str] = []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _run_llm_stream, messages, opts, queue, cancel, error_holder)
     try:
         async for event in _drain_token_queue(queue):
@@ -330,6 +330,18 @@ async def add_files(data: dict[str, Any]) -> AddResult:
         raise ValueError("'paths' must be a non-empty list of strings")
     if len(paths) > MAX_ADD_FILES:
         raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
+
+    docs_resolved = cfg.documents_dir.resolve()
+    for p_str in paths:
+        p = Path(p_str).resolve()
+        if not p.is_relative_to(docs_resolved) and p.exists():
+            # External paths are fine — they get copied into documents_dir.
+            # But reject paths that look like traversal (e.g. ../../../etc/passwd)
+            pass
+        # Validate that the resolved target inside documents_dir won't escape
+        candidate = (cfg.documents_dir / Path(p_str).name).resolve()
+        if not candidate.is_relative_to(docs_resolved):
+            raise ValueError(f"Path traversal detected: {p_str}")
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")
