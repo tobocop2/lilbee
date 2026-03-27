@@ -62,11 +62,11 @@ flowchart LR
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
 - **File discovery**: recursive walk of `documents/`, SHA-256 hash-based change detection — only re-indexes modified files
-- **Markdown**: heading-aware chunking with hierarchy path prepending. kreuzberg doesn't chunk markdown at all (returns raw text). tree-sitter-language-pack splits at heading boundaries but doesn't prepend the hierarchy path. Our `chunk_markdown()` does both: splits at headings AND prepends the full path (e.g., "# Setup > ## Install") so the LLM knows each chunk's section context. Inspired by Anthropic's Contextual Retrieval (2024) which showed adding context to chunks reduces retrieval failures by 49%.
-- **Code**: tree-sitter AST splitting by function/class for 40+ languages, with symbol name, type, and line range in chunk headers
-- **PDF**: kreuzberg 4.5 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model)
-- **Structured files**: CSV/JSON/XML preprocessors → token-based recursive chunking
-- **Frontmatter**: YAML tags, title, author, date extracted from markdown; stripped before chunking
+- **Markdown**: heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., "# Setup > ## Install") so the LLM knows each chunk's section context. Inspired by Anthropic's Contextual Retrieval (2024) which showed adding context to chunks reduces retrieval failures by 49%.
+- **Code**: tree-sitter AST splitting via tree-sitter-language-pack 1.3+ for 170+ languages (55 file extensions), with symbol name, type, and line range in chunk headers
+- **PDF**: kreuzberg 4.6 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model). PDF page rasterization delegated to kreuzberg's `PdfPageIterator`.
+- **Structured files**: kreuzberg handles XML, JSON, JSONL, YAML, CSV extraction natively. Language detection delegated to tree-sitter-language-pack's `detect_language()`.
+- **Web pages**: crawl4ai fetches HTML (with JavaScript rendering via Playwright), converts to markdown, saves to `documents/_web/` for indexing
 - **Embedding**: provider-agnostic — works with Ollama, llama-cpp-python, or any configured provider
 - **Concept extraction**: spaCy noun phrases extracted per chunk, co-occurrence graph built with PPMI weights, Leiden clustering assigns concepts to communities
 - **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval + concept graph tables (nodes, edges, chunk mappings)
@@ -313,6 +313,14 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_RERANK_CANDIDATES` | `20` | Number of candidates to rerank | More = better precision but slower. 20 is a good balance. |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | Enable date-based result filtering | Only activates when temporal keywords are detected in the query |
 | `LILBEE_SHOW_REASONING` | `false` | Show reasoning model thinking process | For Qwen3/DeepSeek-R1 models that emit `<think>` tags |
+| `LILBEE_CONCEPT_GRAPH` | `true` | Enable concept graph (LazyGraphRAG index) | Extracts noun phrases, builds co-occurrence graph, boosts search by concept overlap |
+| `LILBEE_CONCEPT_BOOST_WEIGHT` | `0.3` | Concept overlap boost strength (0.0-1.0) | Higher = concept overlap matters more relative to vector similarity |
+| `LILBEE_CONCEPT_MAX_PER_CHUNK` | `10` | Max concepts extracted per chunk | Caps extraction to reduce noise from long chunks |
+| `LILBEE_CRAWL_MAX_DEPTH` | `2` | Default recursive crawl depth | How many link hops to follow from the root URL |
+| `LILBEE_CRAWL_MAX_PAGES` | `50` | Hard cap on pages per crawl | Enforced regardless of what callers request |
+| `LILBEE_CRAWL_TIMEOUT` | `30` | Per-page fetch timeout in seconds | Passed to crawl4ai as page_timeout |
+| `LILBEE_CRAWL_MAX_CONCURRENT` | CPU count | Max simultaneous crawl operations | 0 = unlimited. I/O-bound so CPU count is a reasonable default |
+| `LILBEE_CRAWL_SYNC_INTERVAL` | `30` | Seconds between periodic syncs during crawl | 0 = sync only after crawl completes. Lower = documents searchable sooner |
 
 ### Provider Settings
 
