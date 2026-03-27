@@ -341,9 +341,9 @@ class TestSlashCommandIntegration:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             with (
-                patch("lilbee.store.get_sources") as mock_get,
-                patch("lilbee.store.delete_by_source") as mock_del_chunks,
-                patch("lilbee.store.delete_source") as mock_del_src,
+                patch("lilbee.cli.tui.screens.chat.get_sources") as mock_get,
+                patch("lilbee.cli.tui.screens.chat.delete_by_source") as mock_del_chunks,
+                patch("lilbee.cli.tui.screens.chat.delete_source") as mock_del_src,
             ):
                 mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
                 app.screen._handle_slash("/delete notes.md")
