@@ -33,7 +33,7 @@ def chunk_text(
         chunking=ChunkingConfig(
             max_chars=max_chars,
             max_overlap=max_overlap,
-            chunker_type="markdown" if heading_context else None,  # type: ignore[call-arg]
+            chunker_type="markdown" if heading_context else None,
             prepend_heading_context=heading_context,  # type: ignore[call-arg]
         )
     )
