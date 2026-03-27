@@ -189,6 +189,34 @@ class TestFetchHfModels:
         models = catalog._fetch_hf_models()
         assert len(models[0].description) <= 120
 
+    def test_uses_pipeline_tag_for_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [
+            {
+                "id": "user/embed-model",
+                "downloads": 100,
+                "pipeline_tag": "feature-extraction",
+                "siblings": [],
+            },
+            {
+                "id": "user/vision-model",
+                "downloads": 50,
+                "pipeline_tag": "image-text-to-text",
+                "siblings": [],
+            },
+        ]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert models[0].task == "embedding"
+        assert models[1].task == "vision"
+
+    def test_missing_pipeline_tag_defaults_to_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert models[0].task == "chat"
+
 
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,12 +242,14 @@ class TestGetCatalog:
         result = get_catalog(task="chat")
         assert all(m.task == "chat" for m in result.models)
 
-    def test_filter_by_task_embedding(self) -> None:
+    def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
         result = get_catalog(task="embedding")
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
-    def test_filter_by_task_vision(self) -> None:
+    def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
         result = get_catalog(task="vision")
         assert all(m.task == "vision" for m in result.models)
         assert result.total == len(FEATURED_VISION)
@@ -550,6 +580,35 @@ class TestTaskToPipeline:
 
     def test_none(self) -> None:
         assert catalog._task_to_pipeline(None) == "text-generation"
+
+
+class TestPipelineToTask:
+    def test_text_generation(self) -> None:
+        assert catalog._pipeline_to_task("text-generation") == "chat"
+
+    def test_feature_extraction(self) -> None:
+        assert catalog._pipeline_to_task("feature-extraction") == "embedding"
+
+    def test_image_text_to_text(self) -> None:
+        assert catalog._pipeline_to_task("image-text-to-text") == "vision"
+
+    def test_image_to_text(self) -> None:
+        assert catalog._pipeline_to_task("image-to-text") == "vision"
+
+    def test_unknown_defaults_to_chat(self) -> None:
+        assert catalog._pipeline_to_task("unknown-tag") == "chat"
+
+    def test_empty_defaults_to_chat(self) -> None:
+        assert catalog._pipeline_to_task("") == "chat"
+
+
+class TestFeaturedVisionModel:
+    def test_featured_vision_is_lightonocr(self) -> None:
+        assert len(FEATURED_VISION) == 1
+        assert "LightOnOCR" in FEATURED_VISION[0].name
+
+    def test_featured_vision_is_small(self) -> None:
+        assert FEATURED_VISION[0].size_gb <= 2.0
 
 
 class TestSortModels:

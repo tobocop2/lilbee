@@ -16,8 +16,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
-from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee import settings
+from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
+from lilbee.config import cfg
+from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.providers import get_provider
+from lilbee.query import build_rag_context, search_context
+from lilbee.results import group, to_dicts
+from lilbee.store import get_sources, remove_documents
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -58,6 +64,21 @@ def sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def sse_error(message: str) -> str:
+    """Format an SSE error event."""
+    return sse_event(SseEvent.ERROR, {"message": message})
+
+
+def sse_done(data: dict[str, Any]) -> str:
+    """Format an SSE done event."""
+    return sse_event(SseEvent.DONE, data)
+
+
+def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Convert raw options dict to GenerationOptions, or None."""
+    return cfg.generation_options(**options) if options else None
+
+
 def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCallback:
     """Return a progress callback that serializes events into an asyncio queue.
 
@@ -91,23 +112,16 @@ async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[byte
 
 async def health() -> dict[str, str]:
     """Return service health and version."""
-    from lilbee.cli.helpers import get_version
-
     return {"status": "ok", "version": get_version()}
 
 
 async def status() -> dict[str, Any]:
     """Return config, sources, and chunk counts."""
-    from lilbee.cli.helpers import gather_status
-
     return gather_status().model_dump(exclude_none=True)
 
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search and return grouped DocumentResults as dicts."""
-    from lilbee.query import search_context
-    from lilbee.results import group, to_dicts
-
     results = search_context(q, top_k=top_k)
     grouped = group(results)
     return to_dicts(grouped)
@@ -117,16 +131,53 @@ async def ask(
     question: str, top_k: int = 0, options: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """One-shot RAG answer. Returns {answer, sources[]}."""
-    from lilbee.cli.helpers import clean_result
-    from lilbee.config import cfg
     from lilbee.query import ask_raw
 
-    opts = cfg.generation_options(**options) if options else None
+    opts = _resolve_generation_options(options)
     result = ask_raw(question, top_k=top_k, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
     }
+
+
+def _run_llm_stream(
+    messages: list[ChatMessage],
+    opts: dict[str, Any] | None,
+    queue: asyncio.Queue[str | None],
+    cancel: threading.Event,
+    error_holder: list[str],
+) -> None:
+    """Stream LLM tokens into a queue from a worker thread."""
+    from lilbee.reasoning import filter_reasoning
+
+    try:
+        provider = get_provider()
+        stream = provider.chat(
+            cast("list[dict[str, Any]]", messages),
+            stream=True,
+            options=opts or None,
+            model=cfg.chat_model,
+        )
+        for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
+            if cancel.is_set():
+                break
+            if st.content:
+                event_type = SseEvent.REASONING if st.is_reasoning else SseEvent.TOKEN
+                queue.put_nowait(sse_event(event_type, {"token": st.content}))
+    except Exception as exc:
+        error_holder.append(str(exc))
+    finally:
+        queue.put_nowait(None)
+
+
+async def _drain_token_queue(queue: asyncio.Queue[str | None]) -> AsyncGenerator[str, None]:
+    """Yield SSE strings from the token queue until sentinel."""
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+        yield event
 
 
 async def _stream_rag_response(
@@ -137,51 +188,23 @@ async def _stream_rag_response(
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
-    from lilbee.cli.helpers import clean_result
-    from lilbee.config import cfg
-    from lilbee.query import _build_rag_context
 
-    rag = _build_rag_context(question, top_k=top_k, history=history)
+    rag = build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
-        yield sse_event("error", {"message": "No relevant documents found."})
+        yield sse_error("No relevant documents found.")
         return
 
     results, messages = rag
-    opts = cfg.generation_options(**options) if options else cfg.generation_options()
+    opts = _resolve_generation_options(options) or cfg.generation_options()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     cancel = threading.Event()
     error_holder: list[str] = []
 
-    def _generate() -> None:
-        from lilbee.reasoning import filter_reasoning
-
-        try:
-            provider = get_provider()
-            stream = provider.chat(
-                cast("list[dict[str, Any]]", messages),
-                stream=True,
-                options=opts or None,
-                model=cfg.chat_model,
-            )
-            for st in filter_reasoning(cast(Iterator[str], stream), show=cfg.show_reasoning):
-                if cancel.is_set():
-                    break
-                if st.content:
-                    event_type = "reasoning" if st.is_reasoning else "token"
-                    queue.put_nowait(sse_event(event_type, {"token": st.content}))
-        except Exception as exc:
-            error_holder.append(str(exc))
-        finally:
-            queue.put_nowait(None)
-
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _generate)
+    loop.run_in_executor(None, _run_llm_stream, messages, opts, queue, cancel, error_holder)
     try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
+        async for event in _drain_token_queue(queue):
             yield event
     except (asyncio.CancelledError, GeneratorExit):
         log.info("Stream cancelled by client")
@@ -189,11 +212,11 @@ async def _stream_rag_response(
         return
 
     if error_holder:
-        yield sse_event("error", {"message": error_holder[0]})
+        yield sse_error(error_holder[0])
         return
 
-    yield sse_event("sources", [clean_result(s) for s in results])
-    yield sse_event("done", {})
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
+    yield sse_done({})
 
 
 def ask_stream(
@@ -210,11 +233,9 @@ async def chat(
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Chat with history. Returns {answer, sources[]}."""
-    from lilbee.cli.helpers import clean_result
-    from lilbee.config import cfg
     from lilbee.query import ask_raw
 
-    opts = cfg.generation_options(**options) if options else None
+    opts = _resolve_generation_options(options)
     result = ask_raw(question, top_k=top_k, history=history, options=opts)
     return {
         "answer": result.answer,
@@ -250,7 +271,7 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
             continue
         if item is not None:
             yield item
-    yield sse_event("done", task.result().model_dump())
+    yield sse_done(task.result().model_dump())
 
 
 async def _run_add(
@@ -260,8 +281,6 @@ async def _run_add(
     queue: asyncio.Queue[str | None],
 ) -> None:
     """Copy files and sync, pushing SSE events to the queue."""
-    from lilbee.cli.helpers import copy_files
-    from lilbee.config import cfg
     from lilbee.ingest import sync
 
     callback = _make_sse_callback(queue)
@@ -322,7 +341,6 @@ async def add_files(data: dict[str, Any]) -> AddResult:
 
 async def list_models() -> dict[str, Any]:
     """Return chat and vision model catalogs with installed status."""
-    from lilbee.config import cfg
     from lilbee.models import MODEL_CATALOG, VISION_CATALOG, list_installed_models
 
     installed = set(list_installed_models())
@@ -364,8 +382,6 @@ async def list_models() -> dict[str, Any]:
 
 async def set_chat_model(model: str) -> dict[str, str]:
     """Switch active chat model. Returns {model}."""
-    from lilbee import settings
-    from lilbee.config import cfg
     from lilbee.models import ensure_tag
 
     tagged = ensure_tag(model)
@@ -376,9 +392,6 @@ async def set_chat_model(model: str) -> dict[str, str]:
 
 async def set_vision_model(model: str) -> dict[str, str]:
     """Switch active vision model. Pass empty string to disable. Returns {model}."""
-    from lilbee import settings
-    from lilbee.config import cfg
-
     cfg.vision_model = model
     settings.set_value(cfg.data_root, "vision_model", model)
     return {"model": model}
@@ -386,8 +399,6 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.store import remove_documents
-
     result = remove_documents(names, delete_files=delete_files)
     return {"removed": result.removed, "not_found": result.not_found}
 
@@ -398,8 +409,6 @@ async def list_documents(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Return indexed documents with metadata, paginated and filterable."""
-    from lilbee.store import get_sources
-
     sources = get_sources()
     if search:
         search_lower = search.lower()
@@ -423,7 +432,6 @@ async def list_documents(
 
 async def get_config() -> dict[str, Any]:
     """Return all user-facing configuration values."""
-    from lilbee.config import cfg
     from lilbee.reranker import reranker_available
 
     result: dict[str, Any] = {
@@ -543,13 +551,13 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
         events: list[str] = []
 
         def _on_progress(data: dict[str, Any]) -> None:
-            events.append(sse_event("progress", data))
+            events.append(sse_event(SseEvent.PROGRESS, data))
 
         manager.pull(model, src, on_progress=_on_progress)
         for event in events:
             yield event
     except Exception as exc:
-        yield sse_event("error", {"message": str(exc)})
+        yield sse_error(str(exc))
 
 
 async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]:
@@ -560,3 +568,39 @@ async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]
     src = _parse_source(source)
     deleted = manager.remove(model, src)
     return {"deleted": deleted, "model": model, "freed_gb": 0.0}
+
+
+async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGenerator[str, None]:
+    """Stream crawl progress as SSE events.
+
+    Emits crawl_start, crawl_page, crawl_done events, then a final done event
+    with the list of files written. On error emits crawl_error.
+    """
+    from lilbee.crawler import require_valid_crawl_url
+
+    require_valid_crawl_url(url)
+
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    callback = _make_sse_callback(queue)
+
+    async def _run_crawl() -> list[Path]:
+        from lilbee.crawler import crawl_and_save
+
+        return await crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=callback)
+
+    task = asyncio.create_task(_run_crawl())
+    while not task.done() or not queue.empty():
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except TimeoutError:
+            continue
+        if item is not None:
+            yield item
+
+    exc = task.exception()
+    if exc is not None:
+        yield sse_error(str(exc))
+        return
+
+    paths = task.result()
+    yield sse_done({"files_written": [str(p) for p in paths]})
