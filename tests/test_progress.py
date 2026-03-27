@@ -2,6 +2,7 @@
 
 from lilbee.progress import (
     EventType,
+    SseEvent,
     noop_callback,
 )
 
@@ -23,3 +24,16 @@ class TestEventTypes:
         assert EventType.DONE == "done"
         assert EventType.EMBED == "embed"
         assert EventType.EXTRACT == "extract"
+
+
+class TestSseEvent:
+    def test_sse_event_values(self) -> None:
+        assert SseEvent.TOKEN == "token"
+        assert SseEvent.REASONING == "reasoning"
+        assert SseEvent.SOURCES == "sources"
+        assert SseEvent.ERROR == "error"
+        assert SseEvent.DONE == "done"
+        assert SseEvent.PROGRESS == "progress"
+
+    def test_sse_event_is_str(self) -> None:
+        assert isinstance(SseEvent.TOKEN, str)

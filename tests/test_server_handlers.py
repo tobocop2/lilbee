@@ -714,7 +714,7 @@ class TestGetConfig:
 
 
 class TestListDocuments:
-    @patch("lilbee.store.get_sources")
+    @patch("lilbee.server.handlers.get_sources")
     async def test_returns_documents(self, mock_sources):
         mock_sources.return_value = [
             {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
@@ -724,14 +724,14 @@ class TestListDocuments:
         assert result["documents"][0]["filename"] == "a.md"
         assert result["documents"][0]["chunk_count"] == 5
 
-    @patch("lilbee.store.get_sources")
+    @patch("lilbee.server.handlers.get_sources")
     async def test_empty(self, mock_sources):
         mock_sources.return_value = []
         result = await handlers.list_documents()
         assert result["total"] == 0
         assert result["documents"] == []
 
-    @patch("lilbee.store.get_sources")
+    @patch("lilbee.server.handlers.get_sources")
     async def test_pagination(self, mock_sources):
         mock_sources.return_value = [
             {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
@@ -743,7 +743,7 @@ class TestListDocuments:
         assert result["limit"] == 3
         assert result["offset"] == 2
 
-    @patch("lilbee.store.get_sources")
+    @patch("lilbee.server.handlers.get_sources")
     async def test_search_filter(self, mock_sources):
         mock_sources.return_value = [
             {"filename": "readme.md", "chunk_count": 3},
