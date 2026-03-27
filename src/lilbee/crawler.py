@@ -73,9 +73,6 @@ def validate_crawl_url(url: str) -> None:
     if not hostname:
         raise ValueError("URL has no hostname")
 
-    if hostname.lower() in ("localhost", "localhost."):
-        raise ValueError("Crawling localhost is not allowed")
-
     try:
         addr_infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror as exc:
@@ -241,16 +238,15 @@ async def crawl_single(url: str) -> CrawlResult:
     try:
         async with AsyncWebCrawler() as crawler:
             result = await crawler.arun(url=url, config=config)
-            if not result.success:
-                return CrawlResult(
-                    url=url,
-                    success=False,
-                    error=result.error_message or "Unknown crawl error",
-                )
+            # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
+            # even when the main page has valid markdown. Trust the content, not the flag.
+            markdown = (result.markdown or "").strip()
+            if markdown:
+                return CrawlResult(url=url, markdown=markdown, success=True)
             return CrawlResult(
                 url=url,
-                markdown=result.markdown or "",
-                success=True,
+                success=False,
+                error=result.error_message or "No content extracted",
             )
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
