@@ -235,7 +235,8 @@ class TestLilbeeReset:
 
 class TestLilbeeInit:
     def test_init_creates_structure(self, tmp_path):
-        result = lilbee_init(str(tmp_path))
+        with mock.patch("pathlib.Path.home", return_value=tmp_path.parent):
+            result = lilbee_init(str(tmp_path))
         root = tmp_path / ".lilbee"
         assert result["command"] == "init"
         assert result["created"] is True
@@ -246,14 +247,23 @@ class TestLilbeeInit:
 
     def test_init_already_exists(self, tmp_path):
         (tmp_path / ".lilbee").mkdir()
-        result = lilbee_init(str(tmp_path))
+        with mock.patch("pathlib.Path.home", return_value=tmp_path.parent):
+            result = lilbee_init(str(tmp_path))
         assert result["created"] is False
 
     def test_init_default_cwd(self, tmp_path):
-        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+        with (
+            mock.patch("pathlib.Path.cwd", return_value=tmp_path),
+            mock.patch("pathlib.Path.home", return_value=tmp_path.parent),
+        ):
             result = lilbee_init()
         assert result["created"] is True
         assert (tmp_path / ".lilbee" / "documents").is_dir()
+
+    def test_init_outside_home_rejected(self, tmp_path):
+        with mock.patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+            result = lilbee_init(str(tmp_path))
+        assert "error" in result
 
 
 class TestLilbeeAdd:

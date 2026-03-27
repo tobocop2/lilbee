@@ -255,7 +255,7 @@ class TestAsk:
     @mock.patch("lilbee.query.ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_prints_response(self, mock_sync, mock_stream):
-        mock_stream.return_value = iter(["Hello", " world"])
+        mock_stream.return_value = _mock_stream("Hello", " world")
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 

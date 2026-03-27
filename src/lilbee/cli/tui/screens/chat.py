@@ -253,9 +253,13 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            cfg.chat_model = args
+            from lilbee.models import ensure_tag
+
+            tagged = ensure_tag(args)
+            cfg.chat_model = tagged
+            settings.set_value(cfg.data_root, "chat_model", tagged)
             self.app.title = f"lilbee — {cfg.chat_model}"
-            self.notify(msg.CMD_MODEL_SET.format(name=args))
+            self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
             self.app.push_screen(CatalogScreen())
@@ -296,6 +300,8 @@ class ChatScreen(Screen[None]):
             else:
                 parsed = defn.type(value)
             setattr(cfg, defn.cfg_attr, parsed)
+            persisted = str(parsed) if parsed is not None else ""
+            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
@@ -425,7 +431,7 @@ class ChatScreen(Screen[None]):
                     self.app.call_from_thread(sync_bar.set_status, status)
 
             result = asyncio.run(sync(on_progress=on_progress))
-            added = result.get("added", 0) if isinstance(result, dict) else 0
+            added = len(result.added)
             self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_DONE.format(count=added))
         except Exception:
             log.warning("Background sync failed", exc_info=True)
