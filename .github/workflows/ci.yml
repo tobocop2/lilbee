@@ -22,7 +22,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Lint
         run: make lint
@@ -60,7 +60,7 @@ jobs:
         run: choco install make -y
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Run unit tests with coverage
         run: make test-ci
@@ -94,7 +94,7 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Build dev portal (coverage + API docs)
         run: make docs-site
@@ -125,7 +125,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --all-extras
 
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
