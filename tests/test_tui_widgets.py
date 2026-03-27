@@ -602,6 +602,14 @@ class TestPathOptions:
             r = _path_options("something")
         assert r == []
 
+    def test_limits_results_to_20(self, tmp_path):
+        from lilbee.cli.tui.widgets.autocomplete import _path_options
+
+        for i in range(25):
+            (tmp_path / f"file_{i:02d}.txt").touch()
+        r = _path_options(str(tmp_path) + "/")
+        assert len(r) == 20
+
 
 # ---------------------------------------------------------------------------
 # autocomplete.py — CompletionOverlay widget
