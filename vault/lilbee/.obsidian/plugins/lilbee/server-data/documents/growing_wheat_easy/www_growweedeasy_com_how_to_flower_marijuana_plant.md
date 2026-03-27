@@ -1,0 +1,220 @@
+* [Newsletter](https://www.growweedeasy.com/message/news)
+  * [Submit Pics](https://www.growweedeasy.com/submit-trophy-pics)
+  * [About](https://www.growweedeasy.com/about)
+  * [Contact](https://www.growweedeasy.com/website-feedback)
+
+[](https://www.growweedeasy.com/how-to-flower-marijuana-plant#slide_menu) [  ](https://www.growweedeasy.com "GrowWeedEasy")
+  * [Home](https://www.growweedeasy.com/)
+  * [Start Here](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [The Beginner’s Guide](https://www.growweedeasy.com/basics)
+    * [How to Grow Cannabis in 10 Steps](https://www.growweedeasy.com/10-step-grow-guide)
+    * [Germinate Your Seeds!](https://www.growweedeasy.com/germinate)
+    * [Use the Right Nutrients](https://www.growweedeasy.com/nutrients)
+    * [Cannabis Grow Lights](https://www.growweedeasy.com/cannabis-grow-lights)
+    * [When Do I Harvest?](https://www.growweedeasy.com/harvest)
+    * [How to Dry & Cure Buds](https://www.growweedeasy.com/drying-curing)
+    * [New Grower Shopping List](https://www.growweedeasy.com/growing-cannabis-setup-examples)
+    * [Ask Questions!](https://www.growweedeasy.com/forum/growing-community)
+  * [Problems & Symptoms](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [Cannabis Problems Guide](https://www.growweedeasy.com/marijuana-symptoms)
+    * [Diagnose Your Sick Plant](https://www.growweedeasy.com/cannabis-symptoms-pictures)
+    * [Bugs, Mold, & Other Cannabis Pests](https://www.growweedeasy.com/bugs-pests-symptoms-marijuana-grow)
+    * [Stop Nutrient Deficiencies](https://www.growweedeasy.com/ph)
+    * [5-Step Cure to Most Plant Problems](https://www.growweedeasy.com/5-step-solution-to-most-cannabis-growing-problem)
+  * [Tutorials](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [Examples of Good Grow Setups](https://www.growweedeasy.com/growing-cannabis-setup-examples)
+    * [Marijuana Growth Timeline](https://www.growweedeasy.com/how-long-does-it-take-to-grow-weed)
+    * [Tiny LED Grow for $300 Guide](https://www.growweedeasy.com/how-to-grow-cannabis-for-300-in-this-mini-grow-kit-up-to-3-oz-harvest-shopping-list-grow-tutorial)
+    * [Cheapskate Grow for $150 Guide](https://www.growweedeasy.com/cheapest-way-to-grow-weed-indoors)
+    * [Organic Super Soil Guide](https://www.growweedeasy.com/organic-super-soil)
+    * [Bubbleponics Grow Guide](https://www.growweedeasy.com/high-yield-bubbleponics-technique)
+    * [200W LED Grow 5-11 oz Guide](https://www.growweedeasy.com/200w-led-spider-farmer-sf-2000-cannabis-setup-shopping-list-grow-tutorial)
+    * [How to Grow 1 lb of Weed Indoors](https://www.growweedeasy.com/how-to-grow-1-pound-of-weed-indoors-proven-method-grow-tent)
+    * [List of ALL Tutorials](https://www.growweedeasy.com/the-basics)
+  * [Growing Topics](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [5 Ways to Increase Yields](https://www.growweedeasy.com/how-to-increase-yields-indoors)
+    * [How to Improve Bud Quality](https://www.growweedeasy.com/7-tips-to-growing-top-shelf-buds)
+    * [Nebula’s Cannabis Grow Journals](https://www.growweedeasy.com/side-by-side-cannabis-grow-journal-experiments-by-nebula-haze)
+    * [Male vs Female Plants](https://www.growweedeasy.com/marijuana-boy-girl)
+    * [How to Control Smell](https://www.growweedeasy.com/smell)
+    * [The Perfect Environment](https://www.growweedeasy.com/perfect-growing-environment)
+    * [Plant Training Yield Guide](https://www.growweedeasy.com/cannabis-plant-training)
+    * [Grower’s Glossary](https://www.growweedeasy.com/growweedeasys-growers-glossary)
+    * […and LOTS more!](https://www.growweedeasy.com/the-basics)
+  * [Seeds](https://www.growweedeasy.com/seeds)
+  * [Grow Tools & Calculators](https://www.growweedeasy.com/grow-tools-calculators)
+    * [Plant Doctor](https://www.growweedeasy.com/cannabis-symptoms-pictures)
+    * [Electricity Usage Calculator](https://www.growweedeasy.com/electricity-usage-calculator)
+    * [Nutrient Schedule Calculator](https://www.growweedeasy.com/nutrient-schedule-calculator)
+    * [LED Selector](https://www.growweedeasy.com/led-selector)
+    * [All Tools & Calculators](https://www.growweedeasy.com/grow-tools-calculators)
+  * [Harvest Book](https://homegrowmasterclass.com/product/harvest-your-guide-to-the-good-part/?utm_source=mobilemenu&utm_medium=content&utm_campaign=bookgreen&utm_content=harvestbook)
+  * [Submit PIcs](https://www.growweedeasy.com/submit-trophy-pics)
+  * [Harvest Book](https://homegrowmasterclass.com/product/harvest-your-guide-to-the-good-part/)
+  * [Sitemap](https://www.growweedeasy.com/link-guide-growing-cannabis)
+  * [Newsletter signup](https://www.growweedeasy.com/message/news)
+  * [Glossary](https://www.growweedeasy.com/growweedeasys-growers-glossary)
+  * [About](https://www.growweedeasy.com/about)
+  * [Contact](https://www.growweedeasy.com/website-feedback)
+  * [GIVE ME GROW TIPS!](https://www.growweedeasy.com/message/news)
+
+# How do I flower a marijuana plant?
+**Question** : I need help. I have a marijuana plant growing in my closet under a small [100W LED grow light](https://www.amazon.com/Horticulture-Lighting-Group-High-Efficiency-Upgraded/dp/B07C59J8L2?crid=170S4MY4ZV7HV&keywords=hlg+100&qid=1678577735&sprefix=hlg+100%2Caps%2C118&sr=8-2&linkCode=ll1&tag=4200a7-20&linkId=13067ed239bd3975d9871c38b05bb501&language=en_US&ref_=as_li_ss_tl). It’s a little over a month old and looks good, but now I want it to flower and make buds. What do I need?
+[](https://www.growweedeasy.com/wp-content/uploads/2020/04/jack-the-cat-checking-out-cannabis-plant-vegetative-in-coco-pot.jpg)
+**Answer:** Change the lights to only be on for 12 hours a day, with 12 hours of total, uninterrupted darkness when the lights are off. This is done by using a wall timer. That’s it! Happy growing!
+-Sirius Fourside
+* * *
+##  **Summary: How to get cannabis to make buds** (also known as flowering, because the buds are female flowers)
+  1. **12/12 light schedule** – Give cannabis plants 12 hours of light a day and 12 hours of dark per day to get them to start flowering (growing buds). Do this by plugging your grow lights into a [wall timer](https://www.amazon.com/dp/B00MVFF59S?psc=1&pd_rd_i=B00MVFF59S&pd_rd_w=eUxSa&content-id=amzn1.sym.fc40fdbf-2388-405b-a964-03cdb84a009a&pf_rd_p=fc40fdbf-2388-405b-a964-03cdb84a009a&pf_rd_r=613T6JEFZ4SEV6WKZF54&pd_rd_wg=JasFe&pd_rd_r=c4cccb17-4811-4d4c-8e58-5dac96378b5c&s=hi&sp_csd=d2lkZ2V0TmFtZT1zcF9kZXRhaWxfdGhlbWF0aWM&spLa=ZW5jcnlwdGVkUXVhbGlmaWVyPUEzMjFUSklPMkhWQzVXJmVuY3J5cHRlZElkPUEwNzMzNjgyMjJYUzI3S0JRNDBORyZlbmNyeXB0ZWRBZElkPUEwMjc5NjQ0MldMWU8xSVlYR0daTCZ3aWRnZXROYW1lPXNwX2RldGFpbF90aGVtYXRpYyZhY3Rpb249Y2xpY2tSZWRpcmVjdCZkb05vdExvZ0NsaWNrPXRydWU%3D&linkCode=ll1&tag=4200a7-20&linkId=5d2f71101a5d43328c0da54bc2758773&language=en_US&ref_=as_li_ss_tl).
+  2. **No light leaks** – Don’t let plants get any light during their dark period. This also means you should not check on flowering cannabis plants during lights-off time. Even a little light at night can cause plants to [herm](https://www.growweedeasy.com/cannabis-plant-problems/male-plants-hermies-bananas) (make seedy buds) or [revert back to the vegetative stage](https://www.growweedeasy.com/cannabis-plant-problems/accidental-re-vegging) (known as re-vegging)
+  3. **Look out for male plants** – If plant grow pollen sacs instead of buds, toss them immediately because you can’t smoke pollen sacs. Plus they release pollen that makes your buds seedy. [Why do I not want male plants?](https://www.growweedeasy.com/why-do-i-not-want-male-marijuana-plants)
+
+**1.) Put cannabis grow lights on a timer** so plants get light for only 12 hours a day. The long nights make a cannabis plant “think” winter is coming, and it starts making flowers so they’ll be ready before it gets cold. _Note:_ Auto-flowering strains automatically start making buds and most strains are ready to harvest in 2-3 months from seed. That means an autoflowering grower doesn’t need to worry about light leaks or light schedules. [Learn more about auto-flowering cannabis](https://www.growweedeasy.com/2023-guide-to-cannabis-auto-flowering-strains).
+[](https://www.growweedeasy.com/wp-content/uploads/2016/01/put-cannabis-grow-lights-12-12-initiate-flowering-stage.jpg)
+**2.) No light leaks.** Even small amounts of light can cause plants to [turn into a hermaphrodite](https://www.growweedeasy.com/cannabis-plant-problems/male-plants-hermies-bananas), which means to grow pollen and get seedy buds. Light leaks can also make the plant [revert back to the vegetative stage](https://www.growweedeasy.com/cannabis-plant-problems/accidental-re-vegging), which causes the buds to die and leaves start growing with rounded edges.
+Look out for these symptoms that are caused by light leaks.
+Light leaks cause “hermies” (an affectionate name for hermaphrodite cannabis plants). These cause seedy buds if you ignore them.
+[](https://www.growweedeasy.com/wp-content/uploads/2017/10/male-plants-hermies-bananas-cannabis.jpg)
+Light during the dark period causes cannabis plants to revert back to the vegetative stage. This is the first sign of re-vegging: round leaves.
+[](https://www.growweedeasy.com/wp-content/uploads/2018/07/accidental-re-vegging-cannabis.jpg)
+**3.) Remove male plants** – Once you initiate a 12/12 light schedule, plant should start making buds in 2-3 weeks. Watch to make sure all plants are growing buds. If plant grow pollen sacs, that means this is a male plant, and the plants need to be removed immediately from the grow room. These plants release excessive amounts of pollen that make your buds grow seeds. A few seeds are okay, but if you have a lot it can hurt yields and also reduce the potency of buds. [Learn more about male vs female cannabis plants](https://www.growweedeasy.com/marijuana-boy-girl).
+After starting 12/12, plants should make buds in 2-3 weeks. If they grow pollen sacs like this, toss the plant immediately! [See more pictures of male plants](https://www.growweedeasy.com/pictures-of-male-marijuana-plants).
+[](https://www.growweedeasy.com/wp-content/uploads/2013/03/male-pollen-sacs-cannabis-sm.jpg)
+[Learn when to harvest your buds](https://www.growweedeasy.com/harvest)
+If you follow these steps, you’ll soon be rewarded with gorgeous cannabis buds.
+[](https://www.growweedeasy.com/wp-content/uploads/2022/07/platinum-cookies-bud-defoliated-plant-just-before-harvest.jpg)
+I love Platinum Cookies. [Check out my review of this strain!](https://www.growweedeasy.com/review-of-platinum-cookies-strain-by-seed-supreme-highly-recommended)
+[](https://www.growweedeasy.com/wp-content/uploads/2022/08/platinum-cookies-in-jar-purple-buds.jpg)
+* * *
+_Jump to…_
+[Cannabis Light Schedules: What You Need to Know](https://www.growweedeasy.com/when-should-i-change-the-cannabis-plant-over-to-flowering)
+[How long does it take to grow a cannabis plant from beginning to end?](https://www.growweedeasy.com/how-long-does-it-take-to-grow-weed)
+[Cannabis Growing: The Basics](https://www.growweedeasy.com/basics)
+[Where do I get seeds?](https://www.growweedeasy.com/seeds)
+* * *
+[](https://www.instagram.com/growweedeasy/)
+  * Company
+This field is for validation purposes and should be left unchanged.
+  * Was this article helpful?
+    * Yes
+    * No
+  * Oh no! How can we improve?
+  * 
+
+[General Cannabis Care](https://www.growweedeasy.com/category/general-cannabis-care)
+[Lights](https://www.growweedeasy.com/category/lights)
+**Get Your****Free****Grow Guide!**
+5 **Keys** to Growing Weed
+
+Enter Your Email Here:
+We respect your [email privacy](https://www.growweedeasy.com/email-privacy-policy)
+[](https://seedsupreme.com/#grower)
+[See OUR favorite seed sources!](https://www.growweedeasy.com/seeds)
+[](http://forum.growweedeasy.com/forum/growing-community) [Get Extra Growing Help](http://forum.growweedeasy.com/forum/growing-community)
+[](https://www.growweedeasy.com/the-basics)
+**February 2026**
+  * [GrowWeedEasy.com Harvest Survey – Spring 2026](https://www.growweedeasy.com/harvest-survey-spring-2026)
+  * [Best Soil Nutrients for Cannabis](https://www.growweedeasy.com/best-soil-nutrients-for-cannabis)
+  * [What’s the Best Soil for Growing Cannabis?](https://www.growweedeasy.com/what-soil-is-good-for-growing-cannabis)
+  * [Mars Hydro TSL2000 LED Grow Setup (300W)](https://www.growweedeasy.com/mars-hydro-tsl2000-led-cannabis-grow-setup-tutorial-300w-led)
+  * [5 Best LED Grow Lights 2026](https://www.growweedeasy.com/5-best-led-grow-lights-2026-cannabis-yields-speed-bud-quality)
+  * [Nebula’s Cannabis Grow Journals & Experiments](https://www.growweedeasy.com/side-by-side-cannabis-grow-journal-experiments-by-nebula-haze)
+  * [“Defoliation Deep Dive” Cannabis Yield Multiplier](https://www.growweedeasy.com/nebulas-flowering-stage-defoliation-tutorial)
+  * [How To Get To Harvest Faster](https://www.growweedeasy.com/how-to-get-to-harvest-as-fast-as-possible)
+  * [Difference Between “Fast” and Autoflower Strains](https://www.growweedeasy.com/difference-fast-strains-auto-flowering-cannabis-strains)
+  * [Best Outdoor Autoflowering Cannabis Strains (2026)](https://www.growweedeasy.com/best-outdoor-autoflowering-cannabis-strains-2026)
+  * [The 5 Microskills Every Grower Eventually Learns](https://www.growweedeasy.com/the-5-microskills-every-grower-eventually-learns)
+  * [How Many Cannabis Plants Should I Grow?](https://www.growweedeasy.com/how-many-plants-to-grow)
+  * [5 Steps to Give Cannabis Plants the Best Start](https://www.growweedeasy.com/5-steps-to-give-cannabis-plants-the-best-start)
+  * [Why Hydro Feels Like Cheating (Plus 7 Tips)](https://www.growweedeasy.com/7-secrets-no-problems-cannabis-hydroponic-dwc-cultivation)
+
+**January 2026**
+  * [“Sweet Dreams” Photoperiod Grow Journal](https://www.growweedeasy.com/sweet-dreams-photoperiod-grow-journal-in-progress)
+  * [Fast Outdoor Strains for a Quicker Harvest](https://www.growweedeasy.com/fastest-outdoor-cannabis-strains-for-late-planting)
+  * [How to Grow Cannabis Outdoors (Easier Method)](https://www.growweedeasy.com/beginner-guide-to-growing-cannabis-outdoors)
+  * [How to Make Cannabis Clones with an Aero Cloner](https://www.growweedeasy.com/how-to-make-cannabis-clones-aero-cloner)
+  * [Best Marijuana Strains for Beginner Growers](https://www.growweedeasy.com/best-marijuana-strains-beginners)
+  * [How to Increase “DLI” for Bigger Yields](https://www.growweedeasy.com/how-to-increase-dli-for-bigger-yields-daily-light-integral-tips)
+  * [When Are Marijuana Buds Ready to Harvest?](https://www.growweedeasy.com/harvest)
+  * [Complete Drying & Curing Marijuana Guide](https://www.growweedeasy.com/drying-curing)
+  * [The 3 Signs of a Great Grower](https://www.growweedeasy.com/the-3-signs-of-a-great-grower)
+  * [The First 3 Weeks Decide Everything](https://www.growweedeasy.com/the-first-3-weeks-decide-everything)
+  * [What Is VPD and Why Do Growers Care?](https://www.growweedeasy.com/vpd)
+  * [What Do Good Cannabis Seeds Look Like?](https://www.growweedeasy.com/what-do-cannabis-seeds-look-like)
+  * [My Experience with White Rhino Seeds (Hydro)](https://www.growweedeasy.com/my-experience-white-rhino-cannabis-seeds-hydro)
+  * [What Is the Solo Cup Challenge?](https://www.growweedeasy.com/solo-cup-challenge-grow-weed-in-a-cup)
+  * [How to Clone Weed in a Cup of Water](https://www.growweedeasy.com/how-to-clone-weed-in-a-cup-of-water-easy)
+  * [Grow Better Weed: The 5 Core Principles](https://www.growweedeasy.com/how-to-grow-better-weed-at-home)
+  * [Why Are My Cannabis Buds Growing So Small?](https://www.growweedeasy.com/why-are-my-cannabis-buds-so-small)
+  * [My Review of the Volcano Vaporizer](https://www.growweedeasy.com/review-volcano-tabletop-vaporizer-cannabis)
+  * [GrowWeedEasy Strain Library](https://www.growweedeasy.com/strain-library)
+
+**[View list of ALL articles!](https://www.growweedeasy.com/the-basics)**
+[Return to Top of Page](javascript:void\(0\))
+  * [Recent Updates](https://www.growweedeasy.com/the-basics)
+  * [About Us](https://www.growweedeasy.com/about)
+  * [Privacy Policy & Disclaimers](https://www.growweedeasy.com/privacy-policy)
+  * [Newsletter / Email Policy](https://www.growweedeasy.com/email-privacy-policy)
+  * [Free Ways to Help Grow Weed Easy](https://www.growweedeasy.com/how-to-support-growweedeasy-com)
+  * [Contact Us](https://www.growweedeasy.com/website-feedback/)
+
+[](https://www.instagram.com/growweedeasy/) [](https://www.facebook.com/growweedeasy/) [](https://www.pinterest.com/growweedeasy/) [](https://www.linkedin.com/in/nebula-haze/)
+GrowWeedEasy.com was [founded in 2010](https://www.growweedeasy.com/about) by Nebula Haze and Sirius Fourside. Featured in _High Times_ , Ed Rosenthal’s books, _Cannabis Business Times_ , and _Skunk Magazine_ , GrowWeedEasy.com is the **#1 free resource in the world** for learning how to grow cannabis at home. Our simple step-by-step tutorials make it easy for anyone to grow great weed. **[Sign up for our free newsletter](https://www.growweedeasy.com/message/news)** to get grow tips delivered every Sunday at 4:20 AM.
+Copyright © 2010 - 2026. All rights reserved.   
+Note: As an Amazon Associate, GrowWeedEasy.com earns a commission from qualifying purchases.
+[](https://www.growweedeasy.com/how-to-flower-marijuana-plant#slide_menu)
+  * [Home](https://www.growweedeasy.com/)
+  * [Start Here](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [The Beginner’s Guide](https://www.growweedeasy.com/basics)
+    * [How to Grow Cannabis in 10 Steps](https://www.growweedeasy.com/10-step-grow-guide)
+    * [Germinate Your Seeds!](https://www.growweedeasy.com/germinate)
+    * [Use the Right Nutrients](https://www.growweedeasy.com/nutrients)
+    * [Cannabis Grow Lights](https://www.growweedeasy.com/cannabis-grow-lights)
+    * [When Do I Harvest?](https://www.growweedeasy.com/harvest)
+    * [How to Dry & Cure Buds](https://www.growweedeasy.com/drying-curing)
+    * [New Grower Shopping List](https://www.growweedeasy.com/growing-cannabis-setup-examples)
+    * [Ask Questions!](https://www.growweedeasy.com/forum/growing-community)
+  * [Problems & Symptoms](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [Cannabis Problems Guide](https://www.growweedeasy.com/marijuana-symptoms)
+    * [Diagnose Your Sick Plant](https://www.growweedeasy.com/cannabis-symptoms-pictures)
+    * [Bugs, Mold, & Other Cannabis Pests](https://www.growweedeasy.com/bugs-pests-symptoms-marijuana-grow)
+    * [Stop Nutrient Deficiencies](https://www.growweedeasy.com/ph)
+    * [5-Step Cure to Most Plant Problems](https://www.growweedeasy.com/5-step-solution-to-most-cannabis-growing-problem)
+  * [Tutorials](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [Examples of Good Grow Setups](https://www.growweedeasy.com/growing-cannabis-setup-examples)
+    * [Marijuana Growth Timeline](https://www.growweedeasy.com/how-long-does-it-take-to-grow-weed)
+    * [Tiny LED Grow for $300 Guide](https://www.growweedeasy.com/how-to-grow-cannabis-for-300-in-this-mini-grow-kit-up-to-3-oz-harvest-shopping-list-grow-tutorial)
+    * [Cheapskate Grow for $150 Guide](https://www.growweedeasy.com/cheapest-way-to-grow-weed-indoors)
+    * [Organic Super Soil Guide](https://www.growweedeasy.com/organic-super-soil)
+    * [Bubbleponics Grow Guide](https://www.growweedeasy.com/high-yield-bubbleponics-technique)
+    * [200W LED Grow 5-11 oz Guide](https://www.growweedeasy.com/200w-led-spider-farmer-sf-2000-cannabis-setup-shopping-list-grow-tutorial)
+    * [How to Grow 1 lb of Weed Indoors](https://www.growweedeasy.com/how-to-grow-1-pound-of-weed-indoors-proven-method-grow-tent)
+    * [List of ALL Tutorials](https://www.growweedeasy.com/the-basics)
+  * [Growing Topics](https://www.growweedeasy.com/how-to-flower-marijuana-plant)
+    * [5 Ways to Increase Yields](https://www.growweedeasy.com/how-to-increase-yields-indoors)
+    * [How to Improve Bud Quality](https://www.growweedeasy.com/7-tips-to-growing-top-shelf-buds)
+    * [Nebula’s Cannabis Grow Journals](https://www.growweedeasy.com/side-by-side-cannabis-grow-journal-experiments-by-nebula-haze)
+    * [Male vs Female Plants](https://www.growweedeasy.com/marijuana-boy-girl)
+    * [How to Control Smell](https://www.growweedeasy.com/smell)
+    * [The Perfect Environment](https://www.growweedeasy.com/perfect-growing-environment)
+    * [Plant Training Yield Guide](https://www.growweedeasy.com/cannabis-plant-training)
+    * [Grower’s Glossary](https://www.growweedeasy.com/growweedeasys-growers-glossary)
+    * […and LOTS more!](https://www.growweedeasy.com/the-basics)
+  * [Seeds](https://www.growweedeasy.com/seeds)
+  * [Grow Tools & Calculators](https://www.growweedeasy.com/grow-tools-calculators)
+    * [Plant Doctor](https://www.growweedeasy.com/cannabis-symptoms-pictures)
+    * [Electricity Usage Calculator](https://www.growweedeasy.com/electricity-usage-calculator)
+    * [Nutrient Schedule Calculator](https://www.growweedeasy.com/nutrient-schedule-calculator)
+    * [LED Selector](https://www.growweedeasy.com/led-selector)
+    * [All Tools & Calculators](https://www.growweedeasy.com/grow-tools-calculators)
+  * [Harvest Book](https://homegrowmasterclass.com/product/harvest-your-guide-to-the-good-part/?utm_source=mobilemenu&utm_medium=content&utm_campaign=bookgreen&utm_content=harvestbook)
+  * [Submit PIcs](https://www.growweedeasy.com/submit-trophy-pics)
+  * [Harvest Book](https://homegrowmasterclass.com/product/harvest-your-guide-to-the-good-part/)
+  * [Sitemap](https://www.growweedeasy.com/link-guide-growing-cannabis)
+  * [Newsletter signup](https://www.growweedeasy.com/message/news)
+  * [Glossary](https://www.growweedeasy.com/growweedeasys-growers-glossary)
+  * [About](https://www.growweedeasy.com/about)
+  * [Contact](https://www.growweedeasy.com/website-feedback)
+  * [GIVE ME GROW TIPS!](https://www.growweedeasy.com/message/news)
+
+Notifications

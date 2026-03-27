@@ -1,0 +1,1279 @@
+{
+  "channels": [
+    {
+      "id": "ca8ef807-1c43-4161-ba02-f2ea13e90a9c",
+      "type": "EPISODIC",
+      "title": "Rescue Heroes",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b046c4359caa499fb10f53eff8ae1490.Rescue_Heroes_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b046c4359caa499fb10f53eff8ae1490.Rescue_Heroes_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b046c4359caa499fb10f53eff8ae1490.Rescue_Heroes_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "b046c435-9caa-499f-b10f-53eff8ae1490",
+      "contentRating": "TV-Y7",
+      "videoCount": 39,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-13T01:02:57.293Z"
+    },
+    {
+      "id": "dff69040-6f5f-4ea1-9003-c47c28c5502d",
+      "type": "EPISODIC",
+      "title": "Spliced",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2ebd80c198f14b48a51a8ec97a025126.Spliced_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2ebd80c198f14b48a51a8ec97a025126.Spliced_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2ebd80c198f14b48a51a8ec97a025126.Spliced_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "9082f2e6-090c-4998-b545-7dcede3fa121",
+      "type": "EPISODIC",
+      "title": "Bunsen is a Beast",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5f9a7971d43e411f9e0bc3e356b8f3b1.Bunsen_is_a_Beast_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5f9a7971d43e411f9e0bc3e356b8f3b1.Bunsen_is_a_Beast_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5f9a7971d43e411f9e0bc3e356b8f3b1.Bunsen_is_a_Beast_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "bcb745e2-d082-480b-b9db-7cba0c7bde4e",
+      "type": "EPISODIC",
+      "title": "Oh No! It’s an Alien Invasion",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fede3b7f622d47f8bb5ca033fda6f073.Oh_No_Its_an_Alien_Invasion_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fede3b7f622d47f8bb5ca033fda6f073.Oh_No_Its_an_Alien_Invasion_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fede3b7f622d47f8bb5ca033fda6f073.Oh_No_Its_an_Alien_Invasion_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "362da909-e4b9-4e01-a056-a52468618a39",
+      "type": "EPISODIC",
+      "title": "Mr. Peabody and Sherman Show",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b17e6496a19d4b48a5c8eae13025e778.Mr._Peabody_and_Sherman_Show_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b17e6496a19d4b48a5c8eae13025e778.Mr._Peabody_and_Sherman_Show_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b17e6496a19d4b48a5c8eae13025e778.Mr._Peabody_and_Sherman_Show_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "6fde413d-88e1-4563-8e01-437b2f3220c7",
+      "type": "EPISODIC",
+      "title": "Wayside School",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1bf11f952d95458dbdbfd94afa9b5b1c.Wayside_School_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1bf11f952d95458dbdbfd94afa9b5b1c.Wayside_School_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1bf11f952d95458dbdbfd94afa9b5b1c.Wayside_School_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "3f8526e2-7c22-4cda-adbf-44396d6e6216",
+      "type": "EPISODIC",
+      "title": "Trucktown",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e85df7b3a444385b0fa7e9e1a18c744.Trucktown_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e85df7b3a444385b0fa7e9e1a18c744.Trucktown_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e85df7b3a444385b0fa7e9e1a18c744.Trucktown_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "3e85df7b-3a44-4385-b0fa-7e9e1a18c744",
+      "contentRating": "Varies",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "e2c673c3-8063-4ec6-821e-941e1ad8bb09",
+      "type": "EPISODIC",
+      "title": "Nina's World",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d385c51d68a349f9b0b645fa59403c0b.Ninas_World_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d385c51d68a349f9b0b645fa59403c0b.Ninas_World_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d385c51d68a349f9b0b645fa59403c0b.Ninas_World_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "USA TV-Y",
+      "videoCount": 27,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "5dba7a29-65bb-472f-828f-5f6562c22412",
+      "type": "EPISODIC",
+      "title": "Puss in Boots",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/41614cd28c074904b3d5913dbcdb029f.Puss_in_Boots_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/41614cd28c074904b3d5913dbcdb029f.Puss_in_Boots_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/41614cd28c074904b3d5913dbcdb029f.Puss_in_Boots_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "d31e469f-151d-4452-b444-ac1908d445de",
+      "type": "EPISODIC",
+      "title": "All Hail King Julien",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/30ec9caeb99e45799ac50a3e759cf401.All_Hail_King_Julien_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/30ec9caeb99e45799ac50a3e759cf401.All_Hail_King_Julien_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/30ec9caeb99e45799ac50a3e759cf401.All_Hail_King_Julien_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "24a6e7ed-c388-4558-aa36-d74052246d80",
+      "contentRating": "Varies",
+      "videoCount": 23,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-12-03T15:56:20.869Z"
+    },
+    {
+      "id": "7ae59e21-8446-4491-af5d-29b172b28386",
+      "type": "EPISODIC",
+      "title": "Dragons Edge",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e66bc0d05108458e84ef0014f2af0023.Dragons_Edge_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e66bc0d05108458e84ef0014f2af0023.Dragons_Edge_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e66bc0d05108458e84ef0014f2af0023.Dragons_Edge_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "e66bc0d0-5108-458e-84ef-0014f2af0023",
+      "contentRating": "Varies",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "51b7cfd3-f63c-45f0-b04b-7a6e853e1c3a",
+      "type": "EPISODIC",
+      "title": "Odd Squad",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/830ca209acd040cca9bca7a6ac139d56.Odd_Squad_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/830ca209acd040cca9bca7a6ac139d56.Odd_Squad_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/830ca209acd040cca9bca7a6ac139d56.Odd_Squad_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "USA TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "2ba631f8-8996-4853-9f47-df0b3e070c9a",
+      "type": "EPISODIC",
+      "title": "The Loud House",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8d0c1dfe57574c38adb01269f07fb570.The_Loud_House_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8d0c1dfe57574c38adb01269f07fb570.The_Loud_House_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8d0c1dfe57574c38adb01269f07fb570.The_Loud_House_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "8d0c1dfe-5757-4c38-adb0-1269f07fb570",
+      "contentRating": "TV-Y",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "640566b4-9dbe-47fa-9edf-f8576e4c9501",
+      "type": "EPISODIC",
+      "title": "The Fairly OddParents",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d51121d293884fa89cb59accf6e207f8.The_Fairly_OddParents_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d51121d293884fa89cb59accf6e207f8.The_Fairly_OddParents_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d51121d293884fa89cb59accf6e207f8.The_Fairly_OddParents_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 39,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "bf0cd429-6b26-4556-bede-f98d5183834b",
+      "type": "EPISODIC",
+      "title": "Bubble Guppies",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e50e7e367fe434f8bde02770482198b.Bubble_Guppies_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e50e7e367fe434f8bde02770482198b.Bubble_Guppies_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3e50e7e367fe434f8bde02770482198b.Bubble_Guppies_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "25558cef-2481-4c9c-87a2-8cdb7aedd2cf",
+      "type": "EPISODIC",
+      "title": "Rugrats",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5ba45702f3c43d8b859ca5698f7d193.Rugrats_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5ba45702f3c43d8b859ca5698f7d193.Rugrats_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5ba45702f3c43d8b859ca5698f7d193.Rugrats_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 73,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "88bdb8a2-c8ba-417c-b4bd-6c305ad2fcb3",
+      "type": "EPISODIC",
+      "title": "Voltron",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b7c3e7ad4dda4b44bbae1d0117ec10e9.Voltron_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b7c3e7ad4dda4b44bbae1d0117ec10e9.Voltron_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b7c3e7ad4dda4b44bbae1d0117ec10e9.Voltron_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "b7c3e7ad-4dda-4b44-bbae-1d0117ec10e9",
+      "contentRating": "TV-Y7",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "4aa1756e-d0d5-4dff-a030-2bd5bff1e746",
+      "type": "EPISODIC",
+      "title": "Super WHY!",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3f428a037b974d40b4f957ca7843d845.Super_WHY_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3f428a037b974d40b4f957ca7843d845.Super_WHY_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/3f428a037b974d40b4f957ca7843d845.Super_WHY_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "USA TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "db857abd-1d8e-41c5-ab21-ae26edd70d6b",
+      "type": "EPISODIC",
+      "title": "6teen (the Mall)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/382d7a990b26418da184b0bdc16c5e16.6teen_the_Mall_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/382d7a990b26418da184b0bdc16c5e16.6teen_the_Mall_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/382d7a990b26418da184b0bdc16c5e16.6teen_the_Mall_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "5101a15a-a0cc-4bf6-a8ee-fd9fa0e4ba6c",
+      "contentRating": "Varies",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-02-06T04:58:59.452Z"
+    },
+    {
+      "id": "b34088f4-1ecb-4553-9575-b919c14f683c",
+      "type": "EPISODIC",
+      "title": "Trollhunters",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/53f7d73a65d14f2ea5a2ce9d5150e918.Trollhunters_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/53f7d73a65d14f2ea5a2ce9d5150e918.Trollhunters_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/53f7d73a65d14f2ea5a2ce9d5150e918.Trollhunters_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 25,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "11df8a20-1db3-4c1a-b79f-f92a59df49b6",
+      "type": "EPISODIC",
+      "title": "Sesame Street",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fcc870c7329c40d19405c16aff025008.Sesame_Street_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fcc870c7329c40d19405c16aff025008.Sesame_Street_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fcc870c7329c40d19405c16aff025008.Sesame_Street_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 22,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "76e39934-e454-4864-a46f-39ac22f5169d",
+      "type": "EPISODIC",
+      "title": "Go, Diego, Go!",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/876a637e22c146e4ace8008cf9ecb942.Go_Diego_Go_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/876a637e22c146e4ace8008cf9ecb942.Go_Diego_Go_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/876a637e22c146e4ace8008cf9ecb942.Go_Diego_Go_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 55,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "84fbe73d-c181-4528-a530-ec6de2f0ad4b",
+      "type": "EPISODIC",
+      "title": "Me and My Robot",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/0099f479570d4bb190e1dcd5cd65e97c.Me_and_My_Robot_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/0099f479570d4bb190e1dcd5cd65e97c.Me_and_My_Robot_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/0099f479570d4bb190e1dcd5cd65e97c.Me_and_My_Robot_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "FRA Not Rated <10",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "91a97d4f-34f7-4a5a-bbc9-037209d7806a",
+      "type": "EPISODIC",
+      "title": "Babar and the Adventures of Badou",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18e3e5fda05b4d238fdfba41969218d2.Babar_and_the_Adventures_of_Badou_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18e3e5fda05b4d238fdfba41969218d2.Babar_and_the_Adventures_of_Badou_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18e3e5fda05b4d238fdfba41969218d2.Babar_and_the_Adventures_of_Badou_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "18e3e5fd-a05b-4d23-8fdf-ba41969218d2",
+      "contentRating": "Varies",
+      "videoCount": 65,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-01-13T20:53:02.353Z"
+    },
+    {
+      "id": "2a4edfc9-b1b1-4757-911b-449bd9f2fb31",
+      "type": "EPISODIC",
+      "title": "Jasper The Penguin",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c2d95228c54247978ab807a1dcdd8ad9.Jasper_The_Penguin_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c2d95228c54247978ab807a1dcdd8ad9.Jasper_The_Penguin_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c2d95228c54247978ab807a1dcdd8ad9.Jasper_The_Penguin_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "5c4c4fb7-074d-4d07-8fcb-e6eae1386378",
+      "contentRating": "FRA Not Rated <10",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "1c311fca-4273-407c-bb4d-655f9e840fdf",
+      "type": "EPISODIC",
+      "title": "Backyardigans",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/6bf6875a27514cecb4d673847289f7bb.Backyardigans_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/6bf6875a27514cecb4d673847289f7bb.Backyardigans_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/6bf6875a27514cecb4d673847289f7bb.Backyardigans_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 39,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "81dee2ac-dc28-4272-b6e3-4cb934bea174",
+      "type": "EPISODIC",
+      "title": "Harvey Beaks",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b26bfb5ef41d4ff1b2f3c6d8dc7551ff.Harvey_Beaks_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b26bfb5ef41d4ff1b2f3c6d8dc7551ff.Harvey_Beaks_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b26bfb5ef41d4ff1b2f3c6d8dc7551ff.Harvey_Beaks_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "38ece387-c884-455f-99f0-86c00b2bacfc",
+      "type": "EPISODIC",
+      "title": "Franklin & Friends (2010s)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f5b3864259194e7bad1899c25291ff2f.Franklin__Friends_2010s_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f5b3864259194e7bad1899c25291ff2f.Franklin__Friends_2010s_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f5b3864259194e7bad1899c25291ff2f.Franklin__Friends_2010s_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "f5b38642-5919-4e7b-ad18-99c25291ff2f",
+      "contentRating": "TV-Y",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "1d52f3ad-29d7-496f-a640-1c9e29dc2388",
+      "type": "EPISODIC",
+      "title": "Team Umizoomi",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/333a67a8f49e4add8fe5d64bf3156178.Team_Umizoomi_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/333a67a8f49e4add8fe5d64bf3156178.Team_Umizoomi_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/333a67a8f49e4add8fe5d64bf3156178.Team_Umizoomi_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "eba5a695-7e6d-476e-9c0f-16af5db727de",
+      "type": "EPISODIC",
+      "title": "Danny Phantom",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db648f92eb704bceba56e1d95cce7a1b.Danny_Phantom_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db648f92eb704bceba56e1d95cce7a1b.Danny_Phantom_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db648f92eb704bceba56e1d95cce7a1b.Danny_Phantom_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "a4bcae4f-c567-4ad4-a791-5c746e648cae",
+      "contentRating": "TV-Y7",
+      "videoCount": 37,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "a519051e-c6b5-4990-b43f-221c3132df08",
+      "type": "EPISODIC",
+      "title": "The ZhuZhus",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5eda79bce57f481390be3d72e817b89b.The_ZhuZhus_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5eda79bce57f481390be3d72e817b89b.The_ZhuZhus_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/5eda79bce57f481390be3d72e817b89b.The_ZhuZhus_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "02f61390-d162-4873-9642-61c2f0649aa2",
+      "contentRating": "Varies",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-10-20T14:07:57.354Z"
+    },
+    {
+      "id": "82b2c32a-733c-4dcb-8cc6-cdd421046c12",
+      "type": "EPISODIC",
+      "title": "Dora the Explorer",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/643987a61e4e4d27bd9feb12e85fa70c.Dora_the_Explorer_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/643987a61e4e4d27bd9feb12e85fa70c.Dora_the_Explorer_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/643987a61e4e4d27bd9feb12e85fa70c.Dora_the_Explorer_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "af747219-ff77-4cff-8c53-ceb7d04869c2",
+      "contentRating": "TV-Y",
+      "videoCount": 72,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "ea38177a-160d-4158-b18b-1f115b3de301",
+      "type": "EPISODIC",
+      "title": "Dragons Berk",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/98901fd732df4582ae4185d50dfd3260.Dragons_Berk_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/98901fd732df4582ae4185d50dfd3260.Dragons_Berk_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/98901fd732df4582ae4185d50dfd3260.Dragons_Berk_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "98901fd7-32df-4582-ae41-85d50dfd3260",
+      "contentRating": "TV-Y7-FV",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-10-10T12:48:05.461Z"
+    },
+    {
+      "id": "57a50966-4d24-466a-9d49-9e4cf4abb6b1",
+      "type": "EPISODIC",
+      "title": "Dinotrux",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/867ef9cb74624677939c86c042852ce5.Dinotrux_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/867ef9cb74624677939c86c042852ce5.Dinotrux_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/867ef9cb74624677939c86c042852ce5.Dinotrux_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 23,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "b9b9ad6c-cffb-4de6-b0e2-dbf5ea8bda7d",
+      "type": "EPISODIC",
+      "title": "Blaze and the Monster Machine",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9578c2305fdb4a619b107b007de60df0.Blaze_and_the_Monster_Machine_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9578c2305fdb4a619b107b007de60df0.Blaze_and_the_Monster_Machine_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9578c2305fdb4a619b107b007de60df0.Blaze_and_the_Monster_Machine_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "9578c230-5fdb-4a61-9b10-7b007de60df0",
+      "contentRating": "TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "c4af18e9-0fc4-4333-8d66-61401b54fd32",
+      "type": "EPISODIC",
+      "title": "Every Witch Way",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d260622e4cf24d8b95d310fb14757deb.Every_Witch_Way_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d260622e4cf24d8b95d310fb14757deb.Every_Witch_Way_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d260622e4cf24d8b95d310fb14757deb.Every_Witch_Way_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "d260622e-4cf2-4d8b-95d3-10fb14757deb",
+      "contentRating": "TV-Y7",
+      "videoCount": 43,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "8dfff999-c62a-42e5-a9fb-5b33af86f5e0",
+      "type": "EPISODIC",
+      "title": "Wild Kratts",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db64fd20c82d4ff098f1e2583d53aca8.Wild_Kratts_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db64fd20c82d4ff098f1e2583d53aca8.Wild_Kratts_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/db64fd20c82d4ff098f1e2583d53aca8.Wild_Kratts_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "db64fd20-c82d-4ff0-98f1-e2583d53aca8",
+      "contentRating": "USA TV-Y",
+      "videoCount": 30,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-02-13T03:32:33.191Z"
+    },
+    {
+      "id": "9561799d-817c-4ae8-b9a1-cd7a543470f7",
+      "type": "EPISODIC",
+      "title": "SpongeBob SquarePants",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/066c2dd0864a4da8817fcc94740165fd.SpongeBob_SquarePants_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/066c2dd0864a4da8817fcc94740165fd.SpongeBob_SquarePants_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/066c2dd0864a4da8817fcc94740165fd.SpongeBob_SquarePants_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "e551a902-c055-48f7-819e-b0697758325e",
+      "contentRating": "TV-Y",
+      "videoCount": 37,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-05T00:32:28.094Z"
+    },
+    {
+      "id": "8c8e02aa-1248-4603-8c53-cfd6072d8622",
+      "type": "EPISODIC",
+      "title": "TMNT (2012)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1b123b2182ae41d18db549a1c5bfe72a.TMNT_2012_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1b123b2182ae41d18db549a1c5bfe72a.TMNT_2012_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1b123b2182ae41d18db549a1c5bfe72a.TMNT_2012_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "1b123b21-82ae-41d1-8db5-49a1c5bfe72a",
+      "contentRating": "TV-Y7",
+      "videoCount": 74,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-03T21:35:39.909Z"
+    },
+    {
+      "id": "f5583aa8-ea19-4d43-bdd0-6bbc519fe4e1",
+      "type": "EPISODIC",
+      "title": "Molang",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/63e718e0a9174fd8a976eccaa991b63b.Molang_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/63e718e0a9174fd8a976eccaa991b63b.Molang_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/63e718e0a9174fd8a976eccaa991b63b.Molang_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "32b80b43-6ef0-43a1-ba85-41bca3cf9f6c",
+      "contentRating": "FRA Not Rated <10",
+      "videoCount": 264,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-12-03T15:54:07.339Z"
+    },
+    {
+      "id": "a7f55a0c-c103-42ec-bd2e-93d77494896f",
+      "type": "EPISODIC",
+      "title": "Little Charmers",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8dea34d60dfc4c5c8b9b4d6538e10cd7.Little_Charmers_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8dea34d60dfc4c5c8b9b4d6538e10cd7.Little_Charmers_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8dea34d60dfc4c5c8b9b4d6538e10cd7.Little_Charmers_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "8dea34d6-0dfc-4c5c-8b9b-4d6538e10cd7",
+      "contentRating": "TV-G",
+      "videoCount": 53,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "56d6384e-470b-4fc1-a94e-32b8a2a6ea6f",
+      "type": "EPISODIC",
+      "title": "Max and Ruby",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d49666f8e0164e8f8964891179dcb23f.Max_and_Ruby_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d49666f8e0164e8f8964891179dcb23f.Max_and_Ruby_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d49666f8e0164e8f8964891179dcb23f.Max_and_Ruby_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 104,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "90e3dcb4-c260-4270-b9c4-910c89e0a30c",
+      "type": "EPISODIC",
+      "title": "Turbo F.A.S.T.",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4451f4c83d1b4ae7b195ea0af6437570.Turbo_F.A.S.T._portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4451f4c83d1b4ae7b195ea0af6437570.Turbo_F.A.S.T._landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4451f4c83d1b4ae7b195ea0af6437570.Turbo_F.A.S.T._avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "b1fd0bc4-545e-43f4-8bf0-15109c2a7959",
+      "type": "EPISODIC",
+      "title": "Braceface",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/296829f1f1dc420badacc06cba8a25d4.Braceface_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/296829f1f1dc420badacc06cba8a25d4.Braceface_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/296829f1f1dc420badacc06cba8a25d4.Braceface_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "296829f1-f1dc-420b-adac-c06cba8a25d4",
+      "contentRating": "TV-Y7",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "c49e4d61-1988-4801-8428-98829aff3f56",
+      "type": "EPISODIC",
+      "title": "Undercover High",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8bb3e192b5b544809774f91cebb1e12a.Undercover_High_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8bb3e192b5b544809774f91cebb1e12a.Undercover_High_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8bb3e192b5b544809774f91cebb1e12a.Undercover_High_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "4ca2e2fc-c0d8-4b6f-a5b9-0254b7ebf4f9",
+      "contentRating": "Varies",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-12-03T15:59:40.438Z"
+    },
+    {
+      "id": "7f9739c0-619a-4c51-915b-5e9435e9d278",
+      "type": "EPISODIC",
+      "title": "Word World",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/394231f4ec304e6485f38bf886aa53a7.Word_World_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/394231f4ec304e6485f38bf886aa53a7.Word_World_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/394231f4ec304e6485f38bf886aa53a7.Word_World_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "394231f4-ec30-4e64-85f3-8bf886aa53a7",
+      "contentRating": "USA TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "f687ada6-1fef-4020-a19e-24219ed9478b",
+      "type": "EPISODIC",
+      "title": "Ruby Gloom",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/02cd66d592874c30a67f7748b44180d9.Ruby_Gloom_portrait_compressed_Xy9GkQa.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/02cd66d592874c30a67f7748b44180d9.Ruby_Gloom_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/02cd66d592874c30a67f7748b44180d9.Ruby_Gloom_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "a26777db-56f5-4fae-a095-c23f08268f11",
+      "type": "EPISODIC",
+      "title": "Sanjay and Craig",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5a7240f7b5b4ba7a352e9b4764664b9.Sanjay_and_Craig_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5a7240f7b5b4ba7a352e9b4764664b9.Sanjay_and_Craig_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/a5a7240f7b5b4ba7a352e9b4764664b9.Sanjay_and_Craig_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "a5a7240f-7b5b-4ba7-a352-e9b4764664b9",
+      "contentRating": "TV-Y",
+      "videoCount": 20,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "70f486e6-392f-4a50-99e3-fa57121bb286",
+      "type": "EPISODIC",
+      "title": "The Adventures of Jimmy Neutron",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d9f26df63b2443898ffcd73eda43f293.The_Adventures_of_Jimmy_Neutron_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d9f26df63b2443898ffcd73eda43f293.The_Adventures_of_Jimmy_Neutron_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d9f26df63b2443898ffcd73eda43f293.The_Adventures_of_Jimmy_Neutron_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 34,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "a955c5e6-f536-4967-aa7c-1567ed4cb10a",
+      "type": "EPISODIC",
+      "title": "Franklin (1990s)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d30e5c0b1dca4f61a9f2c9f7eec5783b.Franklin_1990s_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d30e5c0b1dca4f61a9f2c9f7eec5783b.Franklin_1990s_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d30e5c0b1dca4f61a9f2c9f7eec5783b.Franklin_1990s_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 50,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "c7612d66-0643-4b75-a9ba-f93f790a60b7",
+      "type": "EPISODIC",
+      "title": "Mike the Knight",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/ea3a2fde76d748948b2d6e3e0df2aaa3.Mike_the_Knight_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/ea3a2fde76d748948b2d6e3e0df2aaa3.Mike_the_Knight_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/ea3a2fde76d748948b2d6e3e0df2aaa3.Mike_the_Knight_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "ea3a2fde-76d7-4894-8b2d-6e3e0df2aaa3",
+      "contentRating": "Varies",
+      "videoCount": 65,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-09-17T17:17:37.801Z"
+    },
+    {
+      "id": "307145d1-85a3-4a13-a6de-d093c9cc2f00",
+      "type": "EPISODIC",
+      "title": "Ready Jet Go!",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d55cc3ffb9bb4b1b84a28d193ffb41a2.Ready_Jet_Go_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d55cc3ffb9bb4b1b84a28d193ffb41a2.Ready_Jet_Go_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d55cc3ffb9bb4b1b84a28d193ffb41a2.Ready_Jet_Go_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "USA TV-Y",
+      "videoCount": 19,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "ced25be4-c22b-43ad-8cde-8af1488c5ac5",
+      "type": "EPISODIC",
+      "title": "Hey Arnold",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d8bafdbe80a3468283ee7d2ad6c4ba70.Hey_Arnold_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d8bafdbe80a3468283ee7d2ad6c4ba70.Hey_Arnold_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d8bafdbe80a3468283ee7d2ad6c4ba70.Hey_Arnold_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "3c7a2612-6f43-4b1b-95a7-099a0b4294c7",
+      "type": "EPISODIC",
+      "title": "Di-Gata Defenders",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8ed79ac0412849f78769c2ee6281decc.Di-Gata_Defenders_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8ed79ac0412849f78769c2ee6281decc.Di-Gata_Defenders_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/8ed79ac0412849f78769c2ee6281decc.Di-Gata_Defenders_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "3dca0a60-653c-471f-aad4-776608dd38a3",
+      "contentRating": "TV-Y7-FV",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-02-13T03:34:23.723Z"
+    },
+    {
+      "id": "7c16b1e4-16e2-43be-81ab-7e895de46cde",
+      "type": "EPISODIC",
+      "title": "Ranger Rob",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4f1b8e61bc0d4eae8e9e95edabf47e2d.Ranger_Rob_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4f1b8e61bc0d4eae8e9e95edabf47e2d.Ranger_Rob_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4f1b8e61bc0d4eae8e9e95edabf47e2d.Ranger_Rob_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "Varies",
+      "videoCount": 66,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "ba7ff73c-1dac-4ac0-a5e5-d792926724b7",
+      "type": "EPISODIC",
+      "title": "Arthur",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18b552b3cea045aeb9a05c583e29c052.Arthur_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18b552b3cea045aeb9a05c583e29c052.Arthur_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/18b552b3cea045aeb9a05c583e29c052.Arthur_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "18b552b3-cea0-45ae-b9a0-5c583e29c052",
+      "contentRating": "USA TV-Y",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-11-17T15:56:00.419Z"
+    },
+    {
+      "id": "b08dbaa3-cbbe-490d-a5b4-3e0bfa18f9d1",
+      "type": "EPISODIC",
+      "title": "Pokemon XY (Season 17)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e204d42d099d433bb6d999fd66b68fb5.Pokemon_XY_Season_17_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e204d42d099d433bb6d999fd66b68fb5.Pokemon_XY_Season_17_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e204d42d099d433bb6d999fd66b68fb5.Pokemon_XY_Season_17_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 48,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "b7a8d1c1-654f-4e6e-a966-5f60a2e1dd5d",
+      "type": "EPISODIC",
+      "title": "Pokemon XY Kalos Quest (Season 18)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f34ea893f551469d82067e5ede11f311.Pokemon_XY_Kalos_Quest_Season_18_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f34ea893f551469d82067e5ede11f311.Pokemon_XY_Kalos_Quest_Season_18_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/f34ea893f551469d82067e5ede11f311.Pokemon_XY_Kalos_Quest_Season_18_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 45,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "abd8b0b3-dda4-4dc4-90f2-260d7a60a091",
+      "type": "EPISODIC",
+      "title": "Pokemon XYZ (Season 19)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/bd065c4a227f4221a038c085cf41bd33.Pokemon_XYZ_Season_19_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/bd065c4a227f4221a038c085cf41bd33.Pokemon_XYZ_Season_19_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/bd065c4a227f4221a038c085cf41bd33.Pokemon_XYZ_Season_19_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 48,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "a7566596-6571-47e5-95f9-b35d36710589",
+      "type": "EPISODIC",
+      "title": "Pokemon Sun & Moon (Season 20)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9d0cff99cbbe41c1bf21f86fdef7b907.Pokemon_Sun__Moon_Season_20_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9d0cff99cbbe41c1bf21f86fdef7b907.Pokemon_Sun__Moon_Season_20_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/9d0cff99cbbe41c1bf21f86fdef7b907.Pokemon_Sun__Moon_Season_20_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 43,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "a50cbeb7-1fbe-4e48-8e43-005f77d20965",
+      "type": "EPISODIC",
+      "title": "Pokemon Sun & Moon (Season 21)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c9d79d75283e4fe6a7581f5d45bb27a9.Pokemon_Sun__Moon_Season_21_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c9d79d75283e4fe6a7581f5d45bb27a9.Pokemon_Sun__Moon_Season_21_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c9d79d75283e4fe6a7581f5d45bb27a9.Pokemon_Sun__Moon_Season_21_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "c9d79d75-283e-4fe6-a758-1f5d45bb27a9",
+      "contentRating": "TV-Y7",
+      "videoCount": 48,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-04T23:23:56.978Z"
+    },
+    {
+      "id": "7f09673b-9c04-42f6-bbc6-05a7fbb65da8",
+      "type": "EPISODIC",
+      "title": "Pokemon Sun & Moon (Season 22)",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c370355a77024bd589d1449827c7f9fa.Pokemon_Sun__Moon_Season_22_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c370355a77024bd589d1449827c7f9fa.Pokemon_Sun__Moon_Season_22_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/c370355a77024bd589d1449827c7f9fa.Pokemon_Sun__Moon_Season_22_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "c370355a-7702-4bd5-89d1-449827c7f9fa",
+      "contentRating": "TV-Y7",
+      "videoCount": 54,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-05T02:51:38.032Z"
+    },
+    {
+      "id": "46b701ae-0066-4a6c-a5d9-5e6acd903c67",
+      "type": "EPISODIC",
+      "title": "Laid Back Camp",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d97c30b899db434282a71a33121af40e.Laid_Back_Camp_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d97c30b899db434282a71a33121af40e.Laid_Back_Camp_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/d97c30b899db434282a71a33121af40e.Laid_Back_Camp_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "d97c30b8-99db-4342-82a7-1a33121af40e",
+      "contentRating": "TV-Y7",
+      "videoCount": 12,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-11-14T21:32:31.884Z"
+    },
+    {
+      "id": "d30d4bca-38f5-4e66-80d3-f392d81fb768",
+      "type": "EPISODIC",
+      "title": "Mr. Young",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/7fa5dc98286b4290a91850af476f36a8.Mr._Young_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/7fa5dc98286b4290a91850af476f36a8.Mr._Young_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/7fa5dc98286b4290a91850af476f36a8.Mr._Young_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "831d9e62-99b9-4248-b351-ff1474b2dff0",
+      "type": "EPISODIC",
+      "title": "Blue's Clues",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2e6a697ce57247d8879cdc4e7ff2e378.Blues_Clues_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2e6a697ce57247d8879cdc4e7ff2e378.Blues_Clues_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2e6a697ce57247d8879cdc4e7ff2e378.Blues_Clues_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 50,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "c368b8f5-df67-428e-af33-bb653d0ec2f0",
+      "type": "EPISODIC",
+      "title": "Agent Binkey Pets Of The Universe",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2c2c6617ea4e49ed90a72e9dab6bda1b.Agent_Binkey_Pets_Of_The_Universe_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2c2c6617ea4e49ed90a72e9dab6bda1b.Agent_Binkey_Pets_Of_The_Universe_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/2c2c6617ea4e49ed90a72e9dab6bda1b.Agent_Binkey_Pets_Of_The_Universe_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y",
+      "videoCount": 75,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "d44bc8c9-e7e8-45b7-b2b7-3aa7e959ad19",
+      "type": "EPISODIC",
+      "title": "Bakugan Battle Brawlers",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fccd2321d02c477b9888862a3aefbca8.Bakugan_Battle_Brawlers_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fccd2321d02c477b9888862a3aefbca8.Bakugan_Battle_Brawlers_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/fccd2321d02c477b9888862a3aefbca8.Bakugan_Battle_Brawlers_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "fccd2321-d02c-477b-9888-862a3aefbca8",
+      "contentRating": "TV-Y7",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "c7482b58-7779-4166-aa91-8a1d60b550a1",
+      "type": "EPISODIC",
+      "title": "CatDog",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/dd34fc2bb39f43018cb10c31cebcc801.CatDog_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/dd34fc2bb39f43018cb10c31cebcc801.CatDog_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/dd34fc2bb39f43018cb10c31cebcc801.CatDog_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "TV-Y7",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "d7a9ce7b-2c37-4baa-93ef-380347b9cdea",
+      "type": "EPISODIC",
+      "title": "Mysticons",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4295b2e3bee24b0d8a70a3d485f14b69.Mysticons_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4295b2e3bee24b0d8a70a3d485f14b69.Mysticons_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/4295b2e3bee24b0d8a70a3d485f14b69.Mysticons_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "4295b2e3-bee2-4b0d-8a70-a3d485f14b69",
+      "contentRating": "Varies",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "d3b0addf-d30d-4d77-b6f5-1298d7b32cb1",
+      "type": "EPISODIC",
+      "title": "Project Mc2",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7b944d9391748e48c89289cd037bca9.Project_Mc2_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7b944d9391748e48c89289cd037bca9.Project_Mc2_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7b944d9391748e48c89289cd037bca9.Project_Mc2_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "e7b944d9-3917-48e4-8c89-289cd037bca9",
+      "contentRating": "Varies",
+      "videoCount": 16,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-11-07T18:23:34.627Z"
+    },
+    {
+      "id": "e187151f-5864-4e23-8af3-ca8e490297ac",
+      "type": "EPISODIC",
+      "title": "The Wild Thornberrys",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/cd662a3102bc450c98104c20d9d28037.The_Wild_Thornberrys_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/cd662a3102bc450c98104c20d9d28037.The_Wild_Thornberrys_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/cd662a3102bc450c98104c20d9d28037.The_Wild_Thornberrys_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "6197277d-8a2d-4cba-8ebf-79bad2ca9a29",
+      "contentRating": "TV-Y7",
+      "videoCount": 59,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    },
+    {
+      "id": "d5e82be3-ff40-424d-9ec4-28540ee746cd",
+      "type": "EPISODIC",
+      "title": "Rocket Power",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/74fc7c7755544fceabd68fd4f2f6d55f.Rocket_Power_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/74fc7c7755544fceabd68fd4f2f6d55f.Rocket_Power_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/74fc7c7755544fceabd68fd4f2f6d55f.Rocket_Power_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "74fc7c77-5554-4fce-abd6-8fd4f2f6d55f",
+      "contentRating": "TV-Y7",
+      "videoCount": 40,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-02-05T18:56:34.610Z"
+    },
+    {
+      "id": "e17dfb8f-3f49-488c-97ec-10a6af222199",
+      "type": "EPISODIC",
+      "title": "Doug",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7373b4c7d904465b5d0a02e2f0be919.Doug_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7373b4c7d904465b5d0a02e2f0be919.Doug_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/e7373b4c7d904465b5d0a02e2f0be919.Doug_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "6492ad9d-0a8c-4ed6-8aaa-6bb878966212",
+      "contentRating": "TV-Y7",
+      "videoCount": 26,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2025-02-03T17:09:48.604Z"
+    },
+    {
+      "id": "e622e153-e4d6-4faa-b6a8-6f33570236ed",
+      "type": "EPISODIC",
+      "title": "Raa Raa The Noisy Lion",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1e24e1e5be9e4def936b2680c8874659.Raa_Raa_The_Noisy_Lion_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1e24e1e5be9e4def936b2680c8874659.Raa_Raa_The_Noisy_Lion_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/1e24e1e5be9e4def936b2680c8874659.Raa_Raa_The_Noisy_Lion_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": "1e24e1e5-be9e-4def-936b-2680c8874659",
+      "contentRating": "TV-G",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": "2026-03-04T23:23:56.978Z"
+    },
+    {
+      "id": "ac802cf0-ebbe-4433-89bb-aed0b01d2baf",
+      "type": "EPISODIC",
+      "title": "Pirata and Capitano",
+      "logo": null,
+      "portraitThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b019695e37ce46a38007c5b3f27dcca6.Pirata_and_Capitano_portrait_compressed.jpg",
+      "landscapeThumbnail": "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b019695e37ce46a38007c5b3f27dcca6.Pirata_and_Capitano_landscape_compressed.jpg",
+      "avatars": [
+        "https://d20pxge495nqpo.cloudfront.net/original/user/developers/b019695e37ce46a38007c5b3f27dcca6.Pirata_and_Capitano_avatar1_compressed.jpg"
+      ],
+      "currentVideoId": null,
+      "contentRating": "FRA Not Rated <10",
+      "videoCount": 52,
+      "channels": [],
+      "isFavorite": false,
+      "lastWatchedTime": null
+    }
+  ]
+}

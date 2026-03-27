@@ -1,0 +1,17 @@
+{
+  "serverUrl": "http://127.0.0.1:7433",
+  "topK": 5,
+  "syncMode": "manual",
+  "syncDebounceMs": 5000,
+  "ollamaUrl": "http://127.0.0.1:11434",
+  "temperature": null,
+  "top_p": null,
+  "top_k_sampling": null,
+  "repeat_penalty": null,
+  "num_ctx": null,
+  "seed": null,
+  "serverMode": "managed",
+  "serverPort": null,
+  "lilbeeVersion": "v0.5.3",
+  "systemPrompt": ""
+}

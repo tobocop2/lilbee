@@ -1,0 +1,24 @@
+{
+  "date": "2026-03-23",
+  "summary": "TUI bug fixes round 2 + command palette + profiling",
+  "branch": "feature/textual-tui",
+  "commits_today": 8,
+
+  "latest_fixes": [
+    "Async embedding model check (no more UI freeze on mount)",
+    "Download modal dismiss crash fixed",
+    "Tab completion via priority binding",
+    "Command Palette (Ctrl+P) with all actions",
+    "/exit and /cancel commands",
+    "/add triggers background sync",
+    "Startup profiling: ~0.4s cold, 0.2s warm (Python import overhead, not fixable)"
+  ],
+
+  "known_remaining": [
+    "Ctrl+N/Ctrl+P cycling not implemented (CommandPalette replaces this UX)",
+    "Embedding model persistence across sessions needs verification",
+    "Coverage at 97.86% (TUI event handlers omitted)"
+  ],
+
+  "pr": "https://github.com/tobocop2/lilbee/pull/19"
+}

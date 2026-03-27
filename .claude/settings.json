@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "lilbee": {
+      "command": "lilbee",
+      "args": ["mcp"]
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(opencode run * --dir /Users/tobias/projects/lilbee/demos/*)",
+      "Bash(rm /Users/tobias/projects/lilbee/demos/*/level_generator.gd)",
+      "Bash(timeout 300 python3 /tmp/test_single_model.py*)"
+    ]
+  }
+}

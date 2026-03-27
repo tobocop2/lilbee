@@ -1,0 +1,24 @@
+{
+  "pluginList": [
+    "tobocop2/obsidian-lilbee"
+  ],
+  "pluginSubListFrozenVersion": [
+    {
+      "repo": "tobocop2/obsidian-lilbee",
+      "version": "v0.1.3"
+    }
+  ],
+  "themesList": [],
+  "updateAtStartup": true,
+  "updateThemesAtStartup": true,
+  "enableAfterInstall": true,
+  "loggingEnabled": false,
+  "loggingPath": "BRAT-log",
+  "loggingVerboseEnabled": false,
+  "debuggingMode": false,
+  "notificationsEnabled": false,
+  "globalTokenName": "",
+  "personalAccessToken": "",
+  "selectLatestPluginVersionByDefault": false,
+  "allowIncompatiblePlugins": false
+}

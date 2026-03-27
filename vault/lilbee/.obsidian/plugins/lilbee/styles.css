@@ -1,0 +1,680 @@
+/* lilbee Obsidian plugin styles */
+
+.lilbee-document-card {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    padding: var(--size-4-3, 12px);
+    margin-bottom: var(--size-4-2, 8px);
+    background-color: var(--background-primary);
+}
+
+.lilbee-document-card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2, 8px);
+    margin-bottom: var(--size-4-1, 4px);
+}
+
+.lilbee-document-source {
+    color: var(--interactive-accent);
+    font-weight: var(--font-medium, 500);
+    text-decoration: none;
+    cursor: pointer;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lilbee-document-source:hover {
+    text-decoration: underline;
+}
+
+.lilbee-relevance-bar-container {
+    height: 3px;
+    background-color: var(--background-modifier-border);
+    border-radius: 2px;
+    margin-bottom: var(--size-4-2, 8px);
+    overflow: hidden;
+}
+
+.lilbee-relevance-bar {
+    height: 100%;
+    background-color: var(--interactive-accent);
+    border-radius: 2px;
+    min-width: 2px;
+    transition: width 0.2s ease;
+}
+
+.lilbee-content-badge {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    font-weight: var(--font-medium, 500);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.lilbee-excerpt {
+    padding: var(--size-4-1, 4px) 0;
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    line-height: var(--line-height-normal, 1.5);
+}
+
+.lilbee-excerpt p {
+    margin: 0 0 2px;
+}
+
+.lilbee-location {
+    color: var(--text-faint);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-source-chip {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    border: 1px solid var(--background-modifier-border);
+    margin: 2px 2px 0 0;
+    cursor: default;
+}
+
+.lilbee-chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.lilbee-chat-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2, 8px);
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-bottom: 1px solid var(--background-modifier-border);
+    background-color: var(--background-secondary);
+    flex-shrink: 0;
+}
+
+.lilbee-chat-toolbar button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    padding: 2px var(--size-4-2, 8px);
+    border-radius: var(--radius-s, 4px);
+}
+
+.lilbee-chat-toolbar button:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.lilbee-toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.lilbee-toolbar-spacer {
+    flex: 1;
+}
+
+.lilbee-progress-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+    transition: opacity 150ms ease;
+    opacity: 1;
+}
+
+.lilbee-progress-banner[data-hidden] {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.lilbee-progress-top-label {
+    font-size: var(--font-smallest, 10px);
+    color: var(--text-normal);
+    font-weight: var(--font-medium, 500);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.lilbee-progress-sub-label {
+    font-size: 9px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.lilbee-progress-bar-container {
+    height: 3px;
+    background-color: var(--background-modifier-border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.lilbee-progress-bar {
+    height: 100%;
+    background-color: var(--interactive-accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 200ms ease-out;
+}
+
+.lilbee-server-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.lilbee-server-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+}
+
+.lilbee-server-dot.is-ready {
+    background-color: var(--color-green, #2d7a4f);
+}
+
+.lilbee-server-dot.is-error {
+    background-color: var(--text-error);
+}
+
+.lilbee-server-dot.is-starting {
+    background-color: var(--color-yellow, #e0a526);
+}
+
+.lilbee-server-dot.is-downloading {
+    background-color: var(--color-yellow, #e0a526);
+}
+
+.lilbee-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--size-4-3, 12px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2, 8px);
+}
+
+.lilbee-chat-message {
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-radius: var(--radius-m, 6px);
+    max-width: 88%;
+    line-height: var(--line-height-normal, 1.5);
+    font-size: var(--font-text-size, 15px);
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.lilbee-chat-message p {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.lilbee-chat-message.user {
+    align-self: flex-end;
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.lilbee-chat-message.assistant {
+    align-self: flex-start;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+}
+
+.lilbee-chat-content {
+    white-space: normal;
+}
+
+.lilbee-chat-sources {
+    border-top: 1px solid var(--background-modifier-border);
+    padding: var(--size-4-1, 4px) var(--size-4-3, 12px);
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-chat-source-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    margin-top: var(--size-4-1, 4px);
+}
+
+.lilbee-chat-input {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--size-4-2, 8px);
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    border-top: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary);
+    flex-shrink: 0;
+}
+
+.lilbee-chat-input textarea {
+    flex: 1;
+    resize: vertical;
+    overflow: auto;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    padding: 6px var(--size-4-2, 8px);
+    font-family: var(--font-interface);
+    font-size: var(--font-text-size, 15px);
+    line-height: 1.4;
+    min-height: 36px;
+    max-height: 160px;
+    outline: none;
+    box-sizing: border-box;
+    field-sizing: content;
+}
+
+.lilbee-chat-input textarea:focus {
+    border-color: var(--interactive-accent);
+}
+
+.lilbee-chat-add-file {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: var(--size-4-2, 8px);
+    border-radius: var(--radius-s, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+}
+
+.lilbee-chat-add-file:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.lilbee-chat-send {
+    flex-shrink: 0;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: var(--radius-m, 6px);
+    cursor: pointer;
+    font-size: var(--font-small, 13px);
+    font-weight: var(--font-medium, 500);
+    line-height: 1;
+    min-height: 36px;
+}
+
+.lilbee-chat-send:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.lilbee-chat-send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.lilbee-chat-error {
+    color: var(--text-error);
+    font-style: italic;
+}
+
+.lilbee-modal {
+    padding: var(--size-4-3, 12px);
+}
+
+.lilbee-modal-results {
+    margin-top: var(--size-4-3, 12px);
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.lilbee-search-input {
+    width: 100%;
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    font-size: var(--font-text-size, 15px);
+    outline: none;
+    box-sizing: border-box;
+}
+
+.lilbee-search-input:focus {
+    border-color: var(--interactive-accent);
+}
+
+.lilbee-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--size-4-6, 24px);
+    color: var(--text-muted);
+    font-size: var(--font-small, 13px);
+    gap: var(--size-4-2, 8px);
+}
+
+.lilbee-loading::before {
+    content: "";
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--background-modifier-border);
+    border-top-color: var(--interactive-accent);
+    border-radius: 50%;
+    animation: lilbee-spin 0.7s linear infinite;
+}
+
+@keyframes lilbee-spin {
+    to { transform: rotate(360deg); }
+}
+
+.lilbee-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--size-4-8, 32px) var(--size-4-4, 16px);
+    color: var(--text-faint);
+    font-size: var(--font-small, 13px);
+    text-align: center;
+}
+
+.lilbee-ask-answer {
+    padding: var(--size-4-3, 12px);
+    color: var(--text-normal);
+    font-size: var(--font-text-size, 15px);
+    line-height: var(--line-height-normal, 1.5);
+    border-radius: var(--radius-m, 6px);
+    background-color: var(--background-secondary);
+    margin-bottom: var(--size-4-2, 8px);
+}
+
+.lilbee-ask-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: var(--size-4-1, 4px) 0;
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-models-container {
+    margin-top: var(--size-4-3, 12px);
+}
+
+.lilbee-model-section {
+    margin-bottom: var(--size-4-6, 24px);
+}
+
+.lilbee-model-section h4 {
+    font-size: var(--font-small, 13px);
+    font-weight: var(--font-semibold, 600);
+    color: var(--text-normal);
+    margin: 0 0 var(--size-4-2, 8px);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.lilbee-model-catalog table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-small, 13px);
+    color: var(--text-normal);
+}
+
+.lilbee-model-catalog table th {
+    text-align: left;
+    font-weight: var(--font-medium, 500);
+    color: var(--text-muted);
+    padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.lilbee-model-catalog table td {
+    padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+    border-bottom: 1px solid var(--background-modifier-border);
+    vertical-align: middle;
+}
+
+.lilbee-model-catalog table tr:last-child td {
+    border-bottom: none;
+}
+
+.lilbee-installed {
+    display: inline-block;
+    padding: 1px var(--size-4-2, 8px);
+    border-radius: 999px;
+    background-color: var(--color-green, #2d7a4f);
+    color: var(--text-on-accent, #fff);
+    font-size: var(--font-smallest, 10px);
+    font-weight: var(--font-medium, 500);
+}
+
+.lilbee-pull-progress {
+    display: inline-block;
+    color: var(--text-muted);
+    font-size: var(--font-smallest, 10px);
+    min-width: 2.5em;
+    text-align: right;
+}
+
+.lilbee-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.lilbee-progress-row .lilbee-progress-top-label {
+    flex: 1;
+}
+
+.lilbee-progress-cancel {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px;
+    border-radius: var(--radius-s, 4px);
+}
+
+.lilbee-progress-cancel:hover {
+    color: var(--text-error);
+    background-color: var(--background-modifier-hover);
+}
+
+.lilbee-chat-save {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px var(--size-4-2, 8px);
+    border-radius: var(--radius-s, 4px);
+}
+
+.lilbee-chat-save:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.lilbee-model-delete {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px;
+    margin-left: var(--size-4-2, 8px);
+    border-radius: var(--radius-s, 4px);
+    vertical-align: middle;
+}
+
+.lilbee-model-delete:hover {
+    color: var(--text-error);
+    background-color: var(--background-modifier-hover);
+}
+
+.lilbee-toolbar-icon {
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.lilbee-toolbar-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.lilbee-generation-details summary {
+    cursor: pointer;
+    font-weight: var(--font-semibold, 600);
+    padding: var(--size-4-2, 8px) 0;
+    color: var(--text-normal);
+}
+
+.lilbee-pull-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2, 8px);
+    padding: var(--size-4-2, 8px) var(--size-4-3, 12px);
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m, 6px);
+    margin: var(--size-4-2, 8px) 0;
+    font-size: var(--font-small, 13px);
+    color: var(--text-muted);
+}
+
+.lilbee-pull-banner-cancel {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s, 4px);
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 2px var(--size-4-2, 8px);
+    font-size: var(--font-smallest, 10px);
+}
+
+.lilbee-pull-banner-cancel:hover {
+    color: var(--text-error);
+    border-color: var(--text-error);
+}
+
+.lilbee-health-status {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+}
+
+.lilbee-health-ok { color: var(--text-success); }
+.lilbee-health-error { color: var(--text-error); }
+
+.lilbee-status-downloading {
+    color: var(--text-on-accent) !important;
+    background-color: var(--interactive-accent);
+    border-radius: var(--radius-s, 4px);
+    padding: 0 var(--size-4-2, 8px);
+    position: relative;
+    overflow: hidden;
+}
+
+.lilbee-status-downloading::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -40%;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.35),
+        transparent
+    );
+    animation: lilbee-knight 1.4s ease-in-out infinite;
+}
+
+@keyframes lilbee-knight {
+    0% { left: -40%; }
+    50% { left: 100%; }
+    50.01% { left: 100%; }
+    100% { left: -40%; }
+}
+
+.lilbee-health-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+    vertical-align: middle;
+}
+
+.lilbee-health-dot.is-ok {
+    background-color: var(--color-green, #2d7a4f);
+}
+
+.lilbee-health-dot.is-error {
+    background-color: var(--text-error);
+}
+
+.lilbee-status-starting {
+    color: var(--text-on-accent) !important;
+    background-color: var(--color-yellow, #e0a526);
+    border-radius: var(--radius-s, 4px);
+    padding: 0 var(--size-4-2, 8px);
+    position: relative;
+    overflow: hidden;
+}
+
+.lilbee-status-starting::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -40%;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.35),
+        transparent
+    );
+    animation: lilbee-knight 1.4s ease-in-out infinite;
+}
+
+.lilbee-status-ready {
+    color: var(--text-on-accent, #fff) !important;
+    background-color: var(--color-green, #2d7a4f);
+    border-radius: var(--radius-s, 4px);
+    padding: 0 var(--size-4-2, 8px);
+}
