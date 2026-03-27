@@ -352,6 +352,13 @@ class TestMain:
 
 
 class TestLilbeeAddWithUrls:
+    async def test_add_url_without_crawler(self, isolated_env):
+        """Adding URLs when crawl4ai not installed returns error."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = await lilbee_add(paths=["https://example.com"])
+            assert "error" in result
+            assert "pip install" in result["error"].lower()
+
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     async def test_add_url(self, mock_crawl, mock_sync, isolated_env):
