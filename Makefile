@@ -24,7 +24,7 @@ imports-check:
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
 install:
-	uv tool install . --force --reinstall
+	uv tool install . --force --reinstall --compile-bytecode
 
 demo:  ## Record all demo GIFs via VHS
 	vhs demos/chat.tape

@@ -20,3 +20,15 @@ CLAUDE.md
 docs/plans/
 demo.cast
 docs/superpowers/
+.kreuzberg/
+.claude/
+.dolt/
+.doltcfg/
+.test_lancedb/
+beads/
+beads_bb/
+vault/
+plugins/
+node_modules/
+*.mov
+*.mp4

@@ -20,7 +20,7 @@ from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
 
 if TYPE_CHECKING:
-    from lilbee.cli.chat.sync import SyncStatus
+    from lilbee.cli.sync import SyncStatus
     from lilbee.store import SearchChunk
 
 
@@ -210,7 +210,7 @@ def add_paths(
         )
 
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
         run_sync_background(
             con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
@@ -266,7 +266,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
     sync blocks until complete (for ``lilbee ask``).
     """
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
         run_sync_background(con)
         return

@@ -86,3 +86,11 @@ class SetModelResponse(BaseModel):
     """Response for /api/models/chat and /api/models/vision."""
 
     model: str
+
+
+class CrawlRequest(BaseModel):
+    """Request body for /api/crawl."""
+
+    url: str
+    depth: int = 0
+    max_pages: int = 50

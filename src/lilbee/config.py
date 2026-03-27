@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_int
+from lilbee.platform import canonical_models_dir, default_data_dir, env, env_int
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,22 @@ class Config(BaseModel):
     # separate SSE events (event: reasoning) for UI rendering.
     show_reasoning: bool = False
 
+    # Web crawling settings
+    # Maximum link-following depth for recursive crawls.
+    crawl_max_depth: int = Field(default=2, ge=0)
+
+    # Maximum pages to fetch in a single crawl operation.
+    crawl_max_pages: int = Field(default=50, ge=1)
+
+    # Per-page timeout in seconds for fetching a URL.
+    crawl_timeout: int = Field(default=30, ge=1)
+
+    # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
+    crawl_max_concurrent: int = Field(default=0, ge=0)
+
+    # Seconds between periodic syncs during crawl (0 = sync only at end).
+    crawl_sync_interval: int = Field(default=30, ge=0)
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.
@@ -196,7 +212,7 @@ class Config(BaseModel):
             documents_dir=data_root / "documents",
             data_dir=data_root / "data",
             lancedb_dir=data_root / "data" / "lancedb",
-            models_dir=data_root / "models",
+            models_dir=canonical_models_dir(),
             chat_model=chat_model,
             embedding_model=_load_setting(
                 data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str
@@ -273,6 +289,19 @@ class Config(BaseModel):
             ),
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool
+            ),
+            crawl_max_depth=_load_setting(data_root, "crawl_max_depth", "CRAWL_MAX_DEPTH", 2, int),
+            crawl_max_pages=_load_setting(data_root, "crawl_max_pages", "CRAWL_MAX_PAGES", 50, int),
+            crawl_timeout=_load_setting(data_root, "crawl_timeout", "CRAWL_TIMEOUT", 30, int),
+            crawl_max_concurrent=_load_setting(
+                data_root,
+                "crawl_max_concurrent",
+                "CRAWL_MAX_CONCURRENT",
+                os.cpu_count() or 4,
+                int,
+            ),
+            crawl_sync_interval=_load_setting(
+                data_root, "crawl_sync_interval", "CRAWL_SYNC_INTERVAL", 30, int
             ),
             concept_graph=_load_setting(data_root, "concept_graph", "CONCEPT_GRAPH", True, bool),
             concept_boost_weight=_load_setting(

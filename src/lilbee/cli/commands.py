@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,8 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.config import cfg
+from lilbee.crawler import is_url
+from lilbee.store import delete_by_source, delete_source, get_chunks_by_source, get_sources
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -65,9 +68,7 @@ def _ensure_vision_model() -> None:
         _validate_configured_vision()
         return
 
-    import sys
-
-    from lilbee.cli.chat import list_installed_models
+    from lilbee.models import list_installed_models
 
     try:
         installed = set(list_installed_models())
@@ -86,8 +87,7 @@ def _ensure_vision_model() -> None:
 
 def _validate_configured_vision() -> None:
     """Check that a pre-configured vision model is available; pull if needed."""
-    from lilbee.cli.chat import list_installed_models
-    from lilbee.models import ensure_tag
+    from lilbee.models import ensure_tag, list_installed_models
 
     tagged = ensure_tag(cfg.vision_model)
     cfg.vision_model = tagged
@@ -143,8 +143,6 @@ def _pick_vision_interactive(installed: set[str]) -> None:
 
 def _pick_vision_auto(installed: set[str]) -> None:
     """Non-interactive vision model auto-selection."""
-    import sys
-
     from lilbee.models import pick_default_vision_model
 
     model_info = pick_default_vision_model()
@@ -178,8 +176,7 @@ def _pull_and_save_vision(model_name: str, installed: set[str]) -> None:
 
 _paths_argument = typer.Argument(
     ...,
-    exists=True,
-    help="Files or directories to add to the knowledge base.",
+    help="Files, directories, or URLs to add to the knowledge base.",
 )
 
 
@@ -281,32 +278,134 @@ def rebuild(
 
 
 _force_option = typer.Option(False, "--force", "-f", help="Overwrite existing files.")
+_crawl_option = typer.Option(False, "--crawl", help="Recursively crawl URLs (follow links).")
+_depth_option = typer.Option(None, "--depth", help="Maximum crawl depth (default: from config).")
+_max_pages_option = typer.Option(
+    None, "--max-pages", help="Maximum pages to crawl (default: from config)."
+)
+
+
+def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
+    """Split inputs into file paths and URLs."""
+    paths: list[Path] = []
+    urls: list[str] = []
+    for inp in inputs:
+        if is_url(inp):
+            urls.append(inp)
+        else:
+            paths.append(Path(inp))
+    return paths, urls
+
+
+def _crawl_urls_blocking(
+    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
+) -> list[Path]:
+    """Crawl URLs synchronously (for CLI), returning paths written."""
+    from typing import Any
+
+    from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
+
+    from lilbee.crawler import crawl_and_save
+    from lilbee.progress import DetailedProgressCallback, EventType
+
+    effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
+    effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
+
+    all_paths: list[Path] = []
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
+        for url in urls:
+            ptask = progress.add_task(f"Crawling {url}...", total=None)
+
+            def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
+                def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+                    if event_type == EventType.CRAWL_PAGE:
+                        current = data.get("current", 0)
+                        total = data.get("total", 0)
+                        page_url = data.get("url", "")
+                        progress.update(_t, description=f"Crawled {current}/{total}: {page_url}")
+
+                return on_progress
+
+            paths = asyncio.run(
+                crawl_and_save(
+                    url,
+                    depth=effective_depth,
+                    max_pages=effective_pages,
+                    on_progress=_make_callback(),
+                )
+            )
+            all_paths.extend(paths)
+            progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
+    return all_paths
 
 
 @app.command()
 def add(
-    paths: list[Path] = _paths_argument,
+    paths: list[str] = _paths_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = _global_option,
     force: bool = _force_option,
     vision: bool = _vision_option,
     vision_timeout: float | None = _vision_timeout_option,
+    crawl: bool = _crawl_option,
+    depth: int | None = _depth_option,
+    max_pages: int | None = _max_pages_option,
 ) -> None:
-    """Copy files into the knowledge base and ingest them."""
+    """Copy files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if vision_timeout is not None:
         cfg.vision_timeout = vision_timeout
     if vision:
         _ensure_vision_model()
+
+    file_paths, urls = _partition_inputs(paths)
+    # Validate file paths exist
+    for fp in file_paths:
+        if not fp.exists():
+            if cfg.json_mode:
+                json_output({"error": f"Path not found: {fp}"})
+                raise SystemExit(1)
+            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
+            raise SystemExit(1)
+
     try:
+        # Crawl URLs first (saves .md files into documents/_web/)
+        crawled_paths: list[Path] = []
+        if urls:
+            crawled_paths = _crawl_urls_blocking(
+                urls, crawl=crawl, depth=depth, max_pages=max_pages
+            )
+            if not cfg.json_mode:
+                console.print(
+                    f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
+                    f" from {len(urls)} URL(s)[/{theme.MUTED}]"
+                )
+
         if cfg.json_mode:
             from lilbee.ingest import sync
 
-            copied = copy_paths(paths, console, force=force)
+            copied: list[str] = []
+            if file_paths:
+                copied = copy_paths(file_paths, console, force=force)
             result = asyncio.run(sync(quiet=True, force_vision=vision))
-            json_output({"command": "add", "copied": copied, "sync": sync_result_to_json(result)})
+            json_output(
+                {
+                    "command": "add",
+                    "copied": copied,
+                    "crawled": len(crawled_paths),
+                    "sync": sync_result_to_json(result),
+                }
+            )
             return
-        add_paths(paths, console, force=force, force_vision=vision)
+
+        if file_paths:
+            add_paths(file_paths, console, force=force, force_vision=vision)
+        elif urls:
+            # URLs already saved; just trigger sync
+            from lilbee.ingest import sync
+
+            result = asyncio.run(sync(force_vision=vision))
+            console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -326,8 +425,6 @@ def chunks(
 ) -> None:
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
-    from lilbee.store import get_chunks_by_source, get_sources
 
     known = {s["filename"] for s in get_sources()}
     if source not in known:
@@ -377,8 +474,6 @@ def remove(
 ) -> None:
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
-    from lilbee.store import delete_by_source, delete_source, get_sources
 
     known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
@@ -496,9 +591,13 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
-    from lilbee.cli.chat import chat_loop
 
-    chat_loop(console, auto_sync_bg=True)
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Chat requires a terminal.")
+        raise SystemExit(1)
+    from lilbee.cli.tui import run_tui
+
+    run_tui(auto_sync=True)
 
 
 @app.command()
@@ -564,8 +663,6 @@ def reset(
 @app.command()
 def init() -> None:
     """Initialize a local .lilbee/ knowledge base in the current directory."""
-    from pathlib import Path
-
     root = Path.cwd() / ".lilbee"
     if root.is_dir():
         if cfg.json_mode:

@@ -25,6 +25,7 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
     CleanedChunk,
+    CrawlRequest,
     HealthResponse,
     SetModelRequest,
     SetModelResponse,
@@ -242,16 +243,22 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
+@post("/api/crawl")
+async def crawl_route(data: CrawlRequest) -> Stream:
+    """Crawl a URL with streaming SSE progress events (crawl_start, crawl_page, crawl_done)."""
+    try:
+        gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return Stream(gen, media_type="text/event-stream")
+
+
 log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
-    """Pre-load LLM provider and embedding model on server startup.
-
-    Each step is wrapped in try/except so a failure logs a warning
-    but never blocks the server from starting.
-    """
+    """Pre-load LLM provider and embedding model on server startup."""
     try:
         from lilbee.providers.factory import get_provider
 
@@ -300,6 +307,7 @@ def create_app() -> Litestar:
             models_delete_route,
             documents_list_route,
             documents_remove_route,
+            crawl_route,
         ],
         cors_config=cors,
         openapi_config=OpenAPIConfig(

@@ -63,6 +63,14 @@ def find_local_root(start: Path | None = None) -> Path | None:
         current = parent
 
 
+def canonical_models_dir() -> Path:
+    """Return the shared models directory (always in the platform default, never per-project).
+
+    Multiple lilbee instances share this directory so models are downloaded once.
+    """
+    return default_data_dir() / "models"
+
+
 def is_ignored_dir(name: str, ignore_dirs: frozenset[str]) -> bool:
     """Return True if a directory name should be skipped during traversal."""
     return name.startswith(".") or name in ignore_dirs or name.endswith(".egg-info")
