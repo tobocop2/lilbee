@@ -73,6 +73,7 @@ dev = [
     "reportlab",
     "ruff>=0.15.4",
     "httpx>=0.27",
+    "pytest-httpserver",
 ]
 
 [tool.pytest.ini_options]

@@ -40,13 +40,17 @@ _MAX_FILENAME_LEN = 200
 _INDEX_FILENAME = "index.md"
 
 
-_BLOCKED_NETWORKS = (
+_DEFAULT_BLOCKED_NETWORKS = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("::1/128"),
+)
+
+blocked_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = list(
+    _DEFAULT_BLOCKED_NETWORKS
 )
 
 
@@ -79,7 +83,7 @@ def validate_crawl_url(url: str) -> None:
 
     for _family, _type, _proto, _canonname, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        for network in _BLOCKED_NETWORKS:
+        for network in blocked_networks:
             if ip in network:
                 raise ValueError(f"Crawling private/reserved IP {ip} is not allowed")
 
@@ -353,19 +357,14 @@ async def crawl_and_save(
     *,
     depth: int = 0,
     max_pages: int = 0,
-    force: bool = False,
     on_progress: DetailedProgressCallback | None = None,
 ) -> list[Path]:
-    """Crawl URL(s), save as markdown, update metadata. Returns paths written."""
-    max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
+    """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
-    if not force:
-        meta = load_crawl_metadata()
-        if url in meta:
-            existing_file = _web_dir() / meta[url].file
-            if existing_file.exists():
-                log.info("URL already crawled, skipping: %s (use force=True to re-crawl)", url)
-                return []
+    Uses hash-based change detection: always fetches, but only saves files
+    whose content has changed (or is new).
+    """
+    max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
     sem = _get_crawl_semaphore()
     if sem is not None:
@@ -384,8 +383,9 @@ async def crawl_and_save(
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, {"url": url, "current": 1, "total": 1})
 
-        paths = save_crawl_results(results)
-        update_metadata(results)
+        changed = _filter_changed(results)
+        paths = save_crawl_results(changed)
+        update_metadata(changed)
         await _maybe_periodic_sync()
 
         if on_progress:
@@ -398,3 +398,21 @@ async def crawl_and_save(
     finally:
         if sem is not None:
             sem.release()
+
+
+def _filter_changed(results: list[CrawlResult]) -> list[CrawlResult]:
+    """Return only results whose content differs from the last crawl."""
+    meta = load_crawl_metadata()
+    web_dir = _web_dir()
+    changed: list[CrawlResult] = []
+    for r in results:
+        if not r.success or not r.markdown.strip():
+            continue
+        prev = meta.get(r.url)
+        file_path = web_dir / url_to_filename(r.url)
+        new_hash = content_hash(r.markdown)
+        if prev is not None and prev.content_hash == new_hash and file_path.exists():
+            log.info("Content unchanged, skipping save: %s", r.url)
+            continue
+        changed.append(r)
+    return changed
