@@ -692,9 +692,9 @@ async def test_chat_slash_delete_with_match(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.store.get_sources") as mock_get,
-            patch("lilbee.store.delete_by_source") as mock_del_chunks,
-            patch("lilbee.store.delete_source") as mock_del_src,
+            patch("lilbee.cli.tui.screens.chat.get_sources") as mock_get,
+            patch("lilbee.cli.tui.screens.chat.delete_by_source") as mock_del_chunks,
+            patch("lilbee.cli.tui.screens.chat.delete_source") as mock_del_src,
         ):
             mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
             app.screen._cmd_delete("notes.md")
@@ -707,7 +707,7 @@ async def test_chat_slash_delete_not_found(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.store.get_sources",
+            "lilbee.cli.tui.screens.chat.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("nonexistent.md")
@@ -718,7 +718,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch(
-            "lilbee.store.get_sources",
+            "lilbee.cli.tui.screens.chat.get_sources",
             return_value=[{"filename": "notes.md", "source": "notes.md"}],
         ):
             app.screen._cmd_delete("")
@@ -728,7 +728,7 @@ async def test_chat_slash_delete_no_arg(mock_check):
 async def test_chat_slash_delete_store_error(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", side_effect=Exception("no store")):
+        with patch("lilbee.cli.tui.screens.chat.get_sources", side_effect=Exception("no store")):
             app.screen._cmd_delete("x")
 
 
@@ -736,7 +736,7 @@ async def test_chat_slash_delete_store_error(mock_check):
 async def test_chat_slash_delete_empty_sources(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", return_value=[]):
+        with patch("lilbee.cli.tui.screens.chat.get_sources", return_value=[]):
             app.screen._cmd_delete("x")
 
 

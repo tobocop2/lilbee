@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,8 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.config import cfg
+from lilbee.crawler import is_url
+from lilbee.store import delete_by_source, delete_source, get_chunks_by_source, get_sources
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -64,8 +67,6 @@ def _ensure_vision_model() -> None:
         cfg.vision_model = saved
         _validate_configured_vision()
         return
-
-    import sys
 
     from lilbee.models import list_installed_models
 
@@ -142,8 +143,6 @@ def _pick_vision_interactive(installed: set[str]) -> None:
 
 def _pick_vision_auto(installed: set[str]) -> None:
     """Non-interactive vision model auto-selection."""
-    import sys
-
     from lilbee.models import pick_default_vision_model
 
     model_info = pick_default_vision_model()
@@ -288,8 +287,6 @@ _max_pages_option = typer.Option(
 
 def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
     """Split inputs into file paths and URLs."""
-    from lilbee.crawler import is_url
-
     paths: list[Path] = []
     urls: list[str] = []
     for inp in inputs:
@@ -430,8 +427,6 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.store import get_chunks_by_source, get_sources
-
     known = {s["filename"] for s in get_sources()}
     if source not in known:
         if cfg.json_mode:
@@ -480,8 +475,6 @@ def remove(
 ) -> None:
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-
-    from lilbee.store import delete_by_source, delete_source, get_sources
 
     known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
@@ -599,7 +592,6 @@ def chat(
         num_ctx=num_ctx,
         seed=seed,
     )
-    import sys
 
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Chat requires a terminal.")
@@ -672,8 +664,6 @@ def reset(
 @app.command()
 def init() -> None:
     """Initialize a local .lilbee/ knowledge base in the current directory."""
-    from pathlib import Path
-
     root = Path.cwd() / ".lilbee"
     if root.is_dir():
         if cfg.json_mode:

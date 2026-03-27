@@ -23,6 +23,17 @@ class EventType(StrEnum):
     CRAWL_ERROR = "crawl_error"
 
 
+class SseEvent(StrEnum):
+    """SSE event names used in the HTTP streaming protocol."""
+
+    TOKEN = "token"
+    REASONING = "reasoning"
+    SOURCES = "sources"
+    ERROR = "error"
+    DONE = "done"
+    PROGRESS = "progress"
+
+
 DetailedProgressCallback = Callable[[EventType, dict[str, Any]], None]
 
 # When set, vision updates the batch task's description instead of creating its own bar.

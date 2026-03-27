@@ -149,6 +149,9 @@ class Config(BaseModel):
     # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
     crawl_max_concurrent: int = Field(default=0, ge=0)
 
+    # Seconds between periodic syncs during crawl (0 = sync only at end).
+    crawl_sync_interval: int = Field(default=30, ge=0)
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
 
@@ -280,6 +283,9 @@ class Config(BaseModel):
                 "CRAWL_MAX_CONCURRENT",
                 os.cpu_count() or 4,
                 int,
+            ),
+            crawl_sync_interval=_load_setting(
+                data_root, "crawl_sync_interval", "CRAWL_SYNC_INTERVAL", 30, int
             ),
         )
 

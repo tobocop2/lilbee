@@ -16,12 +16,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import cfg
-from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.providers import get_provider
 from lilbee.query import build_rag_context, search_context
 from lilbee.results import group, to_dicts
+from lilbee.store import get_sources, remove_documents
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -64,12 +66,12 @@ def sse_event(event: str, data: Any) -> str:
 
 def sse_error(message: str) -> str:
     """Format an SSE error event."""
-    return sse_event("error", {"message": message})
+    return sse_event(SseEvent.ERROR, {"message": message})
 
 
 def sse_done(data: dict[str, Any]) -> str:
     """Format an SSE done event."""
-    return sse_event("done", data)
+    return sse_event(SseEvent.DONE, data)
 
 
 def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -161,7 +163,7 @@ def _run_llm_stream(
             if cancel.is_set():
                 break
             if st.content:
-                event_type = "reasoning" if st.is_reasoning else "token"
+                event_type = SseEvent.REASONING if st.is_reasoning else SseEvent.TOKEN
                 queue.put_nowait(sse_event(event_type, {"token": st.content}))
     except Exception as exc:
         error_holder.append(str(exc))
@@ -213,7 +215,7 @@ async def _stream_rag_response(
         yield sse_error(error_holder[0])
         return
 
-    yield sse_event("sources", [clean_result(s) for s in results])
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
     yield sse_done({})
 
 
@@ -380,7 +382,6 @@ async def list_models() -> dict[str, Any]:
 
 async def set_chat_model(model: str) -> dict[str, str]:
     """Switch active chat model. Returns {model}."""
-    from lilbee import settings
     from lilbee.models import ensure_tag
 
     tagged = ensure_tag(model)
@@ -391,8 +392,6 @@ async def set_chat_model(model: str) -> dict[str, str]:
 
 async def set_vision_model(model: str) -> dict[str, str]:
     """Switch active vision model. Pass empty string to disable. Returns {model}."""
-    from lilbee import settings
-
     cfg.vision_model = model
     settings.set_value(cfg.data_root, "vision_model", model)
     return {"model": model}
@@ -400,8 +399,6 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.store import remove_documents
-
     result = remove_documents(names, delete_files=delete_files)
     return {"removed": result.removed, "not_found": result.not_found}
 
@@ -412,8 +409,6 @@ async def list_documents(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Return indexed documents with metadata, paginated and filterable."""
-    from lilbee.store import get_sources
-
     sources = get_sources()
     if search:
         search_lower = search.lower()
@@ -556,7 +551,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
         events: list[str] = []
 
         def _on_progress(data: dict[str, Any]) -> None:
-            events.append(sse_event("progress", data))
+            events.append(sse_event(SseEvent.PROGRESS, data))
 
         manager.pull(model, src, on_progress=_on_progress)
         for event in events:

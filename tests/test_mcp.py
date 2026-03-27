@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lilbee.config import cfg
+from lilbee.crawl_task import clear_tasks
 from lilbee.ingest import SyncResult
 from lilbee.mcp import (
     clean,
     lilbee_add,
     lilbee_crawl,
+    lilbee_crawl_status,
     lilbee_init,
     lilbee_list_documents,
     lilbee_remove,
@@ -168,24 +170,24 @@ class TestLilbeeSync:
 
 
 class TestLilbeeRemove:
-    @mock.patch("lilbee.store.get_sources")
-    @mock.patch("lilbee.store.delete_source")
-    @mock.patch("lilbee.store.delete_by_source")
+    @mock.patch("lilbee.mcp.get_sources")
+    @mock.patch("lilbee.mcp.delete_source")
+    @mock.patch("lilbee.mcp.delete_by_source")
     def test_removes_known_file(self, mock_del, mock_del_src, mock_sources):
         mock_sources.return_value = [{"filename": "a.md"}]
         result = lilbee_remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
 
-    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.mcp.get_sources")
     def test_not_found(self, mock_sources):
         mock_sources.return_value = []
         result = lilbee_remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    @mock.patch("lilbee.store.get_sources")
-    @mock.patch("lilbee.store.delete_source")
-    @mock.patch("lilbee.store.delete_by_source")
+    @mock.patch("lilbee.mcp.get_sources")
+    @mock.patch("lilbee.mcp.delete_source")
+    @mock.patch("lilbee.mcp.delete_by_source")
     def test_delete_files_removes_from_disk(self, mock_del, mock_del_src, mock_sources):
         mock_sources.return_value = [{"filename": "a.md"}]
         f = cfg.documents_dir / "a.md"
@@ -197,14 +199,14 @@ class TestLilbeeRemove:
 
 
 class TestLilbeeListDocuments:
-    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.mcp.get_sources")
     def test_returns_documents(self, mock_sources):
         mock_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
         result = lilbee_list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
 
-    @mock.patch("lilbee.store.get_sources")
+    @mock.patch("lilbee.mcp.get_sources")
     def test_empty(self, mock_sources):
         mock_sources.return_value = []
         result = lilbee_list_documents()
@@ -393,34 +395,50 @@ class TestLilbeeAddWithUrls:
 
 
 class TestLilbeeCrawl:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_single_page_crawl(self, mock_crawl, mock_sync, isolated_env):
-        """Single page crawl returns page count and triggers sync."""
-        from pathlib import Path
+    @mock.patch("lilbee.mcp.start_crawl", return_value="abc123")
+    def test_returns_task_id(self, mock_start, isolated_env):
+        """Non-blocking crawl returns a task_id immediately."""
+        result = lilbee_crawl(url="https://example.com")
+        assert result["status"] == "started"
+        assert result["task_id"] == "abc123"
+        assert result["url"] == "https://example.com"
+        mock_start.assert_called_once_with("https://example.com", depth=0, max_pages=50)
 
-        mock_crawl.return_value = [Path("/tmp/page.md")]
-        result = await lilbee_crawl(url="https://example.com")
-        assert result["command"] == "crawl"
-        assert result["pages_crawled"] == 1
-        assert "sync" in result
-        mock_sync.assert_awaited_once()
+    @mock.patch("lilbee.mcp.start_crawl", return_value="def456")
+    def test_passes_depth_and_max_pages(self, mock_start, isolated_env):
+        """Depth and max_pages are forwarded to start_crawl."""
+        result = lilbee_crawl(url="https://example.com", depth=2, max_pages=10)
+        assert result["task_id"] == "def456"
+        mock_start.assert_called_once_with("https://example.com", depth=2, max_pages=10)
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_recursive_crawl(self, mock_crawl, mock_sync, isolated_env):
-        """Recursive crawl passes depth and max_pages."""
-        from pathlib import Path
+    def test_rejects_invalid_url(self):
+        result = lilbee_crawl(url="ftp://bad.com")
+        assert "error" in result
 
-        mock_crawl.return_value = [Path("/tmp/a.md"), Path("/tmp/b.md")]
-        result = await lilbee_crawl(url="https://example.com", depth=2, max_pages=10)
-        assert result["pages_crawled"] == 2
-        call_kwargs = mock_crawl.call_args[1]
-        assert call_kwargs["depth"] == 2
-        assert call_kwargs["max_pages"] == 10
 
-    async def test_rejects_invalid_url(self):
-        result = await lilbee_crawl(url="ftp://bad.com")
+class TestLilbeeCrawlStatus:
+    @mock.patch("lilbee.mcp.get_task")
+    def test_returns_task_state(self, mock_get_task, isolated_env):
+        """Status returns current task state."""
+        from lilbee.crawl_task import CrawlTask, TaskStatus
+
+        mock_get_task.return_value = CrawlTask(
+            task_id="abc123",
+            url="https://example.com",
+            depth=0,
+            max_pages=50,
+            status=TaskStatus.RUNNING,
+            pages_crawled=3,
+        )
+        status = lilbee_crawl_status("abc123")
+        assert status["url"] == "https://example.com"
+        assert status["status"] == "running"
+        assert status["pages_crawled"] == 3
+
+    def test_not_found(self):
+        """Unknown task_id returns an error."""
+        clear_tasks()
+        result = lilbee_crawl_status("nonexistent")
         assert "error" in result
 
 

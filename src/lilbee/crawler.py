@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import socket
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -310,6 +311,43 @@ async def crawl_recursive(
     return results
 
 
+_last_sync_time: float = 0.0
+_sync_running: bool = False
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _maybe_periodic_sync() -> None:
+    """Fire off a background sync if the crawl_sync_interval has elapsed.
+
+    Skips if a sync is already running or periodic sync is disabled (interval=0).
+    """
+    global _last_sync_time, _sync_running
+    interval = cfg.crawl_sync_interval
+    if interval <= 0 or _sync_running:
+        return
+    now = time.monotonic()
+    if now - _last_sync_time < interval:
+        return
+
+    _last_sync_time = now
+    _sync_running = True
+
+    async def _run_sync() -> None:
+        global _sync_running
+        try:
+            from lilbee.ingest import sync
+
+            await sync(quiet=True)
+        except Exception as exc:
+            log.warning("Periodic sync during crawl failed: %s", exc)
+        finally:
+            _sync_running = False
+
+    task = asyncio.create_task(_run_sync())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def crawl_and_save(
     url: str,
     *,
@@ -348,6 +386,7 @@ async def crawl_and_save(
 
         paths = save_crawl_results(results)
         update_metadata(results)
+        await _maybe_periodic_sync()
 
         if on_progress:
             on_progress(

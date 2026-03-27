@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual import work
 from textual.app import ComposeResult
@@ -12,7 +14,9 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Input
 
+from lilbee import settings
 from lilbee.cli.helpers import get_version
+from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -22,7 +26,10 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
+from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.progress import EventType
 from lilbee.query import ChatMessage
+from lilbee.store import delete_by_source, delete_source, get_sources
 
 # Maps slash command names to handler method names.
 _SLASH_COMMANDS: dict[str, str] = {
@@ -141,8 +148,6 @@ class ChatScreen(Screen[None]):
         if not args:
             return
         # Auto-detect URLs and route to crawl logic
-        from lilbee.crawler import is_url
-
         if is_url(args):
             self._cmd_crawl(args)
             return
@@ -171,8 +176,6 @@ class ChatScreen(Screen[None]):
             return
         parts = args.split()
         url = parts[0]
-        from lilbee.crawler import require_valid_crawl_url
-
         try:
             require_valid_crawl_url(url)
         except ValueError as exc:
@@ -185,8 +188,6 @@ class ChatScreen(Screen[None]):
     @staticmethod
     def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
         """Extract --depth and --max-pages from argument tokens."""
-        import contextlib
-
         flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
         parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
         i = 0
@@ -203,17 +204,12 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_crawl_background(self, url: str, depth: int, max_pages: int) -> None:
         """Run a crawl in a background thread, then trigger sync."""
-        import asyncio
-
         from lilbee.crawler import crawl_and_save
 
         sync_bar = self.query_one("#sync-bar", SyncBar)
         self.app.call_from_thread(sync_bar.set_status, f"Crawling {url}...")
 
         try:
-            from typing import Any
-
-            from lilbee.progress import EventType
 
             def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
                 if event_type == EventType.CRAWL_PAGE:
@@ -240,8 +236,6 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
-        from lilbee.store import get_sources
-
         try:
             sources = get_sources()
         except Exception:
@@ -261,8 +255,6 @@ class ChatScreen(Screen[None]):
         if name not in known:
             self.notify(f"Not found: {name}", severity="error")
             return
-
-        from lilbee.store import delete_by_source, delete_source
 
         delete_by_source(name)
         delete_source(name)
@@ -302,8 +294,6 @@ class ChatScreen(Screen[None]):
         key = parts[0]
         value = parts[1] if len(parts) > 1 else ""
 
-        from lilbee.cli.settings_map import SETTINGS_MAP
-
         if key not in SETTINGS_MAP:
             self.notify(f"Unknown setting: {key}", severity="warning")
             return
@@ -340,8 +330,6 @@ class ChatScreen(Screen[None]):
         self.notify(f"lilbee {get_version()}")
 
     def _cmd_vision(self, args: str) -> None:
-        from lilbee import settings
-
         if args == "off":
             cfg.vision_model = ""
             settings.set_value(cfg.data_root, "vision_model", "")
@@ -422,12 +410,9 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_sync(self) -> None:
         """Run background document sync."""
-        import asyncio
-
         sync_bar = self.query_one("#sync-bar", SyncBar)
         try:
             from lilbee.ingest import sync
-            from lilbee.progress import EventType
 
             self.app.call_from_thread(sync_bar.set_status, "Syncing...")
 

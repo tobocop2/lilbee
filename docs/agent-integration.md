@@ -29,7 +29,8 @@ Add to your MCP client's MCP server configuration:
 | `lilbee_status()` | Show indexed documents, config, and chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with the vector store | Yes (for embedding) |
 | `lilbee_add(paths, force, vision_model)` | Add files, dirs, or URLs and sync them into the vector store | Yes (for embedding) |
-| `lilbee_crawl(url, depth, max_pages)` | Crawl a web page (or site) and add it to the knowledge base, then sync | Yes (for embedding) |
+| `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl of a web page (or site); returns task_id for polling | No (crawl only; sync separately) |
+| `lilbee_crawl_status(task_id)` | Check status of a running crawl task (pages crawled, errors, completion) | No |
 | `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base in a directory | No |
 | `lilbee_remove(names, delete_files)` | Remove documents from the index (optionally delete source files) | No |
 | `lilbee_list_documents()` | List all indexed documents with chunk counts | No |
