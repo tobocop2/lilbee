@@ -80,6 +80,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["slow: integration tests that download and run real models"]
+addopts = "-m 'not slow'"
 
 [tool.coverage.run]
 source = ["lilbee"]
