@@ -74,20 +74,13 @@ class LlamaCppProvider(LLMProvider):
 
     def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
         """Run one batched embedding call and resolve all futures."""
-        all_texts: list[str] = []
-        offsets: list[tuple[int, int]] = []
+        llm = self._get_embed_llm()
         for req in batch:
-            offsets.append((len(all_texts), len(req.texts)))
-            all_texts.extend(req.texts)
-
-        try:
-            llm = self._get_embed_llm()
-            response = llm.create_embedding(input=all_texts)
-            all_vectors = [item["embedding"] for item in response["data"]]
-            for req, (start, count) in zip(batch, offsets, strict=True):
-                req.future.set_result(all_vectors[start : start + count])
-        except Exception as exc:
-            for req in batch:
+            try:
+                response = llm.create_embedding(input=req.texts)
+                vectors = [item["embedding"] for item in response["data"]]
+                req.future.set_result(vectors)
+            except Exception as exc:
                 if not req.future.done():
                     req.future.set_exception(exc)
 
