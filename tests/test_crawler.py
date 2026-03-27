@@ -8,6 +8,7 @@ from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
+    _filter_changed,
     _get_crawl_semaphore,
     _maybe_periodic_sync,
     content_hash,
@@ -184,6 +185,48 @@ class TestContentHash:
 
     def test_different_for_different_content(self):
         assert content_hash("hello") != content_hash("world")
+
+
+class TestFilterChanged:
+    def test_new_url_passes_through(self, isolated_env):
+        results = [CrawlResult(url="https://example.com/new", markdown="# New")]
+        changed = _filter_changed(results)
+        assert len(changed) == 1
+
+    def test_unchanged_content_filtered(self, isolated_env):
+        """When metadata hash matches and file exists, result is filtered out."""
+        result = CrawlResult(url="https://example.com/same", markdown="# Same")
+        # Save first, then update metadata
+        save_crawl_results([result])
+        update_metadata([result])
+        changed = _filter_changed([result])
+        assert changed == []
+
+    def test_changed_content_passes_through(self, isolated_env):
+        """When content hash differs, result passes through."""
+        original = CrawlResult(url="https://example.com/page", markdown="# Original")
+        save_crawl_results([original])
+        update_metadata([original])
+        updated = CrawlResult(url="https://example.com/page", markdown="# Updated")
+        changed = _filter_changed([updated])
+        assert len(changed) == 1
+
+    def test_missing_file_passes_through(self, isolated_env):
+        """If metadata exists but file was deleted, re-save."""
+        result = CrawlResult(url="https://example.com/gone", markdown="# Gone")
+        update_metadata([result])  # metadata exists but file does not
+        changed = _filter_changed([result])
+        assert len(changed) == 1
+
+    def test_failed_results_filtered(self, isolated_env):
+        results = [CrawlResult(url="https://example.com/fail", success=False, error="404")]
+        changed = _filter_changed(results)
+        assert changed == []
+
+    def test_empty_markdown_filtered(self, isolated_env):
+        results = [CrawlResult(url="https://example.com/empty", markdown="   ")]
+        changed = _filter_changed(results)
+        assert changed == []
 
 
 def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=True, error=None):
@@ -460,7 +503,7 @@ class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
-        paths = await crawl_and_save("https://example.com", force=True)
+        paths = await crawl_and_save("https://example.com")
         assert len(paths) == 1
         assert paths[0].exists()
 
@@ -470,7 +513,7 @@ class TestCrawlAndSave:
             CrawlResult(url="https://example.com", markdown="# Home"),
             CrawlResult(url="https://example.com/about", markdown="# About"),
         ]
-        paths = await crawl_and_save("https://example.com", depth=2, max_pages=10, force=True)
+        paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
 
     @patch("lilbee.crawler.crawl_single")
@@ -482,7 +525,7 @@ class TestCrawlAndSave:
         def on_progress(event_type, data):
             events.append((str(event_type), data))
 
-        await crawl_and_save("https://example.com", force=True, on_progress=on_progress)
+        await crawl_and_save("https://example.com", on_progress=on_progress)
         event_types = [e[0] for e in events]
         assert "crawl_start" in event_types
         assert "crawl_page" in event_types
@@ -493,38 +536,42 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
         )
-        await crawl_and_save("https://example.com/page", force=True)
+        await crawl_and_save("https://example.com/page")
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
 
     @patch("lilbee.crawler.crawl_single")
-    async def test_skips_duplicate_url(self, mock_crawl_single, isolated_env):
-        """Already-crawled URL is skipped when force=False."""
+    async def test_unchanged_content_skips_save(self, mock_crawl_single, isolated_env):
+        """Same content on re-crawl skips saving (hash-based detection)."""
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
-        # First crawl
-        await crawl_and_save("https://example.com/dup", force=True)
+        # First crawl saves the file
+        paths1 = await crawl_and_save("https://example.com/dup")
+        assert len(paths1) == 1
         mock_crawl_single.reset_mock()
 
-        # Second crawl without force: should skip
-        paths = await crawl_and_save("https://example.com/dup")
-        assert paths == []
-        mock_crawl_single.assert_not_awaited()
-
-    @patch("lilbee.crawler.crawl_single")
-    async def test_force_overrides_duplicate_check(self, mock_crawl_single, isolated_env):
-        """force=True re-crawls even when URL already exists in metadata."""
+        # Second crawl with identical content: fetches but skips save
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Dup"
         )
-        await crawl_and_save("https://example.com/dup", force=True)
+        paths2 = await crawl_and_save("https://example.com/dup")
+        assert paths2 == []
+        mock_crawl_single.assert_awaited_once()
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_changed_content_updates_file(self, mock_crawl_single, isolated_env):
+        """Changed content on re-crawl saves updated file."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/dup", markdown="# Dup"
+        )
+        await crawl_and_save("https://example.com/dup")
         mock_crawl_single.reset_mock()
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/dup", markdown="# Updated"
         )
 
-        paths = await crawl_and_save("https://example.com/dup", force=True)
+        paths = await crawl_and_save("https://example.com/dup")
         assert len(paths) == 1
         mock_crawl_single.assert_awaited_once()
 
@@ -533,7 +580,7 @@ class TestCrawlAndSave:
         """max_pages in crawl_and_save is capped by cfg.crawl_max_pages."""
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Test")
         cfg.crawl_max_pages = 5
-        await crawl_and_save("https://example.com", max_pages=999, force=True)
+        await crawl_and_save("https://example.com", max_pages=999)
         # Single page mode: no assertion on max_pages since depth=0 uses crawl_single
 
     async def test_semaphore_limits_concurrency(self, isolated_env):

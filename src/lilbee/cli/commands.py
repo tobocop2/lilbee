@@ -298,7 +298,7 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 
 
 def _crawl_urls_blocking(
-    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None, force: bool = False
+    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written."""
     from typing import Any
@@ -331,7 +331,6 @@ def _crawl_urls_blocking(
                     url,
                     depth=effective_depth,
                     max_pages=effective_pages,
-                    force=force,
                     on_progress=_make_callback(),
                 )
             )
@@ -374,7 +373,7 @@ def add(
         crawled_paths: list[Path] = []
         if urls:
             crawled_paths = _crawl_urls_blocking(
-                urls, crawl=crawl, depth=depth, max_pages=max_pages, force=force
+                urls, crawl=crawl, depth=depth, max_pages=max_pages
             )
             if not cfg.json_mode:
                 console.print(
