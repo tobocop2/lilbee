@@ -1654,9 +1654,10 @@ class TestIngestShutdownError:
 class TestAddWithUrls:
     """Tests for URL crawling through the add CLI command."""
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl):
+    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl, mock_avail):
         """Adding a URL calls the crawler instead of copying files."""
         result = runner.invoke(app, ["add", "https://example.com"])
         assert result.exit_code == 0
@@ -1664,33 +1665,37 @@ class TestAddWithUrls:
         args = mock_crawl.call_args
         assert args[0][0] == ["https://example.com"]
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl):
+    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl, mock_avail):
         """--crawl flag is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["crawl"] is True
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_depth(self, mock_sync, mock_crawl):
+    def test_add_url_with_depth(self, mock_sync, mock_crawl, mock_avail):
         """--depth is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--depth", "3", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["depth"] == 3
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_max_pages(self, mock_sync, mock_crawl):
+    def test_add_url_with_max_pages(self, mock_sync, mock_crawl, mock_avail):
         """--max-pages is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--max-pages", "10", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_json_mode(self, mock_sync, mock_crawl, isolated_env):
+    def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
 
@@ -1701,11 +1706,12 @@ class TestAddWithUrls:
         assert data["command"] == "add"
         assert data["crawled"] == 1
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
     @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     def test_add_mixed_urls_and_files(
-        self, mock_crawl, mock_embed, mock_embed_batch, isolated_env, tmp_path
+        self, mock_crawl, mock_embed, mock_embed_batch, mock_avail, isolated_env, tmp_path
     ):
         """Mixing URLs and file paths in one add command."""
         src = tmp_path / "source" / "doc.txt"
