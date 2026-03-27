@@ -32,6 +32,9 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
+CONCEPT_NODES_TABLE = "concept_nodes"
+CONCEPT_EDGES_TABLE = "concept_edges"
+CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
 
 class Config(BaseModel):
@@ -135,6 +138,19 @@ class Config(BaseModel):
     # When False, thinking is stripped silently. When True, emitted as
     # separate SSE events (event: reasoning) for UI rendering.
     show_reasoning: bool = False
+
+    # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
+    # from chunks, builds a co-occurrence graph, and uses it to boost search
+    # results and expand queries. Requires spacy + networkx + graspologic-native.
+    concept_graph: bool = True
+
+    # Weight for concept overlap boosting in search results (0.0-1.0).
+    # Higher = concept overlap matters more relative to vector similarity.
+    concept_boost_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # Maximum noun-phrase concepts extracted per chunk.
+    # Caps extraction to avoid noise from very long chunks.
+    concept_max_per_chunk: int = Field(default=10, ge=1)
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
@@ -257,6 +273,13 @@ class Config(BaseModel):
             ),
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool
+            ),
+            concept_graph=_load_setting(data_root, "concept_graph", "CONCEPT_GRAPH", True, bool),
+            concept_boost_weight=_load_setting(
+                data_root, "concept_boost_weight", "CONCEPT_BOOST_WEIGHT", 0.3, float
+            ),
+            concept_max_per_chunk=_load_setting(
+                data_root, "concept_max_per_chunk", "CONCEPT_MAX_PER_CHUNK", 10, int
             ),
         )
 
