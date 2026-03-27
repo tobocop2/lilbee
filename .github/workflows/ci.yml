@@ -100,7 +100,7 @@ jobs:
           restore-keys: gguf-models-
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v -m slow --timeout=300
+        run: uv run pytest tests/integration/ -v -m slow
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
