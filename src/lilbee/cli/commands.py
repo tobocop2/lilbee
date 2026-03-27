@@ -744,6 +744,16 @@ def topics(
     """Show top concept communities or concepts related to a query."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
+        msg = "Concept graph requires: pip install 'lilbee[graph]'"
+        if cfg.json_mode:
+            json_output({"error": msg})
+            raise SystemExit(1)
+        console.print(f"[{theme.ERROR}]{msg}[/{theme.ERROR}]")
+        raise SystemExit(1)
+
     if not cfg.concept_graph:
         if cfg.json_mode:
             json_output({"error": "Concept graph is disabled (LILBEE_CONCEPT_GRAPH=false)"})
