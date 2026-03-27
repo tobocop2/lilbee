@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual import work
 from textual.app import ComposeResult
@@ -13,6 +13,7 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Input
 
+from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
@@ -25,7 +26,10 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
+from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.progress import EventType
 from lilbee.query import ChatMessage
+from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +130,10 @@ class ChatScreen(Screen[None]):
     def _cmd_add(self, args: str) -> None:
         if not args:
             return
+        # Auto-detect URLs and route to crawl logic
+        if is_url(args):
+            self._cmd_crawl(args)
+            return
         path = Path(args).expanduser()
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
@@ -146,12 +154,72 @@ class ChatScreen(Screen[None]):
             worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
+    def _cmd_crawl(self, args: str) -> None:
+        if not args:
+            self.notify("Usage: /crawl <url> [--depth N] [--max-pages N]", severity="warning")
+            return
+        parts = args.split()
+        url = parts[0]
+        try:
+            require_valid_crawl_url(url)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        depth, max_pages = self._parse_crawl_flags(parts[1:])
+        self.notify(f"Crawling {url}...")
+        self._run_crawl_background(url, depth, max_pages)
+
+    @staticmethod
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
+        """Extract --depth and --max-pages from argument tokens."""
+        flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
+        parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
+        i = 0
+        while i < len(tokens):
+            key = flag_map.get(tokens[i])
+            if key and i + 1 < len(tokens):
+                with contextlib.suppress(ValueError):
+                    parsed[key] = int(tokens[i + 1])
+                i += 2
+            else:
+                i += 1
+        return parsed["depth"], parsed["max_pages"]
+
+    @work(thread=True)
+    def _run_crawl_background(self, url: str, depth: int, max_pages: int) -> None:
+        """Run a crawl in a background thread, then trigger sync."""
+        from lilbee.crawler import crawl_and_save
+
+        sync_bar = self.query_one("#sync-bar", SyncBar)
+        self.app.call_from_thread(sync_bar.set_status, f"Crawling {url}...")
+
+        try:
+
+            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+                if event_type == EventType.CRAWL_PAGE:
+                    current = data.get("current", 0)
+                    total = data.get("total", 0)
+                    page_url = data.get("url", "")
+                    msg = f"Crawling [{current}/{total}]: {page_url}"
+                    self.app.call_from_thread(sync_bar.set_status, msg)
+
+            paths = asyncio.run(
+                crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+            )
+            self.app.call_from_thread(self.notify, f"Crawled {len(paths)} page(s) from {url}")
+        except Exception as exc:
+            self.app.call_from_thread(self.notify, f"Crawl failed: {exc}", severity="error")
+            self.app.call_from_thread(sync_bar.set_status, "Crawl failed")
+            return
+
+        # Trigger sync to ingest the crawled markdown files
+        self.app.call_from_thread(sync_bar.set_status, "Syncing crawled pages...")
+        self._run_sync()
+
     def _cmd_catalog(self, _args: str) -> None:
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
-        from lilbee.store import get_sources
-
         try:
             sources = get_sources()
         except Exception:
@@ -172,8 +240,6 @@ class ChatScreen(Screen[None]):
         if name not in known:
             self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
-
-        from lilbee.store import delete_by_source, delete_source
 
         delete_by_source(name)
         delete_source(name)
@@ -214,8 +280,6 @@ class ChatScreen(Screen[None]):
         key = parts[0]
         value = parts[1] if len(parts) > 1 else ""
 
-        from lilbee.cli.settings_map import SETTINGS_MAP
-
         if key not in SETTINGS_MAP:
             self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
             return
@@ -253,8 +317,6 @@ class ChatScreen(Screen[None]):
         self.notify(f"lilbee {get_version()}")
 
     def _cmd_vision(self, args: str) -> None:
-        from lilbee import settings
-
         if args == "off":
             cfg.vision_model = ""
             settings.set_value(cfg.data_root, "vision_model", "")
@@ -347,7 +409,6 @@ class ChatScreen(Screen[None]):
         sync_bar = self.query_one("#sync-bar", SyncBar)
         try:
             from lilbee.ingest import sync
-            from lilbee.progress import EventType
 
             self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_SYNCING)
 

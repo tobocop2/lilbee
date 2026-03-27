@@ -39,6 +39,8 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     sources = _ARG_SOURCES.get(cmd)
     if sources is None:
         return []
+    if cmd == "/add":
+        return _path_options(partial)
     options = sources()
     if partial:
         return [o for o in options if o.lower().startswith(partial.lower())]
@@ -88,9 +90,37 @@ def _theme_options() -> list[str]:
     return list(DARK_THEMES)
 
 
-def _path_options() -> list[str]:
+def _path_options(partial: str = "") -> list[str]:
+    """Return filesystem completions for a partial path.
+
+    Handles relative paths, absolute paths, and ~ expansion.
+    Directories get a trailing / so the user knows to keep typing.
+    """
     try:
-        return [str(p) for p in Path(".").iterdir() if not p.name.startswith(".")][:20]
+        expanded = Path(partial).expanduser() if partial else Path(".")
+        if partial and not expanded.is_dir():
+            parent = expanded.parent
+            prefix = expanded.name.lower()
+        else:
+            parent = expanded
+            prefix = ""
+
+        if not parent.is_dir():
+            return []
+
+        results: list[str] = []
+        for p in sorted(parent.iterdir()):
+            if p.name.startswith("."):
+                continue
+            if prefix and not p.name.lower().startswith(prefix):
+                continue
+            display = str(p) if partial and Path(partial) != Path(".") else p.name
+            if p.is_dir():
+                display = display.rstrip("/") + "/"
+            results.append(display)
+            if len(results) >= 20:
+                break
+        return results
     except Exception:
         log.debug("Failed to list paths for autocomplete", exc_info=True)
         return []
