@@ -146,6 +146,9 @@ class Config(BaseModel):
     # Per-page timeout in seconds for fetching a URL.
     crawl_timeout: int = Field(default=30, ge=1)
 
+    # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
+    crawl_max_concurrent: int = Field(default=0, ge=0)
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
 
@@ -271,6 +274,13 @@ class Config(BaseModel):
             crawl_max_depth=_load_setting(data_root, "crawl_max_depth", "CRAWL_MAX_DEPTH", 2, int),
             crawl_max_pages=_load_setting(data_root, "crawl_max_pages", "CRAWL_MAX_PAGES", 50, int),
             crawl_timeout=_load_setting(data_root, "crawl_timeout", "CRAWL_TIMEOUT", 30, int),
+            crawl_max_concurrent=_load_setting(
+                data_root,
+                "crawl_max_concurrent",
+                "CRAWL_MAX_CONCURRENT",
+                os.cpu_count() or 4,
+                int,
+            ),
         )
 
 

@@ -17,8 +17,20 @@ from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
 
-_MAX_CONCURRENT_CRAWLS = 3
-_crawl_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CRAWLS)
+_crawl_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_crawl_semaphore() -> asyncio.Semaphore | None:
+    """Return the concurrency semaphore, or None if unlimited (0)."""
+    global _crawl_semaphore
+    if _crawl_semaphore is not None:
+        return _crawl_semaphore
+    limit = cfg.crawl_max_concurrent
+    if limit <= 0:
+        return None
+    _crawl_semaphore = asyncio.Semaphore(limit)
+    return _crawl_semaphore
+
 
 # Maximum filename length before truncation (most filesystems cap at 255 bytes)
 _MAX_FILENAME_LEN = 200
@@ -317,7 +329,10 @@ async def crawl_and_save(
                 log.info("URL already crawled, skipping: %s (use force=True to re-crawl)", url)
                 return []
 
-    async with _crawl_semaphore:
+    sem = _get_crawl_semaphore()
+    if sem is not None:
+        await sem.acquire()
+    try:
         if on_progress:
             on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
 
@@ -341,3 +356,6 @@ async def crawl_and_save(
             )
 
         return paths
+    finally:
+        if sem is not None:
+            sem.release()
