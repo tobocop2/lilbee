@@ -1,12 +1,19 @@
-"""Tests for the concept graph module."""
+"""Tests for the concept graph module.
+
+Skipped when graph dependencies (spacy, graspologic-native) are not installed.
+Install with: pip install 'lilbee[graph]'
+"""
 
 from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lilbee.concepts import concepts_available
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
+
+pytestmark = pytest.mark.skipif(not concepts_available(), reason="lilbee[graph] not installed")
 
 
 @pytest.fixture(autouse=True)
