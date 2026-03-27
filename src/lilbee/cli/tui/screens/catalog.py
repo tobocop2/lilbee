@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import ClassVar
 
@@ -25,6 +26,8 @@ from textual.worker import Worker, WorkerState
 from lilbee.catalog import FEATURED_ALL, CatalogModel, get_catalog
 from lilbee.config import cfg
 from lilbee.model_manager import OllamaModel
+
+log = logging.getLogger(__name__)
 
 TASK_TABS = ("All", "Chat", "Embedding", "Vision")
 _TAB_TO_TASK: dict[str, str | None] = {

@@ -483,15 +483,15 @@ async def test_app_title_has_model(mock_check):
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
 async def test_app_cycle_theme(mock_check):
-    from lilbee.cli.tui.app import _DARK_THEMES, LilbeeApp
+    from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.action_cycle_theme()
-        assert app.theme == _DARK_THEMES[1]
-        for _ in range(len(_DARK_THEMES)):
+        assert app.theme == DARK_THEMES[1]
+        for _ in range(len(DARK_THEMES)):
             app.action_cycle_theme()
-        assert app.theme == _DARK_THEMES[1]
+        assert app.theme == DARK_THEMES[1]
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -1221,6 +1221,21 @@ async def test_chat_scroll_to_bottom(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._scroll_to_bottom()
+
+
+@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
+async def test_chat_trim_history_when_over_limit(mock_check):
+    """History is trimmed when it exceeds _MAX_HISTORY_MESSAGES."""
+    from lilbee.cli.tui.screens.chat import _MAX_HISTORY_MESSAGES
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._history = [
+            {"role": "user", "content": f"msg-{i}"} for i in range(_MAX_HISTORY_MESSAGES + 10)
+        ]
+        app.screen._trim_history()
+        assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
+        assert app.screen._history[0]["content"] == "msg-10"
 
 
 # ---------------------------------------------------------------------------
