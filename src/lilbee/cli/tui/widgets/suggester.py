@@ -13,6 +13,7 @@ _SLASH_COMMANDS = (
     "/settings",
     "/set",
     "/add",
+    "/crawl",
     "/delete",
     "/reset",
     "/version",

@@ -405,6 +405,27 @@ class TestCors:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+class TestCrawlRoute:
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_streams_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen(
+            "event: crawl_start\ndata: {}\n\n",
+            "event: done\ndata: {}\n\n",
+        )
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "depth": 1})
+        assert resp.status_code == 201
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert b"crawl_start" in resp.content
+
+    @mock.patch(
+        "lilbee.server.handlers.crawl_stream",
+        side_effect=ValueError("URL must start with http:// or https://"),
+    )
+    def test_post_crawl_invalid_url(self, mock_stream, client):
+        resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
+        assert resp.status_code == 400
+
+
 class TestCreateAppReexport:
     @mock.patch("lilbee.server.litestar_app.create_app")
     def test_lazy_import(self, mock_create):
