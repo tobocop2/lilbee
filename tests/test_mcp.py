@@ -415,6 +415,13 @@ class TestLilbeeCrawl:
         result = lilbee_crawl(url="ftp://bad.com")
         assert "error" in result
 
+    def test_crawler_not_installed(self):
+        """Returns error when crawl4ai is not installed."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = lilbee_crawl(url="https://example.com")
+            assert "error" in result
+            assert "pip install" in result["error"].lower()
+
 
 class TestLilbeeCrawlStatus:
     @mock.patch("lilbee.mcp.get_task")

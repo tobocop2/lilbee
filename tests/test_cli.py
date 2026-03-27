@@ -1715,6 +1715,13 @@ class TestAddWithUrls:
         assert result.exit_code == 0
         mock_crawl.assert_called_once()
 
+    def test_add_url_without_crawler_installed(self):
+        """Adding a URL when crawl4ai is not installed shows install message."""
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(app, ["add", "https://example.com"])
+            assert result.exit_code == 1
+            assert "pip install" in result.output.lower()
+
     def test_add_nonexistent_path_fails(self):
         """Adding a nonexistent file path fails with error."""
         result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
