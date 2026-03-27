@@ -459,10 +459,10 @@ class TestCLIIntegration:
 
 class TestThemes:
     def test_dark_themes_available(self) -> None:
-        from lilbee.cli.tui.app import _DARK_THEMES
+        from lilbee.cli.tui.app import DARK_THEMES
 
-        assert "monokai" in _DARK_THEMES
-        assert "dracula" in _DARK_THEMES
+        assert "monokai" in DARK_THEMES
+        assert "dracula" in DARK_THEMES
 
     @mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

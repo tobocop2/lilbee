@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -13,6 +14,8 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from lilbee.cli.tui.command_registry import command_names
+
+log = logging.getLogger(__name__)
 
 _SLASH_COMMANDS = command_names()
 _MAX_VISIBLE = 8  # max dropdown items shown at once
@@ -48,6 +51,7 @@ def _model_options() -> list[str]:
 
         return list_installed_models()
     except Exception:
+        log.debug("Failed to list models for autocomplete", exc_info=True)
         return []
 
 
@@ -58,7 +62,7 @@ def _vision_options() -> list[str]:
 
         names.extend(m.name for m in VISION_CATALOG)
     except Exception:
-        pass
+        log.debug("Failed to load vision catalog for autocomplete", exc_info=True)
     return names
 
 
@@ -74,19 +78,21 @@ def _document_options() -> list[str]:
 
         return [s.get("filename", s.get("source", "")) for s in get_sources()]
     except Exception:
+        log.debug("Failed to list documents for autocomplete", exc_info=True)
         return []
 
 
 def _theme_options() -> list[str]:
-    from lilbee.cli.tui.app import _DARK_THEMES
+    from lilbee.cli.tui.app import DARK_THEMES
 
-    return list(_DARK_THEMES)
+    return list(DARK_THEMES)
 
 
 def _path_options() -> list[str]:
     try:
         return [str(p) for p in Path(".").iterdir() if not p.name.startswith(".")][:20]
     except Exception:
+        log.debug("Failed to list paths for autocomplete", exc_info=True)
         return []
 
 

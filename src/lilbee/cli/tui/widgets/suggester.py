@@ -88,6 +88,6 @@ class SlashSuggester(Suggester):
             return []
 
     def _get_theme_names(self) -> list[str]:
-        from lilbee.cli.tui.app import _DARK_THEMES
+        from lilbee.cli.tui.app import DARK_THEMES
 
-        return list(_DARK_THEMES)
+        return list(DARK_THEMES)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -10,6 +11,8 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from lilbee.config import cfg
+
+log = logging.getLogger(__name__)
 
 
 class StatusScreen(Screen[None]):
@@ -53,6 +56,7 @@ class StatusScreen(Screen[None]):
                     src.get("content_type", "?"),
                 )
         except Exception:
+            log.debug("Failed to read store for status screen", exc_info=True)
             table.add_row("(unable to read store)", "", "")
 
     def action_pop_screen(self) -> None:
