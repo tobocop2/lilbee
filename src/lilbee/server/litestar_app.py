@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from litestar import Litestar, delete, get, post, put
@@ -25,6 +23,7 @@ from lilbee.server.models import (
     AskResponse,
     ChatRequest,
     CleanedChunk,
+    CrawlRequest,
     HealthResponse,
     SetModelRequest,
     SetModelResponse,
@@ -242,31 +241,14 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
-log = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def _lifespan(app: Litestar) -> AsyncIterator[None]:
-    """Pre-load LLM provider and embedding model on server startup.
-
-    Each step is wrapped in try/except so a failure logs a warning
-    but never blocks the server from starting.
-    """
+@post("/api/crawl")
+async def crawl_route(data: CrawlRequest) -> Stream:
+    """Crawl a URL with streaming SSE progress events (crawl_start, crawl_page, crawl_done)."""
     try:
-        from lilbee.providers.factory import get_provider
-
-        get_provider()
-        log.info("LLM provider pre-loaded")
-    except Exception:
-        log.warning("Failed to pre-load LLM provider", exc_info=True)
-    try:
-        from lilbee import embedder
-
-        embedder.validate_model()
-        log.info("Embedding model validated")
-    except Exception:
-        log.warning("Failed to validate embedding model", exc_info=True)
-    yield
+        gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return Stream(gen, media_type="text/event-stream")
 
 
 def create_app() -> Litestar:
@@ -278,7 +260,6 @@ def create_app() -> Litestar:
         allow_headers=["Content-Type"],
     )
     return Litestar(
-        lifespan=[_lifespan],
         route_handlers=[
             health_route,
             status_route,
@@ -300,6 +281,7 @@ def create_app() -> Litestar:
             models_delete_route,
             documents_list_route,
             documents_remove_route,
+            crawl_route,
         ],
         cors_config=cors,
         openapi_config=OpenAPIConfig(

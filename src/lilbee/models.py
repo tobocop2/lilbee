@@ -311,3 +311,22 @@ def ensure_chat_model() -> None:
         )
 
     validate_disk_and_pull(model_info, free_gb)
+
+
+def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
+    """Return installed model names, excluding embedding models.
+
+    When *exclude_vision* is True, also filters out known vision catalog models.
+    """
+    from lilbee.providers import get_provider
+
+    try:
+        provider = get_provider()
+        embed_base = cfg.embedding_model.split(":")[0]
+        models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
+        if exclude_vision:
+            vision_names = {m.name for m in VISION_CATALOG}
+            models = [m for m in models if m not in vision_names]
+        return models
+    except Exception:
+        return []

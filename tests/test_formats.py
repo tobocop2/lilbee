@@ -25,7 +25,6 @@ def isolated_env(tmp_path):
     cfg.documents_dir = docs
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.concept_graph = False
 
     yield docs
 

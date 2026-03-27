@@ -149,6 +149,9 @@ def _default(
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
-        from lilbee.cli.chat import chat_loop
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            typer.echo("Error: Interactive chat requires a terminal.", err=True)
+            raise SystemExit(1)
+        from lilbee.cli.tui import run_tui
 
-        chat_loop(console, auto_sync_bg=True)
+        run_tui(auto_sync=True)

@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_int
+from lilbee.platform import canonical_models_dir, default_data_dir, env, env_int
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +32,6 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
-CONCEPT_NODES_TABLE = "concept_nodes"
-CONCEPT_EDGES_TABLE = "concept_edges"
-CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 
 
 class Config(BaseModel):
@@ -139,18 +136,21 @@ class Config(BaseModel):
     # separate SSE events (event: reasoning) for UI rendering.
     show_reasoning: bool = False
 
-    # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
-    # from chunks, builds a co-occurrence graph, and uses it to boost search
-    # results and expand queries. Requires spacy + networkx + graspologic-native.
-    concept_graph: bool = True
+    # Web crawling settings
+    # Maximum link-following depth for recursive crawls.
+    crawl_max_depth: int = Field(default=2, ge=0)
 
-    # Weight for concept overlap boosting in search results (0.0-1.0).
-    # Higher = concept overlap matters more relative to vector similarity.
-    concept_boost_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    # Maximum pages to fetch in a single crawl operation.
+    crawl_max_pages: int = Field(default=50, ge=1)
 
-    # Maximum noun-phrase concepts extracted per chunk.
-    # Caps extraction to avoid noise from very long chunks.
-    concept_max_per_chunk: int = Field(default=10, ge=1)
+    # Per-page timeout in seconds for fetching a URL.
+    crawl_timeout: int = Field(default=30, ge=1)
+
+    # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
+    crawl_max_concurrent: int = Field(default=0, ge=0)
+
+    # Seconds between periodic syncs during crawl (0 = sync only at end).
+    crawl_sync_interval: int = Field(default=30, ge=0)
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build Ollama generation options from config fields and overrides.
@@ -196,7 +196,7 @@ class Config(BaseModel):
             documents_dir=data_root / "documents",
             data_dir=data_root / "data",
             lancedb_dir=data_root / "data" / "lancedb",
-            models_dir=data_root / "models",
+            models_dir=canonical_models_dir(),
             chat_model=chat_model,
             embedding_model=_load_setting(
                 data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str
@@ -274,12 +274,18 @@ class Config(BaseModel):
             show_reasoning=_load_setting(
                 data_root, "show_reasoning", "SHOW_REASONING", False, bool
             ),
-            concept_graph=_load_setting(data_root, "concept_graph", "CONCEPT_GRAPH", True, bool),
-            concept_boost_weight=_load_setting(
-                data_root, "concept_boost_weight", "CONCEPT_BOOST_WEIGHT", 0.3, float
+            crawl_max_depth=_load_setting(data_root, "crawl_max_depth", "CRAWL_MAX_DEPTH", 2, int),
+            crawl_max_pages=_load_setting(data_root, "crawl_max_pages", "CRAWL_MAX_PAGES", 50, int),
+            crawl_timeout=_load_setting(data_root, "crawl_timeout", "CRAWL_TIMEOUT", 30, int),
+            crawl_max_concurrent=_load_setting(
+                data_root,
+                "crawl_max_concurrent",
+                "CRAWL_MAX_CONCURRENT",
+                os.cpu_count() or 4,
+                int,
             ),
-            concept_max_per_chunk=_load_setting(
-                data_root, "concept_max_per_chunk", "CONCEPT_MAX_PER_CHUNK", 10, int
+            crawl_sync_interval=_load_setting(
+                data_root, "crawl_sync_interval", "CRAWL_SYNC_INTERVAL", 30, int
             ),
         )
 

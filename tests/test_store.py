@@ -49,7 +49,7 @@ class TestEnsureFtsIndex:
 
     def test_handles_exception_gracefully(self):
         store.add_chunks(_make_records())
-        table = store.open_table(store.CHUNKS_TABLE)
+        table = store._open_table(store.CHUNKS_TABLE)
         assert table is not None
         with mock.patch.object(
             type(table),

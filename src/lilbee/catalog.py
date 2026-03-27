@@ -6,7 +6,6 @@ Three levels:
 3. Combined catalog — featured first, then HF results
 """
 
-import fnmatch
 import logging
 import time
 from dataclasses import dataclass
@@ -123,12 +122,12 @@ FEATURED_EMBEDDING: tuple[CatalogModel, ...] = (
 
 FEATURED_VISION: tuple[CatalogModel, ...] = (
     CatalogModel(
-        "LLaVA 1.6 7B",
-        "mys/ggml-model-llava-v1.6-7b",
+        "LightOnOCR-2",
+        "LightOnIO/LightOnOCR-2-0.5B-GGUF",
         "*Q4_K_M.gguf",
-        4.1,
-        8,
-        "Strong vision model",
+        1.5,
+        4,
+        "Fast OCR — clean markdown output, tiny footprint",
         True,
         0,
         "vision",
@@ -188,6 +187,7 @@ def _fetch_hf_models(
         model_desc = item.get("description") or card_data.get("description") or ""
         # Estimate size from siblings — find largest GGUF file
         size_gb = _estimate_size_from_siblings(item.get("siblings", []))
+        task = _pipeline_to_task(item.get("pipeline_tag", ""))
         models.append(
             CatalogModel(
                 name=repo_id.split("/")[-1],
@@ -198,7 +198,7 @@ def _fetch_hf_models(
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
                 downloads=downloads,
-                task="chat",
+                task=task,
             )
         )
     _hf_cache[cache_key] = (now, models)
@@ -215,7 +215,7 @@ def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
             max_bytes = max(max_bytes, size)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
-    return 5.0  # fallback
+    return 0.0  # unknown — display as "?" in UI
 
 
 def get_catalog(
@@ -294,16 +294,30 @@ def _task_to_pipeline(task: str | None) -> str:
     return mapping.get(task or "chat", "text-generation")
 
 
+_PIPELINE_TO_TASK: dict[str, str] = {
+    "text-generation": "chat",
+    "feature-extraction": "embedding",
+    "image-text-to-text": "vision",
+    "image-to-text": "vision",
+}
+
+
+def _pipeline_to_task(pipeline_tag: str) -> str:
+    """Map HuggingFace pipeline tag to internal task name."""
+    return _PIPELINE_TO_TASK.get(pipeline_tag, "chat")
+
+
 def _get_installed_models(model_manager: Any) -> set[str]:
     """Get set of installed model names from model_manager."""
     try:
-        return {m.name for m in model_manager.list_models()}
+        return set(model_manager.list_installed())
     except Exception:
         return set()
 
 
 _SORT_KEYS: dict[str, tuple] = {
     "downloads": (lambda m: m.downloads, True),
+    "name": (lambda m: m.name.lower(), False),
     "size_asc": (lambda m: m.size_gb, False),
     "size_desc": (lambda m: m.size_gb, True),
     "featured": (lambda m: (not m.featured, -m.downloads), False),
@@ -360,32 +374,69 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     return dest
 
 
-def _resolve_filename(entry: CatalogModel) -> str:
-    """Resolve a GGUF filename pattern to a concrete filename.
+_QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
 
-    For patterns like '*Q4_K_M.gguf', we need to find the actual file on HF.
-    For exact filenames, return as-is.
+
+def _resolve_filename(entry: CatalogModel) -> str:
+    """Resolve a GGUF filename pattern to the best concrete filename.
+
+    For exact filenames, return as-is. For wildcards, query the HF API
+    and pick the best quantization (prefer Q4_K_M for balance of size/quality).
     """
     if "*" not in entry.gguf_filename:
         return entry.gguf_filename
 
-    # Query HF API for repo siblings to find matching file
     try:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{entry.hf_repo}",
             timeout=_DEFAULT_TIMEOUT,
         )
-        if resp.status_code >= 400:
-            log.warning("HuggingFace API returned HTTP %d for %s", resp.status_code, entry.hf_repo)
-        else:
-            data = resp.json()
-            siblings = data.get("siblings", [])
-            for sib in siblings:
-                rfilename: str = sib.get("rfilename", "")
-                if fnmatch.fnmatch(rfilename, entry.gguf_filename):
-                    return rfilename
-    except (httpx.HTTPError, ValueError) as exc:
-        log.warning("Failed to resolve filename for %s: %s", entry.hf_repo, exc)
+        resp.raise_for_status()
+        siblings = resp.json().get("siblings", [])
+    except Exception as exc:
+        raise RuntimeError(f"Cannot query files for {entry.hf_repo}: {exc}") from exc
 
-    # Fallback: strip wildcards and use a best guess
-    return entry.gguf_filename.replace("*", "")
+    gguf_files = [
+        s.get("rfilename", "") for s in siblings if s.get("rfilename", "").endswith(".gguf")
+    ]
+    if not gguf_files:
+        raise RuntimeError(f"No GGUF files found in {entry.hf_repo}")
+
+    return _pick_best_gguf(gguf_files)
+
+
+def _pick_best_gguf(filenames: list[str]) -> str:
+    """Pick the best GGUF file by quantization preference."""
+    for quant in _QUANT_PREFERENCE:
+        for f in filenames:
+            if quant in f:
+                return f
+    return filenames[0]
+
+
+def fetch_model_file_size(hf_repo: str) -> float:
+    """Fetch the best GGUF file size from HuggingFace tree API.
+
+    Returns size in GB, or 0.0 if unavailable.
+    """
+    try:
+        resp = httpx.get(
+            f"https://huggingface.co/api/models/{hf_repo}/tree/main",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        resp.raise_for_status()
+        files = resp.json()
+    except Exception:
+        return 0.0
+
+    gguf_files = [
+        (f.get("path", ""), f.get("size", 0) or f.get("lfs", {}).get("size", 0))
+        for f in files
+        if isinstance(f, dict) and f.get("path", "").endswith(".gguf")
+    ]
+    if not gguf_files:
+        return 0.0
+
+    best_name = _pick_best_gguf([name for name, _ in gguf_files])
+    size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
+    return round(size_bytes / (1024**3), 1) if size_bytes else 0.0

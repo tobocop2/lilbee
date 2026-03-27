@@ -1,17 +1,13 @@
 """Document sync engine — keeps documents/ dir in sync with LanceDB."""
 
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict, cast
-
-if TYPE_CHECKING:
-    from kreuzberg import ExtractionConfig, ExtractionResult
+from typing import Any, TypedDict, cast
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -25,9 +21,10 @@ from rich.progress import (
 
 from lilbee import embedder, store
 from lilbee.chunk import chunk_text
-from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
+from lilbee.code_chunker import CodeChunk, chunk_code, supported_extensions
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.preprocessors import preprocess_csv, preprocess_json, preprocess_xml
 from lilbee.progress import (
     BatchProgressEvent,
     DetailedProgressCallback,
@@ -112,16 +109,57 @@ class _IngestResult:
     error: Exception | None
 
 
-# Extension → content_type string for document formats handled by kreuzberg
-_DOCUMENT_EXTENSION_MAP: dict[str, str] = {
+# File extensions routed to the code chunker (tree-sitter)
+_CODE_EXTENSIONS = supported_extensions()
+
+# All document extensions handled by extraction or structured preprocessors
+_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".txt",
+        ".html",
+        ".rst",
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".epub",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".tiff",
+        ".tif",
+        ".bmp",
+        ".webp",
+        ".csv",
+        ".tsv",
+        ".xml",
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
+    }
+)
+
+# Extension → content_type string for metadata
+_EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
     ".pdf": "pdf",
+    **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
     **{ext: "data" for ext in (".csv", ".tsv")},
     ".xml": "xml",
     **{ext: "json" for ext in (".json", ".jsonl")},
+}
+
+
+# Preprocessors for structured formats: content_type → callable(Path) → str
+_PREPROCESSORS: dict[str, Callable[[Path], str]] = {
+    "xml": preprocess_xml,
+    "json": preprocess_json,
+    "data": preprocess_csv,
 }
 
 
@@ -150,22 +188,17 @@ def discover_files() -> dict[str, Path]:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if classify_file(path) is not None:
+            if path.suffix.lower() in _EXTENSION_MAP:
                 files[_relative_name(path)] = path
     return files
 
 
 def classify_file(path: Path) -> str | None:
     """Classify file by extension. Returns content_type or None if unsupported."""
-    doc_type = _DOCUMENT_EXTENSION_MAP.get(path.suffix.lower())
-    if doc_type is not None:
-        return doc_type
-    if is_code_file(path):
-        return "code"
-    return None
+    return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def extraction_config(content_type: str) -> ExtractionConfig:
+def extraction_config(content_type: str) -> object:
     """Build ExtractionConfig for a given content type."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
@@ -182,7 +215,7 @@ def extraction_config(content_type: str) -> ExtractionConfig:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
-def ocr_extraction_config() -> ExtractionConfig:
+def ocr_extraction_config() -> object:
     """Build ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
 
@@ -197,9 +230,7 @@ def ocr_extraction_config() -> ExtractionConfig:
     )
 
 
-async def _try_tesseract_ocr(
-    path: Path, source_name: str, fallback: ExtractionResult
-) -> ExtractionResult:
+async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
     """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
     try:
         from kreuzberg import extract_file
@@ -365,6 +396,39 @@ def ingest_code_sync(
     ]
 
 
+async def ingest_structured(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[ChunkRecord]:
+    """Preprocess a structured file, chunk, embed, and return store-ready records."""
+    preprocessor = _PREPROCESSORS[content_type]
+    text = await asyncio.to_thread(preprocessor, path)
+    if not text.strip():
+        return []
+    texts = chunk_text(text)
+    if not texts:
+        return []
+    vectors = await asyncio.to_thread(
+        embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+    )
+    return [
+        ChunkRecord(
+            source=source_name,
+            content_type=content_type,
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=idx,
+            vector=vec,
+        )
+        for idx, (text, vec) in enumerate(zip(texts, vectors, strict=True))
+    ]
+
+
 async def ingest_markdown(
     path: Path,
     source_name: str,
@@ -401,35 +465,6 @@ async def ingest_markdown(
     ]
 
 
-async def _rebuild_concept_clusters() -> None:
-    """Re-run Leiden clustering after sync. No-op if disabled."""
-    if not cfg.concept_graph:
-        return
-    try:
-        from lilbee.concepts import get_graph, rebuild_clusters
-
-        if not get_graph():
-            return
-        await asyncio.to_thread(rebuild_clusters)
-    except Exception:
-        log.warning("Concept cluster rebuild failed", exc_info=True)
-
-
-async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
-    """Extract and index concepts for ingested chunks. No-op if disabled."""
-    if not cfg.concept_graph or not records:
-        return
-    try:
-        from lilbee.concepts import build_from_chunks, extract_concepts_batch
-
-        texts = [r["chunk"] for r in records]
-        concept_lists = await asyncio.to_thread(extract_concepts_batch, texts)
-        chunk_ids = [(source_name, r["chunk_index"]) for r in records]
-        await asyncio.to_thread(build_from_chunks, chunk_ids, concept_lists)
-    except Exception:
-        log.warning("Concept indexing failed for %s", source_name, exc_info=True)
-
-
 async def _ingest_file(
     path: Path,
     source_name: str,
@@ -443,6 +478,8 @@ async def _ingest_file(
     records: list[ChunkRecord]
     if content_type == "code":
         records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
+    elif content_type in _PREPROCESSORS:
+        records = await ingest_structured(path, source_name, content_type, on_progress)
     elif path.suffix.lower() == ".md":
         records = await ingest_markdown(path, source_name, on_progress)
     else:
@@ -454,9 +491,7 @@ async def _ingest_file(
             quiet=quiet,
             on_progress=on_progress,
         )
-    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
-    await _index_concepts(records, source_name)
-    return chunk_count
+    return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
 
 
 async def sync(
@@ -531,7 +566,6 @@ async def sync(
 
     if files_to_process or removed:
         store.ensure_fts_index()
-        await _rebuild_concept_clusters()
 
     result = SyncResult(
         added=added,

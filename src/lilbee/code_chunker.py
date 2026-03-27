@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from tree_sitter_language_pack import ProcessConfig, has_language, init, process
-from tree_sitter_language_pack._native import detect_language
 
 from lilbee.chunk import chunk_text
 from lilbee.config import cfg
+from lilbee.languages import EXT_TO_LANG
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +40,8 @@ class CodeChunk:
 
 
 def _detect_language(file_path: Path) -> str | None:
-    """Detect language from file path using tree-sitter-language-pack."""
-    result: str | None = detect_language(str(file_path))
-    return result
+    """Detect language from file extension."""
+    return EXT_TO_LANG.get(file_path.suffix.lower())
 
 
 def _ensure_language(lang: str) -> bool:
@@ -89,7 +88,7 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
     return results
 
 
-def _extract_symbols(result: Any, source_text: str) -> list[SymbolInfo]:
+def _extract_symbols(result: dict[str, Any], source_text: str) -> list[SymbolInfo]:
     """Parse process() result into typed SymbolInfo objects."""
     raw = result.get("structure", [])
     if not isinstance(raw, list):
@@ -166,6 +165,6 @@ def chunk_code(file_path: Path) -> list[CodeChunk]:
     return chunks
 
 
-def is_code_file(file_path: Path) -> bool:
-    """Check if a file is supported by tree-sitter chunking."""
-    return detect_language(str(file_path)) is not None
+def supported_extensions() -> set[str]:
+    """File extensions supported by tree-sitter chunking."""
+    return set(EXT_TO_LANG)

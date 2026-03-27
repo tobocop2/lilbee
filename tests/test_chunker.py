@@ -129,26 +129,22 @@ class Greeter:
         finally:
             path.unlink()
 
-    def test_is_code_file_common_extensions(self):
-        from lilbee.code_chunker import is_code_file
+    def test_supported_extensions_nonempty(self):
+        from lilbee.code_chunker import supported_extensions
 
-        assert is_code_file(Path("main.py"))
-        assert is_code_file(Path("app.js"))
-        assert is_code_file(Path("lib.rs"))
-        assert is_code_file(Path("server.go"))
+        exts = supported_extensions()
+        assert ".py" in exts
+        assert ".js" in exts
+        assert ".rs" in exts
+        assert ".go" in exts
 
-    def test_is_code_file_non_code(self):
-        from lilbee.code_chunker import is_code_file
+    def test_languages_map(self):
+        from lilbee.languages import EXT_TO_LANG
 
-        assert not is_code_file(Path("photo.png"))
-        assert not is_code_file(Path("document.pdf"))
-
-    def test_detect_language_python(self):
-        from lilbee.code_chunker import _detect_language
-
-        result = _detect_language(Path("main.py"))
-        assert result is not None
-        assert "python" in result.lower()
+        assert ".py" in EXT_TO_LANG
+        assert ".js" in EXT_TO_LANG
+        assert ".rs" in EXT_TO_LANG
+        assert EXT_TO_LANG[".py"] == "python"
 
     def test_ensure_language_exception_returns_false(self):
         from unittest.mock import patch
