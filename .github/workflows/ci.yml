@@ -23,6 +23,8 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=OFF"
 
       - name: Lint
         run: make lint
@@ -69,6 +71,40 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
+  integration:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Install Playwright for crawl4ai
+        run: uv run crawl4ai-setup
+        continue-on-error: true
+
+      - name: Cache GGUF models
+        uses: actions/cache@v4
+        with:
+          path: ~/.lilbee/models
+          key: gguf-models-v1
+          restore-keys: gguf-models-
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration/ -v -m slow --timeout=300
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_LLM_PROVIDER: llama-cpp
+
   deploy-pages:
     needs: test
     if: github.event_name == 'push'
@@ -97,6 +133,8 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=OFF"
 
       - name: Build dev portal (coverage + API docs)
         run: make docs-site
@@ -111,37 +149,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v4
-
-  test-with-ollama:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama and pull models
-        run: |
-          ollama serve &
-          sleep 5
-          ollama pull nomic-embed-text
-          ollama pull mistral
-
-      - name: Run full test suite (including accuracy)
-        run: uv run pytest tests/ -v
-        env:
-          LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_CHAT_MODEL: mistral
-
