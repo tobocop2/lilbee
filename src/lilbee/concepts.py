@@ -22,6 +22,7 @@ from lilbee.config import (
     CHUNK_CONCEPTS_TABLE,
     CONCEPT_EDGES_TABLE,
     CONCEPT_NODES_TABLE,
+    Config,
     cfg,
 )
 
@@ -98,30 +99,6 @@ def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     return concepts
 
 
-def extract_concepts(text: str, max_concepts: int | None = None) -> list[str]:
-    """Extract deduplicated noun-phrase concepts from text.
-
-    Returns lowercase concept strings, capped at *max_concepts*
-    (defaults to ``cfg.concept_max_per_chunk``).
-    """
-    if max_concepts is None:
-        max_concepts = cfg.concept_max_per_chunk
-    if not text.strip():
-        return []
-    nlp = _get_nlp()
-    doc = nlp(text)
-    return _filter_noun_chunks(doc, max_concepts)
-
-
-def extract_concepts_batch(texts: list[str]) -> list[list[str]]:
-    """Batch-extract concepts using spaCy's ``nlp.pipe()`` for efficiency."""
-    if not texts:
-        return []
-    max_concepts = cfg.concept_max_per_chunk
-    nlp = _get_nlp()
-    return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
-
-
 def _concept_nodes_schema() -> pa.Schema:
     return pa.schema(
         [
@@ -192,6 +169,146 @@ def _leiden_partition(
     return partition, dict(degree_map)
 
 
+class ConceptGraph:
+    """Concept graph — extracts, stores, and queries concept co-occurrence data."""
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
+        """Extract deduplicated noun-phrase concepts from text."""
+        if max_concepts is None:
+            max_concepts = self._config.concept_max_per_chunk
+        if not text.strip():
+            return []
+        nlp = _get_nlp()
+        doc = nlp(text)
+        return _filter_noun_chunks(doc, max_concepts)
+
+    def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
+        """Batch-extract concepts using spaCy's ``nlp.pipe()``."""
+        if not texts:
+            return []
+        max_concepts = self._config.concept_max_per_chunk
+        nlp = _get_nlp()
+        return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
+
+    def boost_results(
+        self,
+        results: list[Any],
+        query_concepts: list[str],
+    ) -> list[Any]:
+        """Adjust search result scores by concept overlap with query."""
+        if not query_concepts or not results:
+            return results
+        query_set = set(query_concepts)
+        boosted: list[Any] = []
+        for r in results:
+            chunk_concepts = set(self.get_chunk_concepts(r.source, r.chunk_index))
+            overlap = len(query_set & chunk_concepts)
+            if overlap > 0:
+                boost = (overlap / len(query_set)) * self._config.concept_boost_weight
+                r = r.model_copy()
+                if r.relevance_score is not None:
+                    r.relevance_score = r.relevance_score + boost
+                elif r.distance is not None:
+                    r.distance = max(0.0, r.distance - boost)
+            boosted.append(r)
+        return boosted
+
+    def get_chunk_concepts(self, source: str, chunk_index: int) -> list[str]:
+        """Look up concepts for a specific chunk."""
+        from lilbee.store import escape_sql_string, open_table
+
+        table = open_table(CHUNK_CONCEPTS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source)
+        try:
+            rows = (
+                table.search()
+                .where(f"chunk_source = '{escaped}' AND chunk_index = {chunk_index}")
+                .to_list()
+            )
+            return [r["concept"] for r in rows]
+        except Exception:
+            return []
+
+    def expand_query(self, query: str) -> list[str]:
+        """Extract concepts from query and find related concepts via graph."""
+        concepts = self.extract_concepts(query)
+        if not concepts:
+            return []
+        related: list[str] = []
+        seen = set(concepts)
+        for concept in concepts:
+            for neighbor in self.get_related_concepts(concept):
+                if neighbor not in seen:
+                    related.append(neighbor)
+                    seen.add(neighbor)
+        return related
+
+    def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
+        """BFS traversal of edges to find related concepts."""
+        from lilbee.store import escape_sql_string, open_table
+
+        table = open_table(CONCEPT_EDGES_TABLE)
+        if table is None:
+            return []
+        visited: set[str] = {concept}
+        frontier: list[str] = [concept]
+        for _ in range(depth):
+            next_frontier: list[str] = []
+            for node in frontier:
+                escaped = escape_sql_string(node)
+                try:
+                    rows = (
+                        table.search()
+                        .where(f"source = '{escaped}' OR target = '{escaped}'")
+                        .to_list()
+                    )
+                except Exception:
+                    continue
+                for row in rows:
+                    neighbor = row["target"] if row["source"] == node else row["source"]
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.append(neighbor)
+            frontier = next_frontier
+        return [c for c in visited if c != concept]
+
+    def get_graph(self) -> bool:
+        """Return whether concept graph tables exist."""
+        if not self._config.concept_graph:
+            return False
+        from lilbee.store import open_table
+
+        return open_table(CONCEPT_NODES_TABLE) is not None
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible module-level API
+# ---------------------------------------------------------------------------
+
+
+def extract_concepts(text: str, max_concepts: int | None = None) -> list[str]:
+    if max_concepts is None:
+        max_concepts = cfg.concept_max_per_chunk
+    if not text.strip():
+        return []
+    nlp = _get_nlp()
+    doc = nlp(text)
+    return _filter_noun_chunks(doc, max_concepts)
+
+
+def extract_concepts_batch(texts: list[str]) -> list[list[str]]:
+    if not texts:
+        return []
+    max_concepts = cfg.concept_max_per_chunk
+    nlp = _get_nlp()
+    return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
+
+
 def build_from_chunks(
     chunk_ids: list[tuple[str, int]],
     concept_lists: list[list[str]],
@@ -241,12 +358,6 @@ def boost_results(
     results: list[Any],
     query_concepts: list[str],
 ) -> list[Any]:
-    """Adjust search result scores by concept overlap with query.
-
-    For each result, finds shared concepts between the result's chunk
-    and the query, then boosts the score by overlap ratio times
-    ``cfg.concept_boost_weight``.
-    """
     if not query_concepts or not results:
         return results
     query_set = set(query_concepts)
@@ -266,7 +377,6 @@ def boost_results(
 
 
 def get_chunk_concepts(source: str, chunk_index: int) -> list[str]:
-    """Look up concepts for a specific chunk from the chunk_concepts table."""
     from lilbee.store import escape_sql_string, open_table
 
     table = open_table(CHUNK_CONCEPTS_TABLE)
@@ -285,7 +395,6 @@ def get_chunk_concepts(source: str, chunk_index: int) -> list[str]:
 
 
 def expand_query(query: str) -> list[str]:
-    """Extract concepts from query and find related concepts via graph."""
     concepts = extract_concepts(query)
     if not concepts:
         return []
@@ -300,7 +409,6 @@ def expand_query(query: str) -> list[str]:
 
 
 def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
-    """BFS traversal of edges to find related concepts."""
     from lilbee.store import escape_sql_string, open_table
 
     table = open_table(CONCEPT_EDGES_TABLE)
@@ -314,7 +422,9 @@ def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
             escaped = escape_sql_string(node)
             try:
                 rows = (
-                    table.search().where(f"source = '{escaped}' OR target = '{escaped}'").to_list()
+                    table.search()
+                    .where(f"source = '{escaped}' OR target = '{escaped}'")
+                    .to_list()
                 )
             except Exception:
                 continue
@@ -328,7 +438,6 @@ def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
 
 
 def top_communities(k: int = 10) -> list[Community]:
-    """Return top-k concept clusters by size."""
     from lilbee.store import open_table
 
     table = open_table(CONCEPT_NODES_TABLE)
@@ -347,7 +456,6 @@ def top_communities(k: int = 10) -> list[Community]:
 
 
 def rebuild_clusters() -> None:
-    """Re-run Leiden clustering on the full co-occurrence graph."""
     from lilbee.lock import write_lock
     from lilbee.store import ensure_table, get_db, open_table, safe_delete
 
@@ -378,7 +486,6 @@ def rebuild_clusters() -> None:
 
 
 def get_graph() -> bool:
-    """Return whether concept graph tables exist."""
     if not cfg.concept_graph:
         return False
     from lilbee.store import open_table

@@ -13,9 +13,11 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from lilbee import embedder, store
-from lilbee.config import cfg
+from lilbee.config import Config, cfg
+from lilbee.embedder import Embedder
 from lilbee.providers import get_provider
-from lilbee.store import SearchChunk
+from lilbee.providers.base import LLMProvider
+from lilbee.store import SearchChunk, Store
 
 
 class ChatMessage(TypedDict):
@@ -61,11 +63,7 @@ def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> l
 
 
 def _sort_key(r: SearchChunk) -> float:
-    """Sort key: lower = more relevant.
-
-    Hybrid results have relevance_score (higher = better) → negate.
-    Vector results have distance (lower = better) → use directly.
-    """
+    """Sort key: lower = more relevant."""
     if r.relevance_score is not None:
         return -r.relevance_score
     if r.distance is not None:
@@ -81,11 +79,7 @@ def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
 def diversify_sources(
     results: list[SearchChunk], max_per_source: int | None = None
 ) -> list[SearchChunk]:
-    """Cap results per source document to ensure diversity.
-
-    Standard IR diversity technique; see Zhai 2008,
-    "Towards a Game-Theoretic Framework for Information Retrieval."
-    """
+    """Cap results per source document to ensure diversity."""
     if max_per_source is None:
         max_per_source = cfg.diversity_max_per_source
     counts: dict[str, int] = {}
@@ -96,34 +90,6 @@ def diversify_sources(
             diverse.append(r)
             counts[r.source] = count + 1
     return diverse
-
-
-def _apply_temporal_filter(results: list[SearchChunk], question: str) -> list[SearchChunk]:
-    """Filter results by date range if temporal keywords detected in question."""
-    if not cfg.temporal_filtering:
-        return results
-    from lilbee.temporal import detect_temporal, resolve_date_range
-
-    keyword = detect_temporal(question)
-    if keyword is None:
-        return results
-    date_range = resolve_date_range(keyword)
-    # Filter by ingestion date (stored in sources table, not on chunks directly).
-    # Since chunks don't carry dates, we filter by source ingestion time via store.
-    source_dates = {s["filename"]: s.get("ingested_at", "") for s in store.get_sources()}
-    filtered: list[SearchChunk] = []
-    for r in results:
-        ingested_at = source_dates.get(r.source, "")
-        if not ingested_at:
-            filtered.append(r)  # keep if no date info
-            continue
-        try:
-            doc_date = datetime.fromisoformat(ingested_at)
-            if date_range.start <= doc_date <= date_range.end:
-                filtered.append(r)
-        except (ValueError, TypeError):
-            filtered.append(r)  # keep on parse failure
-    return filtered if filtered else results  # fall back to unfiltered if nothing matches
 
 
 def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
@@ -139,17 +105,12 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(parts)
 
 
-# Multi-query expansion generates alternative search phrasings to
-# improve recall. Based on standard multi-query retrieval techniques.
 _EXPANSION_PROMPT = (
     "Generate {count} alternative search queries for the following question. "
     "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
     "Question: {question}"
 )
 
-# Max tokens the LLM can generate for expansion variants.
-# 200 tokens is enough for 3 one-line query variants (~50 tokens each
-# plus formatting). Not configurable — this is an internal budget.
 _EXPANSION_MAX_TOKENS = 200
 
 
@@ -230,8 +191,6 @@ _STOP_WORDS = frozenset(
     }
 )
 
-# Minimum token overlap ratio between variant and original query.
-# Below 0.3, the variant has drifted too far from the original question.
 _MIN_OVERLAP_RATIO = 0.3
 
 
@@ -240,19 +199,371 @@ def _tokenize_query(text: str) -> set[str]:
     return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
 
 
-def _apply_guardrails(variants: list[str], question: str) -> list[str]:
-    """Validate expansion variants to prevent drift.
+_HYDE_PROMPT = (
+    "Write a 50-100 word passage that directly answers this question as if "
+    "it were an excerpt from a real document. Do not include any preamble, "
+    "just write the passage.\n\nQuestion: {question}"
+)
 
-    Drops variants with less than 30% token overlap with the original query.
-    Falls back to empty list if all variants are filtered.
-    """
+
+class AskResult(BaseModel):
+    """Structured result from ask_raw — answer text + raw search results."""
+
+    answer: str
+    sources: list[SearchChunk]
+
+
+class Searcher:
+    """RAG search pipeline — embed, search, expand, generate."""
+
+    def __init__(
+        self,
+        config: Config,
+        provider: LLMProvider,
+        store: Store,
+        embedder: Embedder,
+    ) -> None:
+        self._config = config
+        self._provider = provider
+        self._store = store
+        self._embedder = embedder
+
+    def _apply_guardrails(self, variants: list[str], question: str) -> list[str]:
+        if not self._config.expansion_guardrails:
+            return variants
+        original_tokens = _tokenize_query(question)
+        if not original_tokens:
+            return variants
+        validated: list[str] = []
+        for variant in variants:
+            variant_tokens = _tokenize_query(variant)
+            if not variant_tokens:
+                continue
+            overlap = len(original_tokens & variant_tokens) / len(original_tokens)
+            if overlap >= _MIN_OVERLAP_RATIO:
+                validated.append(variant)
+        return validated
+
+    def _concept_query_expansion(self, question: str) -> list[str]:
+        if not self._config.concept_graph:
+            return []
+        try:
+            from lilbee.concepts import expand_query, get_graph
+
+            if not get_graph():
+                return []
+            return expand_query(question)
+        except Exception:
+            return []
+
+    def _expand_query(self, question: str) -> list[str]:
+        count = self._config.query_expansion_count
+        if count == 0:
+            return []
+        try:
+            prompt = _EXPANSION_PROMPT.format(count=count, question=question)
+            messages = [{"role": "user", "content": prompt}]
+            response = self._provider.chat(
+                messages, stream=False, options={"num_predict": _EXPANSION_MAX_TOKENS}
+            )
+            if not isinstance(response, str):
+                return []
+            variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
+            variants = variants[:count]
+            variants.extend(self._concept_query_expansion(question))
+            variants = self._apply_guardrails(variants, question)
+            return variants
+        except Exception:
+            return []
+
+    def _should_skip_expansion(self, question: str) -> bool:
+        if self._config.expansion_skip_threshold <= 0:
+            return False
+        results = self._store.bm25_probe(question, top_k=2)
+        if not results:
+            return False
+        top_score = results[0].relevance_score or 0
+        if top_score < self._config.expansion_skip_threshold:
+            return False
+        if len(results) < 2:
+            return True
+        second_score = results[1].relevance_score or 0
+        return (top_score - second_score) >= self._config.expansion_skip_gap
+
+    def _apply_temporal_filter(
+        self, results: list[SearchChunk], question: str
+    ) -> list[SearchChunk]:
+        if not self._config.temporal_filtering:
+            return results
+        from lilbee.temporal import detect_temporal, resolve_date_range
+
+        keyword = detect_temporal(question)
+        if keyword is None:
+            return results
+        date_range = resolve_date_range(keyword)
+        source_dates = {s["filename"]: s.get("ingested_at", "") for s in self._store.get_sources()}
+        filtered: list[SearchChunk] = []
+        for r in results:
+            ingested_at = source_dates.get(r.source, "")
+            if not ingested_at:
+                filtered.append(r)
+                continue
+            try:
+                doc_date = datetime.fromisoformat(ingested_at)
+                if date_range.start <= doc_date <= date_range.end:
+                    filtered.append(r)
+            except (ValueError, TypeError):
+                filtered.append(r)
+        return filtered if filtered else results
+
+    def _apply_concept_boost(
+        self, results: list[SearchChunk], question: str
+    ) -> list[SearchChunk]:
+        if not self._config.concept_graph:
+            return results
+        try:
+            from lilbee.concepts import boost_results, extract_concepts, get_graph
+
+            if not get_graph():
+                return results
+            query_concepts = extract_concepts(question)
+            return boost_results(results, query_concepts)
+        except Exception:
+            return results
+
+    def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": _HYDE_PROMPT.format(question=question)}],
+                stream=False,
+                options={"num_predict": _EXPANSION_MAX_TOKENS},
+            )
+            if not isinstance(response, str) or not response.strip():
+                return []
+            hyde_vec = self._embedder.embed(response.strip())
+            return self._store.search(hyde_vec, top_k=top_k, query_text=None)
+        except Exception:
+            return []
+
+    def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
+        for prefix in ("term:", "vec:", "hyde:"):
+            if question.strip().lower().startswith(prefix):
+                return prefix[:-1], question.strip()[len(prefix) :].strip()
+        return None, question
+
+    def _search_structured(self, mode: str, query: str, top_k: int) -> list[SearchChunk]:
+        if mode == "term":
+            return self._store.bm25_probe(query, top_k=top_k)
+        if mode == "vec":
+            query_vec = self._embedder.embed(query)
+            return self._store.search(query_vec, top_k=top_k, query_text=None)
+        if mode == "hyde":
+            return self._hyde_search(query, top_k)
+        return []
+
+    def select_context(
+        self, results: list[SearchChunk], question: str, max_sources: int | None = None
+    ) -> list[SearchChunk]:
+        if max_sources is None:
+            max_sources = self._config.max_context_sources
+        if len(results) <= max_sources:
+            return results
+        query_terms = _tokenize_query(question)
+        if not query_terms:
+            return results[:max_sources]
+        selected: list[SearchChunk] = []
+        covered: set[str] = set()
+        remaining = list(results)
+        for _ in range(max_sources):
+            if not remaining or covered == query_terms:
+                break
+            best_idx = 0
+            best_gain = -1
+            for i, chunk in enumerate(remaining):
+                chunk_terms = _tokenize_query(chunk.chunk)
+                gain = len((chunk_terms & query_terms) - covered)
+                if gain > best_gain or (gain == best_gain and i < best_idx):
+                    best_gain = gain
+                    best_idx = i
+            if best_gain <= 0 and selected:
+                break
+            chosen = remaining.pop(best_idx)
+            selected.append(chosen)
+            covered |= _tokenize_query(chosen.chunk) & query_terms
+        return selected
+
+    def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
+        """Embed question and return top-K matching chunks."""
+        if top_k == 0:
+            top_k = self._config.top_k
+
+        mode, clean_query = self._parse_structured_query(question)
+        if mode is not None:
+            return self._search_structured(mode, clean_query, top_k)
+
+        query_vec = self._embedder.embed(question)
+        results = self._store.search(query_vec, top_k=top_k, query_text=question)
+
+        if self._should_skip_expansion(question):
+            return results[: top_k * 2]
+
+        seen = {(r.source, r.chunk_index) for r in results}
+        variants = self._expand_query(question)
+        if variants:
+            for variant in variants:
+                variant_vec = self._embedder.embed(variant)
+                variant_results = self._store.search(
+                    variant_vec, top_k=top_k, query_text=variant
+                )
+                for r in variant_results:
+                    key = (r.source, r.chunk_index)
+                    if key not in seen:
+                        results.append(r)
+                        seen.add(key)
+
+        if self._config.hyde:
+            hyde_results = self._hyde_search(question, top_k)
+            for r in hyde_results:
+                key = (r.source, r.chunk_index)
+                if key not in seen:
+                    if r.distance is not None and self._config.hyde_weight > 0:
+                        r.distance = r.distance / self._config.hyde_weight
+                    results.append(r)
+                    seen.add(key)
+
+        results = self._apply_concept_boost(results, question)
+        return results[: top_k * 2]
+
+    def build_rag_context(
+        self,
+        question: str,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+    ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+        results = self.search(question, top_k=top_k)
+        if not results:
+            return None
+        results = prepare_results(results)
+        if self._config.reranker_model:
+            from lilbee.reranker import rerank
+
+            results = rerank(question, results)
+        results = self._apply_temporal_filter(results, question)
+        results = self.select_context(results, question)
+        context = build_context(results)
+        prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": self._config.system_prompt}
+        ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+        return results, messages
+
+    def ask_raw(
+        self,
+        question: str,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> AskResult:
+        rag = self.build_rag_context(question, top_k=top_k, history=history)
+        if rag is None:
+            return AskResult(
+                answer="No relevant documents found. Try ingesting some documents first.",
+                sources=[],
+            )
+        results, messages = rag
+        opts = options if options is not None else self._config.generation_options()
+        answer = self._provider.chat(
+            cast(list[dict[str, Any]], messages), options=opts or None
+        )
+        return AskResult(answer=str(answer) or "", sources=results)
+
+    def ask(
+        self,
+        question: str,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> str:
+        result = self.ask_raw(question, top_k=top_k, history=history, options=options)
+        if not result.sources:
+            return result.answer
+        citations = deduplicate_sources(result.sources)
+        return f"{result.answer}\n\nSources:\n" + "\n".join(citations)
+
+    def ask_stream(
+        self,
+        question: str,
+        top_k: int = 0,
+        history: list[ChatMessage] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> Generator[StreamToken, None, None]:
+        from lilbee.reasoning import StreamToken, filter_reasoning
+
+        rag = self.build_rag_context(question, top_k=top_k, history=history)
+        if rag is None:
+            yield StreamToken(
+                content="No relevant documents found. Try ingesting some documents first.",
+                is_reasoning=False,
+            )
+            return
+        results, messages = rag
+        opts = options if options is not None else self._config.generation_options()
+        raw_stream = self._provider.chat(
+            cast(list[dict[str, Any]], messages), stream=True, options=opts or None
+        )
+        try:
+            for st in filter_reasoning(
+                cast(Iterator[str], raw_stream), show=self._config.show_reasoning
+            ):
+                if st.content:
+                    yield st
+        except (ConnectionError, OSError) as exc:
+            yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+        citations = deduplicate_sources(results)
+        yield StreamToken(
+            content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible module-level API
+# ---------------------------------------------------------------------------
+
+
+def _apply_temporal_filter(results: list[SearchChunk], question: str) -> list[SearchChunk]:
+    if not cfg.temporal_filtering:
+        return results
+    from lilbee.temporal import detect_temporal, resolve_date_range
+
+    keyword = detect_temporal(question)
+    if keyword is None:
+        return results
+    date_range = resolve_date_range(keyword)
+    source_dates = {s["filename"]: s.get("ingested_at", "") for s in store.get_sources()}
+    filtered: list[SearchChunk] = []
+    for r in results:
+        ingested_at = source_dates.get(r.source, "")
+        if not ingested_at:
+            filtered.append(r)
+            continue
+        try:
+            doc_date = datetime.fromisoformat(ingested_at)
+            if date_range.start <= doc_date <= date_range.end:
+                filtered.append(r)
+        except (ValueError, TypeError):
+            filtered.append(r)
+    return filtered if filtered else results
+
+
+def _apply_guardrails(variants: list[str], question: str) -> list[str]:
     if not cfg.expansion_guardrails:
         return variants
-
     original_tokens = _tokenize_query(question)
     if not original_tokens:
         return variants
-
     validated: list[str] = []
     for variant in variants:
         variant_tokens = _tokenize_query(variant)
@@ -261,17 +572,23 @@ def _apply_guardrails(variants: list[str], question: str) -> list[str]:
         overlap = len(original_tokens & variant_tokens) / len(original_tokens)
         if overlap >= _MIN_OVERLAP_RATIO:
             validated.append(variant)
-
     return validated
 
 
-def _expand_query(question: str) -> list[str]:
-    """Use the LLM to generate alternative query phrasings.
+def _concept_query_expansion(question: str) -> list[str]:
+    if not cfg.concept_graph:
+        return []
+    try:
+        from lilbee.concepts import expand_query, get_graph
 
-    Returns up to ``cfg.query_expansion_count`` variants.
-    When ``cfg.expansion_guardrails`` is True, validates variants for drift.
-    Set ``LILBEE_QUERY_EXPANSION_COUNT=0`` to disable expansion entirely.
-    """
+        if not get_graph():
+            return []
+        return expand_query(question)
+    except Exception:
+        return []
+
+
+def _expand_query(question: str) -> list[str]:
     count = cfg.query_expansion_count
     if count == 0:
         return []
@@ -294,17 +611,6 @@ def _expand_query(question: str) -> list[str]:
 
 
 def _should_skip_expansion(question: str) -> bool:
-    """Check if BM25 results are confident enough to skip query expansion.
-
-    Probes the FTS index with the original query. If the top result
-    scores above ``cfg.expansion_skip_threshold`` and the gap to the
-    second result exceeds ``cfg.expansion_skip_gap``, expansion is
-    skipped to save an LLM call.
-
-    Based on early termination patterns standard in search engines
-    (Lucene/Elasticsearch). Thresholds derived from sigmoid-normalized
-    BM25 score distribution (90th percentile).
-    """
     if cfg.expansion_skip_threshold <= 0:
         return False
     results = store.bm25_probe(question, top_k=2)
@@ -314,7 +620,7 @@ def _should_skip_expansion(question: str) -> bool:
     if top_score < cfg.expansion_skip_threshold:
         return False
     if len(results) < 2:
-        return True  # only one result and it's confident
+        return True
     second_score = results[1].relevance_score or 0
     return (top_score - second_score) >= cfg.expansion_skip_gap
 
@@ -322,24 +628,16 @@ def _should_skip_expansion(question: str) -> bool:
 def select_context(
     results: list[SearchChunk], question: str, max_sources: int | None = None
 ) -> list[SearchChunk]:
-    """Select chunks that maximize query term coverage.
-
-    Greedy set-cover: pick chunks adding the most uncovered query terms.
-    Falls through unchanged if results ≤ max_sources.
-    """
     if max_sources is None:
         max_sources = cfg.max_context_sources
     if len(results) <= max_sources:
         return results
-
     query_terms = _tokenize_query(question)
     if not query_terms:
         return results[:max_sources]
-
     selected: list[SearchChunk] = []
     covered: set[str] = set()
     remaining = list(results)
-
     for _ in range(max_sources):
         if not remaining or covered == query_terms:
             break
@@ -356,27 +654,24 @@ def select_context(
         chosen = remaining.pop(best_idx)
         selected.append(chosen)
         covered |= _tokenize_query(chosen.chunk) & query_terms
-
     return selected
 
 
-_HYDE_PROMPT = (
-    "Write a 50-100 word passage that directly answers this question as if "
-    "it were an excerpt from a real document. Do not include any preamble, "
-    "just write the passage.\n\nQuestion: {question}"
-)
+def _apply_concept_boost(results: list[SearchChunk], question: str) -> list[SearchChunk]:
+    if not cfg.concept_graph:
+        return results
+    try:
+        from lilbee.concepts import boost_results, extract_concepts, get_graph
+
+        if not get_graph():
+            return results
+        query_concepts = extract_concepts(question)
+        return boost_results(results, query_concepts)
+    except Exception:
+        return results
 
 
 def _hyde_search(question: str, top_k: int) -> list[SearchChunk]:
-    """HyDE: generate a hypothetical document, embed it, search with it.
-
-    Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
-    Relevance Labels" (https://arxiv.org/abs/2212.10496).
-
-    Returns results from the hypothetical embedding search, or empty
-    list on failure. Results should be weighted at ``cfg.hyde_weight``
-    relative to original search results.
-    """
     try:
         provider = get_provider()
         response = provider.chat(
@@ -393,10 +688,6 @@ def _hyde_search(question: str, top_k: int) -> list[SearchChunk]:
 
 
 def _parse_structured_query(question: str) -> tuple[str | None, str]:
-    """Parse structured query mode prefix.
-
-    Returns (mode, query) where mode is "term", "vec", "hyde", or None.
-    """
     for prefix in ("term:", "vec:", "hyde:"):
         if question.strip().lower().startswith(prefix):
             return prefix[:-1], question.strip()[len(prefix) :].strip()
@@ -404,68 +695,26 @@ def _parse_structured_query(question: str) -> tuple[str | None, str]:
 
 
 def _search_structured(mode: str, query: str, top_k: int) -> list[SearchChunk]:
-    """Execute a structured query mode search."""
     if mode == "term":
         return store.bm25_probe(query, top_k=top_k)
     if mode == "vec":
         query_vec = embedder.embed(query)
         return store.search(query_vec, top_k=top_k, query_text=None)
     if mode == "hyde":
-        hyde_results = _hyde_search(query, top_k)
-        return hyde_results
+        return _hyde_search(query, top_k)
     return []
 
 
-def _apply_concept_boost(results: list[SearchChunk], question: str) -> list[SearchChunk]:
-    """Boost search results by concept overlap. No-op if disabled."""
-    if not cfg.concept_graph:
-        return results
-    try:
-        from lilbee.concepts import boost_results, extract_concepts, get_graph
-
-        if not get_graph():
-            return results
-        query_concepts = extract_concepts(question)
-        return boost_results(results, query_concepts)
-    except Exception:
-        return results
-
-
-def _concept_query_expansion(question: str) -> list[str]:
-    """Get additional query terms from concept graph. Returns empty on failure."""
-    if not cfg.concept_graph:
-        return []
-    try:
-        from lilbee.concepts import expand_query, get_graph
-
-        if not get_graph():
-            return []
-        return expand_query(question)
-    except Exception:
-        return []
-
-
 def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
-    """Embed question and return top-K matching chunks.
-
-    Supports structured query modes (``term:``, ``vec:``, ``hyde:`` prefixes)
-    and query expansion with confidence-based skipping.
-    """
     if top_k == 0:
         top_k = cfg.top_k
-
-    # Check for structured query mode
     mode, clean_query = _parse_structured_query(question)
     if mode is not None:
         return _search_structured(mode, clean_query, top_k)
-
     query_vec = embedder.embed(question)
     results = store.search(query_vec, top_k=top_k, query_text=question)
-
-    # Skip expansion if BM25 already found a confident match
     if _should_skip_expansion(question):
         return results[: top_k * 2]
-
     seen = {(r.source, r.chunk_index) for r in results}
     variants = _expand_query(question)
     if variants:
@@ -477,9 +726,6 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                 if key not in seen:
                     results.append(r)
                     seen.add(key)
-
-    # HyDE: search with hypothetical document embedding (if enabled).
-    # Discount distances by hyde_weight since these are from a fabricated passage.
     if cfg.hyde:
         hyde_results = _hyde_search(question, top_k)
         for r in hyde_results:
@@ -489,18 +735,8 @@ def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
                     r.distance = r.distance / cfg.hyde_weight
                 results.append(r)
                 seen.add(key)
-
     results = _apply_concept_boost(results, question)
-
-    # Cap total results to prevent context overflow from expansion
     return results[: top_k * 2]
-
-
-class AskResult(BaseModel):
-    """Structured result from ask_raw — answer text + raw search results."""
-
-    answer: str
-    sources: list[SearchChunk]
 
 
 def build_rag_context(
@@ -508,14 +744,9 @@ def build_rag_context(
     top_k: int = 0,
     history: list[ChatMessage] | None = None,
 ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
-    """Shared RAG pipeline: search → prepare → rerank → filter → select → build.
-
-    Returns (results, messages) or None if no results found.
-    """
     results = search_context(question, top_k=top_k)
     if not results:
         return None
-
     results = prepare_results(results)
     if cfg.reranker_model:
         from lilbee.reranker import rerank
@@ -525,7 +756,6 @@ def build_rag_context(
     results = select_context(results, question)
     context = build_context(results)
     prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-
     messages: list[ChatMessage] = [{"role": "system", "content": cfg.system_prompt}]
     if history:
         messages.extend(history)
@@ -539,14 +769,12 @@ def ask_raw(
     history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> AskResult:
-    """One-shot question returning structured answer + raw sources."""
     rag = build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
         return AskResult(
             answer="No relevant documents found. Try ingesting some documents first.",
             sources=[],
         )
-
     results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
@@ -560,7 +788,6 @@ def ask(
     history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> str:
-    """One-shot question: returns full answer with source citations."""
     result = ask_raw(question, top_k=top_k, history=history, options=options)
     if not result.sources:
         return result.answer
@@ -574,11 +801,6 @@ def ask_stream(
     history: list[ChatMessage] | None = None,
     options: dict[str, Any] | None = None,
 ) -> Generator[StreamToken, None, None]:
-    """Streaming question: yields classified tokens, then source citations.
-
-    Each yielded ``StreamToken`` has ``.content`` (text) and ``.is_reasoning``
-    (True for ``<think>...</think>`` blocks when ``cfg.show_reasoning`` is True).
-    """
     from lilbee.reasoning import StreamToken, filter_reasoning
 
     rag = build_rag_context(question, top_k=top_k, history=history)
@@ -588,20 +810,17 @@ def ask_stream(
             is_reasoning=False,
         )
         return
-
     results, messages = rag
     opts = options if options is not None else cfg.generation_options()
     provider = get_provider()
     raw_stream = provider.chat(
         cast(list[dict[str, Any]], messages), stream=True, options=opts or None
     )
-
     try:
         for st in filter_reasoning(cast(Iterator[str], raw_stream), show=cfg.show_reasoning):
             if st.content:
                 yield st
     except (ConnectionError, OSError) as exc:
         yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
-
     citations = deduplicate_sources(results)
     yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
