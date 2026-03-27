@@ -10,7 +10,11 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-_HELP_TEXT = """\
+from lilbee.cli.tui.command_registry import help_text as registry_help_text
+
+_COMMANDS_BLOCK = registry_help_text()
+
+_HELP_TEXT = f"""\
 [bold]Keys[/bold]
 
   F1             Help (this screen)
@@ -29,15 +33,7 @@ _HELP_TEXT = """\
   Tab            Accept suggestion
 
   [bold]Commands[/bold]  (type / for suggestions)
-  /model [name]  Switch model (no arg = catalog)
-  /vision [name] Set vision model (/vision off)
-  /add path      Add file to knowledge base
-  /delete name   Remove document from index
-  /set key val   Change a setting
-  /reset confirm Factory reset
-  /theme name    Switch theme
-  /version       Show version
-  /quit          Exit
+{_COMMANDS_BLOCK}
 
   Press Escape or q to close.
 """

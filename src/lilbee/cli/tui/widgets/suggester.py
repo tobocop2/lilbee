@@ -4,24 +4,9 @@ from __future__ import annotations
 
 from textual.suggester import Suggester
 
-_SLASH_COMMANDS = (
-    "/help",
-    "/models",
-    "/model",
-    "/vision",
-    "/status",
-    "/settings",
-    "/set",
-    "/add",
-    "/crawl",
-    "/delete",
-    "/reset",
-    "/version",
-    "/theme",
-    "/quit",
-    "/exit",
-    "/cancel",
-)
+from lilbee.cli.tui.command_registry import command_names
+
+_SLASH_COMMANDS = command_names()
 
 
 class SlashSuggester(Suggester):
@@ -103,6 +88,6 @@ class SlashSuggester(Suggester):
             return []
 
     def _get_theme_names(self) -> list[str]:
-        from lilbee.cli.tui.app import _DARK_THEMES
+        from lilbee.cli.tui.app import DARK_THEMES
 
-        return list(_DARK_THEMES)
+        return list(DARK_THEMES)
