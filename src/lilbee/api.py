@@ -28,7 +28,7 @@ from lilbee.query import Searcher
 from lilbee.store import Store
 
 if TYPE_CHECKING:
-    from lilbee.ingest import Indexer, SyncResult
+    from lilbee.ingest import SyncResult
     from lilbee.providers.base import LLMProvider
     from lilbee.store import SearchChunk
 

@@ -170,120 +170,31 @@ def _leiden_partition(
 
 
 class ConceptGraph:
-    """Concept graph — extracts, stores, and queries concept co-occurrence data."""
+    """Concept graph — delegates to module-level functions during migration."""
 
     def __init__(self, config: Config) -> None:
         self._config = config
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
-        """Extract deduplicated noun-phrase concepts from text."""
-        if max_concepts is None:
-            max_concepts = self._config.concept_max_per_chunk
-        if not text.strip():
-            return []
-        nlp = _get_nlp()
-        doc = nlp(text)
-        return _filter_noun_chunks(doc, max_concepts)
+        return extract_concepts(text, max_concepts=max_concepts)
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
-        """Batch-extract concepts using spaCy's ``nlp.pipe()``."""
-        if not texts:
-            return []
-        max_concepts = self._config.concept_max_per_chunk
-        nlp = _get_nlp()
-        return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
+        return extract_concepts_batch(texts)
 
-    def boost_results(
-        self,
-        results: list[Any],
-        query_concepts: list[str],
-    ) -> list[Any]:
-        """Adjust search result scores by concept overlap with query."""
-        if not query_concepts or not results:
-            return results
-        query_set = set(query_concepts)
-        boosted: list[Any] = []
-        for r in results:
-            chunk_concepts = set(self.get_chunk_concepts(r.source, r.chunk_index))
-            overlap = len(query_set & chunk_concepts)
-            if overlap > 0:
-                boost = (overlap / len(query_set)) * self._config.concept_boost_weight
-                r = r.model_copy()
-                if r.relevance_score is not None:
-                    r.relevance_score = r.relevance_score + boost
-                elif r.distance is not None:
-                    r.distance = max(0.0, r.distance - boost)
-            boosted.append(r)
-        return boosted
+    def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
+        return boost_results(results, query_concepts)
 
     def get_chunk_concepts(self, source: str, chunk_index: int) -> list[str]:
-        """Look up concepts for a specific chunk."""
-        from lilbee.store import escape_sql_string, open_table
-
-        table = open_table(CHUNK_CONCEPTS_TABLE)
-        if table is None:
-            return []
-        escaped = escape_sql_string(source)
-        try:
-            rows = (
-                table.search()
-                .where(f"chunk_source = '{escaped}' AND chunk_index = {chunk_index}")
-                .to_list()
-            )
-            return [r["concept"] for r in rows]
-        except Exception:
-            return []
+        return get_chunk_concepts(source, chunk_index)
 
     def expand_query(self, query: str) -> list[str]:
-        """Extract concepts from query and find related concepts via graph."""
-        concepts = self.extract_concepts(query)
-        if not concepts:
-            return []
-        related: list[str] = []
-        seen = set(concepts)
-        for concept in concepts:
-            for neighbor in self.get_related_concepts(concept):
-                if neighbor not in seen:
-                    related.append(neighbor)
-                    seen.add(neighbor)
-        return related
+        return expand_query(query)
 
     def get_related_concepts(self, concept: str, depth: int = 1) -> list[str]:
-        """BFS traversal of edges to find related concepts."""
-        from lilbee.store import escape_sql_string, open_table
-
-        table = open_table(CONCEPT_EDGES_TABLE)
-        if table is None:
-            return []
-        visited: set[str] = {concept}
-        frontier: list[str] = [concept]
-        for _ in range(depth):
-            next_frontier: list[str] = []
-            for node in frontier:
-                escaped = escape_sql_string(node)
-                try:
-                    rows = (
-                        table.search()
-                        .where(f"source = '{escaped}' OR target = '{escaped}'")
-                        .to_list()
-                    )
-                except Exception:
-                    continue
-                for row in rows:
-                    neighbor = row["target"] if row["source"] == node else row["source"]
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        next_frontier.append(neighbor)
-            frontier = next_frontier
-        return [c for c in visited if c != concept]
+        return get_related_concepts(concept, depth=depth)
 
     def get_graph(self) -> bool:
-        """Return whether concept graph tables exist."""
-        if not self._config.concept_graph:
-            return False
-        from lilbee.store import open_table
-
-        return open_table(CONCEPT_NODES_TABLE) is not None
+        return get_graph()
 
 
 # ---------------------------------------------------------------------------
@@ -422,9 +333,7 @@ def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
             escaped = escape_sql_string(node)
             try:
                 rows = (
-                    table.search()
-                    .where(f"source = '{escaped}' OR target = '{escaped}'")
-                    .to_list()
+                    table.search().where(f"source = '{escaped}' OR target = '{escaped}'").to_list()
                 )
             except Exception:
                 continue
@@ -457,7 +366,7 @@ def top_communities(k: int = 10) -> list[Community]:
 
 def rebuild_clusters() -> None:
     from lilbee.lock import write_lock
-    from lilbee.store import ensure_table, get_db, open_table, safe_delete
+    from lilbee.store import _safe_delete_unlocked, ensure_table, get_db, open_table
 
     edges_table = open_table(CONCEPT_EDGES_TABLE)
     if edges_table is None:
@@ -477,10 +386,10 @@ def rebuild_clusters() -> None:
         for node, cluster_id in partition.items()
     ]
 
-    db = get_db()
-    nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
-    safe_delete(nodes_table, "concept IS NOT NULL")
     with write_lock():
+        db = get_db()
+        nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
+        _safe_delete_unlocked(nodes_table, "concept IS NOT NULL")
         if node_records:
             nodes_table.add(node_records)
 
