@@ -12,9 +12,10 @@ from textual.containers import Vertical
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
-from lilbee.cli.tui.widgets.suggester import _SLASH_COMMANDS
+from lilbee.cli.tui.command_registry import command_names
 
-_MAX_VISIBLE = 8
+_SLASH_COMMANDS = command_names()
+_MAX_VISIBLE = 8  # max dropdown items shown at once
 
 
 def get_completions(text: str) -> list[str]:

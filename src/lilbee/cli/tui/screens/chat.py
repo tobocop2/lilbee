@@ -13,6 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Input
 
 from lilbee.cli.helpers import get_version
+from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -24,27 +25,7 @@ from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
 from lilbee.query import ChatMessage
 
-# Maps slash command names to handler method names.
-_SLASH_COMMANDS: dict[str, str] = {
-    "/quit": "_cmd_quit",
-    "/q": "_cmd_quit",
-    "/exit": "_cmd_quit",
-    "/cancel": "_cmd_cancel",
-    "/help": "_cmd_help",
-    "/h": "_cmd_help",
-    "/models": "_cmd_catalog",
-    "/m": "_cmd_catalog",
-    "/model": "_cmd_model",
-    "/status": "_cmd_status",
-    "/settings": "_cmd_settings",
-    "/set": "_cmd_set",
-    "/theme": "_cmd_theme",
-    "/add": "_cmd_add",
-    "/vision": "_cmd_vision",
-    "/version": "_cmd_version",
-    "/delete": "_cmd_delete",
-    "/reset": "_cmd_reset",
-}
+_DISPATCH = build_dispatch_dict()
 
 
 class ChatScreen(Screen[None]):
@@ -125,10 +106,10 @@ class ChatScreen(Screen[None]):
         self._send_message(text)
 
     def _handle_slash(self, text: str) -> None:
-        """Dispatch slash commands via _SLASH_COMMANDS map."""
+        """Dispatch slash commands via the command registry."""
         cmd = text.split()[0].lower()
         args = text[len(cmd) :].strip()
-        handler_name = _SLASH_COMMANDS.get(cmd)
+        handler_name = _DISPATCH.get(cmd)
         if handler_name:
             getattr(self, handler_name)(args)
         else:

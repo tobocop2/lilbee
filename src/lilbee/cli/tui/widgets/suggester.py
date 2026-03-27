@@ -4,23 +4,9 @@ from __future__ import annotations
 
 from textual.suggester import Suggester
 
-_SLASH_COMMANDS = (
-    "/help",
-    "/models",
-    "/model",
-    "/vision",
-    "/status",
-    "/settings",
-    "/set",
-    "/add",
-    "/delete",
-    "/reset",
-    "/version",
-    "/theme",
-    "/quit",
-    "/exit",
-    "/cancel",
-)
+from lilbee.cli.tui.command_registry import command_names
+
+_SLASH_COMMANDS = command_names()
 
 
 class SlashSuggester(Suggester):
