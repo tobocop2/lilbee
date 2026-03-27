@@ -27,14 +27,13 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.5.4",
+    "kreuzberg>=4.6.2",
     "filelock",
-    "tree-sitter-language-pack>=1.0.0",
+    "tree-sitter-language-pack>=1.3.2",
     "typer",
     "tiktoken",
     "textual>=0.75",
     "mcp>=1.26.0",
-    "pypdfium2>=5.6.0",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
@@ -42,6 +41,8 @@ dependencies = [
     "huggingface_hub",
     "httpx",
     "crawl4ai>=0.8.0",
+    "spacy>=3.8",
+    "graspologic-native>=1.2",
 ]
 
 [project.optional-dependencies]
