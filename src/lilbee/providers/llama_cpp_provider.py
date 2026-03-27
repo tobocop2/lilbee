@@ -1,9 +1,18 @@
-"""Llama.cpp provider for local GGUF inference."""
+"""Llama.cpp provider for local GGUF inference.
+
+Includes a thread-safe batching queue for embeddings so that concurrent
+ingest threads don't hit the non-thread-safe Llama object simultaneously.
+"""
 
 from __future__ import annotations
 
 import logging
+import queue
+import threading
+import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +20,76 @@ from lilbee.providers.base import LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
 
+_BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+
+
+@dataclass
+class _EmbedRequest:
+    """A single embedding request submitted to the batch queue."""
+
+    texts: list[str]
+    future: Future[list[list[float]]]
+
 
 class LlamaCppProvider(LLMProvider):
-    """Provider backed by llama-cpp-python for local GGUF model inference."""
+    """Provider backed by llama-cpp-python for local GGUF model inference.
+
+    Embedding calls are funnelled through a single background worker thread
+    that batches concurrent requests into one ``create_embedding`` call.
+    Chat calls are serialized via a lock (no batching possible).
+    """
 
     def __init__(self) -> None:
         self._chat_llm: Any | None = None
         self._embed_llm: Any | None = None
+        self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
+        self._chat_lock = threading.Lock()
+        self._worker = threading.Thread(target=self._embed_worker, daemon=True)
+        self._worker.start()
+
+    def _embed_worker(self) -> None:
+        """Background thread: drain queue, batch, inference, dispatch results."""
+        while True:
+            first = self._embed_queue.get()
+            if first is None:
+                break
+
+            batch: list[_EmbedRequest] = [first]
+            shutting_down = False
+            deadline = time.monotonic() + _BATCH_WINDOW_S
+            while time.monotonic() < deadline:
+                try:
+                    req = self._embed_queue.get_nowait()
+                    if req is None:
+                        shutting_down = True
+                        break
+                    batch.append(req)
+                except queue.Empty:
+                    time.sleep(0.001)
+                    continue
+
+            self._dispatch_batch(batch)
+            if shutting_down:
+                break
+
+    def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
+        """Run one batched embedding call and resolve all futures."""
+        all_texts: list[str] = []
+        offsets: list[tuple[int, int]] = []
+        for req in batch:
+            offsets.append((len(all_texts), len(req.texts)))
+            all_texts.extend(req.texts)
+
+        try:
+            llm = self._get_embed_llm()
+            response = llm.create_embedding(input=all_texts)
+            all_vectors = [item["embedding"] for item in response["data"]]
+            for req, (start, count) in zip(batch, offsets, strict=True):
+                req.future.set_result(all_vectors[start : start + count])
+        except Exception as exc:
+            for req in batch:
+                if not req.future.done():
+                    req.future.set_exception(exc)
 
     def _get_chat_llm(self, model: str | None = None) -> Any:
         """Lazy-load a Llama instance for chat."""
@@ -46,10 +118,10 @@ class LlamaCppProvider(LLMProvider):
         return self._embed_llm
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts using llama-cpp-python."""
-        llm = self._get_embed_llm()
-        response = llm.create_embedding(input=texts)
-        return [item["embedding"] for item in response["data"]]
+        """Submit embedding request to the batch queue. Thread-safe."""
+        fut: Future[list[list[float]]] = Future()
+        self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
+        return fut.result()
 
     def chat(
         self,
@@ -59,15 +131,21 @@ class LlamaCppProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | Iterator[str]:
-        """Chat completion using llama-cpp-python."""
-        llm = self._get_chat_llm(model)
-        kwargs: dict[str, Any] = {}
-        if options:
-            kwargs.update(options)
-        response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
-        if stream:
-            return _stream_tokens(response)
-        return response["choices"][0]["message"]["content"] or ""
+        """Chat completion — serialized via lock (Llama is not thread-safe)."""
+        self._chat_lock.acquire()
+        try:
+            llm = self._get_chat_llm(model)
+            kwargs: dict[str, Any] = {}
+            if options:
+                kwargs.update(options)
+            response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
+            if stream:
+                return _LockedStreamIterator(response, self._chat_lock)
+            result: str = response["choices"][0]["message"]["content"] or ""
+            return result
+        finally:
+            if not stream:
+                self._chat_lock.release()
 
     def list_models(self) -> list[str]:
         """List .gguf files in the models directory."""
@@ -88,6 +166,44 @@ class LlamaCppProvider(LLMProvider):
     def show_model(self, model: str) -> dict[str, str] | None:
         """llama-cpp doesn't expose model metadata."""
         return None
+
+    def shutdown(self) -> None:
+        """Stop the embed worker thread."""
+        self._embed_queue.put(None)
+        self._worker.join(timeout=2)
+
+
+class _LockedStreamIterator:
+    """Wraps a streaming response so the chat lock is held until iteration ends.
+
+    The lock must already be acquired by the caller; this iterator releases it
+    when the underlying stream is exhausted (or on explicit close).
+    """
+
+    def __init__(self, response: Any, lock: threading.Lock) -> None:
+        self._response = response
+        self._lock = lock
+        self._released = False
+
+    def __iter__(self) -> _LockedStreamIterator:
+        return self
+
+    def __next__(self) -> str:
+        while True:
+            try:
+                chunk = next(self._response)
+            except StopIteration:
+                self._release()
+                raise
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            content: str | None = delta.get("content")
+            if content:
+                return content
+
+    def _release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._lock.release()
 
 
 def _resolve_model_path(model: str) -> Path:
@@ -130,12 +246,3 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
         "verbose": False,
     }
     return Llama(**kwargs)
-
-
-def _stream_tokens(response: Any) -> Iterator[str]:
-    """Extract content tokens from a streaming chat completion response."""
-    for chunk in response:
-        delta = chunk.get("choices", [{}])[0].get("delta", {})
-        content = delta.get("content")
-        if content:
-            yield content
