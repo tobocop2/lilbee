@@ -63,6 +63,8 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
 
       - name: Run unit tests with coverage
         run: make test-ci
