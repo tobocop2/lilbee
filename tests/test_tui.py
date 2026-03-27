@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from lilbee.catalog import CatalogModel, CatalogResult
-from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, OllamaRow
+from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, RemoteRow
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.sync_bar import SyncBar
@@ -102,10 +102,10 @@ class TestHelpModal:
         assert modal is not None
 
 
-class TestOllamaClassification:
+class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import classify_ollama_models
+        from lilbee.model_manager import classify_remote_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -124,7 +124,7 @@ class TestOllamaClassification:
             },
         )
         mock_get.return_value.raise_for_status = lambda: None
-        result = classify_ollama_models()
+        result = classify_remote_models()
         by_task = {m.task: m.name for m in result}
         assert by_task["embedding"] == "nomic-embed-text:latest"
         assert by_task["chat"] == "qwen3:8b"
@@ -508,10 +508,10 @@ class TestThemes:
             assert app.theme == "gruvbox"
 
 
-class TestDetectOllamaEmbeddings:
+class TestDetectRemoteEmbeddings:
     @mock.patch("httpx.get")
     def test_detects_bert_family(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_ollama_embedding_models
+        from lilbee.model_manager import detect_remote_embedding_models
 
         mock_get.return_value = mock.MagicMock(
             status_code=200,
@@ -523,28 +523,28 @@ class TestDetectOllamaEmbeddings:
             },
         )
         mock_get.return_value.raise_for_status = lambda: None
-        result = detect_ollama_embedding_models()
+        result = detect_remote_embedding_models()
         assert result == ["nomic-embed-text:latest"]
 
     @mock.patch("httpx.get", side_effect=Exception("connection refused"))
     def test_returns_empty_on_error(self, mock_get: mock.MagicMock) -> None:
-        from lilbee.model_manager import detect_ollama_embedding_models
+        from lilbee.model_manager import detect_remote_embedding_models
 
-        assert detect_ollama_embedding_models() == []
+        assert detect_remote_embedding_models() == []
 
 
 class TestSetupModal:
-    def test_creates_without_ollama(self) -> None:
+    def test_creates_without_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         modal = SetupModal()
         assert modal is not None
 
-    def test_creates_with_ollama(self) -> None:
+    def test_creates_with_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         modal = SetupModal(ollama_embeddings=["nomic-embed-text:latest"])
-        assert modal._ollama_embeddings == ["nomic-embed-text:latest"]
+        assert modal._remote_embeddings == ["nomic-embed-text:latest"]
 
 
 class TestCanonicalModelsDir:
@@ -556,13 +556,13 @@ class TestCanonicalModelsDir:
         assert "lilbee" in str(result)
 
 
-class TestOllamaRow:
+class TestRemoteRow:
     def test_creates(self) -> None:
-        from lilbee.model_manager import OllamaModel
+        from lilbee.model_manager import RemoteModel
 
-        om = OllamaModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
-        row = OllamaRow(om)
-        assert row.ollama_model.name == "mistral:latest"
+        rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
+        row = RemoteRow(rm)
+        assert row.remote_model.name == "mistral:latest"
 
 
 class TestSlashSuggester:

@@ -591,19 +591,19 @@ class TestModelsInstalled:
         mock_manager.list_installed.return_value = ["qwen3:8b", "mistral:7b"]
         from lilbee.model_manager import ModelSource
 
-        mock_manager.get_source.return_value = ModelSource.OLLAMA
+        mock_manager.get_source.return_value = ModelSource.LITELLM
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert len(result["models"]) == 2
-        assert result["models"][0]["source"] == "ollama"
+        assert result["models"][0]["source"] == "litellm"
 
-    async def test_unknown_source_defaults_to_ollama(self):
+    async def test_unknown_source_defaults_to_litellm(self):
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert result["models"][0]["source"] == "ollama"
+        assert result["models"][0]["source"] == "litellm"
 
 
 class TestModelsPull:
@@ -637,7 +637,7 @@ class TestModelsDelete:
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
-            result = await handlers.models_delete("test", source="ollama")
+            result = await handlers.models_delete("test", source="litellm")
         assert result["deleted"] is True
         assert result["model"] == "test"
 
@@ -705,7 +705,7 @@ class TestGetConfig:
         result = await handlers.get_config()
         assert "chat_model" in result
         assert "system_prompt" in result
-        assert "ollama_url" in result
+        assert "litellm_base_url" in result
         assert "diversity_max_per_source" in result
         assert "mmr_lambda" in result
         assert "query_expansion_count" in result

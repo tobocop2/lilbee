@@ -12,9 +12,9 @@ from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import (
     LoadMoreRow,
     ModelRow,
-    OllamaRow,
+    RemoteRow,
     _filter_catalog,
-    _filter_ollama,
+    _filter_remote,
     _format_downloads,
     _format_row,
     _group_by_size,
@@ -22,7 +22,7 @@ from lilbee.cli.tui.screens.catalog import (
     _parse_param_size,
 )
 from lilbee.config import cfg
-from lilbee.model_manager import OllamaModel
+from lilbee.model_manager import RemoteModel
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -65,13 +65,13 @@ def _make_catalog_model(
     )
 
 
-def _make_ollama_model(
-    name: str = "ollama-test:latest",
+def _make_remote_model(
+    name: str = "remote-test:latest",
     task: str = "chat",
     family: str = "llama",
     parameter_size: str = "7B",
-) -> OllamaModel:
-    return OllamaModel(name=name, task=task, family=family, parameter_size=parameter_size)
+) -> RemoteModel:
+    return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
 
 
 # ---------------------------------------------------------------------------
@@ -225,25 +225,25 @@ class TestFilterCatalog:
         assert _filter_catalog([], "chat", "test") == []
 
 
-class TestFilterOllama:
+class TestFilterRemote:
     def test_no_filters(self):
-        models = [_make_ollama_model(task="chat"), _make_ollama_model(task="embedding")]
-        assert len(_filter_ollama(models, None, "")) == 2
+        models = [_make_remote_model(task="chat"), _make_remote_model(task="embedding")]
+        assert len(_filter_remote(models, None, "")) == 2
 
     def test_task_filter(self):
-        models = [_make_ollama_model(task="chat"), _make_ollama_model(task="embedding")]
-        assert len(_filter_ollama(models, "chat", "")) == 1
+        models = [_make_remote_model(task="chat"), _make_remote_model(task="embedding")]
+        assert len(_filter_remote(models, "chat", "")) == 1
 
     def test_search_filter(self):
         models = [
-            _make_ollama_model(name="qwen:latest"),
-            _make_ollama_model(name="llama:latest"),
+            _make_remote_model(name="qwen:latest"),
+            _make_remote_model(name="llama:latest"),
         ]
-        result = _filter_ollama(models, None, "qwen")
+        result = _filter_remote(models, None, "qwen")
         assert len(result) == 1
 
     def test_empty_list(self):
-        assert _filter_ollama([], None, "") == []
+        assert _filter_remote([], None, "") == []
 
 
 class TestGroupBySize:
@@ -286,16 +286,16 @@ class TestModelRow:
         assert row.model is m
 
 
-class TestOllamaRow:
+class TestRemoteRow:
     def test_stores_model(self):
-        m = _make_ollama_model()
-        row = OllamaRow(m)
-        assert row.ollama_model is m
+        m = _make_remote_model()
+        row = RemoteRow(m)
+        assert row.remote_model is m
 
     def test_none_parameter_size(self):
-        m = _make_ollama_model(parameter_size="")
-        row = OllamaRow(m)
-        assert row.ollama_model.parameter_size == ""
+        m = _make_remote_model(parameter_size="")
+        row = RemoteRow(m)
+        assert row.remote_model.parameter_size == ""
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +515,7 @@ async def test_app_push_catalog(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
             app.action_push_catalog()
             await _pilot.pause()
@@ -626,7 +626,7 @@ async def test_chat_slash_model_no_arg(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/model")
             await _pilot.pause()
@@ -885,7 +885,7 @@ async def test_chat_slash_models(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/models")
             await _pilot.pause()
@@ -1055,7 +1055,7 @@ async def test_chat_slash_m(mock_check):
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
             app.screen._handle_slash("/m")
             await _pilot.pause()
@@ -1484,7 +1484,7 @@ def _patch_catalog():
     """Context manager to patch catalog screen's network calls."""
     return (
         patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-        patch("lilbee.model_manager.classify_ollama_models", return_value=[]),
+        patch("lilbee.model_manager.classify_remote_models", return_value=[]),
     )
 
 
@@ -1661,7 +1661,7 @@ async def test_catalog_install_new_model():
                 await _pilot.pause()
 
 
-async def test_catalog_select_ollama_row():
+async def test_catalog_select_remote_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -1670,12 +1670,12 @@ async def test_catalog_select_ollama_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            om = _make_ollama_model(name="ollama-chat:latest")
-            row = OllamaRow(om)
+            om = _make_remote_model(name="remote-chat:latest")
+            row = RemoteRow(om)
             event = MagicMock()
             event.item = row
             screen.on_list_view_selected(event)
-            assert cfg.chat_model == "ollama-chat:latest"
+            assert cfg.chat_model == "remote-chat:latest"
 
 
 async def test_catalog_select_load_more():
@@ -1712,7 +1712,7 @@ async def test_catalog_highlight_model_row():
             assert "test-7B" in str(detail.render())
 
 
-async def test_catalog_highlight_ollama_row():
+async def test_catalog_highlight_remote_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -1721,11 +1721,11 @@ async def test_catalog_highlight_ollama_row():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            om = _make_ollama_model(name="ollama-test:latest")
-            row = OllamaRow(om)
+            om = _make_remote_model(name="remote-test:latest")
+            row = RemoteRow(om)
             screen._update_highlighted_detail(row)
             detail = screen.query_one("#model-detail", Static)
-            assert "ollama-test" in str(detail.render())
+            assert "remote-test" in str(detail.render())
 
 
 async def test_catalog_highlight_unknown_row():
@@ -1812,7 +1812,7 @@ async def test_catalog_worker_hf_success():
             assert len(screen._hf_models) == 1
 
 
-async def test_catalog_worker_ollama_success():
+async def test_catalog_worker_remote_success():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -1825,13 +1825,13 @@ async def test_catalog_worker_ollama_success():
             from textual.worker import WorkerState
 
             mock_worker = MagicMock()
-            mock_worker.name = "_fetch_ollama_models"
-            mock_worker.result = [_make_ollama_model()]
+            mock_worker.name = "_fetch_remote_models"
+            mock_worker.result = [_make_remote_model()]
             mock_event = MagicMock()
             mock_event.state = WorkerState.SUCCESS
             mock_event.worker = mock_worker
             screen.on_worker_state_changed(mock_event)
-            assert len(screen._ollama_models) == 1
+            assert len(screen._remote_models) == 1
 
 
 async def test_catalog_worker_more_hf_success():
@@ -2037,18 +2037,18 @@ async def test_model_row_compose():
         assert "compose-test-7B" in str(text.render())
 
 
-class OllamaRowTestApp(App[None]):
+class RemoteRowTestApp(App[None]):
     CSS = ""
 
     def compose(self) -> ComposeResult:
-        yield OllamaRow(_make_ollama_model(name="ollama-compose:latest", parameter_size=""))
+        yield RemoteRow(_make_remote_model(name="remote-compose:latest", parameter_size=""))
 
 
-async def test_ollama_row_compose():
-    app = OllamaRowTestApp()
+async def test_remote_row_compose():
+    app = RemoteRowTestApp()
     async with app.run_test(size=(120, 10)) as _pilot:
         text = app.query_one(Static)
-        assert "ollama-compose:latest" in str(text.render())
+        assert "remote-compose:latest" in str(text.render())
 
 
 # ---------------------------------------------------------------------------
@@ -2266,7 +2266,7 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_check):
             assert app.screen._streaming is False
 
 
-@patch("lilbee.model_manager.detect_ollama_embedding_models", return_value=[])
+@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[])
 @patch("lilbee.model_manager.get_model_manager")
 async def test_chat_check_embedding_model_async_installed(mock_get_mgr, mock_detect):
     """Cover _check_embedding_model_async lines 61-65 (model installed)."""
@@ -2293,10 +2293,10 @@ async def test_chat_check_embedding_model_async_installed(mock_get_mgr, mock_det
         mock_mgr.is_installed.assert_called_with(cfg.embedding_model)
 
 
-@patch("lilbee.model_manager.detect_ollama_embedding_models", return_value=["test-embed"])
+@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=["test-embed"])
 @patch("lilbee.model_manager.get_model_manager")
-async def test_chat_check_embedding_model_async_ollama(mock_get_mgr, mock_detect):
-    """Cover _check_embedding_model_async lines 67-70 (model in Ollama)."""
+async def test_chat_check_embedding_model_async_remote(mock_get_mgr, mock_detect):
+    """Cover _check_embedding_model_async lines 67-70 (model in remote backend)."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     class EmbedTestApp(App[None]):
@@ -2320,7 +2320,7 @@ async def test_chat_check_embedding_model_async_ollama(mock_get_mgr, mock_detect
         mock_detect.assert_called()
 
 
-@patch("lilbee.model_manager.detect_ollama_embedding_models", return_value=[])
+@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[])
 @patch("lilbee.model_manager.get_model_manager")
 async def test_chat_check_embedding_model_async_not_found(mock_get_mgr, mock_detect):
     """Cover _check_embedding_model_async line 72 (shows setup modal)."""
@@ -2484,7 +2484,7 @@ async def test_catalog_refresh_lists_with_search_and_load_more():
             # Clear all models and set search to something that won't match
             screen._featured = []
             screen._hf_models = []
-            screen._ollama_models = []
+            screen._remote_models = []
             screen._refresh_lists()
             # Should show "No models match" in at least the All tab
             from textual.widgets import ListView
@@ -2622,25 +2622,25 @@ def test_check_embedding_model_installed():
         assert manager.is_installed(cfg.embedding_model) is True
 
 
-def test_check_embedding_model_ollama_available():
-    """Cover _check_embedding_model_async lines 67-70 (model in ollama)."""
+def test_check_embedding_model_remote_available():
+    """Cover _check_embedding_model_async lines 67-70 (model in remote backend)."""
     mock_mgr = MagicMock()
     mock_mgr.is_installed.return_value = False
     with (
         patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
         patch(
-            "lilbee.model_manager.detect_ollama_embedding_models",
+            "lilbee.model_manager.detect_remote_embedding_models",
             return_value=["test-embed"],
         ),
     ):
-        from lilbee.model_manager import detect_ollama_embedding_models, get_model_manager
+        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
 
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        ollama_embeds = detect_ollama_embedding_models(cfg.ollama_url)
-        assert any(embed_base in name for name in ollama_embeds)
+        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
+        assert any(embed_base in name for name in remote_embeds)
 
 
 def test_check_embedding_model_not_found():
@@ -2649,17 +2649,17 @@ def test_check_embedding_model_not_found():
     mock_mgr.is_installed.return_value = False
     with (
         patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
-        patch("lilbee.model_manager.detect_ollama_embedding_models", return_value=[]),
+        patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[]),
     ):
-        from lilbee.model_manager import detect_ollama_embedding_models, get_model_manager
+        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
 
         manager = get_model_manager()
         assert not manager.is_installed(cfg.embedding_model)
 
         embed_base = cfg.embedding_model.split(":")[0]
-        ollama_embeds = detect_ollama_embedding_models(cfg.ollama_url)
-        assert not any(embed_base in name for name in ollama_embeds)
-        # Would call self.app.call_from_thread(self._show_setup_modal, ollama_embeds)
+        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
+        assert not any(embed_base in name for name in remote_embeds)
+        # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")

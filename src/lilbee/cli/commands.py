@@ -74,7 +74,7 @@ def _ensure_vision_model() -> None:
         installed = set(list_installed_models())
     except Exception:
         console.print(
-            f"[{theme.WARNING}]Warning: Cannot connect to Ollama."
+            f"[{theme.WARNING}]Warning: Cannot list models."
             f" Vision OCR disabled.[/{theme.WARNING}]"
         )
         return
@@ -95,7 +95,7 @@ def _validate_configured_vision() -> None:
     try:
         installed = set(list_installed_models())
     except Exception:
-        # Can't reach Ollama — keep the config and let downstream handle errors
+        # Can't reach model backend — keep the config and let downstream handle errors
         return
 
     if tagged in installed:

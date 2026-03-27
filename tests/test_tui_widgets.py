@@ -821,19 +821,19 @@ class _SetupApp(App):
 
 
 class TestSetupModal:
-    def test_creates_without_ollama(self) -> None:
+    def test_creates_without_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         modal = SetupModal()
-        assert modal._ollama_embeddings == []
+        assert modal._remote_embeddings == []
 
-    def test_creates_with_ollama(self) -> None:
+    def test_creates_with_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         modal = SetupModal(ollama_embeddings=["nomic:latest"])
-        assert modal._ollama_embeddings == ["nomic:latest"]
+        assert modal._remote_embeddings == ["nomic:latest"]
 
-    async def test_compose_with_ollama(self) -> None:
+    async def test_compose_with_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         app = _SetupApp()
@@ -842,7 +842,7 @@ class TestSetupModal:
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_compose_without_ollama(self) -> None:
+    async def test_compose_without_remote(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         app = _SetupApp()
@@ -863,7 +863,7 @@ class TestSetupModal:
             await pilot.pause()
         assert None in results
 
-    async def test_ollama_row_selection_dismisses(self) -> None:
+    async def test_remote_row_selection_dismisses(self) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         app = _SetupApp()
@@ -874,11 +874,11 @@ class TestSetupModal:
                 callback=lambda r: results.append(r),
             )
             await pilot.pause()
-            # Find the list and select the ollama row (index 1 — first is header label)
+            # Find the list and select the remote row (index 1 -- first is header label)
             from textual.widgets import ListView
 
             lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 1  # OllamaRow
+            lv.index = 1  # _RemoteRow
             await pilot.pause()
             # Simulate selection via action
             lv.action_select_cursor()
@@ -952,11 +952,11 @@ class TestEmbeddingRow:
         assert len(children) == 1
 
 
-class TestOllamaSetupRow:
+class TestRemoteSetupRow:
     def test_compose(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _OllamaRow
+        from lilbee.cli.tui.widgets.setup_modal import _RemoteRow
 
-        row = _OllamaRow("nomic:latest")
-        assert row.ollama_name == "nomic:latest"
+        row = _RemoteRow("nomic:latest")
+        assert row.remote_name == "nomic:latest"
         children = list(row.compose())
         assert len(children) == 1
