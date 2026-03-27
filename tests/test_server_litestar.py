@@ -406,52 +406,24 @@ class TestCors:
 
 
 class TestCrawlRoute:
-    @mock.patch(
-        "lilbee.server.handlers.crawl_url",
-        new_callable=mock.AsyncMock,
-        return_value={"task_id": "abc123"},
-    )
-    def test_post_crawl(self, mock_crawl, client):
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_streams_sse(self, mock_stream, client):
+        mock_stream.return_value = mock_async_gen(
+            "event: crawl_start\ndata: {}\n\n",
+            "event: done\ndata: {}\n\n",
+        )
         resp = client.post("/api/crawl", json={"url": "https://example.com", "depth": 1})
         assert resp.status_code == 201
-        assert resp.json()["task_id"] == "abc123"
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert b"crawl_start" in resp.content
 
     @mock.patch(
-        "lilbee.server.handlers.crawl_url",
-        new_callable=mock.AsyncMock,
+        "lilbee.server.handlers.crawl_stream",
         side_effect=ValueError("URL must start with http:// or https://"),
     )
-    def test_post_crawl_invalid_url(self, mock_crawl, client):
+    def test_post_crawl_invalid_url(self, mock_stream, client):
         resp = client.post("/api/crawl", json={"url": "ftp://bad.com"})
         assert resp.status_code == 400
-
-    @mock.patch(
-        "lilbee.server.handlers.crawl_status",
-        new_callable=mock.AsyncMock,
-        return_value={
-            "task_id": "abc",
-            "url": "https://example.com",
-            "status": "done",
-            "pages_crawled": 5,
-            "pages_total": 5,
-            "error": None,
-        },
-    )
-    def test_get_crawl_status(self, mock_status, client):
-        resp = client.get("/api/crawl/abc")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "done"
-        assert body["pages_crawled"] == 5
-
-    @mock.patch(
-        "lilbee.server.handlers.crawl_status",
-        new_callable=mock.AsyncMock,
-        side_effect=KeyError("Task not found: xyz"),
-    )
-    def test_get_crawl_status_not_found(self, mock_status, client):
-        resp = client.get("/api/crawl/xyz")
-        assert resp.status_code == 404
 
 
 class TestCreateAppReexport:

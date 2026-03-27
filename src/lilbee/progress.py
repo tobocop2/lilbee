@@ -17,6 +17,10 @@ class EventType(StrEnum):
     DONE = "done"
     EMBED = "embed"
     EXTRACT = "extract"
+    CRAWL_START = "crawl_start"
+    CRAWL_PAGE = "crawl_page"
+    CRAWL_DONE = "crawl_done"
+    CRAWL_ERROR = "crawl_error"
 
 
 DetailedProgressCallback = Callable[[EventType, dict[str, Any]], None]

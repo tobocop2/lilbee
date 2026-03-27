@@ -2784,7 +2784,7 @@ async def test_chat_run_crawl_background_success(mock_check):
     async def _fake_crawl(url, **kwargs):
         cb = kwargs.get("on_progress")
         if cb:
-            cb(1, 2, url)
+            cb("crawl_page", {"current": 1, "total": 2, "url": url})
         return [Path("/tmp/a.md")]
 
     app = ChatTestApp()

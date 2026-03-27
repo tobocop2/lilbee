@@ -205,10 +205,17 @@ class ChatScreen(Screen[None]):
         self.app.call_from_thread(sync_bar.set_status, f"Crawling {url}...")
 
         try:
+            from typing import Any
 
-            def on_progress(crawled: int, total: int, current_url: str) -> None:
-                msg = f"Crawling [{crawled}/{total}]: {current_url}"
-                self.app.call_from_thread(sync_bar.set_status, msg)
+            from lilbee.progress import EventType
+
+            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+                if event_type == EventType.CRAWL_PAGE:
+                    current = data.get("current", 0)
+                    total = data.get("total", 0)
+                    page_url = data.get("url", "")
+                    msg = f"Crawling [{current}/{total}]: {page_url}"
+                    self.app.call_from_thread(sync_bar.set_status, msg)
 
             paths = asyncio.run(
                 crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)

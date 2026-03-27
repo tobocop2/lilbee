@@ -1781,7 +1781,7 @@ class TestCrawlUrlsBlocking:
             # Call the on_progress callback to cover the closure body
             cb = kwargs.get("on_progress")
             if cb:
-                cb(1, 1, url)
+                cb("crawl_page", {"current": 1, "total": 1, "url": url})
             return [Path("/tmp/page.md")]
 
         mock_crawl.side_effect = _fake_crawl
