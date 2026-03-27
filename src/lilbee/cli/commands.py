@@ -286,17 +286,14 @@ _max_pages_option = typer.Option(
 )
 
 
-def _is_url(value: str) -> bool:
-    """Check if a string looks like a URL."""
-    return value.startswith("http://") or value.startswith("https://")
-
-
 def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
     """Split inputs into file paths and URLs."""
+    from lilbee.crawler import is_url
+
     paths: list[Path] = []
     urls: list[str] = []
     for inp in inputs:
-        if _is_url(inp):
+        if is_url(inp):
             urls.append(inp)
         else:
             paths.append(Path(inp))
@@ -304,7 +301,7 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
 
 
 def _crawl_urls_blocking(
-    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
+    urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None, force: bool = False
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written."""
     from typing import Any
@@ -337,6 +334,7 @@ def _crawl_urls_blocking(
                     url,
                     depth=effective_depth,
                     max_pages=effective_pages,
+                    force=force,
                     on_progress=_make_callback(),
                 )
             )
@@ -379,7 +377,7 @@ def add(
         crawled_paths: list[Path] = []
         if urls:
             crawled_paths = _crawl_urls_blocking(
-                urls, crawl=crawl, depth=depth, max_pages=max_pages
+                urls, crawl=crawl, depth=depth, max_pages=max_pages, force=force
             )
             if not cfg.json_mode:
                 console.print(

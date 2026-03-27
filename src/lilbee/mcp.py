@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+from lilbee.crawler import is_url, require_valid_crawl_url
+
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
 
@@ -84,7 +86,7 @@ async def lilbee_add(
     valid: list[Path] = []
     urls: list[str] = []
     for p_str in paths:
-        if p_str.startswith("http://") or p_str.startswith("https://"):
+        if is_url(p_str):
             urls.append(p_str)
         else:
             p = Path(p_str)
@@ -99,6 +101,11 @@ async def lilbee_add(
         from lilbee.crawler import crawl_and_save
 
         for url in urls:
+            try:
+                require_valid_crawl_url(url)
+            except ValueError as exc:
+                errors.append(f"{url}: {exc}")
+                continue
             crawled_paths = await crawl_and_save(url)
             crawled_count += len(crawled_paths)
 
@@ -140,8 +147,10 @@ async def lilbee_crawl(
         depth: Maximum link-following depth (0 = single page only).
         max_pages: Maximum number of pages to fetch (default: 50).
     """
-    if not (url.startswith("http://") or url.startswith("https://")):
-        return {"error": "URL must start with http:// or https://"}
+    try:
+        require_valid_crawl_url(url)
+    except ValueError as exc:
+        return {"error": str(exc)}
 
     from lilbee.crawler import crawl_and_save
     from lilbee.ingest import sync

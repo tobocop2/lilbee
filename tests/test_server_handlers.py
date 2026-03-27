@@ -780,7 +780,8 @@ class TestCrawlStream:
                 pass  # pragma: no cover
 
     @patch("lilbee.crawler.crawl_and_save")
-    async def test_streams_events_and_done(self, mock_crawl):
+    @patch("lilbee.crawler.validate_crawl_url")
+    async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
         from pathlib import Path
 
         async def fake_crawl(url, *, depth, max_pages, on_progress):
@@ -797,7 +798,8 @@ class TestCrawlStream:
         assert any("done" in e for e in events)
 
     @patch("lilbee.crawler.crawl_and_save")
-    async def test_streams_error_on_exception(self, mock_crawl):
+    @patch("lilbee.crawler.validate_crawl_url")
+    async def test_streams_error_on_exception(self, _mock_validate, mock_crawl):
         mock_crawl.side_effect = RuntimeError("network fail")
         events = []
         async for event in handlers.crawl_stream("https://example.com"):

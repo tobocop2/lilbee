@@ -1,9 +1,12 @@
 """Web crawling — fetch pages as markdown and save to the documents directory."""
 
+import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import re
+import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,11 +17,65 @@ from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
 
+_MAX_CONCURRENT_CRAWLS = 3
+_crawl_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CRAWLS)
+
 # Maximum filename length before truncation (most filesystems cap at 255 bytes)
 _MAX_FILENAME_LEN = 200
 
 # Sentinel for index pages (trailing slash or empty path)
 _INDEX_FILENAME = "index.md"
+
+
+_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+)
+
+
+def is_url(value: str) -> bool:
+    """Check if a string is an HTTP/HTTPS URL."""
+    return value.startswith(("http://", "https://"))
+
+
+def validate_crawl_url(url: str) -> None:
+    """Validate a URL for crawling. Raises ValueError for unsafe URLs.
+
+    Rejects private IPs, loopback, link-local, and non-HTTP schemes.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Only http:// and https:// URLs are allowed, got {scheme}://")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL has no hostname")
+
+    if hostname.lower() in ("localhost", "localhost."):
+        raise ValueError("Crawling localhost is not allowed")
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve hostname: {hostname}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        for network in _BLOCKED_NETWORKS:
+            if ip in network:
+                raise ValueError(f"Crawling private/reserved IP {ip} is not allowed")
+
+
+def require_valid_crawl_url(url: str) -> None:
+    """Validate URL for crawling. Raises ValueError if invalid."""
+    if not is_url(url):
+        raise ValueError("URL must start with http:// or https://")
+    validate_crawl_url(url)
 
 
 @dataclass
@@ -158,6 +215,7 @@ def update_metadata(results: list[CrawlResult]) -> None:
 
 async def crawl_single(url: str) -> CrawlResult:
     """Fetch a single URL and return its markdown content."""
+    validate_crawl_url(url)
     from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 
     config = CrawlerRunConfig(
@@ -193,11 +251,12 @@ async def crawl_recursive(
     Uses crawl4ai's deep crawl strategy for link discovery.
     Falls back to cfg defaults when max_depth/max_pages are 0.
     """
+    validate_crawl_url(url)
     from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 
     depth = max_depth if max_depth > 0 else cfg.crawl_max_depth
-    pages = max_pages if max_pages > 0 else cfg.crawl_max_pages
+    pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
     strategy = BFSDeepCrawlStrategy(
         max_depth=depth,
@@ -244,29 +303,41 @@ async def crawl_and_save(
     *,
     depth: int = 0,
     max_pages: int = 0,
+    force: bool = False,
     on_progress: DetailedProgressCallback | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written."""
-    if on_progress:
-        on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
+    max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
-    if depth > 0:
-        results = await crawl_recursive(
-            url, max_depth=depth, max_pages=max_pages, on_progress=on_progress
-        )
-    else:
-        result = await crawl_single(url)
-        results = [result]
+    if not force:
+        meta = load_crawl_metadata()
+        if url in meta:
+            existing_file = _web_dir() / meta[url].file
+            if existing_file.exists():
+                log.info("URL already crawled, skipping: %s (use force=True to re-crawl)", url)
+                return []
+
+    async with _crawl_semaphore:
         if on_progress:
-            on_progress(EventType.CRAWL_PAGE, {"url": url, "current": 1, "total": 1})
+            on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
 
-    paths = save_crawl_results(results)
-    update_metadata(results)
+        if depth > 0:
+            results = await crawl_recursive(
+                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress
+            )
+        else:
+            result = await crawl_single(url)
+            results = [result]
+            if on_progress:
+                on_progress(EventType.CRAWL_PAGE, {"url": url, "current": 1, "total": 1})
 
-    if on_progress:
-        on_progress(
-            EventType.CRAWL_DONE,
-            {"pages_crawled": len(results), "files_written": len(paths)},
-        )
+        paths = save_crawl_results(results)
+        update_metadata(results)
 
-    return paths
+        if on_progress:
+            on_progress(
+                EventType.CRAWL_DONE,
+                {"pages_crawled": len(results), "files_written": len(paths)},
+            )
+
+        return paths

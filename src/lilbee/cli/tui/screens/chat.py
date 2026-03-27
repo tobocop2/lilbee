@@ -141,7 +141,9 @@ class ChatScreen(Screen[None]):
         if not args:
             return
         # Auto-detect URLs and route to crawl logic
-        if args.startswith("http://") or args.startswith("https://"):
+        from lilbee.crawler import is_url
+
+        if is_url(args):
             self._cmd_crawl(args)
             return
         path = Path(args).expanduser()
@@ -169,8 +171,12 @@ class ChatScreen(Screen[None]):
             return
         parts = args.split()
         url = parts[0]
-        if not (url.startswith("http://") or url.startswith("https://")):
-            self.notify("URL must start with http:// or https://", severity="error")
+        from lilbee.crawler import require_valid_crawl_url
+
+        try:
+            require_valid_crawl_url(url)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
         self.notify(f"Crawling {url}...")

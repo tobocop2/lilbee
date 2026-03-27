@@ -90,7 +90,7 @@ class TestMakeProgressUpdater:
 
 
 class TestRunCrawl:
-    @patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
     async def test_success(self, mock_crawl):
         from pathlib import Path
 
@@ -103,7 +103,7 @@ class TestRunCrawl:
         assert task.finished_at != ""
         assert task.pages_crawled == 2
 
-    @patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
     async def test_failure(self, mock_crawl):
         mock_crawl.side_effect = RuntimeError("network error")
         task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)

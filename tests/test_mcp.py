@@ -40,6 +40,16 @@ def isolated_env(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_dns():
+    """Bypass SSRF DNS resolution in all MCP tests."""
+    with mock.patch(
+        "lilbee.crawler.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _skip_model_validation():
     """MCP tests never need real Ollama model validation."""
     with mock.patch("lilbee.embedder.validate_model"):
@@ -369,6 +379,17 @@ class TestLilbeeAddWithUrls:
         await lilbee_add(paths=["https://example.com"], vision_model="test-vision:latest")
         # Vision model should be restored after sync
         assert cfg.vision_model == old_vision
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_url_ssrf_rejected(self, mock_sync, isolated_env):
+        """Private IP URLs are rejected with an error, not crawled."""
+        with mock.patch(
+            "lilbee.crawler.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
+        ):
+            result = await lilbee_add(paths=["http://evil.test/steal"])
+        assert result["crawled"] == 0
+        assert any("evil.test" in e for e in result["errors"])
 
 
 class TestLilbeeCrawl:

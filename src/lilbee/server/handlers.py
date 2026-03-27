@@ -581,8 +581,9 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
     with the list of files written. On error emits crawl_error.
     """
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise ValueError("URL must start with http:// or https://")
+    from lilbee.crawler import require_valid_crawl_url
+
+    require_valid_crawl_url(url)
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     callback = _make_sse_callback(queue)

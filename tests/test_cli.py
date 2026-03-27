@@ -1727,24 +1727,24 @@ class TestAddWithUrls:
 
 class TestIsUrl:
     def test_http(self):
-        from lilbee.cli.commands import _is_url
+        from lilbee.crawler import is_url
 
-        assert _is_url("http://example.com")
+        assert is_url("http://example.com")
 
     def test_https(self):
-        from lilbee.cli.commands import _is_url
+        from lilbee.crawler import is_url
 
-        assert _is_url("https://example.com")
+        assert is_url("https://example.com")
 
     def test_not_url(self):
-        from lilbee.cli.commands import _is_url
+        from lilbee.crawler import is_url
 
-        assert not _is_url("/tmp/file.txt")
+        assert not is_url("/tmp/file.txt")
 
     def test_ftp_not_url(self):
-        from lilbee.cli.commands import _is_url
+        from lilbee.crawler import is_url
 
-        assert not _is_url("ftp://example.com")
+        assert not is_url("ftp://example.com")
 
 
 class TestPartitionInputs:

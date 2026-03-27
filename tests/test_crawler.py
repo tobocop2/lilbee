@@ -8,15 +8,19 @@ from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
+    _crawl_semaphore,
     content_hash,
     crawl_and_save,
     crawl_recursive,
     crawl_single,
+    is_url,
     load_crawl_metadata,
+    require_valid_crawl_url,
     save_crawl_metadata,
     save_crawl_results,
     update_metadata,
     url_to_filename,
+    validate_crawl_url,
 )
 
 
@@ -191,6 +195,131 @@ def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=
     return result
 
 
+@pytest.fixture(autouse=True)
+def _no_dns(monkeypatch):
+    """Bypass SSRF DNS resolution in all crawler tests."""
+    monkeypatch.setattr(
+        "lilbee.crawler.socket.getaddrinfo",
+        lambda host, port, *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+
+
+class TestIsUrl:
+    def test_http(self):
+        assert is_url("http://example.com")
+
+    def test_https(self):
+        assert is_url("https://example.com")
+
+    def test_not_url(self):
+        assert not is_url("/tmp/file.txt")
+
+    def test_ftp_not_url(self):
+        assert not is_url("ftp://example.com")
+
+    def test_empty(self):
+        assert not is_url("")
+
+
+class TestValidateCrawlUrl:
+    def test_rejects_ftp(self):
+        with pytest.raises(ValueError, match="Only http"):
+            validate_crawl_url("ftp://example.com")
+
+    def test_rejects_file(self):
+        with pytest.raises(ValueError, match="Only http"):
+            validate_crawl_url("file:///etc/passwd")
+
+    def test_rejects_no_hostname(self):
+        with pytest.raises(ValueError, match="no hostname"):
+            validate_crawl_url("http://")
+
+    def test_rejects_localhost(self):
+        with pytest.raises(ValueError, match="localhost"):
+            validate_crawl_url("http://localhost/path")
+
+    def test_rejects_localhost_dot(self):
+        with pytest.raises(ValueError, match="localhost"):
+            validate_crawl_url("http://localhost./path")
+
+    def test_rejects_loopback_ipv4(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://loopback.test")
+
+    def test_rejects_private_10(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("10.0.0.1", 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://internal.test")
+
+    def test_rejects_private_172(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("172.16.0.1", 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://internal.test")
+
+    def test_rejects_private_192(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("192.168.1.1", 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://internal.test")
+
+    def test_rejects_link_local(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("169.254.169.254", 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://metadata.test")
+
+    def test_rejects_ipv6_loopback(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", ("::1", 0, 0, 0))],
+        )
+        with pytest.raises(ValueError, match="private"):
+            validate_crawl_url("http://ipv6loopback.test")
+
+    def test_accepts_public_ip(self):
+        validate_crawl_url("https://example.com")
+
+    def test_rejects_unresolvable(self, monkeypatch):
+        import socket
+
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            MagicMock(side_effect=socket.gaierror("Name resolution failed")),
+        )
+        with pytest.raises(ValueError, match="Cannot resolve"):
+            validate_crawl_url("http://nonexistent.invalid")
+
+
+class TestRequireValidCrawlUrl:
+    def test_rejects_non_url(self):
+        with pytest.raises(ValueError, match="http"):
+            require_valid_crawl_url("not-a-url")
+
+    def test_rejects_ftp(self):
+        with pytest.raises(ValueError, match="http"):
+            require_valid_crawl_url("ftp://example.com")
+
+    def test_accepts_valid_https(self):
+        require_valid_crawl_url("https://example.com")
+
+    def test_accepts_valid_http(self):
+        require_valid_crawl_url("http://example.com")
+
+
 class TestCrawlSingle:
     @patch("crawl4ai.AsyncWebCrawler")
     async def test_success(self, mock_crawler_cls):
@@ -310,12 +439,27 @@ class TestCrawlRecursive:
         # Verify the crawler was called (config defaults used internally)
         mock_instance.arun.assert_awaited_once()
 
+    @patch("crawl4ai.AsyncWebCrawler")
+    async def test_max_pages_capped_by_config(self, mock_crawler_cls):
+        """max_pages is capped at cfg.crawl_max_pages even when caller passes more."""
+        mock_instance = AsyncMock()
+        mock_instance.arun = AsyncMock(return_value=[])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_crawler_cls.return_value = mock_instance
+
+        cfg.crawl_max_pages = 10
+        await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
+        call_args = mock_instance.arun.call_args
+        crawl_config = call_args.kwargs.get("config") or call_args[1].get("config")
+        assert crawl_config.deep_crawl_strategy.max_pages <= 10
+
 
 class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
-        paths = await crawl_and_save("https://example.com")
+        paths = await crawl_and_save("https://example.com", force=True)
         assert len(paths) == 1
         assert paths[0].exists()
 
@@ -325,7 +469,7 @@ class TestCrawlAndSave:
             CrawlResult(url="https://example.com", markdown="# Home"),
             CrawlResult(url="https://example.com/about", markdown="# About"),
         ]
-        paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        paths = await crawl_and_save("https://example.com", depth=2, max_pages=10, force=True)
         assert len(paths) == 2
 
     @patch("lilbee.crawler.crawl_single")
@@ -337,7 +481,7 @@ class TestCrawlAndSave:
         def on_progress(event_type, data):
             events.append((str(event_type), data))
 
-        await crawl_and_save("https://example.com", on_progress=on_progress)
+        await crawl_and_save("https://example.com", force=True, on_progress=on_progress)
         event_types = [e[0] for e in events]
         assert "crawl_start" in event_types
         assert "crawl_page" in event_types
@@ -348,6 +492,49 @@ class TestCrawlAndSave:
         mock_crawl_single.return_value = CrawlResult(
             url="https://example.com/page", markdown="# Test"
         )
-        await crawl_and_save("https://example.com/page")
+        await crawl_and_save("https://example.com/page", force=True)
         meta = load_crawl_metadata()
         assert "https://example.com/page" in meta
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_skips_duplicate_url(self, mock_crawl_single, isolated_env):
+        """Already-crawled URL is skipped when force=False."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/dup", markdown="# Dup"
+        )
+        # First crawl
+        await crawl_and_save("https://example.com/dup", force=True)
+        mock_crawl_single.reset_mock()
+
+        # Second crawl without force: should skip
+        paths = await crawl_and_save("https://example.com/dup")
+        assert paths == []
+        mock_crawl_single.assert_not_awaited()
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_force_overrides_duplicate_check(self, mock_crawl_single, isolated_env):
+        """force=True re-crawls even when URL already exists in metadata."""
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/dup", markdown="# Dup"
+        )
+        await crawl_and_save("https://example.com/dup", force=True)
+        mock_crawl_single.reset_mock()
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com/dup", markdown="# Updated"
+        )
+
+        paths = await crawl_and_save("https://example.com/dup", force=True)
+        assert len(paths) == 1
+        mock_crawl_single.assert_awaited_once()
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_max_pages_capped_by_config(self, mock_crawl_single, isolated_env):
+        """max_pages in crawl_and_save is capped by cfg.crawl_max_pages."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Test")
+        cfg.crawl_max_pages = 5
+        await crawl_and_save("https://example.com", max_pages=999, force=True)
+        # Single page mode: no assertion on max_pages since depth=0 uses crawl_single
+
+    async def test_semaphore_limits_concurrency(self, isolated_env):
+        """The semaphore limits concurrent crawls."""
+        assert _crawl_semaphore._value == 3

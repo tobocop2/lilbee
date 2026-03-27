@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from lilbee.crawler import crawl_and_save
 from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
@@ -64,8 +65,6 @@ def make_progress_updater(task: CrawlTask) -> DetailedProgressCallback:
 
 async def run_crawl(task: CrawlTask) -> None:
     """Execute crawl, save results, and trigger sync."""
-    from lilbee.crawler import crawl_and_save
-
     task.status = TaskStatus.RUNNING
     task.started_at = now_iso()
     progress = make_progress_updater(task)
