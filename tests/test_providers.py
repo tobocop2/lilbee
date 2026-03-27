@@ -979,9 +979,7 @@ class TestRoutingProvider:
         """When litellm is not installed, routing provider skips remote models."""
         rp = self._make_provider()
 
-        with mock.patch(
-            "lilbee.providers.litellm_provider.litellm_available", return_value=False
-        ):
+        with mock.patch("lilbee.providers.litellm_provider.litellm_available", return_value=False):
             models = rp._litellm_models()
         assert models == set()
 
