@@ -278,12 +278,20 @@ class TestValidateCrawlUrl:
         with pytest.raises(ValueError, match="no hostname"):
             validate_crawl_url("http://")
 
-    def test_rejects_localhost(self):
-        with pytest.raises(ValueError, match="localhost"):
+    def test_rejects_localhost(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
+        )
+        with pytest.raises(ValueError, match="not allowed"):
             validate_crawl_url("http://localhost/path")
 
-    def test_rejects_localhost_dot(self):
-        with pytest.raises(ValueError, match="localhost"):
+    def test_rejects_localhost_dot(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 0))],
+        )
+        with pytest.raises(ValueError, match="not allowed"):
             validate_crawl_url("http://localhost./path")
 
     def test_rejects_loopback_ipv4(self, monkeypatch):
@@ -380,7 +388,7 @@ class TestCrawlSingle:
 
     @patch("crawl4ai.AsyncWebCrawler")
     async def test_failure(self, mock_crawler_cls):
-        mock_result = _make_crawl4ai_result(success=False, error="Connection refused")
+        mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
