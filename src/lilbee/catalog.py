@@ -330,7 +330,7 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     return sorted(models, key=key_fn, reverse=reverse)
 
 
-# Maps Ollama-style names to catalog display names for lookup
+# Maps model names to catalog display names for lookup
 def find_catalog_entry(name: str) -> CatalogModel | None:
     """Find a featured model by display name (case-insensitive)."""
     name_lower = name.lower()

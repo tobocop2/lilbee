@@ -438,7 +438,7 @@ async def get_config() -> dict[str, Any]:
         "chat_model": cfg.chat_model,
         "embedding_model": cfg.embedding_model,
         "vision_model": cfg.vision_model,
-        "ollama_url": cfg.ollama_url,
+        "litellm_base_url": cfg.litellm_base_url,
         "system_prompt": cfg.system_prompt,
         "top_k": cfg.top_k,
         "max_distance": cfg.max_distance,
@@ -506,7 +506,7 @@ async def models_catalog(
 
     models = []
     for m in result.models:
-        source = "ollama" if m.name in installed_names else "native"
+        source = "litellm" if m.name in installed_names else "native"
         models.append(
             {
                 "name": m.name,
@@ -535,7 +535,7 @@ async def models_installed() -> dict[str, Any]:
     models = []
     for name in names:
         src = manager.get_source(name)
-        source_str = src.value if src is not None else ModelSource.OLLAMA.value
+        source_str = src.value if src is not None else ModelSource.LITELLM.value
         models.append({"name": name, "source": source_str})
     return {"models": models}
 
@@ -560,7 +560,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
         yield sse_error(str(exc))
 
 
-async def models_delete(model: str, *, source: str = "ollama") -> dict[str, Any]:
+async def models_delete(model: str, *, source: str = "litellm") -> dict[str, Any]:
     """Delete a model. Returns {deleted, model, freed_gb}."""
     from lilbee.model_manager import get_model_manager
 

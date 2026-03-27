@@ -23,8 +23,8 @@ Add to your MCP client's MCP server configuration:
 
 ### Tools
 
-| Tool | Description | Requires Ollama |
-|------|-------------|-----------------|
+| Tool | Description | Requires LLM backend |
+|------|-------------|---------------------|
 | `lilbee_search(query, top_k)` | Search for relevant document chunks by vector similarity | No (uses pre-computed embeddings) |
 | `lilbee_status()` | Show indexed documents, config, and chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with the vector store | Yes (for embedding) |
@@ -61,16 +61,16 @@ All commands accept `--json` (or `-j`) before the subcommand for structured outp
 ### Two modes
 
 - **`search`** — Raw chunk retrieval. No LLM call at query time. Use when your agent has its own LLM and just needs relevant document chunks.
-- **`ask`** — Full local RAG via Ollama. Use for fully-local workflows when Ollama is running.
+- **`ask`** — Full local RAG via llama-cpp (or litellm if installed). Use for fully-local workflows.
 
 ### Commands
 
 ```bash
-# Search for relevant chunks (no Ollama needed at query time)
+# Search for relevant chunks (no LLM call at query time)
 lilbee --json search "query" --top-k 5
 # Returns: {"command": "search", "query": "...", "results": [...]}
 
-# Ask a question with local RAG (requires Ollama)
+# Ask a question with local RAG
 lilbee --json ask "question"
 # Returns: {"command": "ask", "question": "...", "answer": "...", "sources": [...]}
 
@@ -105,8 +105,8 @@ SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `
 
 ## Recommendations
 
-- Prefer `search` over `ask` if your agent has its own LLM — it's faster and doesn't need Ollama at query time
+- Prefer `search` over `ask` if your agent has its own LLM — it's faster and skips the LLM call at query time
 - Use MCP when available — it's more direct than shelling out
 - Run `status` / `lilbee_status()` first to check if documents are indexed
 - Run `sync` / `lilbee_sync()` after adding documents to update the index
-- Ollama is needed for two things: (1) embedding during sync/indexing, (2) `ask` for LLM answers. Once indexed, `search` works without Ollama
+- An LLM backend is needed for: (1) embedding during sync/indexing, (2) `ask` for LLM answers. Once indexed, `search` works without an LLM. By default, llama-cpp handles both. Install `lilbee[litellm]` to use external backends like Ollama or OpenAI.
