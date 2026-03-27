@@ -22,6 +22,7 @@ flowchart LR
 
     subgraph Core
         INGEST[Ingestion Engine]
+        CONCEPT[Concept Graph]
         SEARCH[Search Pipeline]
         GEN[LLM Generation]
         PROV[Provider Abstraction]
@@ -44,7 +45,10 @@ flowchart LR
     MCP --> SEARCH & INGEST
 
     INGEST --> LANCE & DOCS
+    INGEST --> CONCEPT
+    CONCEPT --> LANCE
     SEARCH --> LANCE
+    SEARCH --> CONCEPT
     SEARCH --> GEN
     GEN --> PROV
     PROV --> OLLAMA & LLAMA
@@ -64,7 +68,8 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Structured files**: CSV/JSON/XML preprocessors → token-based recursive chunking
 - **Frontmatter**: YAML tags, title, author, date extracted from markdown; stripped before chunking
 - **Embedding**: provider-agnostic — works with Ollama, llama-cpp-python, or any configured provider
-- **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval
+- **Concept extraction**: spaCy noun phrases extracted per chunk, co-occurrence graph built with PPMI weights, Leiden clustering assigns concepts to communities
+- **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval + concept graph tables (nodes, edges, chunk mappings)
 
 ---
 
@@ -109,11 +114,13 @@ flowchart TD
     CONF -->|Yes| HYBRID[Hybrid Search Only]
     CONF -->|No| EXPAND[LLM Query Expansion]
 
-    EXPAND --> GUARD[Guardrails: overlap check + dedup]
+    EXPAND --> GEXP[+ Graph Expansion]
+    GEXP --> GUARD[Guardrails: overlap check + dedup]
     GUARD --> MULTI[Multi-Query Search + Merge]
     MULTI --> HYBRID
 
-    HYBRID --> ADAPT[Adaptive Distance Filter]
+    HYBRID --> CBOOST[Concept Boost]
+    CBOOST --> ADAPT[Adaptive Distance Filter]
     ADAPT --> MMR[MMR Diversity]
     MMR --> RERANK{Reranker Model?}
     RERANK -->|Yes| XENC[Cross-Encoder Rerank]
@@ -184,6 +191,20 @@ flowchart TD
 - **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated — they approximate the answer space but aren't grounded in real content)
 - **When it helps**: vague or short queries where the user's terminology doesn't match the indexed documents. E.g. "how does the thing work" where the "thing" is described with specific technical vocabulary in the docs.
 - **When to skip**: factual lookups, keyword-heavy queries, or when latency matters.
+
+#### Concept Graph (LazyGraphRAG Index Side)
+**On by default.** At index time, extracts noun phrases from each chunk via spaCy, builds a co-occurrence graph weighted by Positive Pointwise Mutual Information (PPMI), and clusters concepts with the Leiden algorithm. Zero LLM calls at index or query time.
+
+Two query-time effects:
+- **Concept boost**: for each search result, counts concept overlap between the query's noun phrases and the chunk's concepts. Score adjusted by `overlap_ratio × concept_boost_weight` (default 0.3). Only promotes — never demotes.
+- **Graph expansion**: traverses the co-occurrence graph (1 hop BFS) to find concepts related to the query. These supplement LLM-generated expansion variants and go through the same drift guardrails.
+
+- **Inspiration**: Microsoft Research 2024-2025, "[LazyGraphRAG](https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/)" — NLP concept extraction at index time, defer reasoning to query time
+- **Clustering**: Traag et al. 2019, "[From Louvain to Leiden](https://www.nature.com/articles/s41598-019-41695-z)" via graspologic-native (Rust)
+- **Weighting**: Church & Hanks 1990, PPMI — `max(0, log2(P(a,b) / P(a)P(b)))`. Negative values clamped to zero to discard anti-correlated concept pairs.
+- **Cost**: ~10ms per chunk at index time (spaCy NLP). Zero additional cost at query time (table lookups only).
+- **When it helps**: queries where related but not identical concepts appear across documents. E.g. "connection pooling" finding both database and API performance docs because both mention it alongside related concepts.
+- **Browse**: `lilbee topics` shows concept communities — a map of what's in the knowledge base.
 
 #### Cross-Encoder Reranking
 **Off by default.** Requires a reranker model to be configured. After hybrid search returns candidates, a cross-encoder model scores each (query, chunk) pair for more precise relevance ranking.
