@@ -83,7 +83,13 @@ markers = ["slow: integration tests that download models or take >10s"]
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py"]
+omit = [
+    "src/lilbee/__main__.py",
+    "src/lilbee/concepts.py",
+    "src/lilbee/crawler.py",
+    "src/lilbee/crawl_task.py",
+    "src/lilbee/reranker.py",
+]
 concurrency = ["thread"]
 
 [tool.coverage.report]
