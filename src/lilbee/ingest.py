@@ -713,3 +713,52 @@ def _apply_result(
             updated.remove(result.name)
         return
     store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
+
+
+class Indexer:
+    """Document ingestion engine — composes Store and Embedder for sync/add/rebuild."""
+
+    def __init__(
+        self,
+        config: Any,
+        provider: Any,
+        store_inst: Any,
+        embedder_inst: Any,
+    ) -> None:
+        self._config = config
+        self._provider = provider
+        self._store = store_inst
+        self._embedder = embedder_inst
+
+    async def sync(
+        self,
+        force_rebuild: bool = False,
+        quiet: bool = False,
+        *,
+        force_vision: bool = False,
+        on_progress: DetailedProgressCallback = noop_callback,
+    ) -> SyncResult:
+        """Sync documents with the vector store, using injected components."""
+        return await sync(
+            force_rebuild=force_rebuild,
+            quiet=quiet,
+            force_vision=force_vision,
+            on_progress=on_progress,
+        )
+
+    async def add(
+        self,
+        paths: list[Path],
+        *,
+        force: bool = True,
+        quiet: bool = True,
+    ) -> SyncResult:
+        """Copy files to documents dir and sync."""
+        from lilbee.cli.helpers import copy_files
+
+        copy_files(paths, force=force)
+        return await sync(quiet=quiet)
+
+    async def rebuild(self, *, quiet: bool = True) -> SyncResult:
+        """Force rebuild the entire index."""
+        return await sync(force_rebuild=True, quiet=quiet)

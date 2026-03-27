@@ -5,9 +5,40 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lilbee.config import Config
     from lilbee.providers.base import LLMProvider
 
 _provider: LLMProvider | None = None
+
+
+def create_provider(config: Config) -> LLMProvider:
+    """Create a new LLM provider instance from the given config."""
+    provider_name = config.llm_provider
+
+    if provider_name == "auto":
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        return RoutingProvider()
+
+    if provider_name == "llama-cpp":
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        return LlamaCppProvider()
+
+    if provider_name in ("litellm", "ollama"):
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        if not LiteLLMProvider.available():
+            from lilbee.providers.base import ProviderError
+
+            raise ProviderError(
+                "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
+            )
+        return LiteLLMProvider(base_url=config.litellm_base_url, api_key=config.llm_api_key)
+
+    from lilbee.providers.base import ProviderError
+
+    raise ProviderError(f"Unknown LLM provider: {provider_name!r}")
 
 
 def get_provider() -> LLMProvider:
@@ -18,31 +49,7 @@ def get_provider() -> LLMProvider:
 
     from lilbee.config import cfg
 
-    provider_name = cfg.llm_provider
-
-    if provider_name == "auto":
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        _provider = RoutingProvider()
-    elif provider_name == "llama-cpp":
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
-
-        _provider = LlamaCppProvider()
-    elif provider_name in ("litellm", "ollama"):
-        from lilbee.providers.litellm_provider import LiteLLMProvider
-
-        if not LiteLLMProvider.available():
-            from lilbee.providers.base import ProviderError
-
-            raise ProviderError(
-                "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
-            )
-        _provider = LiteLLMProvider(base_url=cfg.litellm_base_url, api_key=cfg.llm_api_key)
-    else:
-        from lilbee.providers.base import ProviderError
-
-        raise ProviderError(f"Unknown LLM provider: {provider_name!r}")
-
+    _provider = create_provider(cfg)
     return _provider
 
 
