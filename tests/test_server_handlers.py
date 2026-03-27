@@ -12,6 +12,27 @@ from lilbee.server import handlers
 from lilbee.store import SearchChunk
 
 PATCH_PROVIDER = "lilbee.server.handlers.get_provider"
+PATCH_RAG = "lilbee.server.handlers.build_rag_context"
+
+_SAMPLE_CHUNK = SearchChunk(
+    source="a.pdf",
+    content_type="pdf",
+    chunk="text",
+    distance=0.1,
+    page_start=1,
+    page_end=1,
+    line_start=0,
+    line_end=0,
+    chunk_index=0,
+    vector=[0.1],
+)
+
+
+def _rag_return(chunks: list[SearchChunk] | None = None):
+    """Build a mock build_rag_context return value."""
+    results = chunks or [_SAMPLE_CHUNK]
+    messages = [{"role": "system", "content": "test"}, {"role": "user", "content": "q"}]
+    return results, messages
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +69,7 @@ class TestSseEvent:
 
 class TestHealth:
     async def test_returns_status_and_version(self):
-        with patch("lilbee.cli.helpers.get_version", return_value="1.2.3"):
+        with patch("lilbee.server.handlers.get_version", return_value="1.2.3"):
             result = await handlers.health()
         assert result == {"status": "ok", "version": "1.2.3"}
 
@@ -67,14 +88,14 @@ class TestStatus:
             sources=[],
             total_chunks=0,
         )
-        with patch("lilbee.cli.helpers.gather_status", return_value=mock_status):
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
             result = await handlers.status()
         assert result["sources"] == []
         assert result["total_chunks"] == 0
 
 
 class TestSearch:
-    @patch("lilbee.query.search_context")
+    @patch("lilbee.server.handlers.search_context")
     async def test_returns_grouped_results(self, mock_search):
         mock_search.return_value = [
             SearchChunk(
@@ -95,7 +116,7 @@ class TestSearch:
         assert result[0]["source"] == "doc.pdf"
         mock_search.assert_called_once_with("test", top_k=3)
 
-    @patch("lilbee.query.search_context", return_value=[])
+    @patch("lilbee.server.handlers.search_context", return_value=[])
     async def test_empty_results(self, mock_search):
         result = await handlers.search("nothing")
         assert result == []
@@ -140,7 +161,7 @@ class TestAsk:
 
 
 class TestAskStream:
-    @patch("lilbee.query.search_context", return_value=[])
+    @patch("lilbee.server.handlers.build_rag_context", return_value=None)
     async def test_no_results_yields_error(self, mock_search):
         events = [e async for e in handlers.ask_stream("test")]
         # First event is the empty yield, then the error
@@ -149,22 +170,8 @@ class TestAskStream:
         parsed = json.loads(non_empty[0].split("data: ")[1].strip())
         assert "No relevant documents found" in parsed["message"]
 
-    @patch("lilbee.query.search_context")
-    async def test_yields_token_sources_done(self, mock_search):
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_yields_token_sources_done(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["answer"])
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -176,22 +183,8 @@ class TestAskStream:
         assert "sources" in event_types
         assert "done" in event_types
 
-    @patch("lilbee.query.search_context")
-    async def test_provider_error_yields_error_event(self, mock_search):
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_provider_error_yields_error_event(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = RuntimeError("model missing")
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -202,25 +195,11 @@ class TestAskStream:
         assert len(error_events) == 1
         assert "model missing" in error_events[0]
 
-    @patch("lilbee.query.search_context")
-    async def test_cancel_sets_cancel_event(self, mock_search):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_cancel_sets_cancel_event(self, mock_rag):
         """Closing the generator mid-stream signals the thread to stop."""
         import threading
 
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
         barrier = threading.Event()
 
         def blocking_chat(*args, **kwargs):
@@ -244,25 +223,11 @@ class TestAskStream:
         assert any("first" in e for e in non_empty)
         assert not any("second" in e for e in non_empty)
 
-    @patch("lilbee.query.search_context")
-    async def test_cancel_logs_message(self, mock_search, caplog):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_cancel_logs_message(self, mock_rag, caplog):
         """Closing the generator mid-stream logs a cancellation message."""
         import threading
 
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
         barrier = threading.Event()
 
         def blocking_chat(*args, **kwargs):
@@ -285,24 +250,9 @@ class TestAskStream:
 
         assert any("Stream cancelled by client" in r.message for r in caplog.records)
 
-    @patch("lilbee.query.search_context")
-    async def test_skips_empty_tokens(self, mock_search):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_skips_empty_tokens(self, mock_rag):
         """Empty strings from provider are not emitted."""
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
-
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["", "answer"])
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -327,28 +277,14 @@ class TestChat:
 
 
 class TestChatStream:
-    @patch("lilbee.query.search_context", return_value=[])
-    async def test_no_results_yields_error(self, mock_search):
+    @patch("lilbee.server.handlers.build_rag_context", return_value=None)
+    async def test_no_results_yields_error(self, mock_rag):
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
 
-    @patch("lilbee.query.search_context")
-    async def test_yields_events_with_history(self, mock_search):
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_yields_events_with_history(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["reply"])
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -360,22 +296,8 @@ class TestChatStream:
         assert "token" in event_types
         assert "done" in event_types
 
-    @patch("lilbee.query.search_context")
-    async def test_provider_error_yields_error_event(self, mock_search):
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_provider_error_yields_error_event(self, mock_rag):
         mock_provider = MagicMock()
         mock_provider.chat.side_effect = ConnectionError("provider down")
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -386,25 +308,11 @@ class TestChatStream:
         assert len(error_events) == 1
         assert "provider down" in error_events[0]
 
-    @patch("lilbee.query.search_context")
-    async def test_cancel_sets_cancel_event(self, mock_search):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_cancel_sets_cancel_event(self, mock_rag):
         """Closing the chat_stream generator mid-stream signals the thread to stop."""
         import threading
 
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
         barrier = threading.Event()
 
         def blocking_chat(*args, **kwargs):
@@ -428,25 +336,11 @@ class TestChatStream:
         assert any("first" in e for e in non_empty)
         assert not any("second" in e for e in non_empty)
 
-    @patch("lilbee.query.search_context")
-    async def test_cancel_logs_message(self, mock_search, caplog):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_cancel_logs_message(self, mock_rag, caplog):
         """Closing the chat_stream generator mid-stream logs a cancellation message."""
         import threading
 
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
         barrier = threading.Event()
 
         def blocking_chat(*args, **kwargs):
@@ -469,24 +363,9 @@ class TestChatStream:
 
         assert any("Stream cancelled by client" in r.message for r in caplog.records)
 
-    @patch("lilbee.query.search_context")
-    async def test_skips_empty_tokens(self, mock_search):
+    @patch(PATCH_RAG, return_value=_rag_return())
+    async def test_skips_empty_tokens(self, mock_rag):
         """Empty strings from provider are not emitted."""
-        mock_search.return_value = [
-            SearchChunk(
-                source="a.pdf",
-                content_type="pdf",
-                chunk="text",
-                distance=0.1,
-                page_start=1,
-                page_end=1,
-                line_start=0,
-                line_end=0,
-                chunk_index=0,
-                vector=[0.1],
-            )
-        ]
-
         mock_provider = MagicMock()
         mock_provider.chat.return_value = iter(["", "reply"])
         with patch(PATCH_PROVIDER, return_value=mock_provider):
@@ -889,42 +768,58 @@ class TestGetConfigReranker:
         assert "rerank_candidates" in result
 
 
-class TestCrawlUrl:
-    @patch("lilbee.crawl_task.start_crawl", return_value="abc123")
-    async def test_returns_task_id(self, mock_start):
-        result = await handlers.crawl_url("https://example.com", depth=1, max_pages=10)
-        assert result == {"task_id": "abc123"}
-        mock_start.assert_called_once_with("https://example.com", depth=1, max_pages=10)
-
+class TestCrawlStream:
     async def test_rejects_invalid_url(self):
         with pytest.raises(ValueError, match="http"):
-            await handlers.crawl_url("ftp://bad.com")
+            async for _ in handlers.crawl_stream("ftp://bad.com"):
+                pass  # pragma: no cover
 
     async def test_rejects_non_url(self):
         with pytest.raises(ValueError, match="http"):
-            await handlers.crawl_url("not-a-url")
+            async for _ in handlers.crawl_stream("not-a-url"):
+                pass  # pragma: no cover
+
+    @patch("lilbee.crawler.crawl_and_save")
+    async def test_streams_events_and_done(self, mock_crawl):
+        from pathlib import Path
+
+        async def fake_crawl(url, *, depth, max_pages, on_progress):
+            on_progress("crawl_start", {"url": url, "depth": depth})
+            on_progress("crawl_page", {"url": url, "current": 1, "total": 1})
+            on_progress("crawl_done", {"pages_crawled": 1, "files_written": 1})
+            return [Path("/tmp/test.md")]
+
+        mock_crawl.side_effect = fake_crawl
+        events = []
+        async for event in handlers.crawl_stream("https://example.com", depth=1, max_pages=10):
+            events.append(event)
+        assert any("crawl_start" in e for e in events)
+        assert any("done" in e for e in events)
+
+    @patch("lilbee.crawler.crawl_and_save")
+    async def test_streams_error_on_exception(self, mock_crawl):
+        mock_crawl.side_effect = RuntimeError("network fail")
+        events = []
+        async for event in handlers.crawl_stream("https://example.com"):
+            events.append(event)
+        assert any("error" in e and "network fail" in e for e in events)
 
 
-class TestCrawlStatus:
-    async def test_task_not_found_raises_key_error(self):
-        with pytest.raises(KeyError, match="nonexistent"):
-            await handlers.crawl_status("nonexistent")
+class TestSseHelpers:
+    def test_sse_error(self):
+        result = handlers.sse_error("oops")
+        assert result == 'event: error\ndata: {"message": "oops"}\n\n'
 
-    @patch("lilbee.crawl_task.get_task")
-    async def test_returns_task_info(self, mock_get):
-        from lilbee.crawl_task import CrawlTask, TaskStatus
+    def test_sse_done(self):
+        result = handlers.sse_done({"count": 1})
+        assert result == 'event: done\ndata: {"count": 1}\n\n'
 
-        mock_get.return_value = CrawlTask(
-            task_id="abc",
-            url="https://example.com",
-            depth=1,
-            max_pages=50,
-            status=TaskStatus.RUNNING,
-            pages_crawled=5,
-            pages_total=10,
-        )
-        result = await handlers.crawl_status("abc")
-        assert result["task_id"] == "abc"
-        assert result["url"] == "https://example.com"
-        assert result["status"] == "running"
-        assert result["pages_crawled"] == 5
+
+class TestResolveGenerationOptions:
+    def test_with_options(self):
+        result = handlers._resolve_generation_options({"temperature": 0.5})
+        assert result is not None
+
+    def test_without_options(self):
+        result = handlers._resolve_generation_options(None)
+        assert result is None

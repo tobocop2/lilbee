@@ -28,7 +28,8 @@ Add to your MCP client's MCP server configuration:
 | `lilbee_search(query, top_k)` | Search for relevant document chunks by vector similarity | No (uses pre-computed embeddings) |
 | `lilbee_status()` | Show indexed documents, config, and chunk counts | No |
 | `lilbee_sync()` | Sync documents directory with the vector store | Yes (for embedding) |
-| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync them into the vector store | Yes (for embedding) |
+| `lilbee_add(paths, force, vision_model)` | Add files, dirs, or URLs and sync them into the vector store | Yes (for embedding) |
+| `lilbee_crawl(url, depth, max_pages)` | Crawl a web page (or site) and add it to the knowledge base, then sync | Yes (for embedding) |
 | `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base in a directory | No |
 | `lilbee_remove(names, delete_files)` | Remove documents from the index (optionally delete source files) | No |
 | `lilbee_list_documents()` | List all indexed documents with chunk counts | No |
@@ -84,6 +85,22 @@ lilbee --json sync
 ### JSON output format
 
 Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`. Results include `distance` scores (lower = more relevant). Vectors are stripped from output.
+
+## REST API
+
+The built-in HTTP server (`lilbee serve`) exposes a REST API. Streaming endpoints use Server-Sent Events (SSE).
+
+### Crawl endpoint
+
+`POST /api/crawl` streams SSE progress events while crawling a URL:
+
+```bash
+curl -X POST http://localhost:7433/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "depth": 1, "max_pages": 50}'
+```
+
+SSE events emitted: `crawl_start`, `crawl_page`, `crawl_done`, then `done` (or `error` on failure).
 
 ## Recommendations
 

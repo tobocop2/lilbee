@@ -7,7 +7,7 @@ from typing import Any
 
 from litestar import Litestar, delete, get, post, put
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import NotFoundException, ValidationException
+from litestar.exceptions import ValidationException
 from litestar.openapi import OpenAPIConfig
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -24,7 +24,6 @@ from lilbee.server.models import (
     ChatRequest,
     CleanedChunk,
     CrawlRequest,
-    CrawlStatusResponse,
     HealthResponse,
     SetModelRequest,
     SetModelResponse,
@@ -242,23 +241,14 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
-@post("/api/crawl", status_code=201)
-async def crawl_route(data: CrawlRequest) -> dict[str, Any]:
-    """Start a web crawl and return a task_id for status polling."""
+@post("/api/crawl")
+async def crawl_route(data: CrawlRequest) -> Stream:
+    """Crawl a URL with streaming SSE progress events (crawl_start, crawl_page, crawl_done)."""
     try:
-        return await handlers.crawl_url(url=data.url, depth=data.depth, max_pages=data.max_pages)
+        gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-
-
-@get("/api/crawl/{task_id:str}")
-async def crawl_status_route(task_id: str) -> CrawlStatusResponse:
-    """Poll the status of a running or completed crawl task."""
-    try:
-        raw = await handlers.crawl_status(task_id)
-    except KeyError as exc:
-        raise NotFoundException(str(exc)) from exc
-    return CrawlStatusResponse(**raw)
+    return Stream(gen, media_type="text/event-stream")
 
 
 def create_app() -> Litestar:
@@ -292,7 +282,6 @@ def create_app() -> Litestar:
             documents_list_route,
             documents_remove_route,
             crawl_route,
-            crawl_status_route,
         ],
         cors_config=cors,
         openapi_config=OpenAPIConfig(

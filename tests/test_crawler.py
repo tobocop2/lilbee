@@ -245,8 +245,8 @@ class TestCrawlRecursive:
 
         progress_calls = []
 
-        def on_progress(crawled, total, url):
-            progress_calls.append((crawled, total, url))
+        def on_progress(event_type, data):
+            progress_calls.append((event_type, data))
 
         results = await crawl_recursive(
             "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
@@ -327,6 +327,21 @@ class TestCrawlAndSave:
         ]
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
+
+    @patch("lilbee.crawler.crawl_single")
+    async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):
+        """Progress callback receives crawl_start, crawl_page, crawl_done for single page."""
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
+        events = []
+
+        def on_progress(event_type, data):
+            events.append((str(event_type), data))
+
+        await crawl_and_save("https://example.com", on_progress=on_progress)
+        event_types = [e[0] for e in events]
+        assert "crawl_start" in event_types
+        assert "crawl_page" in event_types
+        assert "crawl_done" in event_types
 
     @patch("lilbee.crawler.crawl_single")
     async def test_updates_metadata(self, mock_crawl_single, isolated_env):

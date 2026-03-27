@@ -4,13 +4,13 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 from lilbee.config import cfg
+from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +29,6 @@ class CrawlResult:
     markdown: str = ""
     success: bool = True
     error: str | None = None
-
-
-CrawlProgressCallback = Callable[[int, int, str], None]
-"""(pages_crawled, pages_total, current_url) → None"""
 
 
 def url_to_filename(url: str) -> str:
@@ -190,7 +186,7 @@ async def crawl_recursive(
     url: str,
     max_depth: int = 0,
     max_pages: int = 0,
-    on_progress: CrawlProgressCallback | None = None,
+    on_progress: DetailedProgressCallback | None = None,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, returning results for all pages.
 
@@ -221,7 +217,10 @@ async def crawl_recursive(
                 crawl_results = [crawl_results]
             for i, cr in enumerate(crawl_results):
                 if on_progress:
-                    on_progress(i + 1, len(crawl_results), cr.url)
+                    on_progress(
+                        EventType.CRAWL_PAGE,
+                        {"url": cr.url, "current": i + 1, "total": len(crawl_results)},
+                    )
                 if cr.success:
                     results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
                 else:
@@ -245,9 +244,12 @@ async def crawl_and_save(
     *,
     depth: int = 0,
     max_pages: int = 0,
-    on_progress: CrawlProgressCallback | None = None,
+    on_progress: DetailedProgressCallback | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written."""
+    if on_progress:
+        on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
+
     if depth > 0:
         results = await crawl_recursive(
             url, max_depth=depth, max_pages=max_pages, on_progress=on_progress
@@ -255,7 +257,16 @@ async def crawl_and_save(
     else:
         result = await crawl_single(url)
         results = [result]
+        if on_progress:
+            on_progress(EventType.CRAWL_PAGE, {"url": url, "current": 1, "total": 1})
 
     paths = save_crawl_results(results)
     update_metadata(results)
+
+    if on_progress:
+        on_progress(
+            EventType.CRAWL_DONE,
+            {"pages_crawled": len(results), "files_written": len(paths)},
+        )
+
     return paths

@@ -18,6 +18,7 @@ from lilbee.crawl_task import (
     run_crawl,
     start_crawl,
 )
+from lilbee.progress import EventType
 
 
 @pytest.fixture(autouse=True)
@@ -71,12 +72,21 @@ class TestNowIso:
 
 
 class TestMakeProgressUpdater:
-    def test_updates_task_fields(self):
+    def test_updates_task_fields_on_crawl_page(self):
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
         updater = make_progress_updater(task)
-        updater(5, 10, "https://example.com/page5")
+        updater(
+            EventType.CRAWL_PAGE, {"current": 5, "total": 10, "url": "https://example.com/page5"}
+        )
         assert task.pages_crawled == 5
         assert task.pages_total == 10
+
+    def test_ignores_non_crawl_page_events(self):
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        updater = make_progress_updater(task)
+        updater(EventType.CRAWL_START, {"url": "https://example.com", "depth": 1})
+        assert task.pages_crawled == 0
+        assert task.pages_total is None
 
 
 class TestRunCrawl:

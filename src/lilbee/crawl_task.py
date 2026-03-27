@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
+
+from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +51,13 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def make_progress_updater(task: CrawlTask) -> Callable[[int, int, str], None]:
-    """Return a progress callback that updates task fields."""
+def make_progress_updater(task: CrawlTask) -> DetailedProgressCallback:
+    """Return a progress callback that updates task fields from crawl events."""
 
-    def _on_progress(crawled: int, total: int, _url: str) -> None:
-        task.pages_crawled = crawled
-        task.pages_total = total
+    def _on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+        if event_type == EventType.CRAWL_PAGE:
+            task.pages_crawled = data.get("current", task.pages_crawled)
+            task.pages_total = data.get("total", task.pages_total)
 
     return _on_progress
 

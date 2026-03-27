@@ -94,14 +94,3 @@ class CrawlRequest(BaseModel):
     url: str
     depth: int = 0
     max_pages: int = 50
-
-
-class CrawlStatusResponse(BaseModel):
-    """Response for /api/crawl/{task_id}."""
-
-    task_id: str
-    url: str
-    status: str
-    pages_crawled: int
-    pages_total: int | None = None
-    error: str | None = None
