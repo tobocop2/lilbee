@@ -372,6 +372,14 @@ def add(
         # Crawl URLs first (saves .md files into documents/_web/)
         crawled_paths: list[Path] = []
         if urls:
+            from lilbee.crawler import crawler_available
+
+            if not crawler_available():
+                console.print(
+                    f"[{theme.ERROR}]Web crawling requires: "
+                    f"pip install 'lilbee[crawler]'[/{theme.ERROR}]"
+                )
+                raise SystemExit(1)
             crawled_paths = _crawl_urls_blocking(
                 urls, crawl=crawl, depth=depth, max_pages=max_pages
             )

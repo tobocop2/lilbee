@@ -18,6 +18,17 @@ from lilbee.progress import DetailedProgressCallback, EventType
 
 log = logging.getLogger(__name__)
 
+
+def crawler_available() -> bool:
+    """Check if crawl4ai is installed."""
+    try:
+        import crawl4ai  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 _crawl_semaphore: asyncio.Semaphore | None = None
 
 

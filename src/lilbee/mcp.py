@@ -97,6 +97,10 @@ async def lilbee_add(
     # Crawl URLs
     crawled_count = 0
     if urls:
+        from lilbee.crawler import crawler_available
+
+        if not crawler_available():
+            return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
         from lilbee.crawler import crawl_and_save
 
         for url in urls:
@@ -145,6 +149,10 @@ def lilbee_crawl(
         depth: Maximum link-following depth (0 = single page only).
         max_pages: Maximum number of pages to fetch (default: 50).
     """
+    from lilbee.crawler import crawler_available
+
+    if not crawler_available():
+        return {"error": "Web crawling requires: pip install 'lilbee[crawler]'"}
     try:
         require_valid_crawl_url(url)
     except ValueError as exc:

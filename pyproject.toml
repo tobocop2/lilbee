@@ -40,13 +40,13 @@ dependencies = [
     "litellm",
     "huggingface_hub",
     "httpx",
-    "crawl4ai>=0.8.0",
 ]
 
 [project.optional-dependencies]
 llama-cpp = ["llama-cpp-python"]
 reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
+crawler = ["crawl4ai>=0.8.0"]
 
 [project.urls]
 Homepage = "https://tobocop2.github.io/lilbee/"
