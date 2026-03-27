@@ -61,10 +61,8 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      - name: Install dependencies (no llama-cpp for unit tests)
-        run: uv sync --extra reranker --extra graph --extra crawler
-        env:
-          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
+      - name: Install dependencies
+        run: uv sync
 
       - name: Run unit tests with coverage
         run: make test-ci
