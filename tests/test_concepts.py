@@ -1,7 +1,7 @@
 """Tests for the concept graph module.
 
-Skipped when graph dependencies (spacy, graspologic-native) are not installed.
-Install with: pip install 'lilbee[graph]'
+All heavy deps (spacy, graspologic-native) are mocked at the boundary so these
+tests run without the ``graph`` extra installed.
 """
 
 from dataclasses import fields
@@ -9,11 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lilbee.concepts import concepts_available
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
-
-pytestmark = pytest.mark.skipif(not concepts_available(), reason="lilbee[graph] not installed")
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +87,24 @@ def _make_result(
         relevance_score=relevance_score,
         vector=[0.1],
     )
+
+
+class TestConceptsAvailable:
+    def test_returns_true_when_installed(self):
+        mock_spacy = MagicMock()
+        mock_graspologic = MagicMock()
+        with patch.dict(
+            "sys.modules", {"spacy": mock_spacy, "graspologic_native": mock_graspologic}
+        ):
+            from lilbee.concepts import concepts_available
+
+            assert concepts_available() is True
+
+    def test_returns_false_when_not_installed(self):
+        with patch.dict("sys.modules", {"spacy": None}):
+            from lilbee.concepts import concepts_available
+
+            assert concepts_available() is False
 
 
 class TestExtractConcepts:
@@ -201,24 +216,27 @@ class TestGetNlp:
 
 
 class TestEnsureSpacyModel:
-    @patch("spacy.load")
-    def test_loads_existing(self, mock_load):
-        mock_load.return_value = MagicMock()
-        from lilbee.concepts import _ensure_spacy_model
+    def test_loads_existing(self):
+        mock_spacy = MagicMock()
+        mock_spacy.load.return_value = MagicMock()
+        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": MagicMock()}):
+            from lilbee.concepts import _ensure_spacy_model
 
-        result = _ensure_spacy_model()
-        mock_load.assert_called_once_with("en_core_web_sm")
-        assert result is not None
+            result = _ensure_spacy_model()
+            mock_spacy.load.assert_called_once_with("en_core_web_sm")
+            assert result is not None
 
-    @patch("spacy.load")
-    @patch("spacy.cli.download")
-    def test_downloads_on_oserror(self, mock_download, mock_load):
-        mock_load.side_effect = [OSError("not found"), MagicMock()]
-        from lilbee.concepts import _ensure_spacy_model
+    def test_downloads_on_oserror(self):
+        mock_spacy = MagicMock()
+        mock_spacy.load.side_effect = [OSError("not found"), MagicMock()]
+        mock_cli = MagicMock()
+        mock_spacy.cli = mock_cli
+        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
+            from lilbee.concepts import _ensure_spacy_model
 
-        result = _ensure_spacy_model()
-        mock_download.assert_called_once_with("en_core_web_sm")
-        assert result is not None
+            result = _ensure_spacy_model()
+            mock_cli.download.assert_called_once_with("en_core_web_sm")
+            assert result is not None
 
 
 class TestBuildFromChunks:
@@ -489,33 +507,34 @@ class TestComputePmi:
 
 
 class TestLeidenPartition:
-    @patch("graspologic_native.leiden")
-    def test_returns_partition_and_degrees(self, mock_leiden):
-        mock_leiden.return_value = (0.5, {"a": 0, "b": 0, "c": 1})
-        from lilbee.concepts import _leiden_partition
+    def test_returns_partition_and_degrees(self):
+        mock_graspologic = MagicMock()
+        mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0, "c": 1})
+        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+            from lilbee.concepts import _leiden_partition
 
-        edge_rows = [
-            {"source": "a", "target": "b", "weight": 2.0},
-            {"source": "b", "target": "c", "weight": 1.5},
-        ]
-        partition, degrees = _leiden_partition(edge_rows)
-        assert partition == {"a": 0, "b": 0, "c": 1}
-        assert degrees["a"] == 1
-        assert degrees["b"] == 2
-        assert degrees["c"] == 1
+            edge_rows = [
+                {"source": "a", "target": "b", "weight": 2.0},
+                {"source": "b", "target": "c", "weight": 1.5},
+            ]
+            partition, degrees = _leiden_partition(edge_rows)
+            assert partition == {"a": 0, "b": 0, "c": 1}
+            assert degrees["a"] == 1
+            assert degrees["b"] == 2
+            assert degrees["c"] == 1
 
-    @patch("graspologic_native.leiden")
-    def test_clamps_low_weights(self, mock_leiden):
+    def test_clamps_low_weights(self):
         """Weights below _MIN_LEIDEN_WEIGHT are clamped up."""
-        mock_leiden.return_value = (0.5, {"a": 0, "b": 0})
-        from lilbee.concepts import _MIN_LEIDEN_WEIGHT, _leiden_partition
+        mock_graspologic = MagicMock()
+        mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0})
+        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+            from lilbee.concepts import _MIN_LEIDEN_WEIGHT, _leiden_partition
 
-        edge_rows = [{"source": "a", "target": "b", "weight": 0.0}]
-        _leiden_partition(edge_rows)
-        # Check that the edges passed to leiden have clamped weight
-        call_args = mock_leiden.call_args
-        edges_passed = call_args[1]["edges"]
-        assert edges_passed[0][2] == _MIN_LEIDEN_WEIGHT
+            edge_rows = [{"source": "a", "target": "b", "weight": 0.0}]
+            _leiden_partition(edge_rows)
+            call_args = mock_graspologic.leiden.call_args
+            edges_passed = call_args[1]["edges"]
+            assert edges_passed[0][2] == _MIN_LEIDEN_WEIGHT
 
 
 class TestCommunityDataclass:
