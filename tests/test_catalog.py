@@ -143,8 +143,8 @@ class TestFetchHfModels:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
-        # Second model has no siblings -> fallback 5.0
-        assert models[1].size_gb == 5.0
+        # Second model has no siblings -> fallback 0.0 (unknown)
+        assert models[1].size_gb == 0.0
 
     def test_skips_entries_without_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [{"id": "", "downloads": 0}, {"downloads": 0}]
@@ -189,6 +189,34 @@ class TestFetchHfModels:
         models = catalog._fetch_hf_models()
         assert len(models[0].description) <= 120
 
+    def test_uses_pipeline_tag_for_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [
+            {
+                "id": "user/embed-model",
+                "downloads": 100,
+                "pipeline_tag": "feature-extraction",
+                "siblings": [],
+            },
+            {
+                "id": "user/vision-model",
+                "downloads": 50,
+                "pipeline_tag": "image-text-to-text",
+                "siblings": [],
+            },
+        ]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert models[0].task == "embedding"
+        assert models[1].task == "vision"
+
+    def test_missing_pipeline_tag_defaults_to_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert models[0].task == "chat"
+
 
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,12 +242,14 @@ class TestGetCatalog:
         result = get_catalog(task="chat")
         assert all(m.task == "chat" for m in result.models)
 
-    def test_filter_by_task_embedding(self) -> None:
+    def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
         result = get_catalog(task="embedding")
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
-    def test_filter_by_task_vision(self) -> None:
+    def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
         result = get_catalog(task="vision")
         assert all(m.task == "vision" for m in result.models)
         assert result.total == len(FEATURED_VISION)
@@ -294,25 +324,31 @@ class TestGetCatalog:
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
+    def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        result = get_catalog(sort="name")
+        names = [m.name.lower() for m in result.models]
+        assert names == sorted(names)
+
     def test_installed_filter_with_model_manager(self) -> None:
         class FakeManager:
-            def list_models(self) -> list:
-                return [type("M", (), {"name": "Qwen3 8B"})()]
+            def list_installed(self) -> list[str]:
+                return ["Qwen3 8B"]
 
         result = get_catalog(installed=True, model_manager=FakeManager())
         assert all(m.name == "Qwen3 8B" for m in result.models)
 
     def test_installed_filter_not_installed(self) -> None:
         class FakeManager:
-            def list_models(self) -> list:
-                return [type("M", (), {"name": "Qwen3 8B"})()]
+            def list_installed(self) -> list[str]:
+                return ["Qwen3 8B"]
 
         result = get_catalog(installed=False, model_manager=FakeManager())
         assert all(m.name != "Qwen3 8B" for m in result.models)
 
     def test_installed_filter_manager_error(self) -> None:
         class BadManager:
-            def list_models(self) -> list:
+            def list_installed(self) -> list[str]:
                 raise RuntimeError("no manager")
 
         result = get_catalog(installed=True, model_manager=BadManager())
@@ -490,35 +526,43 @@ class TestResolveFilename:
                 {"rfilename": "Qwen3-0.6B-Q8_0.gguf"},
             ]
         }
-        mock_resp = httpx.Response(200, json=data)
+        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         result = catalog._resolve_filename(entry)
         assert result == "Qwen3-0.6B-Q4_K_M.gguf"
 
-    def test_wildcard_no_match_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
         data = {"siblings": [{"rfilename": "something-else.bin"}]}
-        mock_resp = httpx.Response(200, json=data)
+        mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError, match="No GGUF files found"):
+            catalog._resolve_filename(entry)
 
-    def test_wildcard_api_error_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
 
         def raise_connect(*a: object, **kw: object) -> httpx.Response:
             raise httpx.ConnectError("x")
 
         monkeypatch.setattr(httpx, "get", raise_connect)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError, match="Cannot query files"):
+            catalog._resolve_filename(entry)
 
-    def test_wildcard_http_error_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
         mock_resp = httpx.Response(500)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog._resolve_filename(entry)
-        assert result == "Q4_K_M.gguf"
+        with pytest.raises(RuntimeError):
+            catalog._resolve_filename(entry)
+
+    def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
+        files = ["model-Q8_0.gguf", "model-Q4_K_M.gguf", "model-Q5_K_M.gguf"]
+        assert catalog._pick_best_gguf(files) == "model-Q4_K_M.gguf"
+
+    def test_pick_best_gguf_fallback_first(self) -> None:
+        files = ["model-weird.gguf"]
+        assert catalog._pick_best_gguf(files) == "model-weird.gguf"
 
 
 class TestTaskToPipeline:
@@ -536,6 +580,35 @@ class TestTaskToPipeline:
 
     def test_none(self) -> None:
         assert catalog._task_to_pipeline(None) == "text-generation"
+
+
+class TestPipelineToTask:
+    def test_text_generation(self) -> None:
+        assert catalog._pipeline_to_task("text-generation") == "chat"
+
+    def test_feature_extraction(self) -> None:
+        assert catalog._pipeline_to_task("feature-extraction") == "embedding"
+
+    def test_image_text_to_text(self) -> None:
+        assert catalog._pipeline_to_task("image-text-to-text") == "vision"
+
+    def test_image_to_text(self) -> None:
+        assert catalog._pipeline_to_task("image-to-text") == "vision"
+
+    def test_unknown_defaults_to_chat(self) -> None:
+        assert catalog._pipeline_to_task("unknown-tag") == "chat"
+
+    def test_empty_defaults_to_chat(self) -> None:
+        assert catalog._pipeline_to_task("") == "chat"
+
+
+class TestFeaturedVisionModel:
+    def test_featured_vision_is_lightonocr(self) -> None:
+        assert len(FEATURED_VISION) == 1
+        assert "LightOnOCR" in FEATURED_VISION[0].name
+
+    def test_featured_vision_is_small(self) -> None:
+        assert FEATURED_VISION[0].size_gb <= 2.0
 
 
 class TestSortModels:
@@ -557,7 +630,46 @@ class TestSortModels:
         downloads = [m.downloads for m in sorted_m]
         assert downloads == sorted(downloads, reverse=True)
 
+    def test_name_sort(self) -> None:
+        models = list(FEATURED_ALL)
+        sorted_m = catalog._sort_models(models, "name")
+        names = [m.name.lower() for m in sorted_m]
+        assert names == sorted(names)
+
     def test_featured_default(self) -> None:
         models = list(FEATURED_ALL)
         sorted_m = catalog._sort_models(models, "featured")
         assert len(sorted_m) == len(models)
+
+
+class TestFetchModelFileSize:
+    def test_returns_size_from_tree_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"path": "model-Q4_K_M.gguf", "size": 5_000_000_000},
+            {"path": "model-Q8_0.gguf", "size": 9_000_000_000},
+            {"path": "README.md", "size": 100},
+        ]
+        mock_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        result = catalog.fetch_model_file_size("user/repo")
+        assert result == round(5_000_000_000 / (1024**3), 1)
+
+    def test_returns_zero_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.catalog.httpx.get", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail"))
+        )
+        assert catalog.fetch_model_file_size("user/repo") == 0.0
+
+    def test_returns_zero_no_gguf_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [{"path": "README.md", "size": 100}]
+        mock_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        assert catalog.fetch_model_file_size("user/repo") == 0.0

@@ -1,0 +1,76 @@
+/* lilbee TUI layout — colors come from Textual's built-in theme system */
+
+#chat-log {
+    height: 1fr;
+}
+
+#sync-bar {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+}
+
+#model-detail, #setting-detail {
+    height: 6;
+    padding: 1;
+    border-top: solid $surface-lighten-2;
+}
+
+#catalog-search {
+    dock: top;
+    margin: 0 1;
+}
+
+.model-row-text {
+    padding: 0 1;
+}
+
+.user-message {
+    text-style: bold;
+    padding: 0 1;
+    margin: 1 0 0 0;
+}
+
+.assistant-message {
+    padding: 0 1;
+}
+
+.source-citation {
+    padding: 0 1;
+    text-style: italic;
+    color: $text-muted;
+}
+
+.section-header {
+    text-style: bold underline;
+    color: $text-muted;
+    padding: 1 0 0 1;
+}
+
+Markdown {
+    background: transparent;
+    margin: 0 1;
+}
+
+ListView {
+    height: 1fr;
+}
+
+TabbedContent > ContentSwitcher {
+    height: 1fr;
+}
+
+/* Modal screens */
+DownloadModal > Vertical,
+HelpModal > Vertical,
+SetupModal > Vertical {
+    width: 70;
+    height: auto;
+    max-height: 80%;
+    border: thick $surface-lighten-2;
+    padding: 1 2;
+}
+
+DownloadModal, HelpModal, SetupModal {
+    align: center middle;
+}

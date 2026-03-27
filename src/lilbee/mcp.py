@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+from lilbee.config import cfg
+from lilbee.crawl_task import get_task, start_crawl
+from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.store import delete_by_source, delete_source, get_sources
+
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
 
@@ -28,9 +33,6 @@ def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
 @mcp.tool()
 def lilbee_status() -> dict:
     """Show indexed documents, configuration, and chunk counts."""
-    from lilbee.config import cfg
-    from lilbee.store import get_sources
-
     sources = get_sources()
     return {
         "config": {
@@ -62,13 +64,14 @@ async def lilbee_add(
     force: bool = False,
     vision_model: str = "",
 ) -> dict:
-    """Add files or directories to the knowledge base and sync.
+    """Add files, directories, or URLs to the knowledge base and sync.
 
     Copies the given paths into the documents directory, then ingests them.
+    URLs (http:// or https://) are fetched as markdown and saved to _web/.
     Paths must be absolute and accessible from this machine.
 
     Args:
-        paths: Absolute file or directory paths to add.
+        paths: Absolute file/directory paths or URLs to add.
         force: Overwrite files that already exist in the knowledge base.
         vision_model: Ollama vision model for scanned PDF OCR
             (e.g. "maternion/LightOnOCR-2:latest"). If empty, uses
@@ -76,17 +79,34 @@ async def lilbee_add(
             scanned PDFs are skipped.
     """
     from lilbee.cli.helpers import copy_files
-    from lilbee.config import cfg
     from lilbee.ingest import sync
 
     errors: list[str] = []
     valid: list[Path] = []
+    urls: list[str] = []
     for p_str in paths:
-        p = Path(p_str)
-        if not p.exists():
-            errors.append(p_str)
+        if is_url(p_str):
+            urls.append(p_str)
         else:
-            valid.append(p)
+            p = Path(p_str)
+            if not p.exists():
+                errors.append(p_str)
+            else:
+                valid.append(p)
+
+    # Crawl URLs
+    crawled_count = 0
+    if urls:
+        from lilbee.crawler import crawl_and_save
+
+        for url in urls:
+            try:
+                require_valid_crawl_url(url)
+            except ValueError as exc:
+                errors.append(f"{url}: {exc}")
+                continue
+            crawled_paths = await crawl_and_save(url)
+            crawled_count += len(crawled_paths)
 
     copy_result = copy_files(valid, force=force)
 
@@ -103,8 +123,59 @@ async def lilbee_add(
         "command": "add",
         "copied": copy_result.copied,
         "skipped": copy_result.skipped,
+        "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,
+    }
+
+
+@mcp.tool()
+def lilbee_crawl(
+    url: str,
+    depth: int = 0,
+    max_pages: int = 50,
+) -> dict:
+    """Crawl a web page and add it to the knowledge base (non-blocking).
+
+    Launches the crawl as a background task and returns immediately with a
+    task_id. Use lilbee_crawl_status(task_id) to poll progress.
+
+    Args:
+        url: The URL to crawl (must start with http:// or https://).
+        depth: Maximum link-following depth (0 = single page only).
+        max_pages: Maximum number of pages to fetch (default: 50).
+    """
+    try:
+        require_valid_crawl_url(url)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    task_id = start_crawl(url, depth=depth, max_pages=max_pages)
+    return {"status": "started", "task_id": task_id, "url": url}
+
+
+@mcp.tool()
+def lilbee_crawl_status(task_id: str) -> dict:
+    """Check the status of a running crawl task.
+
+    Returns the current state including status, pages crawled, and any error.
+    Use this to poll after lilbee_crawl returns a task_id.
+
+    Args:
+        task_id: The task ID returned by lilbee_crawl.
+    """
+    task = get_task(task_id)
+    if task is None:
+        return {"error": f"No task found with id: {task_id}"}
+    return {
+        "task_id": task.task_id,
+        "url": task.url,
+        "status": task.status.value,
+        "pages_crawled": task.pages_crawled,
+        "pages_total": task.pages_total,
+        "error": task.error,
+        "started_at": task.started_at,
+        "finished_at": task.finished_at,
     }
 
 
@@ -133,9 +204,6 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         names: Source filenames to remove (as shown by lilbee_status).
         delete_files: Also delete the physical files from the documents directory.
     """
-    from lilbee.config import cfg
-    from lilbee.store import delete_by_source, delete_source, get_sources
-
     known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
@@ -156,8 +224,6 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
 @mcp.tool()
 def lilbee_list_documents() -> dict:
     """List all indexed documents with their chunk counts."""
-    from lilbee.store import get_sources
-
     sources = get_sources()
     return {
         "documents": [

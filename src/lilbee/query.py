@@ -503,7 +503,7 @@ class AskResult(BaseModel):
     sources: list[SearchChunk]
 
 
-def _build_rag_context(
+def build_rag_context(
     question: str,
     top_k: int = 0,
     history: list[ChatMessage] | None = None,
@@ -540,7 +540,7 @@ def ask_raw(
     options: dict[str, Any] | None = None,
 ) -> AskResult:
     """One-shot question returning structured answer + raw sources."""
-    rag = _build_rag_context(question, top_k=top_k, history=history)
+    rag = build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
         return AskResult(
             answer="No relevant documents found. Try ingesting some documents first.",
@@ -581,7 +581,7 @@ def ask_stream(
     """
     from lilbee.reasoning import StreamToken, filter_reasoning
 
-    rag = _build_rag_context(question, top_k=top_k, history=history)
+    rag = build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
         yield StreamToken(
             content="No relevant documents found. Try ingesting some documents first.",

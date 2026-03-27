@@ -9,16 +9,13 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.cli import (
-    QuitChat,
     app,
     clean_result,
-    console,
     get_version,
-    list_installed_models,
-    make_completer,
 )
 from lilbee.config import cfg
 from lilbee.ingest import SyncResult
+from lilbee.models import list_installed_models
 from lilbee.store import SearchChunk
 
 runner = CliRunner()
@@ -300,72 +297,58 @@ class TestAutoSync:
         assert result.exit_code == 0
         assert "Synced:" in result.output
 
+    def test_auto_sync_background(self) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+
+        con = Console()
+        with mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg:
+            auto_sync(con, background=True)
+            mock_bg.assert_called_once_with(con)
+
+
+class TestAddPathsBackground:
+    def test_add_paths_background_mode(self, isolated_env, tmp_path) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        con = Console()
+        with (
+            mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg,
+            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+        ):
+            add_paths([src], con, background=True)
+            mock_bg.assert_called_once()
+
+    def test_add_paths_chat_mode_prints(self, isolated_env, tmp_path, capsys) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import add_paths
+
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        con = Console()
+        with (
+            mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            mock.patch("lilbee.cli.helpers.copy_paths", return_value=[src]),
+        ):
+            add_paths([src], con, chat_mode=True)
+            captured = capsys.readouterr()
+            assert "Copied 1 path(s)" in captured.out
+
 
 class TestChat:
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello", " world"))
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_quit(self, mock_sync, mock_ask_stream):
-        result = runner.invoke(app, ["chat"], input="question\n/quit\n")
-        assert result.exit_code == 0
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_slash_quit(self, mock_sync, mock_ask_stream):
-        """Bare /quit exits immediately."""
-        result = runner.invoke(app, ["chat"], input="/quit\n")
-        assert result.exit_code == 0
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_empty_input_skipped(self, mock_sync, mock_ask_stream):
-        result = runner.invoke(app, ["chat"], input="\n/quit\n")
-        assert result.exit_code == 0
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_eof_exits(self, mock_sync):
-        # Empty input simulates EOF
-        result = runner.invoke(app, ["chat"], input="")
-        assert result.exit_code == 0
-
-    @mock.patch("lilbee.query.ask_stream")
-    @mock.patch(
-        "lilbee.ingest.sync",
-        new_callable=AsyncMock,
-        return_value=SyncResult(),
-    )
-    def test_chat_passes_history(self, mock_sync, mock_stream):
-        """Second question should include history from first exchange."""
-        call_count = 0
-
-        def fake_stream(question, history=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                assert history == []
-            else:
-                assert len(history) == 2
-                assert history[0]["role"] == "user"
-                assert history[1]["role"] == "assistant"
-            return _mock_stream("answer")
-
-        mock_stream.side_effect = fake_stream
-        result = runner.invoke(app, ["chat"], input="first\nsecond\n/quit\n")
-        assert result.exit_code == 0
-        assert call_count == 2
-
-    @mock.patch("lilbee.query.ask_stream")
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_model_not_found_recovers(self, mock_sync, mock_stream):
-        """Model error in chat shows message and continues the loop."""
-
-        def failing_gen(*_args, **_kwargs):
-            raise RuntimeError("Model 'bad' not found")
-            yield  # type: ignore[misc]  # makes this a generator
-
-        mock_stream.side_effect = failing_gen
-        result = runner.invoke(app, ["chat"], input="hello\n/quit\n")
-        assert result.exit_code == 0
-        assert "not found" in result.output
+    def test_chat_non_tty_exits_with_error(self) -> None:
+        """CliRunner is non-TTY, so chat should exit with error."""
+        result = runner.invoke(app, ["chat"])
+        assert result.exit_code == 1
+        assert "terminal" in result.output.lower()
 
 
 class TestApplyOverrides:
@@ -510,758 +493,96 @@ class TestMainModule:
 # ---------------------------------------------------------------------------
 
 
-class TestDispatchSlash:
-    """Test dispatch_slash in isolation."""
+class TestDefaultRequiresTerminal:
+    """Invoking `lilbee` with no subcommand requires a TTY."""
 
-    def test_non_slash_returns_false(self):
-        from lilbee.cli import dispatch_slash
+    def test_non_tty_exits_with_error(self) -> None:
+        result = runner.invoke(app, [])
+        assert result.exit_code == 1
 
-        assert dispatch_slash("hello", console) is False
+    def test_tty_launches_tui(self) -> None:
+        """When stdin/stdout are TTYs, the default command launches TUI."""
+        from lilbee.cli.tui import run_tui as original_run_tui
 
-    def test_known_command_returns_true(self):
-        from lilbee.cli import dispatch_slash
+        called = []
 
-        assert dispatch_slash("/help", console) is True
+        def fake_run_tui(**kwargs: object) -> None:
+            called.append(kwargs)
 
-    def test_unknown_command_prints_error(self):
-        from io import StringIO
+        import lilbee.cli.tui
 
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli import dispatch_slash
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        result = dispatch_slash("/foobar", con)
-        assert result is True
-        assert "Unknown command" in buf.getvalue()
-
-    def test_slash_help_output(self):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli import dispatch_slash
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        dispatch_slash("/help", con)
-        output = buf.getvalue()
-        assert "/status" in output
-        assert "/add" in output
-        assert "/model" in output
-        assert "/vision" in output
-        assert "/version" in output
-        assert "/reset" in output
-        assert "/help" in output
-        assert "/quit" in output
-
-
-class TestSlashStatus:
-    """Test /status inside the chat loop."""
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_status_in_chat(self, mock_sync):
-        result = runner.invoke(app, ["chat"], input="/status\n/quit\n")
-        assert result.exit_code == 0
-        assert "Documents:" in result.output
-
-
-class TestSlashHelp:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_help_in_chat(self, mock_sync):
-        result = runner.invoke(app, ["chat"], input="/help\n/quit\n")
-        assert result.exit_code == 0
-        assert "/status" in result.output
-
-
-class TestSlashAdd:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_with_path(
-        self, mock_sync, mock_embed, mock_embed_batch, isolated_env, tmp_path
-    ):
-        src = tmp_path / "source" / "test.txt"
-        src.parent.mkdir()
-        src.write_text("content")
-
-        # Re-mock sync for the add_paths call (it calls sync() internally)
-        mock_sync.return_value = SyncResult(added=["test.txt"])
-
-        result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
-        assert result.exit_code == 0
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_nonexistent_path(self, mock_sync):
-        result = runner.invoke(app, ["chat"], input="/add /tmp/nope_xyz_999\n/quit\n")
-        assert result.exit_code == 0
-        assert "Path not found" in result.output
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_interactive_import_error(self, mock_sync):
-        """When prompt_toolkit import fails, /add with no args does nothing."""
-        import sys
-
-        orig = sys.modules.get("prompt_toolkit")
-        sys.modules["prompt_toolkit"] = None  # type: ignore[assignment]
+        lilbee.cli.tui.run_tui = fake_run_tui  # type: ignore[assignment]
         try:
-            result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
-            assert result.exit_code == 0
+            # The runner's isatty check happens on sys.stdin, so we need to
+            # make isatty return True on whatever stream the code actually reads.
+            import sys
+
+            orig_sin = sys.stdin.isatty
+            orig_sout = sys.stdout.isatty
+            sys.stdin.isatty = lambda: True  # type: ignore[method-assign]
+            sys.stdout.isatty = lambda: True  # type: ignore[method-assign]
+            try:
+                from lilbee.cli.app import _default
+
+                ctx = mock.MagicMock()
+                ctx.invoked_subcommand = None
+                _default(
+                    ctx,
+                    data_dir=None,
+                    model=None,
+                    json_output=False,
+                    use_global=False,
+                    log_level=None,
+                    show_version=False,
+                )
+            finally:
+                sys.stdin.isatty = orig_sin  # type: ignore[method-assign]
+                sys.stdout.isatty = orig_sout  # type: ignore[method-assign]
         finally:
-            if orig is not None:
-                sys.modules["prompt_toolkit"] = orig
-            else:
-                sys.modules.pop("prompt_toolkit", None)
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_interactive_eof(self, mock_sync):
-        """When user hits Ctrl+C / EOF in prompt_toolkit, /add exits gracefully."""
-        with mock.patch("prompt_toolkit.prompt", side_effect=EOFError):
-            result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
-            assert result.exit_code == 0
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_interactive_empty_input(self, mock_sync):
-        """When user enters empty path in prompt_toolkit, /add does nothing."""
-        with mock.patch("prompt_toolkit.prompt", return_value="   "):
-            result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
-            assert result.exit_code == 0
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_interactive_nonexistent(self, mock_sync):
-        """When user enters nonexistent path in prompt_toolkit prompt."""
-        with mock.patch("prompt_toolkit.prompt", return_value="/tmp/nope_xyz_999"):
-            result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
-            assert result.exit_code == 0
-            assert "Path not found" in result.output
-
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock)
-    def test_slash_add_interactive_success(self, mock_sync, mock_embed, mock_embed_batch, tmp_path):
-        """Full /add interactive flow with successful file."""
-        src = tmp_path / "source" / "doc.txt"
-        src.parent.mkdir()
-        src.write_text("some content")
-        mock_sync.return_value = SyncResult(added=["doc.txt"])
-
-        with mock.patch("prompt_toolkit.prompt", return_value=str(src)):
-            result = runner.invoke(app, ["chat"], input="/add\n/quit\n")
-            assert result.exit_code == 0
+            lilbee.cli.tui.run_tui = original_run_tui
+        assert called == [{"auto_sync": True}]
 
 
-class TestSlashModel:
-    """Test /model slash command."""
+class TestChatLaunchesTui:
+    """The chat subcommand launches TUI when on a TTY."""
 
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_model_interactive_cancel(self, mock_vram_estimate, mock_disk_estimate):
-        """Empty input cancels the interactive picker without changing model."""
-        from io import StringIO
+    def test_chat_tty_launches_tui(self) -> None:
+        from lilbee.cli.tui import run_tui as original_run_tui
 
-        from rich.console import Console as RichConsole
+        called = []
 
-        from lilbee.cli.chat.slash import handle_slash_model
+        def fake_run_tui(**kwargs: object) -> None:
+            called.append(kwargs)
 
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("builtins.input", return_value=""):
-            handle_slash_model("", con)
-        output = buf.getvalue()
-        assert "Current model:" in output
+        import lilbee.cli.tui
 
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=["qwen3:8b"])
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_model_interactive_picks_installed(
-        self, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Picking an already-installed model switches without pulling."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
+        lilbee.cli.tui.run_tui = fake_run_tui  # type: ignore[assignment]
         try:
-            with (
-                mock.patch("builtins.input", return_value="4"),
-                mock.patch("lilbee.settings.set_value") as mock_set,
-            ):
-                handle_slash_model("", con)
-            assert cfg.chat_model == "qwen3:8b"
-            output = buf.getvalue()
-            assert "Switched to model" in output
-            mock_set.assert_called_once_with(cfg.data_root, "chat_model", "qwen3:8b")
+            with mock.patch("sys.stdin") as mock_in, mock.patch("sys.stdout") as mock_out:
+                mock_in.isatty.return_value = True
+                mock_out.isatty.return_value = True
+                from lilbee.cli.commands import chat
+
+                # Call with minimal defaults
+                chat(
+                    data_dir=None,
+                    model=None,
+                    use_global=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k_sampling=None,
+                    repeat_penalty=None,
+                    num_ctx=None,
+                    seed=None,
+                )
         finally:
-            cfg.chat_model = original
-
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[])
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    @mock.patch("lilbee.models.pull_with_progress")
-    @mock.patch("lilbee.settings.set_value")
-    def test_model_interactive_pulls_uninstalled(
-        self, mock_save_setting, mock_pull, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Picking an uninstalled model triggers a pull."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        try:
-            with mock.patch("builtins.input", return_value="1"):
-                handle_slash_model("", con)
-            assert mock_pull.call_count == 1
-            assert mock_pull.call_args[0][0] == "qwen3:1.7b"
-            output = buf.getvalue()
-            assert "Switched to model" in output
-        finally:
-            cfg.chat_model = original
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_model_interactive_invalid_input(self, mock_vram_estimate, mock_disk_estimate):
-        """Non-numeric input shows an error."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("builtins.input", return_value="abc"):
-            handle_slash_model("", con)
-        output = buf.getvalue()
-        assert "Enter a number" in output
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_model_interactive_out_of_range(self, mock_vram_estimate, mock_disk_estimate):
-        """Out-of-range number shows an error."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("builtins.input", return_value="99"):
-            handle_slash_model("", con)
-        output = buf.getvalue()
-        assert "Enter a number" in output
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_model_interactive_eof(self, mock_vram_estimate, mock_disk_estimate):
-        """EOF during input cancels gracefully."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("builtins.input", side_effect=EOFError):
-            handle_slash_model("", con)
-        # Should not raise
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest"],
-    )
-    def test_model_switches(self, mock_ollama_list):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        try:
-            with mock.patch("lilbee.settings.set_value") as mock_set:
-                handle_slash_model("llama3", con)
-                assert cfg.chat_model == "llama3:latest"
-                output = buf.getvalue()
-                assert "Switched to model" in output
-                assert "(saved)" in output
-                mock_set.assert_called_once_with(cfg.data_root, "chat_model", "llama3:latest")
-        finally:
-            cfg.chat_model = original
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest"],
-    )
-    def test_model_prompts_download_for_unknown(self, mock_ollama_list):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        try:
-            with mock.patch.object(con, "input", return_value="n"):
-                handle_slash_model("nonexistent", con)
-            assert original == cfg.chat_model
-        finally:
-            cfg.chat_model = original
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest"],
-    )
-    def test_model_downloads_on_accept(self, mock_ollama_list):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        try:
-            with (
-                mock.patch.object(con, "input", return_value="y"),
-                mock.patch("lilbee.models.pull_with_progress") as mock_pull,
-                mock.patch("lilbee.settings.set_value"),
-            ):
-                handle_slash_model("nonexistent", con)
-            assert mock_pull.call_count == 1
-            assert cfg.chat_model == "nonexistent:latest"
-        finally:
-            cfg.chat_model = original
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest"],
-    )
-    def test_model_download_prompt_interrupted(self, mock_ollama_list):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_model
-
-        original = cfg.chat_model
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        try:
-            with mock.patch.object(con, "input", side_effect=KeyboardInterrupt):
-                handle_slash_model("nonexistent", con)
-            assert original == cfg.chat_model
-        finally:
-            cfg.chat_model = original
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["phi3:latest", "mistral:latest"],
-    )
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_model_switch_inchat_loop(self, mock_sync, mock_ollama_list):
-
-        original = cfg.chat_model
-        try:
-            result = runner.invoke(app, ["chat"], input="/model phi3\n/quit\n")
-            assert result.exit_code == 0
-            assert "Switched to model" in result.output
-        finally:
-            cfg.chat_model = original
-
-
-class TestSlashVision:
-    """Test /vision slash command — model selection, disable, and status."""
-
-    def test_vision_off_disables(self):
-        """Test /vision off disables vision and preserves model in TOML."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        cfg.vision_model = "some-model"
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("lilbee.settings.set_value") as mock_set:
-            handle_slash_vision("off", con)
-        assert cfg.vision_model == ""
-        mock_set.assert_called_once_with(cfg.data_root, "vision_model", "")
-        output = buf.getvalue()
-        assert "disabled" in output
-        assert "(saved)" in output
-
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=["test-vision:latest"])
-    def test_vision_name_sets_and_enables(self, mock_ollama_list):
-        """Test /vision <name> sets model and enables vision."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("lilbee.settings.set_value"):
-            handle_slash_vision("test-vision", con)
-        assert cfg.vision_model == "test-vision:latest"
-        output = buf.getvalue()
-        assert "Vision model set to" in output
-        assert "(saved)" in output
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["model-a:latest", "model-b:latest"],
-    )
-    def test_vision_prompts_download_for_unknown(self, mock_ollama_list):
-        """Test /vision <name> prompts to download unknown models."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        cfg.vision_model = "original-model"
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch.object(con, "input", return_value="n"):
-            handle_slash_vision("nonexistent", con)
-        assert cfg.vision_model == "original-model"
-
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[])
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_bare_shows_status_enabled(
-        self, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Test bare /vision shows enabled status then picker."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        cfg.vision_model = "test-model"
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", return_value=""),
-            mock.patch("lilbee.settings.set_value"),
-        ):
-            handle_slash_vision("", con)
-        output = buf.getvalue()
-        assert "test-model" in output
-
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[])
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_bare_shows_disabled(
-        self, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Test bare /vision shows disabled when no model set."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        cfg.vision_model = ""
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", return_value=""),
-            mock.patch("lilbee.settings.set_value"),
-        ):
-            handle_slash_vision("", con)
-        output = buf.getvalue()
-        assert "disabled" in output
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["maternion/LightOnOCR-2:latest"],
-    )
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_interactive_picks_installed(
-        self, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Picking an already-installed model switches without pulling."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", return_value="1"),
-            mock.patch("lilbee.settings.set_value"),
-        ):
-            handle_slash_vision("", con)
-        assert cfg.vision_model == "maternion/LightOnOCR-2:latest"
-        output = buf.getvalue()
-        assert "Vision model set to" in output
-
-    @mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[])
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    @mock.patch("lilbee.models.pull_with_progress")
-    @mock.patch("lilbee.settings.set_value")
-    def test_vision_interactive_pulls_uninstalled(
-        self, mock_save_setting, mock_pull, mock_vram_estimate, mock_disk_estimate, mock_ollama_list
-    ):
-        """Picking an uninstalled model triggers a pull."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch("builtins.input", return_value="1"):
-            handle_slash_vision("", con)
-        assert mock_pull.call_count == 1
-        assert mock_pull.call_args[0][0] == "maternion/LightOnOCR-2:latest"
-        output = buf.getvalue()
-        assert "Vision model set to" in output
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_interactive_invalid_input(self, mock_vram_estimate, mock_disk_estimate):
-        """Non-numeric input shows an error."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", return_value="abc"),
-            mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[]),
-        ):
-            handle_slash_vision("", con)
-        output = buf.getvalue()
-        assert "Enter a number" in output
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_interactive_out_of_range(self, mock_vram_estimate, mock_disk_estimate):
-        """Out-of-range number shows an error."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", return_value="99"),
-            mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[]),
-        ):
-            handle_slash_vision("", con)
-        output = buf.getvalue()
-        assert "Enter a number" in output
-
-    @mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0)
-    @mock.patch("lilbee.models.get_system_ram_gb", return_value=8.0)
-    def test_vision_interactive_eof(self, mock_vram_estimate, mock_disk_estimate):
-        """EOF during input cancels gracefully."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_vision
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with (
-            mock.patch("builtins.input", side_effect=EOFError),
-            mock.patch("lilbee.cli.chat.slash.list_installed_models", return_value=[]),
-        ):
-            handle_slash_vision("", con)
-        # Should not raise
-
-    def test_vision_help_listed(self):
-        """Test /vision appears in help output."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli import dispatch_slash
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        dispatch_slash("/help", con)
-        output = buf.getvalue()
-        assert "/vision" in output
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_vision_off_inchat_loop(self, mock_sync):
-        """Test /vision off works in the chat loop."""
-        cfg.vision_model = "some-model"
-        result = runner.invoke(app, ["chat"], input="/vision off\n/quit\n")
-        assert result.exit_code == 0
-        assert "disabled" in result.output
-
-    @mock.patch(
-        "lilbee.cli.chat.slash.list_installed_models",
-        return_value=["phi3:latest", "mistral:latest"],
-    )
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_vision_name_inchat_loop(self, mock_sync, mock_ollama_list):
-        """Test /vision <name> works in the chat loop."""
-        result = runner.invoke(app, ["chat"], input="/vision phi3\n/quit\n")
-        assert result.exit_code == 0
-        assert "Vision model set to" in result.output
-
-
-class TestSlashVersion:
-    """Test /version slash command."""
-
-    def test_version_shows_version(self):
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_version
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        handle_slash_version("", con)
-        output = buf.getvalue()
-        assert "lilbee" in output
-        assert get_version() in output
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_version_inchat_loop(self, mock_sync):
-        result = runner.invoke(app, ["chat"], input="/version\n/quit\n")
-        assert result.exit_code == 0
-        assert "lilbee" in result.output
-
-
-class TestSlashUnknown:
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_unknown_slash_command(self, mock_sync):
-        result = runner.invoke(app, ["chat"], input="/foobar\n/quit\n")
-        assert result.exit_code == 0
-        assert "Unknown command" in result.output
-
-
-class TestDefaultInvokesChatLoop:
-    """Invoking `lilbee` with no subcommand enters chat mode."""
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_default_chat(self, mock_sync, mock_ask_stream):
-        result = runner.invoke(app, [], input="question\n/quit\n")
-        assert result.exit_code == 0
-        assert "lilbee chat" in result.output
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_default_slash_help(self, mock_sync):
-        result = runner.invoke(app, [], input="/help\n/quit\n")
-        assert result.exit_code == 0
-        assert "/status" in result.output
+            lilbee.cli.tui.run_tui = original_run_tui
+        assert called == [{"auto_sync": True}]
 
 
 # ---------------------------------------------------------------------------
 # Completer tests
 # ---------------------------------------------------------------------------
-
-
-class TestLilbeeCompleter:
-    """Unit tests for the chat completer."""
-
-    def _complete(self, text: str) -> list[str]:
-        from prompt_toolkit.document import Document
-
-        doc = Document(text, len(text))
-        completer = make_completer()
-        return [c.text for c in completer.get_completions(doc, None)]
-
-    def test_slash_shows_all_commands(self):
-        results = self._complete("/")
-        assert "/status" in results
-        assert "/add" in results
-        assert "/model" in results
-        assert "/vision" in results
-        assert "/version" in results
-        assert "/reset" in results
-        assert "/help" in results
-        assert "/quit" in results
-
-    def test_slash_s_narrows(self):
-        results = self._complete("/s")
-        assert "/status" in results
-        assert "/settings" in results
-        assert "/set" in results
-
-    def test_add_path_delegates(self):
-        results = self._complete("/add /")
-        assert len(results) > 0
-
-    @mock.patch(
-        "lilbee.cli.chat.complete.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest", "phi3:latest"],
-    )
-    def test_model_prefix_completes(self, mock_ollama_list):
-        results = self._complete("/model ")
-        assert "llama3:latest" in results
-        assert "mistral:latest" in results
-        assert "phi3:latest" in results
-
-    @mock.patch(
-        "lilbee.cli.chat.complete.list_installed_models",
-        return_value=["llama3:latest", "mistral:latest"],
-    )
-    def test_model_prefix_filters(self, mock_ollama_list):
-        results = self._complete("/model ll")
-        assert results == ["llama3:latest"]
-
-    @mock.patch("lilbee.cli.chat.complete.list_installed_models", return_value=[])
-    def test_model_prefix_no_models(self, mock_ollama_list):
-        results = self._complete("/model ")
-        assert results == []
-
-    def test_vision_prefix_completes(self):
-        results = self._complete("/vision ")
-        assert results[0] == "off"
-        assert "maternion/LightOnOCR-2:latest" in results
-
-    def test_vision_prefix_filters_off(self):
-        results = self._complete("/vision of")
-        assert results == ["off"]
-
-    def test_vision_prefix_filters_model(self):
-        results = self._complete("/vision gl")
-        assert results == ["glm-ocr:latest"]
-
-    def test_plain_text_no_completions(self):
-        results = self._complete("hello")
-        assert results == []
 
 
 class TestListInstalledModels:
@@ -1296,82 +617,18 @@ class TestListInstalledModels:
             assert "maternion/LightOnOCR-2:latest" not in result
 
 
-class TestQuitChat:
-    """Test QuitChat sentinel."""
-
-    def test_quit_chat_is_exception(self):
-        assert issubclass(QuitChat, Exception)
-
-    def test_slash_quit_raises(self):
-        from lilbee.cli.chat.slash import handle_slash_quit
-
-        with pytest.raises(QuitChat):
-            handle_slash_quit("", console)
-
-
-class TestPromptSessionBranch:
-    """Test that TTY branch uses PromptSession."""
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_tty_uses_prompt_session(self, mock_sync):
-        mock_session = mock.MagicMock()
-        mock_session.prompt.side_effect = ["/quit"]
-        mock_ps_cls = mock.MagicMock(return_value=mock_session)
-        mock_patch_stdout_mod = mock.MagicMock()
-
-        mock_pt = mock.MagicMock(PromptSession=mock_ps_cls)
-
-        with (
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch.dict(
-                "sys.modules",
-                {
-                    "prompt_toolkit": mock_pt,
-                    "prompt_toolkit.patch_stdout": mock_patch_stdout_mod,
-                },
-            ),
-        ):
-            mock_stdin.isatty.return_value = True
-            from lilbee.cli import chat_loop
-
-            chat_loop(console)
-            mock_session.prompt.assert_called()
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_tty_import_error_falls_back(self, mock_sync):
-        """When prompt_toolkit import fails in TTY mode, falls back to con.input."""
-        from lilbee.cli import chat_loop
-
-        mock_con = mock.MagicMock()
-        mock_con.input.side_effect = EOFError
-
-        with (
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch.dict("sys.modules", {"prompt_toolkit": None}),
-        ):
-            mock_stdin.isatty.return_value = True
-            chat_loop(mock_con)
-            # Verify it fell back to con.input (not PromptSession)
-            mock_con.input.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# JSON output infrastructure tests (Task 1)
-# ---------------------------------------------------------------------------
-
-
-def _search_chunk(**overrides) -> SearchChunk:
-    defaults = dict(
-        source="a.pdf",
-        content_type="pdf",
-        page_start=0,
-        page_end=0,
-        line_start=0,
-        line_end=0,
-        chunk="hi",
-        chunk_index=0,
-        vector=[0.1, 0.2],
-    )
+def _search_chunk(**overrides: object) -> SearchChunk:
+    defaults: dict[str, object] = {
+        "source": "a.pdf",
+        "content_type": "pdf",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": "hi",
+        "chunk_index": 0,
+        "vector": [0.1, 0.2],
+    }
     return SearchChunk(**(defaults | overrides))
 
 
@@ -1779,45 +1036,6 @@ class TestReset:
         assert list(cfg.data_dir.iterdir()) == []
 
 
-class TestSlashReset:
-    """Test /reset inside the chat loop."""
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_reset_confirms(self, mock_sync, isolated_env):
-
-        (cfg.documents_dir / "doc.txt").write_text("content")
-
-        result = runner.invoke(app, ["chat"], input="/reset\nyes\n/quit\n")
-        assert result.exit_code == 0
-        assert "Reset complete" in result.output
-        assert list(cfg.documents_dir.iterdir()) == []
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_reset_eof_aborts(self, mock_sync):
-        """EOF during /reset confirmation aborts gracefully."""
-        from io import StringIO
-
-        from rich.console import Console as RichConsole
-
-        from lilbee.cli.chat.slash import handle_slash_reset
-
-        buf = StringIO()
-        con = RichConsole(file=buf, force_terminal=False, no_color=True)
-        with mock.patch.object(con, "input", side_effect=EOFError):
-            handle_slash_reset("", con)
-        assert "Aborted" in buf.getvalue()
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_reset_aborts(self, mock_sync, isolated_env):
-
-        (cfg.documents_dir / "doc.txt").write_text("content")
-
-        result = runner.invoke(app, ["chat"], input="/reset\nno\n/quit\n")
-        assert result.exit_code == 0
-        assert "Aborted" in result.output
-        assert (cfg.documents_dir / "doc.txt").exists()
-
-
 class TestInit:
     def test_init_creates_structure(self, tmp_path):
         with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
@@ -2102,19 +1320,6 @@ class TestEnsureChatModelWiring:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_calls_ensure_chat_model(self, mock_sync):
-        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
-            runner.invoke(app, ["chat"], input="/quit\n")
-            mock_ensure.assert_called_once()
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_default_calls_ensure_chat_model(self, mock_sync):
-        """Bare `lilbee` (no subcommand) also calls ensure_chat_model."""
-        with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
-            runner.invoke(app, [], input="/quit\n")
-            mock_ensure.assert_called_once()
-
     @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_calls_validate_model(self, mock_sync, mock_ask_stream):
@@ -2122,309 +1327,221 @@ class TestEnsureChatModelWiring:
             runner.invoke(app, ["ask", "test"])
             mock_val.assert_called_once()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_calls_validate_model(self, mock_sync):
-        with mock.patch("lilbee.embedder.validate_model") as mock_val:
-            runner.invoke(app, ["chat"], input="/quit\n")
+
+# ---------------------------------------------------------------------------
+# Vision model setup tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureVisionModel:
+    """Tests for _ensure_vision_model and helpers."""
+
+    def test_returns_early_if_vision_configured(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.cli.commands._validate_configured_vision") as mock_val:
+            _ensure_vision_model()
             mock_val.assert_called_once()
 
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_default_calls_validate_model(self, mock_sync):
-        with mock.patch("lilbee.embedder.validate_model") as mock_val:
-            runner.invoke(app, [], input="/quit\n")
+    def test_restores_saved_model_from_settings(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value="saved-model"),
+            mock.patch("lilbee.cli.commands._validate_configured_vision") as mock_val,
+        ):
+            _ensure_vision_model()
+            assert cfg.vision_model == "saved-model"
             mock_val.assert_called_once()
+
+    def test_ollama_unreachable_disables_vision(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", side_effect=RuntimeError("fail")),
+        ):
+            _ensure_vision_model()
+            assert cfg.vision_model == ""
+
+    def test_tty_calls_interactive_picker(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", return_value=["m1"]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.cli.commands._pick_vision_interactive") as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = True
+            _ensure_vision_model()
+            mock_pick.assert_called_once()
+
+    def test_non_tty_calls_auto_picker(self) -> None:
+        from lilbee.cli.commands import _ensure_vision_model
+
+        cfg.vision_model = ""
+        with (
+            mock.patch("lilbee.cli.commands.settings.get", return_value=""),
+            mock.patch("lilbee.models.list_installed_models", return_value=["m1"]),
+            mock.patch("sys.stdin") as mock_stdin,
+            mock.patch("lilbee.cli.commands._pick_vision_auto") as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = False
+            _ensure_vision_model()
+            mock_pick.assert_called_once()
+
+
+class TestValidateConfiguredVision:
+    def test_already_installed_noop(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.models.list_installed_models", return_value=["llava:7b"]):
+            _validate_configured_vision()
+            assert cfg.vision_model == "llava:7b"
+
+    def test_not_installed_pulls(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with (
+            mock.patch("lilbee.models.list_installed_models", return_value=[]),
+            mock.patch("lilbee.cli.commands._try_pull", return_value=True) as mock_pull,
+        ):
+            _validate_configured_vision()
+            mock_pull.assert_called_once_with("llava:7b")
+
+    def test_pull_fails_clears_vision(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with (
+            mock.patch("lilbee.models.list_installed_models", return_value=[]),
+            mock.patch("lilbee.cli.commands._try_pull", return_value=False),
+        ):
+            _validate_configured_vision()
+            assert cfg.vision_model == ""
+
+    def test_ollama_unreachable_keeps_config(self) -> None:
+        from lilbee.cli.commands import _validate_configured_vision
+
+        cfg.vision_model = "llava:7b"
+        with mock.patch("lilbee.models.list_installed_models", side_effect=RuntimeError):
+            _validate_configured_vision()
+            assert cfg.vision_model == "llava:7b"
+
+
+class TestPickVisionInteractive:
+    @pytest.fixture(autouse=True)
+    def _patch_vision_deps(self):
+        from lilbee.models import VISION_CATALOG
+
+        with (
+            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
+            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
+            mock.patch("lilbee.models.display_vision_picker", return_value=VISION_CATALOG[0]),
+        ):
+            yield
+
+    def test_default_choice(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with (
+            mock.patch("builtins.input", return_value=""),
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            _pick_vision_interactive(set())
+            mock_save.assert_called_once()
+
+    def test_eof_cancels(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", side_effect=EOFError):
+            _pick_vision_interactive(set())
+
+    def test_invalid_input(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", return_value="abc"):
+            _pick_vision_interactive(set())
+
+    def test_out_of_range(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with mock.patch("builtins.input", return_value="999"):
+            _pick_vision_interactive(set())
+
+    def test_valid_numeric_choice(self) -> None:
+        from lilbee.cli.commands import _pick_vision_interactive
+
+        with (
+            mock.patch("builtins.input", return_value="1"),
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            _pick_vision_interactive(set())
+            mock_save.assert_called_once()
+
+
+class TestPickVisionAuto:
+    def test_auto_selects_and_pulls(self) -> None:
+        from lilbee.cli.commands import _pick_vision_auto
+
+        with (
+            mock.patch("lilbee.models.pick_default_vision_model") as mock_pick,
+            mock.patch("lilbee.cli.commands._pull_and_save_vision") as mock_save,
+        ):
+            mock_pick.return_value = mock.MagicMock(name="llava:7b")
+            _pick_vision_auto(set())
+            mock_save.assert_called_once()
+
+
+class TestTryPull:
+    def test_success(self) -> None:
+        from lilbee.cli.commands import _try_pull
+
+        with mock.patch("lilbee.models.pull_with_progress"):
+            assert _try_pull("model") is True
+
+    def test_failure(self) -> None:
+        from lilbee.cli.commands import _try_pull
+
+        with mock.patch("lilbee.models.pull_with_progress", side_effect=RuntimeError("fail")):
+            assert _try_pull("model") is False
+
+
+class TestPullAndSaveVision:
+    def test_already_installed(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        _pull_and_save_vision("llava:7b", {"llava:7b"})
+        assert cfg.vision_model == "llava:7b"
+
+    def test_pull_needed_succeeds(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        with mock.patch("lilbee.cli.commands._try_pull", return_value=True):
+            _pull_and_save_vision("llava:7b", set())
+        assert cfg.vision_model == "llava:7b"
+
+    def test_pull_fails(self) -> None:
+        from lilbee.cli.commands import _pull_and_save_vision
+
+        cfg.vision_model = ""
+        with mock.patch("lilbee.cli.commands._try_pull", return_value=False):
+            _pull_and_save_vision("llava:7b", set())
+        assert cfg.vision_model == ""
 
 
 # ---------------------------------------------------------------------------
 # --vision flag tests
 # ---------------------------------------------------------------------------
-
-
-class TestEnsureVisionModel:
-    """Test _ensure_vision_model helper and --vision CLI flag."""
-
-    def test_already_configured_and_installed(self):
-        """No-op when vision model is set and installed."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = "test-vision"
-        with mock.patch(
-            "lilbee.cli.chat.list_installed_models",
-            return_value=["test-vision:latest"],
-        ):
-            _ensure_vision_model()
-        assert cfg.vision_model == "test-vision:latest"
-
-    def test_configured_but_not_installed_pulls(self):
-        """Pulls the model when configured but not installed."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = "test-vision"
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
-        ):
-            _ensure_vision_model()
-        mock_pull.assert_called_once_with("test-vision:latest")
-        assert cfg.vision_model == "test-vision:latest"
-
-    def test_configured_pull_fails_gracefully(self):
-        """Clears vision model when configured model can't be pulled."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = "test-vision"
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch(
-                "lilbee.models.pull_with_progress",
-                side_effect=Exception("pull failed"),
-            ),
-        ):
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    def test_configured_ollama_unreachable_keeps_model(self):
-        """When Ollama is unreachable, keeps configured model for downstream handling."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = "test-vision"
-        with mock.patch(
-            "lilbee.cli.chat.list_installed_models", side_effect=Exception("conn refused")
-        ):
-            _ensure_vision_model()
-        # Model kept — downstream will surface the error during ingestion
-        assert cfg.vision_model == "test-vision:latest"
-
-    def test_not_configured_restores_from_toml(self):
-        """Restores persisted model from TOML when cfg.vision_model is empty (e.g. --vision)."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = ""
-        with (
-            mock.patch("lilbee.settings.get", return_value="saved-vision:latest"),
-            mock.patch(
-                "lilbee.cli.chat.list_installed_models",
-                return_value=["saved-vision:latest"],
-            ),
-        ):
-            _ensure_vision_model()
-        assert cfg.vision_model == "saved-vision:latest"
-
-    def test_not_configured_non_interactive_auto_picks(self):
-        """Auto-picks and pulls in non-interactive mode."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_model = ModelInfo("auto-vision", 1.5, 4, "test")
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch("lilbee.models.pick_default_vision_model", return_value=fake_model),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
-            mock.patch("lilbee.settings.set_value") as mock_set,
-        ):
-            mock_stdin.isatty.return_value = False
-            _ensure_vision_model()
-        mock_pull.assert_called_once_with("auto-vision")
-        assert cfg.vision_model == "auto-vision"
-        mock_set.assert_called_once_with(cfg.data_root, "vision_model", "auto-vision")
-
-    def test_not_configured_interactive_shows_picker(self):
-        """Shows picker in interactive mode."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_catalog = (
-            ModelInfo("picked-vision", 1.5, 4, "test"),
-            ModelInfo("other-vision", 2.0, 4, "other"),
-        )
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch("lilbee.models.display_vision_picker", return_value=fake_catalog[0]),
-            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("lilbee.models.pull_with_progress") as mock_pull,
-            mock.patch("lilbee.settings.set_value") as mock_set,
-            mock.patch("builtins.input", return_value=""),
-        ):
-            mock_stdin.isatty.return_value = True
-            _ensure_vision_model()
-        mock_pull.assert_called_once_with("picked-vision")
-        assert cfg.vision_model == "picked-vision"
-        mock_set.assert_called_once_with(cfg.data_root, "vision_model", "picked-vision")
-
-    def test_not_configured_interactive_choice_number(self):
-        """Picks model by number in interactive mode."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_catalog = (
-            ModelInfo("v1", 1.0, 4, "first"),
-            ModelInfo("v2", 2.0, 4, "second"),
-        )
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch(
-                "lilbee.models.display_vision_picker",
-                return_value=fake_catalog[0],
-            ),
-            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("lilbee.models.pull_with_progress"),
-            mock.patch("lilbee.settings.set_value"),
-            mock.patch("builtins.input", return_value="2"),
-        ):
-            mock_stdin.isatty.return_value = True
-            _ensure_vision_model()
-        assert cfg.vision_model == "v2"
-
-    def test_not_configured_interactive_invalid_input(self):
-        """Invalid input in interactive mode returns without setting model."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch(
-                "lilbee.models.display_vision_picker",
-                return_value=fake_catalog[0],
-            ),
-            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("builtins.input", return_value="abc"),
-        ):
-            mock_stdin.isatty.return_value = True
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    def test_not_configured_interactive_out_of_range(self):
-        """Out-of-range choice in interactive mode returns without setting model."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch(
-                "lilbee.models.display_vision_picker",
-                return_value=fake_catalog[0],
-            ),
-            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("builtins.input", return_value="99"),
-        ):
-            mock_stdin.isatty.return_value = True
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    def test_not_configured_interactive_eof(self):
-        """EOF during picker returns without setting model."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_catalog = (ModelInfo("rec-vision", 1.5, 4, "recommended"),)
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch(
-                "lilbee.models.display_vision_picker",
-                return_value=fake_catalog[0],
-            ),
-            mock.patch("lilbee.models.VISION_CATALOG", fake_catalog),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch("builtins.input", side_effect=EOFError),
-        ):
-            mock_stdin.isatty.return_value = True
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    def test_ollama_connection_fails_gracefully(self):
-        """Continues without vision when Ollama is down and no model configured."""
-        from lilbee.cli.commands import _ensure_vision_model
-
-        cfg.vision_model = ""
-        with mock.patch(
-            "lilbee.cli.chat.list_installed_models", side_effect=Exception("conn refused")
-        ):
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    def test_non_interactive_pull_fails_gracefully(self):
-        """Non-interactive auto-pick continues without vision when pull fails."""
-        from lilbee.cli.commands import _ensure_vision_model
-        from lilbee.models import ModelInfo
-
-        cfg.vision_model = ""
-        fake_model = ModelInfo("auto-vision", 1.5, 4, "test")
-        with (
-            mock.patch("lilbee.cli.chat.list_installed_models", return_value=[]),
-            mock.patch("sys.stdin") as mock_stdin,
-            mock.patch("lilbee.models.pick_default_vision_model", return_value=fake_model),
-            mock.patch("lilbee.models.get_system_ram_gb", return_value=16.0),
-            mock.patch("lilbee.models.get_free_disk_gb", return_value=50.0),
-            mock.patch(
-                "lilbee.models.pull_with_progress",
-                side_effect=Exception("pull failed"),
-            ),
-        ):
-            mock_stdin.isatty.return_value = False
-            _ensure_vision_model()
-        assert cfg.vision_model == ""
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_vision_flag_on_sync(self, mock_sync):
-        """--vision flag is accepted by sync command."""
-        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
-            result = runner.invoke(app, ["sync", "--vision"])
-            assert result.exit_code == 0
-            mock_ensure.assert_called_once()
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_vision_flag_not_passed_on_sync(self, mock_sync):
-        """Without --vision, _ensure_vision_model is not called."""
-        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
-            result = runner.invoke(app, ["sync"])
-            assert result.exit_code == 0
-            mock_ensure.assert_not_called()
-
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_vision_flag_on_add(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
-        """--vision flag is accepted by add command."""
-        src = tmp_path / "source" / "test.txt"
-        src.parent.mkdir()
-        src.write_text("content")
-        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
-            result = runner.invoke(app, ["add", "--vision", str(src)])
-            assert result.exit_code == 0
-            mock_ensure.assert_called_once()
-
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_vision_flag_on_rebuild(self, mock_embed, mock_embed_batch):
-        """--vision flag is accepted by rebuild command."""
-        with mock.patch("lilbee.cli.commands._ensure_vision_model") as mock_ensure:
-            result = runner.invoke(app, ["rebuild", "--vision"])
-            assert result.exit_code == 0
-            mock_ensure.assert_called_once()
 
 
 class TestVisionTimeout:
@@ -2506,283 +1623,6 @@ class TestLogLevel:
         assert logging.getLogger().level == logging.WARNING
 
 
-class TestSyncProgressPrinter:
-    def test_file_start_event(self):
-        from lilbee.cli.chat.sync import _sync_progress_printer
-        from lilbee.progress import EventType
-
-        con = mock.MagicMock()
-        cb = _sync_progress_printer(con)
-        cb(EventType.FILE_START, {"file": "doc.pdf", "total_files": 3, "current_file": 1})
-        con.print.assert_called_once()
-        assert "doc.pdf" in con.print.call_args[0][0]
-        assert "1/3" in con.print.call_args[0][0]
-
-    def test_done_event_with_changes(self):
-        from lilbee.cli.chat.sync import _sync_progress_printer
-        from lilbee.progress import EventType
-
-        con = mock.MagicMock()
-        cb = _sync_progress_printer(con)
-        cb(EventType.DONE, {"added": 2, "updated": 1, "removed": 0, "failed": 0})
-        con.print.assert_called_once()
-        assert "Synced:" in con.print.call_args[0][0]
-
-    def test_done_event_no_changes(self):
-        from lilbee.cli.chat.sync import _sync_progress_printer
-        from lilbee.progress import EventType
-
-        con = mock.MagicMock()
-        cb = _sync_progress_printer(con)
-        cb(EventType.DONE, {"added": 0, "updated": 0, "removed": 0, "failed": 0})
-        con.print.assert_not_called()
-
-    def test_other_events_ignored(self):
-        from lilbee.cli.chat.sync import _sync_progress_printer
-        from lilbee.progress import EventType
-
-        con = mock.MagicMock()
-        cb = _sync_progress_printer(con)
-        cb(EventType.BATCH_PROGRESS, {"file": "x", "status": "ok", "current": 1, "total": 2})
-        con.print.assert_not_called()
-
-
-class TestRunSyncBackground:
-    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_returns_immediately(self, mock_sync):
-        from lilbee.cli.chat.sync import run_sync_background
-
-        con = mock.MagicMock()
-        future = run_sync_background(con)
-        # Should return a Future without blocking
-        assert future is not None
-        # Wait for it to finish so cleanup is clean
-        future.result(timeout=5)
-        mock_sync.assert_called_once()
-
-    @mock.patch(
-        "lilbee.cli.chat.sync.sync",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("Ollama down"),
-    )
-    def test_error_logged(self, mock_sync):
-        from lilbee.cli.chat.sync import run_sync_background
-
-        con = mock.MagicMock()
-        future = run_sync_background(con)
-        # Wait for the future to complete (it will fail)
-        with pytest.raises(RuntimeError):
-            future.result(timeout=5)
-        # The done callback should have printed the error
-        con.print.assert_called()
-        assert "Background sync error" in con.print.call_args[0][0]
-
-    @mock.patch(
-        "lilbee.cli.chat.sync.sync",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("Ollama down"),
-    )
-    def test_error_logged_chat_mode(self, mock_sync, capsys):
-        from lilbee.cli.chat.sync import run_sync_background
-
-        con = mock.MagicMock()
-        future = run_sync_background(con, chat_mode=True)
-        with pytest.raises(RuntimeError):
-            future.result(timeout=5)
-        # Chat mode uses plain print, not con.print
-        con.print.assert_not_called()
-        assert "Background sync error" in capsys.readouterr().out
-
-    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_passes_force_vision(self, mock_sync):
-        from lilbee.cli.chat.sync import run_sync_background
-
-        con = mock.MagicMock()
-        future = run_sync_background(con, force_vision=True)
-        future.result(timeout=5)
-        mock_sync.assert_called_once()
-        assert mock_sync.call_args[1]["force_vision"] is True
-
-    @mock.patch("lilbee.cli.chat.sync.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_mode_uses_status_callback(self, mock_sync):
-        from lilbee.cli.chat.sync import SyncStatus, run_sync_background
-
-        con = mock.MagicMock()
-        status = SyncStatus()
-        future = run_sync_background(con, chat_mode=True, sync_status=status)
-        future.result(timeout=5)
-        mock_sync.assert_called_once()
-        # The callback should be the chat variant (updates SyncStatus, not con.print)
-        cb = mock_sync.call_args[1]["on_progress"]
-        from lilbee.progress import EventType
-
-        cb(EventType.FILE_START, {"file": "x.pdf", "total_files": 1, "current_file": 1})
-        con.print.assert_not_called()
-        assert "x.pdf" in status.text
-
-
-class TestStreamResponseChatMode:
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    def test_chat_mode_uses_chat_console(self, mock_ask_stream):
-        from lilbee.cli.chat.stream import stream_response
-
-        con = mock.MagicMock()
-        chat_con = mock.MagicMock()
-        chat_con.status.return_value.__enter__ = mock.MagicMock()
-        chat_con.status.return_value.__exit__ = mock.MagicMock()
-        history: list = []
-        stream_response("test", history, con, chat_mode=True, chat_console=chat_con)
-        chat_con.status.assert_called_once_with("Thinking...")
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    def test_chat_mode_fallback_creates_console(self, mock_ask_stream):
-        from lilbee.cli.chat.stream import stream_response
-
-        con = mock.MagicMock()
-        history: list = []
-        with mock.patch("lilbee.cli.chat.stream.Console") as mock_console_cls:
-            mock_real_con = mock.MagicMock()
-            mock_console_cls.return_value = mock_real_con
-            mock_real_con.status.return_value.__enter__ = mock.MagicMock()
-            mock_real_con.status.return_value.__exit__ = mock.MagicMock()
-            stream_response("test", history, con, chat_mode=True)
-            mock_console_cls.assert_called_once()
-            import sys
-
-            assert mock_console_cls.call_args[1]["file"] is sys.__stdout__
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("Hello"))
-    def test_non_chat_mode_uses_con(self, mock_ask_stream):
-        from lilbee.cli.chat.stream import stream_response
-
-        con = mock.MagicMock()
-        con.status.return_value.__enter__ = mock.MagicMock()
-        con.status.return_value.__exit__ = mock.MagicMock()
-        history: list = []
-        stream_response("test", history, con, chat_mode=False)
-        con.status.assert_called_once_with("Thinking...")
-
-
-class TestFormatSyncSummary:
-    def test_all_zeros(self):
-        from lilbee.cli.chat.sync import _format_sync_summary
-
-        assert _format_sync_summary(0, 0, 0, 0) is None
-
-    def test_mixed_counts(self):
-        from lilbee.cli.chat.sync import _format_sync_summary
-
-        result = _format_sync_summary(3, 1, 0, 0)
-        assert result == "3 added, 1 updated"
-
-    def test_all_counts(self):
-        from lilbee.cli.chat.sync import _format_sync_summary
-
-        result = _format_sync_summary(1, 2, 3, 4)
-        assert result == "1 added, 2 updated, 3 removed, 4 failed"
-
-
-class TestChatSyncCallback:
-    def test_prints_on_done_with_changes(self, capsys):
-        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType
-
-        cb = _chat_sync_callback(SyncStatus())
-        cb(EventType.DONE, {"added": 3, "updated": 1, "removed": 0, "failed": 0})
-        out = capsys.readouterr().out
-        assert "3 added" in out
-        assert "1 updated" in out
-
-    def test_prints_removed(self, capsys):
-        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType
-
-        cb = _chat_sync_callback(SyncStatus())
-        cb(EventType.DONE, {"added": 0, "updated": 0, "removed": 2, "failed": 0})
-        out = capsys.readouterr().out
-        assert "2 removed" in out
-
-    def test_silent_on_done_no_changes(self, capsys):
-        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType
-
-        cb = _chat_sync_callback(SyncStatus())
-        cb(EventType.DONE, {"added": 0, "updated": 0, "removed": 0, "failed": 0})
-        assert capsys.readouterr().out == ""
-
-    def test_file_start_updates_status(self):
-        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType
-
-        status = SyncStatus()
-        cb = _chat_sync_callback(status)
-        cb(EventType.FILE_START, {"file": "x.pdf", "total_files": 3, "current_file": 1})
-        assert status.text == "⟳ Syncing [1/3]: x.pdf"
-
-    def test_done_clears_status(self, capsys):
-        from lilbee.cli.chat.sync import SyncStatus, _chat_sync_callback
-        from lilbee.progress import EventType
-
-        status = SyncStatus()
-        cb = _chat_sync_callback(status)
-        cb(EventType.FILE_START, {"file": "x.pdf", "total_files": 1, "current_file": 1})
-        assert status.text != ""
-        cb(EventType.DONE, {"added": 1, "updated": 0, "removed": 0, "failed": 0})
-        assert status.text == ""
-        out = capsys.readouterr().out
-        assert "1 added" in out
-
-
-class TestOnSyncDone:
-    def test_no_exception_returns_silently(self):
-        from lilbee.cli.chat.sync import _on_sync_done
-
-        con = mock.MagicMock()
-        future = mock.MagicMock()
-        future.exception.return_value = None
-        _on_sync_done(con, future)
-        con.print.assert_not_called()
-
-    def test_suppresses_cancelled_error(self):
-        import asyncio
-
-        from lilbee.cli.chat.sync import _on_sync_done
-
-        con = mock.MagicMock()
-        future = mock.MagicMock()
-        future.exception.return_value = asyncio.CancelledError()
-        _on_sync_done(con, future)
-        con.print.assert_not_called()
-
-    def test_suppresses_runtime_error(self):
-        from lilbee.cli.chat.sync import _on_sync_done
-
-        con = mock.MagicMock()
-        future = mock.MagicMock()
-        future.exception.return_value = RuntimeError("cannot schedule new futures after shutdown")
-        _on_sync_done(con, future)
-        con.print.assert_not_called()
-
-    def test_prints_real_errors(self):
-        from lilbee.cli.chat.sync import _on_sync_done
-
-        con = mock.MagicMock()
-        future = mock.MagicMock()
-        future.exception.return_value = ValueError("something broke")
-        _on_sync_done(con, future)
-        con.print.assert_called_once()
-        assert "something broke" in str(con.print.call_args)
-
-    def test_chat_mode_prints_to_stdout(self, capsys):
-        from lilbee.cli.chat.sync import _on_sync_done
-
-        con = mock.MagicMock()
-        future = mock.MagicMock()
-        future.exception.return_value = ValueError("oops")
-        _on_sync_done(con, future, chat_mode=True)
-        assert "oops" in capsys.readouterr().out
-
-
 class TestIngestShutdownError:
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
@@ -2811,133 +1651,165 @@ class TestIngestShutdownError:
         asyncio.run(_run())
 
 
-class TestShutdownExecutor:
-    def test_shutdown_clears_executor(self):
-        import lilbee.cli.chat.sync as h
+class TestAddWithUrls:
+    """Tests for URL crawling through the add CLI command."""
 
-        old = h._bg_executor
-        h._get_executor()
-        assert h._bg_executor is not None
-        h.shutdown_executor()
-        assert h._bg_executor is None
-        h._bg_executor = old
-
-    def test_shutdown_noop_when_none(self):
-        import lilbee.cli.chat.sync as h
-
-        old = h._bg_executor
-        h._bg_executor = None
-        h.shutdown_executor()
-        assert h._bg_executor is None
-        h._bg_executor = old
-
-
-class TestAutoSyncBackground:
-    @mock.patch("lilbee.cli.chat.sync.run_sync_background")
-    def test_background_true_delegates(self, mock_bg):
-        from lilbee.cli.helpers import auto_sync
-
-        con = mock.MagicMock()
-        auto_sync(con, background=True)
-        mock_bg.assert_called_once_with(con)
-
-    @mock.patch(
-        "lilbee.ingest.sync",
-        new_callable=AsyncMock,
-        return_value=SyncResult(added=["new.pdf"]),
-    )
-    def test_background_false_blocks(self, mock_sync):
-        from lilbee.cli.helpers import auto_sync
-
-        con = mock.MagicMock()
-        auto_sync(con, background=False)
-        mock_sync.assert_called_once()
-        con.print.assert_called()
-
-
-class TestAddPathsBackground:
-    @mock.patch("lilbee.cli.chat.sync.run_sync_background")
-    def test_background_copies_then_returns(self, mock_bg, isolated_env, tmp_path):
-        from lilbee.cli.helpers import add_paths
-
-        src = tmp_path / "src_dir" / "test.txt"
-        src.parent.mkdir()
-        src.write_text("content")
-
-        con = mock.MagicMock()
-        add_paths([src], con, force=True, background=True)
-        mock_bg.assert_called_once()
-        # File should be copied
-        assert (cfg.documents_dir / "test.txt").exists()
-
-    @mock.patch(
-        "lilbee.ingest.sync",
-        new_callable=AsyncMock,
-        return_value=SyncResult(added=["test.txt"]),
-    )
-    def test_background_false_blocks(self, mock_sync, isolated_env, tmp_path):
-        from lilbee.cli.helpers import add_paths
-
-        src = tmp_path / "src_dir" / "test.txt"
-        src.parent.mkdir()
-        src.write_text("content")
-
-        con = mock.MagicMock()
-        add_paths([src], con, force=True, background=False)
-        mock_sync.assert_called_once()
-
-
-class TestChatBackgroundSync:
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_chat_command_passes_background(self, mock_sync):
-        """The chat command triggers run_sync_background from inside chat_loop."""
-        with mock.patch("lilbee.cli.chat.loop.run_sync_background") as mock_bg:
-            runner.invoke(app, ["chat"], input="/quit\n")
-            mock_bg.assert_called_once()
-            assert mock_bg.call_args[1].get("chat_mode") is True
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_default_command_passes_background(self, mock_sync):
-        """Bare `lilbee` triggers run_sync_background from inside chat_loop."""
-        with mock.patch("lilbee.cli.chat.loop.run_sync_background") as mock_bg:
-            runner.invoke(app, [], input="/quit\n")
-            mock_bg.assert_called_once()
-            assert mock_bg.call_args[1].get("chat_mode") is True
-
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
-    @mock.patch(
-        "lilbee.ingest.sync",
-        new_callable=AsyncMock,
-        return_value=SyncResult(added=["x.pdf"]),
-    )
-    def test_ask_command_blocks(self, mock_sync, mock_ask_stream):
-        """The ask command calls auto_sync with background=False (blocking)."""
-        result = runner.invoke(app, ["ask", "test"])
+    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl):
+        """Adding a URL calls the crawler instead of copying files."""
+        result = runner.invoke(app, ["add", "https://example.com"])
         assert result.exit_code == 0
-        # Blocking sync should print summary
-        assert "Synced:" in result.output
+        mock_crawl.assert_called_once()
+        args = mock_crawl.call_args
+        assert args[0][0] == ["https://example.com"]
 
-
-class TestSlashAddBackground:
-    @mock.patch("lilbee.cli.chat.sync.run_sync_background")
-    @mock.patch("lilbee.cli.chat.loop.run_sync_background")
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_slash_add_uses_background_chat_mode(
-        self, mock_sync, mock_bg_loop, mock_bg_sync, isolated_env, tmp_path
+    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl):
+        """--crawl flag is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["crawl"] is True
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_with_depth(self, mock_sync, mock_crawl):
+        """--depth is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "--depth", "3", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["depth"] == 3
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_with_max_pages(self, mock_sync, mock_crawl):
+        """--max-pages is passed through to the crawler."""
+        result = runner.invoke(app, ["add", "--crawl", "--max-pages", "10", "https://example.com"])
+        assert result.exit_code == 0
+        assert mock_crawl.call_args[1]["max_pages"] == 10
+
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_json_mode(self, mock_sync, mock_crawl, isolated_env):
+        """URL add in JSON mode returns structured output."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("/tmp/a.md")]
+        result = runner.invoke(app, ["--json", "add", "https://example.com"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["command"] == "add"
+        assert data["crawled"] == 1
+
+    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
+    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
+    def test_add_mixed_urls_and_files(
+        self, mock_crawl, mock_embed, mock_embed_batch, isolated_env, tmp_path
     ):
-        """Chat /add uses background sync with chat_mode=True."""
-        src = tmp_path / "source" / "test.txt"
+        """Mixing URLs and file paths in one add command."""
+        src = tmp_path / "source" / "doc.txt"
         src.parent.mkdir()
-        src.write_text("content")
-
-        result = runner.invoke(app, ["chat"], input=f"/add {src}\n/quit\n")
+        src.write_text("file content")
+        result = runner.invoke(app, ["add", str(src), "https://example.com"])
         assert result.exit_code == 0
-        # run_sync_background is called from chat_loop (loop binding) and
-        # from /add via helpers.add_paths (sync binding) — all with chat_mode=True
-        all_calls = mock_bg_loop.call_args_list + mock_bg_sync.call_args_list
-        assert len(all_calls) >= 1
-        for call in all_calls:
-            assert call[1].get("chat_mode") is True
+        mock_crawl.assert_called_once()
+
+    def test_add_nonexistent_path_fails(self):
+        """Adding a nonexistent file path fails with error."""
+        result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        assert result.exit_code != 0
+
+    def test_add_nonexistent_path_json_fails(self):
+        """Adding a nonexistent file path in JSON mode returns error."""
+        result = runner.invoke(app, ["--json", "add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        assert result.exit_code != 0
+
+
+class TestIsUrl:
+    def test_http(self):
+        from lilbee.crawler import is_url
+
+        assert is_url("http://example.com")
+
+    def test_https(self):
+        from lilbee.crawler import is_url
+
+        assert is_url("https://example.com")
+
+    def test_not_url(self):
+        from lilbee.crawler import is_url
+
+        assert not is_url("/tmp/file.txt")
+
+    def test_ftp_not_url(self):
+        from lilbee.crawler import is_url
+
+        assert not is_url("ftp://example.com")
+
+
+class TestPartitionInputs:
+    def test_separates_urls_and_paths(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["/tmp/a.txt", "https://example.com", "/tmp/b.txt"])
+        assert len(paths) == 2
+        assert urls == ["https://example.com"]
+
+    def test_all_urls(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["https://a.com", "http://b.com"])
+        assert len(paths) == 0
+        assert len(urls) == 2
+
+    def test_all_paths(self):
+        from lilbee.cli.commands import _partition_inputs
+
+        paths, urls = _partition_inputs(["/a.txt", "/b.txt"])
+        assert len(paths) == 2
+        assert len(urls) == 0
+
+
+class TestCrawlUrlsBlocking:
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_single_url(self, mock_crawl, isolated_env):
+        from pathlib import Path
+
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        async def _fake_crawl(url, **kwargs):
+            # Call the on_progress callback to cover the closure body
+            cb = kwargs.get("on_progress")
+            if cb:
+                cb("crawl_page", {"current": 1, "total": 1, "url": url})
+            return [Path("/tmp/page.md")]
+
+        mock_crawl.side_effect = _fake_crawl
+        result = _crawl_urls_blocking(
+            ["https://example.com"], crawl=False, depth=None, max_pages=None
+        )
+        assert len(result) == 1
+        mock_crawl.assert_called_once()
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_with_crawl_flag(self, mock_crawl, isolated_env):
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["depth"] == cfg.crawl_max_depth
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_with_explicit_depth(self, mock_crawl, isolated_env):
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=5, max_pages=20)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["depth"] == 5
+        assert call_kwargs["max_pages"] == 20
 
 
 class TestTopicsCommand:
