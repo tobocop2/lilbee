@@ -28,14 +28,18 @@ def get_provider() -> LLMProvider:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         _provider = LlamaCppProvider()
-    elif provider_name == "ollama":
+    elif provider_name in ("litellm", "ollama"):
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        _provider = LiteLLMProvider(base_url=cfg.ollama_url)
-    elif provider_name == "litellm":
-        from lilbee.providers.litellm_provider import LiteLLMProvider
+        if not LiteLLMProvider.available():
+            from lilbee.providers.base import ProviderError
 
-        _provider = LiteLLMProvider(base_url=cfg.ollama_url, api_key=cfg.llm_api_key)
+            raise ProviderError(
+                "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
+            )
+        _provider = LiteLLMProvider(
+            base_url=cfg.litellm_base_url, api_key=cfg.llm_api_key
+        )
     else:
         from lilbee.providers.base import ProviderError
 

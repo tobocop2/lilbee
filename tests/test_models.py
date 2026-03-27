@@ -156,7 +156,7 @@ class TestDisplayModelPicker:
     def test_shows_browse_link(self, capsys):
         models.display_model_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestPromptModelChoice:
@@ -399,7 +399,7 @@ class TestDisplayVisionPicker:
     def test_shows_browse_link(self, capsys: pytest.CaptureFixture[str]) -> None:
         models.display_vision_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestEnsureTag:

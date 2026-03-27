@@ -80,20 +80,20 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _check_embedding_model_async(self) -> None:
         """Check for embedding model in a background thread (non-blocking)."""
-        from lilbee.model_manager import detect_ollama_embedding_models, get_model_manager
+        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
 
         manager = get_model_manager()
         if manager.is_installed(cfg.embedding_model):
             return
 
         embed_base = cfg.embedding_model.split(":")[0]
-        ollama_embeds = detect_ollama_embedding_models(cfg.ollama_url)
-        if any(embed_base in name for name in ollama_embeds):
+        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
+        if any(embed_base in name for name in remote_embeds):
             return
 
-        self.app.call_from_thread(self._show_setup_modal, ollama_embeds)
+        self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 
-    def _show_setup_modal(self, ollama_embeds: list[str]) -> None:
+    def _show_setup_modal(self, remote_embeds: list[str]) -> None:
         from lilbee.cli.tui.widgets.setup_modal import SetupModal
 
         def on_setup_complete(name: str | None) -> None:
@@ -102,7 +102,7 @@ class ChatScreen(Screen[None]):
                 self.notify(msg.EMBEDDING_SET.format(name=name))
                 self._refresh_model_bar()
 
-        self.app.push_screen(SetupModal(ollama_embeddings=ollama_embeds), on_setup_complete)
+        self.app.push_screen(SetupModal(ollama_embeddings=remote_embeds), on_setup_complete)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":

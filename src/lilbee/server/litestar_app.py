@@ -150,7 +150,7 @@ async def add_route(data: AddRequest) -> Stream:
 
 @get("/api/models")
 async def models_list_route() -> dict[str, Any]:
-    """Available chat and vision models from Ollama."""
+    """Available chat and vision models."""
     return await handlers.list_models()
 
 
@@ -192,7 +192,7 @@ async def models_catalog_route(
 
 @get("/api/models/installed")
 async def models_installed_route() -> dict[str, Any]:
-    """List installed models with their source (native or ollama)."""
+    """List installed models with their source (native or litellm)."""
     return await handlers.models_installed()
 
 

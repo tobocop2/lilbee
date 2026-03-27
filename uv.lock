@@ -1593,8 +1593,8 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "kreuzberg" },
     { name = "lancedb" },
-    { name = "litellm" },
     { name = "litestar" },
+    { name = "llama-cpp-python" },
     { name = "mcp" },
     { name = "pillow" },
     { name = "textual" },
@@ -1612,8 +1612,8 @@ graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
 ]
-llama-cpp = [
-    { name = "llama-cpp-python" },
+litellm = [
+    { name = "litellm" },
 ]
 reranker = [
     { name = "sentence-transformers" },
@@ -1641,9 +1641,9 @@ requires-dist = [
     { name = "huggingface-hub" },
     { name = "kreuzberg", specifier = ">=4.6.2" },
     { name = "lancedb" },
-    { name = "litellm" },
+    { name = "litellm", marker = "extra == 'litellm'" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "llama-cpp-python", marker = "extra == 'llama-cpp'" },
+    { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "sentence-transformers", marker = "extra == 'reranker'" },
@@ -1654,7 +1654,7 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["llama-cpp", "reranker", "graph", "crawler"]
+provides-extras = ["litellm", "reranker", "graph", "crawler"]
 
 [package.metadata.requires-dev]
 dev = [

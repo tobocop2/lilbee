@@ -18,11 +18,11 @@ class TestModelSource:
     def test_native_value(self) -> None:
         assert ModelSource.NATIVE.value == "native"
 
-    def test_ollama_value(self) -> None:
-        assert ModelSource.OLLAMA.value == "ollama"
+    def test_litellm_value(self) -> None:
+        assert ModelSource.LITELLM.value == "litellm"
 
     def test_members(self) -> None:
-        assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.OLLAMA}
+        assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.LITELLM}
 
 
 class TestModelManagerListInstalled:
@@ -51,7 +51,7 @@ class TestModelManagerListInstalled:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.list_installed(ModelSource.NATIVE) == []
 
-    def test_ollama_lists_models(self) -> None:
+    def test_litellm_lists_models(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {
             "models": [
@@ -63,26 +63,26 @@ class TestModelManagerListInstalled:
 
         with mock.patch("httpx.get", return_value=mock_response) as mock_get:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.OLLAMA)
+            result = mgr.list_installed(ModelSource.LITELLM)
 
         mock_get.assert_called_once_with("http://localhost:11434/api/tags", timeout=30.0)
         assert set(result) == {"llama3:latest", "nomic-embed-text:latest"}
 
-    def test_ollama_connection_error(self) -> None:
+    def test_litellm_connection_error(self) -> None:
         with mock.patch("httpx.get", side_effect=httpx.ConnectError("Connection refused")):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.OLLAMA)
+            result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
 
-    def test_ollama_empty_response(self) -> None:
+    def test_litellm_empty_response(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.list_installed(ModelSource.OLLAMA)
+            result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
 
@@ -92,14 +92,14 @@ class TestModelManagerListInstalled:
         (models_dir / "native-model.gguf").touch()
 
         mock_response = mock.Mock()
-        mock_response.json.return_value = {"models": [{"name": "ollama-model:latest"}]}
+        mock_response.json.return_value = {"models": [{"name": "remote-model:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(models_dir, "http://localhost:11434")
             result = mgr.list_installed(None)
 
-        assert set(result) == {"native-model.gguf", "ollama-model:latest"}
+        assert set(result) == {"native-model.gguf", "remote-model:latest"}
 
     def test_none_source_deduplicates(self, tmp_path: Path) -> None:
         """If same model appears in both sources, it should appear once."""
@@ -134,25 +134,25 @@ class TestModelManagerIsInstalled:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.is_installed("missing.gguf", ModelSource.NATIVE) is False
 
-    def test_ollama_installed(self) -> None:
+    def test_litellm_installed(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.is_installed("llama3:latest", ModelSource.OLLAMA)
+            result = mgr.is_installed("llama3:latest", ModelSource.LITELLM)
 
         assert result is True
 
-    def test_ollama_not_installed(self) -> None:
+    def test_litellm_not_installed(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.is_installed("missing:latest", ModelSource.OLLAMA)
+            result = mgr.is_installed("missing:latest", ModelSource.LITELLM)
 
         assert result is False
 
@@ -168,7 +168,7 @@ class TestModelManagerIsInstalled:
         with mock.patch("httpx.get", return_value=mock_response):
             mgr = ModelManager(models_dir, "http://localhost:11434")
             assert mgr.is_installed("native-model.gguf", None) is True
-            assert mgr.is_installed("ollama-model:latest", None) is False
+            assert mgr.is_installed("remote-model:latest", None) is False
 
 
 class TestModelManagerGetSource:
@@ -180,7 +180,7 @@ class TestModelManagerGetSource:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.get_source("my-model.gguf") == ModelSource.NATIVE
 
-    def test_ollama_model(self) -> None:
+    def test_litellm_model(self) -> None:
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
         mock_response.raise_for_status = mock.Mock()
@@ -189,7 +189,7 @@ class TestModelManagerGetSource:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
             result = mgr.get_source("llama3:latest")
 
-        assert result == ModelSource.OLLAMA
+        assert result == ModelSource.LITELLM
 
     def test_native_takes_precedence(self, tmp_path: Path) -> None:
         """When model exists in both sources, NATIVE takes precedence."""
@@ -258,7 +258,7 @@ class TestModelManagerPull:
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 
-    def test_ollama_pull_success(self, tmp_path: Path) -> None:
+    def test_litellm_pull_success(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
@@ -287,17 +287,17 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.OLLAMA, on_progress=on_progress)
+            result = mgr.pull("llama3:latest", ModelSource.LITELLM, on_progress=on_progress)
 
         mock_client.stream.assert_called_once()
         call_args = mock_client.stream.call_args
         assert call_args[0] == ("POST", "http://localhost:11434/api/pull")
         assert call_args[1]["json"] == {"name": "llama3:latest", "stream": True}
 
-        assert result is None  # Ollama pull doesn't return a path
+        assert result is None  # litellm pull doesn't return a path
         assert len(progress_calls) > 0
 
-    def test_ollama_pull_error(self, tmp_path: Path) -> None:
+    def test_litellm_pull_error(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
@@ -317,9 +317,9 @@ class TestModelManagerPull:
             mock.patch("httpx.Client", return_value=mock_client),
             pytest.raises(RuntimeError, match="model not found"),
         ):
-            mgr.pull("nonexistent:model", ModelSource.OLLAMA)
+            mgr.pull("nonexistent:model", ModelSource.LITELLM)
 
-    def test_ollama_connection_error_during_pull(self, tmp_path: Path) -> None:
+    def test_litellm_connection_error_during_pull(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
@@ -331,11 +331,11 @@ class TestModelManagerPull:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with (
             mock.patch("httpx.Client", return_value=mock_client),
-            pytest.raises(RuntimeError, match="Cannot connect to Ollama"),
+            pytest.raises(RuntimeError, match="Cannot connect to litellm backend"),
         ):
-            mgr.pull("llama3:latest", ModelSource.OLLAMA)
+            mgr.pull("llama3:latest", ModelSource.LITELLM)
 
-    def test_ollama_pull_without_progress_callback(self, tmp_path: Path) -> None:
+    def test_litellm_pull_without_progress_callback(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
@@ -357,11 +357,11 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.OLLAMA)
+            result = mgr.pull("llama3:latest", ModelSource.LITELLM)
 
         assert result is None
 
-    def test_ollama_pull_skips_empty_lines(self, tmp_path: Path) -> None:
+    def test_litellm_pull_skips_empty_lines(self, tmp_path: Path) -> None:
         """Empty strings from iter_lines are skipped."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -379,7 +379,7 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with mock.patch("httpx.Client", return_value=mock_client):
-            result = mgr.pull("llama3:latest", ModelSource.OLLAMA)
+            result = mgr.pull("llama3:latest", ModelSource.LITELLM)
 
         assert result is None
 
@@ -402,13 +402,13 @@ class TestModelManagerRemove:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.remove("missing.gguf", ModelSource.NATIVE) is False
 
-    def test_ollama_remove_success(self) -> None:
+    def test_litellm_remove_success(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 200
 
         with mock.patch("httpx.request", return_value=mock_response) as mock_req:
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.OLLAMA)
+            result = mgr.remove("llama3:latest", ModelSource.LITELLM)
 
         mock_req.assert_called_once()
         call_kwargs = mock_req.call_args[1]
@@ -416,34 +416,34 @@ class TestModelManagerRemove:
         assert call_kwargs["headers"]["Content-Type"] == "application/json"
         assert result is True
 
-    def test_ollama_remove_not_found(self) -> None:
+    def test_litellm_remove_not_found(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 404
 
         with mock.patch("httpx.request", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("nonexistent:latest", ModelSource.OLLAMA)
+            result = mgr.remove("nonexistent:latest", ModelSource.LITELLM)
 
         assert result is False
 
-    def test_ollama_connection_error_during_remove(self) -> None:
+    def test_litellm_connection_error_during_remove(self) -> None:
         with mock.patch("httpx.request", side_effect=httpx.ConnectError("Connection refused")):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            with pytest.raises(RuntimeError, match="Cannot connect to Ollama"):
-                mgr.remove("llama3:latest", ModelSource.OLLAMA)
+            with pytest.raises(RuntimeError, match="Cannot connect to litellm backend"):
+                mgr.remove("llama3:latest", ModelSource.LITELLM)
 
-    def test_ollama_remove_unexpected_status(self) -> None:
+    def test_litellm_remove_unexpected_status(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 500
 
         with mock.patch("httpx.request", return_value=mock_response):
             mgr = ModelManager(Path("/tmp"), "http://localhost:11434")
-            result = mgr.remove("llama3:latest", ModelSource.OLLAMA)
+            result = mgr.remove("llama3:latest", ModelSource.LITELLM)
 
         assert result is False
 
     def test_none_source_removes_from_all(self, tmp_path: Path) -> None:
-        """source=None tries native first, then ollama."""
+        """source=None tries native first, then litellm."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         model_file = models_dir / "my-model.gguf"
@@ -470,14 +470,14 @@ class TestSingleton:
     def test_creates_singleton(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.ollama_url = "http://localhost:11434"
+            mock_cfg.litellm_base_url = "http://localhost:11434"
             mgr = get_model_manager()
             assert isinstance(mgr, ModelManager)
 
     def test_returns_same_instance(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.ollama_url = "http://localhost:11434"
+            mock_cfg.litellm_base_url = "http://localhost:11434"
             mgr1 = get_model_manager()
             mgr2 = get_model_manager()
             assert mgr1 is mgr2
@@ -485,15 +485,15 @@ class TestSingleton:
     def test_reset_creates_new_instance(self) -> None:
         with mock.patch("lilbee.config.cfg") as mock_cfg:
             mock_cfg.models_dir = Path("/tmp/models")
-            mock_cfg.ollama_url = "http://localhost:11434"
+            mock_cfg.litellm_base_url = "http://localhost:11434"
             mgr1 = get_model_manager()
             reset_model_manager()
             mgr2 = get_model_manager()
             assert mgr1 is not mgr2
 
 
-class TestOllamaEdgeCases:
-    def test_ollama_http_error(self, tmp_path: Path) -> None:
+class TestLitellmEdgeCases:
+    def test_litellm_http_error(self, tmp_path: Path) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
@@ -502,14 +502,14 @@ class TestOllamaEdgeCases:
         )
 
         with mock.patch("httpx.get", return_value=mock_response):
-            mgr = ModelManager(models_dir=tmp_path, ollama_base_url="http://localhost:11434")
-            result = mgr.list_installed(ModelSource.OLLAMA)
+            mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+            result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
 
-    def test_ollama_timeout(self, tmp_path: Path) -> None:
+    def test_litellm_timeout(self, tmp_path: Path) -> None:
         with mock.patch("httpx.get", side_effect=httpx.TimeoutException("timeout")):
-            mgr = ModelManager(models_dir=tmp_path, ollama_base_url="http://localhost:11434")
-            result = mgr.list_installed(ModelSource.OLLAMA)
+            mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+            result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []

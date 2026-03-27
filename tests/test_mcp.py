@@ -53,7 +53,7 @@ def _no_dns():
 
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
-    """MCP tests never need real Ollama model validation."""
+    """MCP tests never need real model validation."""
     with mock.patch("lilbee.embedder.validate_model"):
         yield
 

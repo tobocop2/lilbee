@@ -73,7 +73,7 @@ async def lilbee_add(
     Args:
         paths: Absolute file/directory paths or URLs to add.
         force: Overwrite files that already exist in the knowledge base.
-        vision_model: Ollama vision model for scanned PDF OCR
+        vision_model: Vision model for scanned PDF OCR
             (e.g. "maternion/LightOnOCR-2:latest"). If empty, uses
             the configured default. If no model is configured,
             scanned PDFs are skipped.
