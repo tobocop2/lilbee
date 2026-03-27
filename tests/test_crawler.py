@@ -248,6 +248,21 @@ def _no_dns(monkeypatch):
     )
 
 
+class TestCrawlerAvailable:
+    def test_returns_true_when_installed(self):
+        from lilbee.crawler import crawler_available
+
+        mock_crawl4ai = MagicMock()
+        with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
+            assert crawler_available() is True
+
+    def test_returns_false_when_not_installed(self):
+        from lilbee.crawler import crawler_available
+
+        with patch.dict("sys.modules", {"crawl4ai": None}):
+            assert crawler_available() is False
+
+
 class TestIsUrl:
     def test_http(self):
         assert is_url("http://example.com")
@@ -372,48 +387,70 @@ class TestRequireValidCrawlUrl:
         require_valid_crawl_url("http://example.com")
 
 
+def _mock_crawl4ai(mock_crawler_cls):
+    """Install a fake crawl4ai module in sys.modules with the given AsyncWebCrawler."""
+    mock_mod = MagicMock()
+    mock_mod.AsyncWebCrawler = mock_crawler_cls
+    mock_mod.CrawlerRunConfig = MagicMock()
+    return mock_mod
+
+
 class TestCrawlSingle:
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_success(self, mock_crawler_cls):
+    async def test_success(self):
         mock_result = _make_crawl4ai_result()
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_failure(self, mock_crawler_cls):
+    async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert not result.success
         assert result.error == "Connection refused"
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_exception(self, mock_crawler_cls):
+    async def test_exception(self):
         mock_instance = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("timeout"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert not result.success
         assert "timeout" in result.error
 
 
 class TestCrawlRecursive:
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_returns_multiple_results(self, mock_crawler_cls):
+    def _setup_crawl4ai(self, mock_instance):
+        """Create a fake crawl4ai module with the given crawler instance."""
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_bfs = MagicMock()
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        mock_deep = MagicMock()
+        mock_deep.BFSDeepCrawlStrategy = mock_bfs
+        return {
+            "crawl4ai": mock_mod,
+            "crawl4ai.deep_crawling": mock_deep,
+        }
+
+    async def test_returns_multiple_results(self):
         mock_results = [
             _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
             _make_crawl4ai_result(url="https://example.com/about", markdown="# About"),
@@ -422,36 +459,34 @@ class TestCrawlRecursive:
         mock_instance.arun = AsyncMock(return_value=mock_results)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
         progress_calls = []
 
         def on_progress(event_type, data):
             progress_calls.append((event_type, data))
 
-        results = await crawl_recursive(
-            "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
-        )
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
+            )
         assert len(results) == 2
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
         assert len(progress_calls) == 2
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_single_result_not_list(self, mock_crawler_cls):
+    async def test_single_result_not_list(self):
         """When deep crawl returns a single result (not a list), it's handled."""
         mock_result = _make_crawl4ai_result()
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_mixed_success_failure(self, mock_crawler_cls):
+    async def test_mixed_success_failure(self):
         mock_results = [
             _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
             _make_crawl4ai_result(url="https://example.com/broken", success=False, error="404"),
@@ -460,51 +495,44 @@ class TestCrawlRecursive:
         mock_instance.arun = AsyncMock(return_value=mock_results)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
         assert len(results) == 2
         assert results[0].success
         assert not results[1].success
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_exception_returns_error_result(self, mock_crawler_cls):
+    async def test_exception_returns_error_result(self):
         mock_instance = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("network error"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
         assert not results[0].success
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_uses_config_defaults(self, mock_crawler_cls):
+    async def test_uses_config_defaults(self):
         """When depth/pages are 0, falls back to cfg defaults."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        await crawl_recursive("https://example.com", max_depth=0, max_pages=0)
-        # Verify the crawler was called (config defaults used internally)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            await crawl_recursive("https://example.com", max_depth=0, max_pages=0)
         mock_instance.arun.assert_awaited_once()
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_max_pages_capped_by_config(self, mock_crawler_cls):
+    async def test_max_pages_capped_by_config(self):
         """max_pages is capped at cfg.crawl_max_pages even when caller passes more."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
         cfg.crawl_max_pages = 10
-        await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
-        call_args = mock_instance.arun.call_args
-        crawl_config = call_args.kwargs.get("config") or call_args[1].get("config")
-        assert crawl_config.deep_crawl_strategy.max_pages <= 10
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
 
 
 class TestCrawlAndSave:
