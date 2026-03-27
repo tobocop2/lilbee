@@ -31,7 +31,7 @@ def _mock_stream(*texts: str):
 
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
-    """CLI tests never need real Ollama model validation or chat model checks."""
+    """CLI tests never need real model validation or chat model checks."""
     with (
         mock.patch("lilbee.embedder.validate_model"),
         mock.patch("lilbee.models.ensure_chat_model"),
@@ -1253,61 +1253,61 @@ class TestAskModelNotFound:
         assert "not found" in data["error"]
 
 
-class TestOllamaUnavailable:
-    """CLI commands should show friendly errors when Ollama is unreachable."""
+class TestBackendUnavailable:
+    """CLI commands should show friendly errors when the backend is unreachable."""
 
-    _ERR = RuntimeError("Cannot connect to Ollama: Connection refused")
+    _ERR = RuntimeError("Connection refused")
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_sync_ollama_unavailable(self, mock_sync):
+    def test_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_sync_ollama_unavailable_json(self, mock_sync):
+    def test_sync_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_rebuild_ollama_unavailable(self, mock_sync):
+    def test_rebuild_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_rebuild_ollama_unavailable_json(self, mock_sync):
+    def test_rebuild_backend_unavailable_json(self, mock_sync):
         result = runner.invoke(app, ["--json", "rebuild"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_add_ollama_unavailable(self, mock_sync, isolated_env, tmp_path):
+    def test_add_backend_unavailable(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
         src.write_text("content")
         result = runner.invoke(app, ["add", str(src)])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_add_ollama_unavailable_json(self, mock_sync, isolated_env, tmp_path):
+    def test_add_backend_unavailable_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
         src.write_text("content")
         result = runner.invoke(app, ["--json", "add", str(src)])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
-        assert "Cannot connect to Ollama" in data["error"]
+        assert "Connection refused" in data["error"]
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=_ERR)
-    def test_auto_sync_ollama_unavailable(self, mock_sync):
+    def test_auto_sync_backend_unavailable(self, mock_sync):
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
-        assert "Cannot connect to Ollama" in result.output
+        assert "Connection refused" in result.output
 
 
 class TestEnsureChatModelWiring:
@@ -1356,7 +1356,7 @@ class TestEnsureVisionModel:
             assert cfg.vision_model == "saved-model"
             mock_val.assert_called_once()
 
-    def test_ollama_unreachable_disables_vision(self) -> None:
+    def test_backend_unreachable_disables_vision(self) -> None:
         from lilbee.cli.commands import _ensure_vision_model
 
         cfg.vision_model = ""
@@ -1427,7 +1427,7 @@ class TestValidateConfiguredVision:
             _validate_configured_vision()
             assert cfg.vision_model == ""
 
-    def test_ollama_unreachable_keeps_config(self) -> None:
+    def test_backend_unreachable_keeps_config(self) -> None:
         from lilbee.cli.commands import _validate_configured_vision
 
         cfg.vision_model = "llava:7b"

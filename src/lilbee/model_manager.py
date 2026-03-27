@@ -1,4 +1,4 @@
-"""Model lifecycle management across native GGUF and Ollama sources."""
+"""Model lifecycle management across native GGUF and litellm-backed sources."""
 
 import json
 import logging
@@ -11,32 +11,32 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-_OLLAMA_TIMEOUT = 30.0
+_LITELLM_TIMEOUT = 30.0
 
 
 class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    OLLAMA = "ollama"  # Ollama's model store
+    LITELLM = "litellm"  # Models managed by an external tool (Ollama, etc.)
 
 
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
 
-    def __init__(self, models_dir: Path, ollama_base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, models_dir: Path, litellm_base_url: str = "http://localhost:11434") -> None:
         self._models_dir = models_dir
-        self._ollama_base_url = ollama_base_url.rstrip("/")
+        self._litellm_base_url = litellm_base_url.rstrip("/")
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. source=None lists all sources."""
         if source is None:
             native = set(self._list_native())
-            ollama = set(self._list_ollama())
-            return sorted(native | ollama)
+            remote = set(self._list_litellm())
+            return sorted(native | remote)
         if source is ModelSource.NATIVE:
             return self._list_native()
-        return self._list_ollama()
+        return self._list_litellm()
 
     def _list_native(self) -> list[str]:
         """List .gguf files in the models directory."""
@@ -44,41 +44,41 @@ class ModelManager:
             return []
         return sorted(p.name for p in self._models_dir.iterdir() if p.suffix == ".gguf")
 
-    def _list_ollama(self) -> list[str]:
-        """List models from Ollama via its HTTP API."""
-        url = f"{self._ollama_base_url}/api/tags"
+    def _list_litellm(self) -> list[str]:
+        """List models from the litellm backend via its HTTP API."""
+        url = f"{self._litellm_base_url}/api/tags"
         try:
-            resp = httpx.get(url, timeout=_OLLAMA_TIMEOUT)
+            resp = httpx.get(url, timeout=_LITELLM_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
         except httpx.HTTPStatusError as exc:
-            log.warning("Ollama HTTP error listing models: %s", exc)
+            log.warning("litellm backend HTTP error listing models: %s", exc)
             return []
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            log.debug("Ollama not reachable: %s", exc)
+            log.debug("litellm backend not reachable: %s", exc)
             return []
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
         """Check if model exists in specified source."""
         if source is None:
-            return self._is_native(model) or self._is_ollama(model)
+            return self._is_native(model) or self._is_litellm(model)
         if source is ModelSource.NATIVE:
             return self._is_native(model)
-        return self._is_ollama(model)
+        return self._is_litellm(model)
 
     def _is_native(self, model: str) -> bool:
         return (self._models_dir / model).is_file()
 
-    def _is_ollama(self, model: str) -> bool:
-        return model in self._list_ollama()
+    def _is_litellm(self, model: str) -> bool:
+        return model in self._list_litellm()
 
     def get_source(self, model: str) -> ModelSource | None:
         """Find which source a model lives in. Native takes precedence."""
         if self._is_native(model):
             return ModelSource.NATIVE
-        if self._is_ollama(model):
-            return ModelSource.OLLAMA
+        if self._is_litellm(model):
+            return ModelSource.LITELLM
         return None
 
     def pull(
@@ -90,11 +90,11 @@ class ModelManager:
     ) -> Path | None:
         """Pull/download model to specified source.
 
-        Returns the Path for native downloads, None for Ollama.
+        Returns the Path for native downloads, None for litellm-backed pulls.
         """
         if source is ModelSource.NATIVE:
             return self._pull_native(model)
-        self._pull_ollama(model, on_progress=on_progress)
+        self._pull_litellm(model, on_progress=on_progress)
         return None
 
     def _pull_native(self, model: str) -> Path:
@@ -108,11 +108,11 @@ class ModelManager:
         log.info("Downloaded %s to %s", model, path)
         return path
 
-    def _pull_ollama(
+    def _pull_litellm(
         self, model: str, *, on_progress: Callable[[dict], None] | None = None
     ) -> None:
-        """Pull model via Ollama's HTTP API with streaming progress."""
-        url = f"{self._ollama_base_url}/api/pull"
+        """Pull model via the litellm backend's HTTP API with streaming progress."""
+        url = f"{self._litellm_base_url}/api/pull"
         try:
             with (
                 httpx.Client(timeout=None) as client,
@@ -128,18 +128,20 @@ class ModelManager:
                     if on_progress is not None:
                         on_progress(data)
         except httpx.ConnectError as exc:
-            raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
-        log.info("Pulled %s via Ollama", model)
+            raise RuntimeError(
+                f"Cannot connect to litellm backend: {exc}. Is the server running?"
+            ) from exc
+        log.info("Pulled %s via litellm backend", model)
 
     def remove(self, model: str, source: ModelSource | None = None) -> bool:
         """Remove installed model. Returns True if removed."""
         if source is None:
             native_removed = self._remove_native(model)
-            ollama_removed = self._remove_ollama(model)
-            return native_removed or ollama_removed
+            litellm_removed = self._remove_litellm(model)
+            return native_removed or litellm_removed
         if source is ModelSource.NATIVE:
             return self._remove_native(model)
-        return self._remove_ollama(model)
+        return self._remove_litellm(model)
 
     def _remove_native(self, model: str) -> bool:
         path = self._models_dir / model
@@ -149,25 +151,27 @@ class ModelManager:
             return True
         return False
 
-    def _remove_ollama(self, model: str) -> bool:
-        url = f"{self._ollama_base_url}/api/delete"
+    def _remove_litellm(self, model: str) -> bool:
+        url = f"{self._litellm_base_url}/api/delete"
         try:
             resp = httpx.request(
                 "DELETE",
                 url,
                 content=json.dumps({"model": model}).encode(),
                 headers={"Content-Type": "application/json"},
-                timeout=_OLLAMA_TIMEOUT,
+                timeout=_LITELLM_TIMEOUT,
             )
             if resp.status_code == 200:
-                log.info("Removed Ollama model %s", model)
+                log.info("Removed litellm model %s", model)
                 return True
             if resp.status_code == 404:
                 return False
             log.warning("Unexpected status %d removing %s", resp.status_code, model)
             return False
         except httpx.ConnectError as exc:
-            raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+            raise RuntimeError(
+                f"Cannot connect to litellm backend: {exc}. Is the server running?"
+            ) from exc
 
 
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
@@ -175,8 +179,8 @@ _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minic
 
 
 @dataclass
-class OllamaModel:
-    """An Ollama model with inferred task classification."""
+class RemoteModel:
+    """A model from the litellm backend with inferred task classification."""
 
     name: str
     task: str  # "chat", "embedding", "vision"
@@ -184,8 +188,12 @@ class OllamaModel:
     parameter_size: str
 
 
-def _classify_ollama_task(name: str, family: str) -> str:
-    """Classify an Ollama model as chat, embedding, or vision."""
+# Backwards-compatible alias
+OllamaModel = RemoteModel
+
+
+def _classify_remote_task(name: str, family: str) -> str:
+    """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
         return "embedding"
@@ -195,33 +203,41 @@ def _classify_ollama_task(name: str, family: str) -> str:
     return "chat"
 
 
-def classify_ollama_models(ollama_url: str = "http://localhost:11434") -> list[OllamaModel]:
-    """Discover and classify all Ollama models by task.
+def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
+    """Discover and classify all models from the litellm backend by task.
 
     Uses /api/tags family metadata for embedding detection and
     name patterns for vision detection.
     """
     try:
-        resp = httpx.get(f"{ollama_url}/api/tags", timeout=5.0)
+        resp = httpx.get(f"{base_url}/api/tags", timeout=5.0)
         resp.raise_for_status()
         raw_models = resp.json().get("models", [])
     except Exception:
         return []
 
-    result: list[OllamaModel] = []
+    result: list[RemoteModel] = []
     for model in raw_models:
         name = model.get("name", "")
         details = model.get("details", {})
         family = details.get("family", "")
         param_size = details.get("parameter_size", "")
-        task = _classify_ollama_task(name, family)
-        result.append(OllamaModel(name=name, task=task, family=family, parameter_size=param_size))
+        task = _classify_remote_task(name, family)
+        result.append(RemoteModel(name=name, task=task, family=family, parameter_size=param_size))
     return result
 
 
-def detect_ollama_embedding_models(ollama_url: str = "http://localhost:11434") -> list[str]:
-    """Return names of Ollama models classified as embedding."""
-    return [m.name for m in classify_ollama_models(ollama_url) if m.task == "embedding"]
+# Backwards-compatible alias
+classify_ollama_models = classify_remote_models
+
+
+def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
+    """Return names of models classified as embedding from the litellm backend."""
+    return [m.name for m in classify_remote_models(base_url) if m.task == "embedding"]
+
+
+# Backwards-compatible alias
+detect_ollama_embedding_models = detect_remote_embedding_models
 
 
 _manager: ModelManager | None = None
@@ -233,7 +249,7 @@ def get_model_manager() -> ModelManager:
     if _manager is None:
         from lilbee.config import cfg
 
-        _manager = ModelManager(cfg.models_dir, cfg.ollama_url)
+        _manager = ModelManager(cfg.models_dir, cfg.litellm_base_url)
     return _manager
 
 

@@ -1,7 +1,7 @@
 """Vision model OCR extraction for scanned PDFs.
 
 Rasterizes PDF pages to PNG, sends each to a local vision model
-via Ollama, and concatenates the extracted text.
+via the configured LLM provider, and concatenates the extracted text.
 """
 
 import contextlib

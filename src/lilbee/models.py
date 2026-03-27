@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2
 
-OLLAMA_MODELS_URL = "https://ollama.com/library"
+MODELS_BROWSE_URL = "https://ollama.com/library"
 
 
 def ensure_tag(name: str) -> str:
@@ -152,7 +152,7 @@ def display_model_picker(
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
     console.print("  \u2605 = recommended for your system")
-    console.print(f"  Browse more models at {OLLAMA_MODELS_URL}\n")
+    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
 
@@ -199,7 +199,7 @@ def display_vision_picker(
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
     console.print("  \u2605 = recommended for your system")
-    console.print(f"  Browse more models at {OLLAMA_MODELS_URL}\n")
+    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
 

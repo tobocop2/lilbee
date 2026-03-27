@@ -1,7 +1,7 @@
 """RAG pipeline integration tests with real models.
 
 Uses llama-cpp-python with real GGUF models downloaded from HuggingFace.
-No Ollama required. Marked slow — excluded from default test runs.
+No external server required. Marked slow — excluded from default test runs.
 
 Run with:
     uv run pytest tests/test_rag_integration.py -v -m slow

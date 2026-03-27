@@ -1,6 +1,6 @@
 """Tests for embedder + store round-trip.
 
-Requires a running Ollama instance with nomic-embed-text model.
+Requires a running embedding model backend with nomic-embed-text model.
 """
 
 import pytest
@@ -109,7 +109,7 @@ class TestStoreRoundTrip:
 
 
 class TestStoreOperations:
-    """Cover store paths that don't need Ollama."""
+    """Cover store paths that don't need a live backend."""
 
     def test_add_chunks_and_search_empty_table(self):
         """add_chunks with data + search on that table."""

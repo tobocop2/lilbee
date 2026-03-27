@@ -25,7 +25,7 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import FEATURED_ALL, CatalogModel, get_catalog
 from lilbee.config import cfg
-from lilbee.model_manager import OllamaModel
+from lilbee.model_manager import RemoteModel
 
 log = logging.getLogger(__name__)
 
@@ -99,18 +99,18 @@ class ModelRow(ListItem):
         yield Static(_format_row(self.model), classes="model-row-text")
 
 
-class OllamaRow(ListItem):
-    """An Ollama model (inference-only)."""
+class RemoteRow(ListItem):
+    """A remote model (inference-only, managed by external tool)."""
 
-    def __init__(self, model: OllamaModel) -> None:
+    def __init__(self, model: RemoteModel) -> None:
         super().__init__()
-        self.ollama_model = model
+        self.remote_model = model
 
     def compose(self) -> ComposeResult:
-        m = self.ollama_model
+        m = self.remote_model
         size = m.parameter_size or "?"
         yield Static(
-            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           (Ollama)",
+            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           (remote)",
             classes="model-row-text",
         )
 
@@ -139,7 +139,7 @@ class CatalogScreen(Screen[None]):
         super().__init__()
         self._featured: list[CatalogModel] = list(FEATURED_ALL)
         self._hf_models: list[CatalogModel] = []
-        self._ollama_models: list[OllamaModel] = []
+        self._remote_models: list[RemoteModel] = []
         self._hf_offset = 0
         self._hf_has_more = True
         self._current_sort = "downloads"
@@ -159,7 +159,7 @@ class CatalogScreen(Screen[None]):
     def on_mount(self) -> None:
         self._refresh_lists()
         self._fetch_hf_models()
-        self._fetch_ollama_models()
+        self._fetch_remote_models()
 
     @work(thread=True)
     def _fetch_hf_models(self) -> list[CatalogModel]:
@@ -171,10 +171,10 @@ class CatalogScreen(Screen[None]):
         return new_models
 
     @work(thread=True)
-    def _fetch_ollama_models(self) -> list[OllamaModel]:
-        from lilbee.model_manager import classify_ollama_models
+    def _fetch_remote_models(self) -> list[RemoteModel]:
+        from lilbee.model_manager import classify_remote_models
 
-        return classify_ollama_models(cfg.ollama_url)
+        return classify_remote_models(cfg.litellm_base_url)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
@@ -186,8 +186,8 @@ class CatalogScreen(Screen[None]):
         elif event.worker.name == "_fetch_more_hf" and isinstance(result, list):
             self._hf_models.extend(result)
             self._refresh_lists()
-        elif event.worker.name == "_fetch_ollama_models" and isinstance(result, list):
-            self._ollama_models = result
+        elif event.worker.name == "_fetch_remote_models" and isinstance(result, list):
+            self._remote_models = result
             self._refresh_lists()
         elif event.worker.name == "_fetch_model_size" and isinstance(result, tuple):
             repo, size_gb = result
@@ -218,7 +218,7 @@ class CatalogScreen(Screen[None]):
 
             featured = _filter_catalog(self._featured, task, search)
             hf = _filter_catalog(self._hf_models, task, search)
-            ollama = _filter_ollama(self._ollama_models, task, search)
+            remote = _filter_remote(self._remote_models, task, search)
 
             if featured:
                 lv.append(ListItem(Label("★ FEATURED", classes="section-header")))
@@ -237,23 +237,23 @@ class CatalogScreen(Screen[None]):
                 if self._hf_has_more and not search:
                     lv.append(LoadMoreRow())
 
-            if ollama:
-                lv.append(ListItem(Label("INSTALLED (Ollama)", classes="section-header")))
-                for om in ollama:
-                    lv.append(OllamaRow(om))
+            if remote:
+                lv.append(ListItem(Label("INSTALLED (Remote)", classes="section-header")))
+                for rm in remote:
+                    lv.append(RemoteRow(rm))
 
-            if not featured and not ollama and not hf:
+            if not featured and not remote and not hf:
                 lv.append(ListItem(Label("No models match your filters.")))
 
         n_featured = len(self._featured)
         n_hf = len(self._hf_models)
-        n_ollama = len(self._ollama_models)
-        total = n_featured + n_hf + n_ollama
+        n_remote = len(self._remote_models)
+        total = n_featured + n_hf + n_remote
         more = "+" if self._hf_has_more else ""
         self.query_one("#sort-label", Static).update(
             f"Sort: {_SORT_LABELS[self._current_sort]}  |  "
             f"Showing {total}{more} models "
-            f"({n_featured} featured, {n_hf} HF, {n_ollama} Ollama)"
+            f"({n_featured} featured, {n_hf} HF, {n_remote} remote)"
         )
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
@@ -263,10 +263,10 @@ class CatalogScreen(Screen[None]):
             return
         if isinstance(item, ModelRow):
             self._install_model(item.model)
-        elif isinstance(item, OllamaRow):
-            cfg.chat_model = item.ollama_model.name
-            self.notify(f"Using {item.ollama_model.name} (Ollama)")
-            self.app.title = f"lilbee — {item.ollama_model.name}"
+        elif isinstance(item, RemoteRow):
+            cfg.chat_model = item.remote_model.name
+            self.notify(f"Using {item.remote_model.name} (remote)")
+            self.app.title = f"lilbee — {item.remote_model.name}"
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         self._update_highlighted_detail(event.item)
@@ -298,9 +298,9 @@ class CatalogScreen(Screen[None]):
             # Lazy-load file size if unknown and not cached
             if m.size_gb <= 0 and m.hf_repo not in self._size_cache:
                 self._fetch_model_size(m.hf_repo)
-        elif isinstance(item, OllamaRow):
-            om = item.ollama_model
-            detail.update(f"{om.name} — {om.task}  Family: {om.family}  {om.parameter_size}")
+        elif isinstance(item, RemoteRow):
+            rm = item.remote_model
+            detail.update(f"{rm.name} — {rm.task}  Family: {rm.family}  {rm.parameter_size}")
         else:
             detail.update("")
 
@@ -403,7 +403,7 @@ def _filter_catalog(
     return filtered
 
 
-def _filter_ollama(models: list[OllamaModel], task: str | None, search: str) -> list[OllamaModel]:
+def _filter_remote(models: list[RemoteModel], task: str | None, search: str) -> list[RemoteModel]:
     filtered = models
     if task:
         filtered = [m for m in filtered if m.task == task]

@@ -35,7 +35,7 @@ flowchart LR
     end
 
     subgraph External
-        OLLAMA[Ollama]
+        LITELLM[litellm backends]
         LLAMA[llama-cpp]
         HF[HuggingFace]
     end
@@ -51,7 +51,7 @@ flowchart LR
     SEARCH --> CONCEPT
     SEARCH --> GEN
     GEN --> PROV
-    PROV --> OLLAMA & LLAMA
+    PROV --> LITELLM & LLAMA
     INGEST --> HF
 ```
 
@@ -67,7 +67,7 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **PDF**: kreuzberg 4.6 extraction with OCR fallback chain (text extraction → Tesseract OCR → vision model). PDF page rasterization delegated to kreuzberg's `PdfPageIterator`.
 - **Structured files**: kreuzberg handles XML, JSON, JSONL, YAML, CSV extraction natively. Language detection delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages**: crawl4ai fetches HTML (with JavaScript rendering via Playwright), converts to markdown, saves to `documents/_web/` for indexing
-- **Embedding**: provider-agnostic — works with Ollama, llama-cpp-python, or any configured provider
+- **Embedding**: provider-agnostic — works with llama-cpp-python (default) or any litellm-compatible backend (Ollama, OpenAI, etc.)
 - **Concept extraction**: spaCy noun phrases extracted per chunk, co-occurrence graph built with PPMI weights, Leiden clustering assigns concepts to communities
 - **Storage**: LanceDB with full-text search (FTS) index for hybrid retrieval + concept graph tables (nodes, edges, chunk mappings)
 
@@ -78,18 +78,19 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 ```mermaid
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
-    ROUTE --> CHECK{Model in Ollama?}
-    CHECK -->|Yes| LIT[LiteLLM → Ollama]
+    ROUTE --> CHECK{litellm installed & model available?}
+    CHECK -->|Yes| LIT[LiteLLM → External Backend]
     CHECK -->|No| LCPP[llama-cpp-python → GGUF]
 
-    APP -->|explicit config| OLLAMA_P[LiteLLM Provider]
+    APP -->|explicit config| LIT_P[LiteLLM Provider]
     APP -->|explicit config| LCPP_P[LlamaCpp Provider]
 ```
 
-- **auto** (default): `RoutingProvider` checks Ollama availability per model. If Ollama has the model, uses it; otherwise falls back to local GGUF.
-- **ollama**: force all calls through LiteLLM → Ollama
-- **llama-cpp**: force local GGUF inference via llama-cpp-python
-- Model downloads always come from HuggingFace. lilbee manages its own GGUF files. Ollama models are used for inference when available but never managed by lilbee.
+- **auto** (default): `RoutingProvider` checks if litellm is installed and the model is available via its API. If so, uses it; otherwise falls back to local GGUF via llama-cpp.
+- **litellm**: force all calls through LiteLLM (Ollama, OpenAI, Azure, etc.). Requires `pip install lilbee[litellm]`.
+- **ollama**: deprecated alias for `litellm`
+- **llama-cpp**: force local GGUF inference via llama-cpp-python (always available)
+- Model downloads come from HuggingFace. lilbee manages its own GGUF files. External models (e.g. Ollama) are used for inference when available but not managed by lilbee.
 
 ---
 
@@ -286,7 +287,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available in Ollama |
+| `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available via litellm backend |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
 | `LILBEE_MAX_DISTANCE` | `0.7` | Cosine distance cutoff for vector results | Lower values are stricter — may return fewer results but higher precision |
@@ -326,6 +327,6 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, ollama, litellm | auto = use Ollama if reachable, otherwise llama-cpp |
-| `LILBEE_OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint | Also reads `OLLAMA_HOST` for backwards compatibility. Supports remote Ollama servers. |
+| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, litellm | auto = use litellm if installed and reachable, otherwise llama-cpp |
+| `LILBEE_LITELLM_BASE_URL` | `http://localhost:11434` | litellm backend endpoint | Also reads `OLLAMA_HOST` for backwards compatibility (deprecated). |
 

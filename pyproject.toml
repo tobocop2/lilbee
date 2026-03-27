@@ -1,7 +1,7 @@
 [project]
 name = "lilbee"
 version = "0.6.0"
-description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Fully offline with Ollama."
+description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Runs fully offline with llama-cpp."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
@@ -37,13 +37,13 @@ dependencies = [
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
-    "litellm",
+    "llama-cpp-python",
     "huggingface_hub",
     "httpx",
 ]
 
 [project.optional-dependencies]
-llama-cpp = ["llama-cpp-python"]
+litellm = ["litellm"]
 reranker = ["sentence-transformers"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.8.0"]

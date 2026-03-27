@@ -1,4 +1,9 @@
-"""LiteLLM provider for Ollama, OpenAI, and other backends."""
+"""LiteLLM provider for external LLM backends.
+
+For users who manage models with external tools like Ollama, or want to connect
+to frontier AI APIs (OpenAI, Anthropic, Azure). Install with ``pip install
+lilbee[litellm]``. By default, lilbee manages its own models via llama-cpp.
+"""
 
 from __future__ import annotations
 
@@ -13,19 +18,34 @@ from lilbee.providers.base import LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
 
-# HTTP timeout for Ollama API calls (seconds)
+# HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
 
+def litellm_available() -> bool:
+    """Return True if litellm is installed."""
+    try:
+        import litellm  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 class LiteLLMProvider(LLMProvider):
-    """Provider backed by litellm for Ollama/cloud APIs."""
+    """Provider backed by litellm for external APIs (Ollama, OpenAI, Azure, etc.)."""
+
+    @staticmethod
+    def available() -> bool:
+        """Return True if litellm is installed."""
+        return litellm_available()
 
     def __init__(self, *, base_url: str = "http://localhost:11434", api_key: str = "") -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
 
     def _model_name(self, model: str | None = None) -> str:
-        """Prefix model name with ollama/ for litellm routing."""
+        """Prefix model name with ollama/ for litellm routing when needed."""
         from lilbee.config import cfg
 
         resolved = model or cfg.chat_model
@@ -34,7 +54,7 @@ class LiteLLMProvider(LLMProvider):
         return resolved
 
     def _embed_model_name(self) -> str:
-        """Prefix embedding model with ollama/ for litellm routing."""
+        """Prefix embedding model with ollama/ for litellm routing when needed."""
         from lilbee.config import cfg
 
         name = cfg.embedding_model
@@ -90,7 +110,7 @@ class LiteLLMProvider(LLMProvider):
         return response.choices[0].message.content or ""
 
     def list_models(self) -> list[str]:
-        """List models via Ollama's /api/tags endpoint."""
+        """List models via the /api/tags endpoint."""
         try:
             resp = httpx.get(f"{self._base_url}/api/tags", timeout=_HTTP_TIMEOUT)
             resp.raise_for_status()
@@ -100,7 +120,7 @@ class LiteLLMProvider(LLMProvider):
             raise ProviderError(f"Cannot list models: {exc}", provider="litellm") from exc
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
-        """Pull a model via Ollama's /api/pull endpoint."""
+        """Pull a model via the /api/pull endpoint."""
         try:
             with (
                 httpx.Client(timeout=None) as client,
@@ -125,7 +145,7 @@ class LiteLLMProvider(LLMProvider):
             raise ProviderError(f"Cannot pull model {model!r}: {exc}", provider="litellm") from exc
 
     def show_model(self, model: str) -> dict[str, str] | None:
-        """Get model info via Ollama's /api/show endpoint."""
+        """Get model info via the /api/show endpoint."""
         try:
             resp = httpx.post(
                 f"{self._base_url}/api/show",

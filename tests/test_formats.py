@@ -1,7 +1,7 @@
 """Real-file format tests — full sync() pipeline with actual files on disk.
 
 All document formats go through kreuzberg. Code files still use tree-sitter.
-Embeddings are mocked (no Ollama needed). kreuzberg is mocked for document
+Embeddings are mocked (no live LLM server needed). kreuzberg is mocked for document
 extraction since we're testing the pipeline, not kreuzberg itself.
 """
 
