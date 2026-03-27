@@ -74,8 +74,7 @@ def _ensure_vision_model() -> None:
         installed = set(list_installed_models())
     except Exception:
         console.print(
-            f"[{theme.WARNING}]Warning: Cannot list models."
-            f" Vision OCR disabled.[/{theme.WARNING}]"
+            f"[{theme.WARNING}]Warning: Cannot list models. Vision OCR disabled.[/{theme.WARNING}]"
         )
         return
 
