@@ -8,7 +8,7 @@ from lilbee.config import cfg
 from lilbee.crawler import (
     CrawlMeta,
     CrawlResult,
-    _crawl_semaphore,
+    _get_crawl_semaphore,
     content_hash,
     crawl_and_save,
     crawl_recursive,
@@ -536,5 +536,34 @@ class TestCrawlAndSave:
         # Single page mode: no assertion on max_pages since depth=0 uses crawl_single
 
     async def test_semaphore_limits_concurrency(self, isolated_env):
-        """The semaphore limits concurrent crawls."""
-        assert _crawl_semaphore._value == 3
+        """The semaphore limits concurrent crawls based on config."""
+        import lilbee.crawler as crawler_mod
+
+        crawler_mod._crawl_semaphore = None
+        cfg.crawl_max_concurrent = 5
+        sem = _get_crawl_semaphore()
+        assert sem is not None
+        assert sem._value == 5
+        crawler_mod._crawl_semaphore = None
+
+    async def test_semaphore_defaults_to_cpu_count(self, isolated_env):
+        """Default concurrency matches CPU count."""
+        import os
+
+        import lilbee.crawler as crawler_mod
+
+        crawler_mod._crawl_semaphore = None
+        cfg.crawl_max_concurrent = os.cpu_count() or 4
+        sem = _get_crawl_semaphore()
+        assert sem is not None
+        assert sem._value == (os.cpu_count() or 4)
+        crawler_mod._crawl_semaphore = None
+
+    async def test_semaphore_unlimited_when_zero(self, isolated_env):
+        """Setting crawl_max_concurrent=0 disables the semaphore."""
+        import lilbee.crawler as crawler_mod
+
+        crawler_mod._crawl_semaphore = None
+        cfg.crawl_max_concurrent = 0
+        assert _get_crawl_semaphore() is None
+        crawler_mod._crawl_semaphore = None
