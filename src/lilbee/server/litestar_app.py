@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import logging
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from litestar import Litestar, delete, get, post, put
@@ -240,6 +242,33 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
     return await handlers.delete_documents(names, delete_files=delete_files)
 
 
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: Litestar) -> AsyncIterator[None]:
+    """Pre-load LLM provider and embedding model on server startup.
+
+    Each step is wrapped in try/except so a failure logs a warning
+    but never blocks the server from starting.
+    """
+    try:
+        from lilbee.providers.factory import get_provider
+
+        get_provider()
+        log.info("LLM provider pre-loaded")
+    except Exception:
+        log.warning("Failed to pre-load LLM provider", exc_info=True)
+    try:
+        from lilbee import embedder
+
+        embedder.validate_model()
+        log.info("Embedding model validated")
+    except Exception:
+        log.warning("Failed to validate embedding model", exc_info=True)
+    yield
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -249,6 +278,7 @@ def create_app() -> Litestar:
         allow_headers=["Content-Type"],
     )
     return Litestar(
+        lifespan=[_lifespan],
         route_handlers=[
             health_route,
             status_route,

@@ -1,12 +1,17 @@
 """Document sync engine — keeps documents/ dir in sync with LanceDB."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+if TYPE_CHECKING:
+    from kreuzberg import ExtractionConfig, ExtractionResult
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -160,7 +165,7 @@ def classify_file(path: Path) -> str | None:
     return None
 
 
-def extraction_config(content_type: str) -> object:
+def extraction_config(content_type: str) -> ExtractionConfig:
     """Build ExtractionConfig for a given content type."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
@@ -177,7 +182,7 @@ def extraction_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
-def ocr_extraction_config() -> object:
+def ocr_extraction_config() -> ExtractionConfig:
     """Build ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
     from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
 
@@ -192,7 +197,9 @@ def ocr_extraction_config() -> object:
     )
 
 
-async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
+async def _try_tesseract_ocr(
+    path: Path, source_name: str, fallback: ExtractionResult
+) -> ExtractionResult:
     """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
     try:
         from kreuzberg import extract_file
@@ -394,6 +401,35 @@ async def ingest_markdown(
     ]
 
 
+async def _rebuild_concept_clusters() -> None:
+    """Re-run Leiden clustering after sync. No-op if disabled."""
+    if not cfg.concept_graph:
+        return
+    try:
+        from lilbee.concepts import get_graph, rebuild_clusters
+
+        if not get_graph():
+            return
+        await asyncio.to_thread(rebuild_clusters)
+    except Exception:
+        log.warning("Concept cluster rebuild failed", exc_info=True)
+
+
+async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
+    """Extract and index concepts for ingested chunks. No-op if disabled."""
+    if not cfg.concept_graph or not records:
+        return
+    try:
+        from lilbee.concepts import build_from_chunks, extract_concepts_batch
+
+        texts = [r["chunk"] for r in records]
+        concept_lists = await asyncio.to_thread(extract_concepts_batch, texts)
+        chunk_ids = [(source_name, r["chunk_index"]) for r in records]
+        await asyncio.to_thread(build_from_chunks, chunk_ids, concept_lists)
+    except Exception:
+        log.warning("Concept indexing failed for %s", source_name, exc_info=True)
+
+
 async def _ingest_file(
     path: Path,
     source_name: str,
@@ -418,7 +454,9 @@ async def _ingest_file(
             quiet=quiet,
             on_progress=on_progress,
         )
-    return await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
+    await _index_concepts(records, source_name)
+    return chunk_count
 
 
 async def sync(
@@ -493,6 +531,7 @@ async def sync(
 
     if files_to_process or removed:
         store.ensure_fts_index()
+        await _rebuild_concept_clusters()
 
     result = SyncResult(
         added=added,

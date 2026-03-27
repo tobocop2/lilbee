@@ -161,7 +161,7 @@ def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lanc
         return db.open_table(name)
 
 
-def _open_table(name: str) -> lancedb.table.Table | None:
+def open_table(name: str) -> lancedb.table.Table | None:
     """Open a table if it exists, otherwise return None."""
     db = get_db()
     if name not in _table_names(db):
@@ -183,7 +183,7 @@ def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
         _safe_delete_unlocked(table, predicate)
 
 
-def _escape_sql_string(value: str) -> str:
+def escape_sql_string(value: str) -> str:
     """Escape single quotes for SQL predicates."""
     return value.replace("'", "''")
 
@@ -195,7 +195,7 @@ def ensure_fts_index() -> None:
     on success so hybrid_search can be used.
     """
     with write_lock():
-        table = _open_table(CHUNKS_TABLE)
+        table = open_table(CHUNKS_TABLE)
         if table is None:
             return
         try:
@@ -247,7 +247,7 @@ def _hybrid_search(
 
 def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
     """Quick BM25-only search for confidence checking. Returns up to top_k results."""
-    table = _open_table(CHUNKS_TABLE)
+    table = open_table(CHUNKS_TABLE)
     if table is None:
         return []
     if not _fts.ready:
@@ -277,7 +277,7 @@ def search(
         top_k = cfg.top_k
     if max_distance is None:
         max_distance = cfg.max_distance
-    table = _open_table(CHUNKS_TABLE)
+    table = open_table(CHUNKS_TABLE)
     if table is None:
         return []
 
@@ -331,10 +331,10 @@ def _adaptive_filter(
 
 def get_chunks_by_source(source: str) -> list[SearchChunk]:
     """Return all chunks for a given source file."""
-    table = _open_table(CHUNKS_TABLE)
+    table = open_table(CHUNKS_TABLE)
     if table is None:
         return []
-    escaped = _escape_sql_string(source)
+    escaped = escape_sql_string(source)
     rows = table.search().where(f"source = '{escaped}'").to_list()
     return [SearchChunk(**r) for r in rows]
 
@@ -342,14 +342,14 @@ def get_chunks_by_source(source: str) -> list[SearchChunk]:
 def delete_by_source(source: str) -> None:
     """Delete all chunks from a given source file."""
     with write_lock():
-        table = _open_table(CHUNKS_TABLE)
+        table = open_table(CHUNKS_TABLE)
         if table is not None:
-            _safe_delete_unlocked(table, f"source = '{_escape_sql_string(source)}'")
+            _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
 
 
 def get_sources() -> list[SourceRecord]:
     """Get all tracked source file records."""
-    table = _open_table(SOURCES_TABLE)
+    table = open_table(SOURCES_TABLE)
     if table is None:
         return []
     result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
@@ -361,7 +361,7 @@ def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
     with write_lock():
         db = get_db()
         table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-        _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+        _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
         table.add(
             [
                 {
@@ -377,9 +377,9 @@ def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
 def delete_source(filename: str) -> None:
     """Remove a source file tracking record."""
     with write_lock():
-        table = _open_table(SOURCES_TABLE)
+        table = open_table(SOURCES_TABLE)
         if table is not None:
-            _safe_delete_unlocked(table, f"filename = '{_escape_sql_string(filename)}'")
+            _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
 
 
 class RemoveResult:

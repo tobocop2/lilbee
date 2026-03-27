@@ -140,8 +140,8 @@ class Greeter:
     def test_is_code_file_non_code(self):
         from lilbee.code_chunker import is_code_file
 
-        assert not is_code_file(Path("readme.txt"))
         assert not is_code_file(Path("photo.png"))
+        assert not is_code_file(Path("document.pdf"))
 
     def test_detect_language_python(self):
         from lilbee.code_chunker import _detect_language
