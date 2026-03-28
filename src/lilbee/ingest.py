@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -24,7 +25,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from lilbee.chunk import chunk_text
+from lilbee.chunk import CHARS_PER_TOKEN, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
@@ -48,9 +49,6 @@ log = logging.getLogger(__name__)
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
 _MIN_MEANINGFUL_CHARS = 50
-
-# Approximate chars-per-token ratio (extraction uses chars, not tokens)
-_CHARS_PER_TOKEN = 4
 
 
 def _has_meaningful_text(result: Any) -> bool:
@@ -97,7 +95,11 @@ class SyncResult(BaseModel):
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return self.__str__()
+        return (
+            f"SyncResult(added={len(self.added)}, updated={len(self.updated)}, "
+            f"removed={len(self.removed)}, unchanged={self.unchanged}, "
+            f"failed={len(self.failed)})"
+        )
 
     def __rich__(self) -> str:
         return self.__str__()
@@ -111,6 +113,7 @@ class _IngestResult:
     path: Path
     chunk_count: int
     error: Exception | None
+    file_hash: str = ""
 
 
 # Extension → content_type string for document formats handled by kreuzberg
@@ -177,8 +180,8 @@ def extraction_config(content_type: str) -> ExtractionConfig:
     from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
 
     chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
+        max_chars=cfg.chunk_size * CHARS_PER_TOKEN,
+        max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
     )
 
     if content_type == "pdf":
@@ -194,14 +197,34 @@ def ocr_extraction_config() -> ExtractionConfig:
     from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
 
     chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
+        max_chars=cfg.chunk_size * CHARS_PER_TOKEN,
+        max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
     )
     return ExtractionConfig(
         chunking=chunking,
         pages=PageConfig(extract_pages=True, insert_page_markers=False),
         ocr=OcrConfig(backend="tesseract"),
     )
+
+
+@contextlib.contextmanager
+def suppress_fd_stderr() -> Generator[None, None, None]:
+    """Suppress stderr at the file-descriptor level.
+
+    Catches subprocess output (e.g. Tesseract's "Detected N diacritics")
+    that ``contextlib.redirect_stderr`` cannot intercept.
+    """
+    old_stderr = os.dup(2)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, 2)
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+    finally:
+        os.close(old_stderr)
 
 
 async def _try_tesseract_ocr(
@@ -212,19 +235,8 @@ async def _try_tesseract_ocr(
         from kreuzberg import extract_file
 
         log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
-        # Suppress Tesseract's "Detected N diacritics" stderr noise at the fd level
-        # (contextlib.redirect_stderr only catches Python's sys.stderr, not subprocess output)
-        old_stderr = os.dup(2)
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            try:
-                os.dup2(devnull, 2)
-                return await extract_file(str(path), config=ocr_extraction_config())
-            finally:
-                os.dup2(old_stderr, 2)
-                os.close(devnull)
-        finally:
-            os.close(old_stderr)
+        with suppress_fd_stderr():
+            return await extract_file(str(path), config=ocr_extraction_config())
     except Exception:
         log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
         return fallback
@@ -277,6 +289,45 @@ async def _vision_fallback(
     ]
 
 
+async def _handle_scanned_pdf_fallback(
+    path: Path,
+    source_name: str,
+    content_type: str,
+    result: ExtractionResult,
+    *,
+    use_vision: bool,
+    quiet: bool,
+    on_progress: DetailedProgressCallback,
+) -> list[ChunkRecord] | ExtractionResult:
+    """Handle scanned PDF fallback chain: Tesseract OCR then vision model.
+
+    Returns chunk records if a fallback produced final results, or an
+    updated ExtractionResult when Tesseract OCR succeeded (so the
+    caller can proceed with normal chunking/embedding).
+    """
+    if not use_vision:
+        result = await _try_tesseract_ocr(path, source_name, result)
+
+    if not _has_meaningful_text(result):
+        if not cfg.vision_model:
+            log.warning(
+                "Skipped %s: Tesseract OCR produced no usable text. "
+                "For better results on complex scans, set a vision model "
+                "with /vision or LILBEE_VISION_MODEL.",
+                source_name,
+            )
+            return []
+        log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
+        return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
+
+    log.info(
+        "Scanned PDF detected — extracted with Tesseract OCR: %s. "
+        "For structured markdown output (tables, headings), re-add with --vision.",
+        source_name,
+    )
+    return result
+
+
 async def ingest_document(
     path: Path,
     source_name: str,
@@ -299,29 +350,20 @@ async def ingest_document(
     config = extraction_config(content_type)
     result = await extract_file(str(path), config=config)
 
-    # Scanned PDF fallback chain: Tesseract OCR → vision model
     if content_type == "pdf" and not _has_meaningful_text(result):
-        # When vision is explicitly enabled, skip Tesseract and go straight to vision
-        if not use_vision:
-            result = await _try_tesseract_ocr(path, source_name, result)
-
-        if not _has_meaningful_text(result):
-            if not cfg.vision_model:
-                log.warning(
-                    "Skipped %s: Tesseract OCR produced no usable text. "
-                    "For better results on complex scans, set a vision model "
-                    "with /vision or LILBEE_VISION_MODEL.",
-                    source_name,
-                )
-                return []
-            log.info("PDF text extraction empty, falling back to vision OCR: %s", source_name)
-            return await _vision_fallback(path, source_name, content_type, on_progress, quiet=quiet)
-
-        log.info(
-            "Scanned PDF detected — extracted with Tesseract OCR: %s. "
-            "For structured markdown output (tables, headings), re-add with --vision.",
+        fallback = await _handle_scanned_pdf_fallback(
+            path,
             source_name,
+            content_type,
+            result,
+            use_vision=use_vision,
+            quiet=quiet,
+            on_progress=on_progress,
         )
+        if isinstance(fallback, list):
+            return fallback
+        # Tesseract OCR succeeded — use the updated ExtractionResult
+        result = fallback
 
     if not result.chunks:
         return []
@@ -519,8 +561,8 @@ async def sync(
             _store.delete_source(name)
             removed.append(name)
 
-    # Process files on disk
-    files_to_process: list[tuple[str, Path, str]] = []  # (name, path, content_type)
+    # Process files on disk — (name, path, content_type, hash)
+    files_to_process: list[tuple[str, Path, str, str]] = []
 
     for name, path in sorted(disk_files.items()):
         content_type = classify_file(path)
@@ -537,10 +579,10 @@ async def sync(
             # Modified -- remove old data
             _store.delete_by_source(name)
             _store.delete_source(name)
-            files_to_process.append((name, path, content_type))
+            files_to_process.append((name, path, content_type, current_hash))
             updated.append(name)
         else:
-            files_to_process.append((name, path, content_type))
+            files_to_process.append((name, path, content_type, current_hash))
             added.append(name)
 
     # Ingest files (with optional progress bar)
@@ -584,7 +626,7 @@ _MAX_CONCURRENT = os.cpu_count() or 4
 
 
 async def ingest_batch(
-    files_to_process: list[tuple[str, Path, str]],
+    files_to_process: list[tuple[str, Path, str, str]],
     added: list[str],
     updated: list[str],
     failed: list[str],
@@ -598,7 +640,7 @@ async def ingest_batch(
     total_files = len(files_to_process)
 
     async def _process_one(
-        name: str, path: Path, content_type: str, file_index: int
+        name: str, path: Path, content_type: str, fhash: str, file_index: int
     ) -> _IngestResult:
         async with semaphore:
             on_progress(
@@ -620,7 +662,7 @@ async def ingest_batch(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=chunk_count).model_dump(),
                 )
-                return _IngestResult(name, path, chunk_count, error=None)
+                return _IngestResult(name, path, chunk_count, error=None, file_hash=fhash)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -636,8 +678,8 @@ async def ingest_batch(
 
     if quiet:
         tasks = [
-            asyncio.ensure_future(_process_one(name, path, ct, idx))
-            for idx, (name, path, ct) in enumerate(files_to_process, 1)
+            asyncio.ensure_future(_process_one(name, path, ct, fh, idx))
+            for idx, (name, path, ct, fh) in enumerate(files_to_process, 1)
         ]
         await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
@@ -653,11 +695,17 @@ async def ingest_batch(
             token = shared_progress.set((progress, ptask))
             try:
                 tasks = [
-                    asyncio.ensure_future(_process_one(name, path, ct, idx))
-                    for idx, (name, path, ct) in enumerate(files_to_process, 1)
+                    asyncio.ensure_future(_process_one(name, path, ct, fh, idx))
+                    for idx, (name, path, ct, fh) in enumerate(files_to_process, 1)
                 ]
-                await _collect_results_with_progress(
-                    progress, ptask, tasks, added, updated, failed, on_progress=on_progress
+                await _collect_results(
+                    tasks,
+                    added,
+                    updated,
+                    failed,
+                    on_progress=on_progress,
+                    progress=progress,
+                    ptask=ptask,
                 )
             finally:
                 shared_progress.reset(token)
@@ -670,40 +718,17 @@ async def _collect_results(
     failed: list[str],
     *,
     on_progress: DetailedProgressCallback = noop_callback,
+    progress: Progress | None = None,
+    ptask: Any = None,
 ) -> None:
-    """Collect task results without progress display."""
+    """Collect task results, optionally updating a Rich progress bar."""
     for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
         result = await fut
         _apply_result(result, added, updated, failed)
-        progress_status = "failed" if result.error is not None else "ingested"
-        on_progress(
-            EventType.BATCH_PROGRESS,
-            BatchProgressEvent(
-                file=result.name,
-                status=progress_status,
-                current=completed_count,
-                total=len(tasks),
-            ).model_dump(),
-        )
-
-
-async def _collect_results_with_progress(
-    progress: Progress,
-    ptask: Any,
-    tasks: list[asyncio.Task[_IngestResult]],
-    added: list[str],
-    updated: list[str],
-    failed: list[str],
-    *,
-    on_progress: DetailedProgressCallback = noop_callback,
-) -> None:
-    """Collect task results, updating an existing Rich progress bar."""
-    for completed_count, fut in enumerate(asyncio.as_completed(tasks), 1):
-        result = await fut
-        _apply_result(result, added, updated, failed)
-        desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
-        progress.update(ptask, description=desc)
-        progress.advance(ptask)
+        if progress is not None and ptask is not None:
+            desc = f"Ingested {result.name}" if result.error is None else f"Failed {result.name}"
+            progress.update(ptask, description=desc)
+            progress.advance(ptask)
         progress_status = "failed" if result.error is not None else "ingested"
         on_progress(
             EventType.BATCH_PROGRESS,
@@ -743,4 +768,5 @@ def _apply_result(
         return
     from lilbee.services import get_services
 
-    get_services().store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
+    fhash = result.file_hash or file_hash(result.path)
+    get_services().store.upsert_source(result.name, fhash, result.chunk_count)

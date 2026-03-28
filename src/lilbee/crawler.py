@@ -228,16 +228,21 @@ def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
     """Persist URL→metadata mapping to the JSON sidecar (atomic write)."""
     path = _crawl_meta_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    import tempfile
+
     serializable = {
         url: {"file": m.file, "content_hash": m.content_hash, "crawled_at": m.crawled_at}
         for url, m in meta.items()
     }
-    tmp = path.with_suffix(".tmp")
+    tmp_name: str | None = None
     try:
-        tmp.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as tmp:
+            tmp_name = tmp.name
+            tmp.write(json.dumps(serializable, indent=2).encode("utf-8"))
+        Path(tmp_name).replace(path)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
         raise
 
 

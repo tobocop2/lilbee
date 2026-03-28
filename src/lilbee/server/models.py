@@ -5,16 +5,16 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AskRequest(BaseModel):
     """Request body for /api/ask."""
 
     question: str
-    top_k: int = 0
+    top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
 
 
@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
 
     question: str
     history: list[ChatMessage] = []
-    top_k: int = 0
+    top_k: int = Field(default=0, le=100)
     options: dict[str, Any] | None = None
 
 
@@ -50,7 +50,7 @@ class SetModelRequest(BaseModel):
 class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
-    role: str
+    role: Literal["user", "assistant"]
     content: str
 
 
@@ -93,5 +93,5 @@ class CrawlRequest(BaseModel):
     """Request body for /api/crawl."""
 
     url: str
-    depth: int = 0
-    max_pages: int = 50
+    depth: int = Field(default=0, le=10)
+    max_pages: int = Field(default=50, le=1000)

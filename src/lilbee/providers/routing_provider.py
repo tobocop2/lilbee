@@ -50,7 +50,7 @@ class RoutingProvider(LLMProvider):
             return self._remote_models
         try:  # pragma: no cover
             self._remote_models = set(self._get_litellm().list_models())  # pragma: no cover
-        except (ProviderError, Exception):  # pragma: no cover
+        except Exception:  # pragma: no cover
             log.debug("litellm backend not reachable, using local models only")  # pragma: no cover
             self._remote_models = set()  # pragma: no cover
         return self._remote_models  # pragma: no cover
@@ -103,7 +103,7 @@ class RoutingProvider(LLMProvider):
                 self._get_litellm().pull_model(model, on_progress=on_progress)
                 self.invalidate_cache()
                 return
-            except (ProviderError, Exception):  # pragma: no cover
+            except Exception:  # pragma: no cover
                 pass  # pragma: no cover
         raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
 

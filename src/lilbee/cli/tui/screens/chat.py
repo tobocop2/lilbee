@@ -394,13 +394,12 @@ class ChatScreen(Screen[None]):
             if full_response:
                 with self._history_lock:
                     self._history.append({"role": "assistant", "content": full_response})
-                self._trim_history()
+                    self._trim_history()
             self.app.call_from_thread(widget.finish, sources)
             self.app.call_from_thread(self._scroll_to_bottom)
 
     def _trim_history(self) -> None:
-        """Trim history to max size. Caller must hold _history_lock."""
-        """Drop oldest messages when history exceeds the cap."""
+        """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
         if len(self._history) > _MAX_HISTORY_MESSAGES:
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
 

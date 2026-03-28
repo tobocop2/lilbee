@@ -358,7 +358,7 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
+        self._store._clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
         if node_records:
             with write_lock():
                 db = self._store.get_db()
@@ -371,7 +371,10 @@ class ConceptGraph:
             return False
         return self._store.open_table(CONCEPT_NODES_TABLE) is not None
 
-    def reset_graph(self) -> None:
+    def reset_nlp_cache(self) -> None:
         """Clear the spaCy model cache. For testing only."""
         global _nlp
         _nlp = None
+
+    # Backward-compatible alias
+    reset_graph = reset_nlp_cache

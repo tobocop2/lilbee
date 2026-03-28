@@ -102,6 +102,7 @@ def create_app() -> Litestar:
             documents_remove_route,
             crawl_route,
         ],
+        request_max_body_size=10 * 1024 * 1024,
         cors_config=cors,
         openapi_config=OpenAPIConfig(
             title="lilbee",

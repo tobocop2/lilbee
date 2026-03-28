@@ -9,11 +9,19 @@ from litestar import get, post
 from litestar.exceptions import ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
+from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.handlers import sse_generator
 from lilbee.server.models import AddRequest, SyncRequest
+
+
+class RemoveRequest(BaseModel):
+    """Request body for /api/documents/remove."""
+
+    names: list[str] = Field(max_length=100)
+    delete_files: bool = False
 
 
 @post("/api/sync")
@@ -54,8 +62,6 @@ async def documents_list_route(
 
 
 @post("/api/documents/remove")
-async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
+async def documents_remove_route(data: RemoveRequest) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    names = data.get("names", [])
-    delete_files = data.get("delete_files", False)
-    return await handlers.delete_documents(names, delete_files=delete_files)
+    return await handlers.delete_documents(data.names, delete_files=data.delete_files)

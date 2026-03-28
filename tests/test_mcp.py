@@ -201,31 +201,37 @@ class TestLilbeeSync:
 
 class TestLilbeeRemove:
     def test_removes_known_file(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = lilbee_remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
-        mock_svc.store.delete_by_source.assert_called_with("a.md")
-        mock_svc.store.delete_source.assert_called_with("a.md")
 
     def test_not_found(self, mock_svc):
-        mock_svc.store.get_sources.return_value = []
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[], not_found=["missing.md"]
+        )
         result = lilbee_remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
     def test_delete_files_removes_from_disk(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
-        f = cfg.documents_dir / "a.md"
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("content")
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = lilbee_remove(["a.md"], delete_files=True)
         assert result["removed"] == ["a.md"]
-        assert not f.exists()
 
     def test_delete_files_path_traversal_skipped(self, mock_svc):
         """Path traversal names are caught and skipped during delete_files."""
+        from lilbee.store import RemoveResult
+
         traversal_name = "../../etc/passwd"
-        mock_svc.store.get_sources.return_value = [{"filename": traversal_name}]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[traversal_name], not_found=[]
+        )
         result = lilbee_remove([traversal_name], delete_files=True)
         assert result["removed"] == [traversal_name]
 

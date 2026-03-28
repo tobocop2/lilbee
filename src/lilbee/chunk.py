@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from lilbee.config import cfg
 
+# Approximate characters-per-token ratio used to convert token counts to char counts.
+CHARS_PER_TOKEN = 4
+
 
 def chunk_text(
     text: str,
@@ -26,8 +29,8 @@ def chunk_text(
 
     from kreuzberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
 
-    max_chars = cfg.chunk_size * 4
-    max_overlap = min(cfg.chunk_overlap * 4, max_chars // 2)
+    max_chars = cfg.chunk_size * CHARS_PER_TOKEN
+    max_overlap = min(cfg.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
 
     config = ExtractionConfig(
         chunking=ChunkingConfig(

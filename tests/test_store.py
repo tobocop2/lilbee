@@ -372,10 +372,10 @@ class TestClearTable:
     def test_clear_table_deletes_matching_rows(self, store):
         records = _make_records(n=1)
         store.add_chunks(records)
-        store.clear_table("chunks", "source = 'doc0.md'")
+        store._clear_table("chunks", "source = 'doc0.md'")
         table = store.open_table("chunks")
         remaining = table.to_arrow()
         assert len(remaining) == 0
 
     def test_clear_table_nonexistent_table_is_noop(self, store):
-        store.clear_table("nonexistent", "source = 'doc0.md'")
+        store._clear_table("nonexistent", "source = 'doc0.md'")

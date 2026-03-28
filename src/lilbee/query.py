@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -18,6 +19,8 @@ from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.store import SearchChunk, Store
+
+log = logging.getLogger(__name__)
 
 
 class ChatMessage(TypedDict):
@@ -104,10 +107,7 @@ def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
 
 def build_context(results: list[SearchChunk]) -> str:
     """Build context block from search results."""
-    parts: list[str] = []
-    for i, r in enumerate(results, 1):
-        parts.append(f"[{i}] {r.chunk}")
-    return "\n\n".join(parts)
+    return "\n\n".join(f"[{i}] {r.chunk}" for i, r in enumerate(results, 1))
 
 
 _EXPANSION_PROMPT = (
@@ -284,6 +284,7 @@ class Searcher:
                 return []
             return self._concepts.expand_query(question)
         except Exception:
+            log.debug("Concept query expansion failed", exc_info=True)
             return []
 
     def _expand_query(self, question: str) -> list[str]:
@@ -304,6 +305,7 @@ class Searcher:
             variants.extend(self._concept_query_expansion(question))
             return variants
         except Exception:
+            log.debug("Query expansion failed", exc_info=True)
             return []
 
     def _should_skip_expansion(self, question: str) -> bool:
@@ -329,6 +331,7 @@ class Searcher:
             query_concepts = self._concepts.extract_concepts(question)
             return self._concepts.boost_results(results, query_concepts)
         except Exception:
+            log.debug("Concept boost failed", exc_info=True)
             return results
 
     def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
@@ -382,25 +385,25 @@ class Searcher:
         query_terms = _tokenize_query(question)
         if not query_terms:
             return results[:max_sources]
+        chunk_tokens = [_tokenize_query(r.chunk) for r in results]
         selected: list[SearchChunk] = []
         covered: set[str] = set()
-        remaining = list(results)
+        remaining_indices = list(range(len(results)))
         for _ in range(max_sources):
-            if not remaining or covered == query_terms:
+            if not remaining_indices or covered == query_terms:
                 break
-            best_idx = 0
+            best_pos = 0
             best_gain = -1
-            for i, chunk in enumerate(remaining):
-                chunk_terms = _tokenize_query(chunk.chunk)
-                gain = len((chunk_terms & query_terms) - covered)
-                if gain > best_gain or (gain == best_gain and i < best_idx):
+            for pos, idx in enumerate(remaining_indices):
+                gain = len((chunk_tokens[idx] & query_terms) - covered)
+                if gain > best_gain or (gain == best_gain and pos < best_pos):
                     best_gain = gain
-                    best_idx = i
+                    best_pos = pos
             if best_gain <= 0 and selected:
                 break
-            chosen = remaining.pop(best_idx)
-            selected.append(chosen)
-            covered |= _tokenize_query(chosen.chunk) & query_terms
+            chosen_idx = remaining_indices.pop(best_pos)
+            selected.append(results[chosen_idx])
+            covered |= chunk_tokens[chosen_idx] & query_terms
         return selected
 
     def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:

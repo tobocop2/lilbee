@@ -43,7 +43,6 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
-from lilbee.security import validate_path_within
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -487,39 +486,22 @@ def remove(
 
     from lilbee.services import get_services
 
-    store = get_services().store
-    known = {s["filename"] for s in store.get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-    docs_resolved = cfg.documents_dir.resolve()
-
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        store.delete_by_source(name)
-        store.delete_source(name)
-        removed.append(name)
-        if delete_file:
-            try:
-                path = validate_path_within(cfg.documents_dir / name, docs_resolved)
-            except ValueError:
-                continue
-            if path.exists():
-                path.unlink()
+    result = get_services().store.remove_documents(
+        names, delete_files=delete_file, documents_dir=cfg.documents_dir
+    )
 
     if cfg.json_mode:
-        payload: dict = {"command": "remove", "removed": removed}
-        if not_found:
-            payload["not_found"] = not_found
+        payload: dict = {"command": "remove", "removed": result.removed}
+        if result.not_found:
+            payload["not_found"] = result.not_found
         json_output(payload)
         return
 
-    for name in removed:
+    for name in result.removed:
         console.print(f"Removed [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
-    for name in not_found:
+    for name in result.not_found:
         console.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
-    if not removed and not_found:
+    if not result.removed and result.not_found:
         raise SystemExit(1)
 
 

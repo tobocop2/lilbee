@@ -31,6 +31,33 @@ log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
 
+_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(
+    {
+        "chat_model",
+        "embedding_model",
+        "vision_model",
+        "litellm_base_url",
+        "system_prompt",
+        "top_k",
+        "max_distance",
+        "chunk_size",
+        "chunk_overlap",
+        "temperature",
+        "top_p",
+        "top_k_sampling",
+        "repeat_penalty",
+        "num_ctx",
+        "seed",
+        "llm_provider",
+        "diversity_max_per_source",
+        "mmr_lambda",
+        "candidate_multiplier",
+        "query_expansion_count",
+        "adaptive_threshold_step",
+        "show_reasoning",
+    }
+)
+
 
 class ModelCatalogEntry(BaseModel):
     """A single model in the catalog."""
@@ -206,7 +233,9 @@ async def _stream_rag_response(
     error_holder: list[str] = []
 
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, _run_llm_stream, messages, opts, queue, cancel, error_holder)
+    executor_fut = loop.run_in_executor(
+        None, _run_llm_stream, messages, opts, queue, cancel, error_holder
+    )
     try:
         async for event in _drain_token_queue(queue):
             yield event
@@ -216,8 +245,13 @@ async def _stream_rag_response(
         return
 
     if error_holder:
-        yield sse_error(error_holder[0])
+        log.warning("Stream error: %s", error_holder[0])
+        yield sse_error("Internal error")
+        cancel.set()
         return
+
+    # Ensure executor thread has finished before yielding final events
+    await executor_fut
 
     yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
     yield sse_done({})
@@ -300,14 +334,10 @@ async def _run_add(
 
     copy_result = copy_files(valid, force=force)
 
-    old_vision = cfg.vision_model
-    if vision_model:
-        cfg.vision_model = vision_model
-    try:
+    from lilbee.cli.helpers import temporary_vision_model
+
+    with temporary_vision_model(vision_model):
         sync_result = await sync(quiet=True, force_vision=bool(vision_model), on_progress=callback)
-    finally:
-        if vision_model:
-            cfg.vision_model = old_vision
 
     summary = {
         "copied": copy_result.copied,
@@ -446,33 +476,11 @@ async def get_config() -> dict[str, Any]:
     """Return all user-facing configuration values."""
     from lilbee.reranker import reranker_available
 
-    result: dict[str, Any] = {
-        "chat_model": cfg.chat_model,
-        "embedding_model": cfg.embedding_model,
-        "vision_model": cfg.vision_model,
-        "litellm_base_url": cfg.litellm_base_url,
-        "system_prompt": cfg.system_prompt,
-        "top_k": cfg.top_k,
-        "max_distance": cfg.max_distance,
-        "chunk_size": cfg.chunk_size,
-        "chunk_overlap": cfg.chunk_overlap,
-        "temperature": cfg.temperature,
-        "top_p": cfg.top_p,
-        "top_k_sampling": cfg.top_k_sampling,
-        "repeat_penalty": cfg.repeat_penalty,
-        "num_ctx": cfg.num_ctx,
-        "seed": cfg.seed,
-        "llm_provider": cfg.llm_provider,
-        "diversity_max_per_source": cfg.diversity_max_per_source,
-        "mmr_lambda": cfg.mmr_lambda,
-        "candidate_multiplier": cfg.candidate_multiplier,
-        "query_expansion_count": cfg.query_expansion_count,
-        "adaptive_threshold_step": cfg.adaptive_threshold_step,
-        "show_reasoning": cfg.show_reasoning,
-    }
+    dumped = cfg.model_dump()
+    result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     if reranker_available():
-        result["reranker_model"] = cfg.reranker_model
-        result["rerank_candidates"] = cfg.rerank_candidates
+        result["reranker_model"] = dumped["reranker_model"]
+        result["rerank_candidates"] = dumped["rerank_candidates"]
     return result
 
 
@@ -557,23 +565,35 @@ async def models_installed() -> dict[str, Any]:
 
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
-    """Yield SSE progress events while pulling a model."""
-    yield ""  # force generator
+    """Yield SSE progress events while pulling a model in real time."""
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
     src = _parse_source(source)
-    try:
-        events: list[str] = []
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
+    def _pull_blocking() -> None:
         def _on_progress(data: dict[str, Any]) -> None:
-            events.append(sse_event(SseEvent.PROGRESS, data))
+            payload = sse_event(SseEvent.PROGRESS, data)
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
 
-        manager.pull(model, src, on_progress=_on_progress)
-        for event in events:
-            yield event
-    except Exception as exc:
-        yield sse_error(str(exc))
+        try:
+            manager.pull(model, src, on_progress=_on_progress)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, sse_error(str(exc)))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
+    while not task.done() or not queue.empty():
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except TimeoutError:
+            continue
+        if item is None:
+            break
+        yield item
 
 
 async def models_delete(model: str, *, source: str = "litellm") -> dict[str, Any]:

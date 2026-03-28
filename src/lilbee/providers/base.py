@@ -28,6 +28,11 @@ class LLMOptions(BaseModel):
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
+def filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model."""
+    return LLMOptions(**options).to_dict()
+
+
 class ProviderError(Exception):
     """Raised when an LLM provider operation fails."""
 

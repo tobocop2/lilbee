@@ -7,10 +7,18 @@ from typing import Any
 from litestar import delete, get, post, put
 from litestar.params import Parameter
 from litestar.response import Stream
+from pydantic import BaseModel
 
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.models import SetModelRequest, SetModelResponse
+
+
+class PullRequest(BaseModel):
+    """Request body for /api/models/pull."""
+
+    model: str
+    source: str = "native"
 
 
 @get("/api/models")
@@ -65,12 +73,10 @@ async def models_installed_route() -> dict[str, Any]:
 
 
 @post("/api/models/pull")
-async def models_pull_route(data: dict[str, Any]) -> Stream:
+async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
-    model = data.get("model", "")
-    source = data.get("source", "native")
     return Stream(
-        handlers.models_pull(model, source=source),
+        handlers.models_pull(data.model, source=data.source),
         media_type="text/event-stream",
     )
 

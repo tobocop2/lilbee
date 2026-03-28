@@ -80,7 +80,7 @@ async def lilbee_add(
             the configured default. If no model is configured,
             scanned PDFs are skipped.
     """
-    from lilbee.cli.helpers import copy_files
+    from lilbee.cli.helpers import copy_files, temporary_vision_model
     from lilbee.ingest import sync
 
     errors: list[str] = []
@@ -116,14 +116,8 @@ async def lilbee_add(
 
     copy_result = copy_files(valid, force=force)
 
-    old_vision = cfg.vision_model
-    if vision_model:
-        cfg.vision_model = vision_model
-    try:
+    with temporary_vision_model(vision_model):
         sync_result = (await sync(quiet=True, force_vision=bool(vision_model))).model_dump()
-    finally:
-        if vision_model:
-            cfg.vision_model = old_vision
 
     return {
         "command": "add",
@@ -221,26 +215,10 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
     """
     from lilbee.services import get_services
 
-    store = get_services().store
-    known = {s["filename"] for s in store.get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-    docs_resolved = cfg.documents_dir.resolve()
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        store.delete_by_source(name)
-        store.delete_source(name)
-        removed.append(name)
-        if delete_files:
-            try:
-                path = validate_path_within(cfg.documents_dir / name, docs_resolved)
-            except ValueError:
-                continue
-            if path.exists():
-                path.unlink()
-    return {"command": "remove", "removed": removed, "not_found": not_found}
+    result = get_services().store.remove_documents(
+        names, delete_files=delete_files, documents_dir=cfg.documents_dir
+    )
+    return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 
 @mcp.tool()

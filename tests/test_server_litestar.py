@@ -26,10 +26,13 @@ def isolated_env(tmp_path):
 
 @pytest.fixture()
 def client():
+    import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
+    auth_mod._session_token = None  # disable auth for route-level tests
     app = create_app()
-    return TestClient(app)
+    yield TestClient(app)
+    auth_mod._session_token = None
 
 
 async def mock_async_gen(*events):

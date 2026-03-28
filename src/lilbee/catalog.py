@@ -157,6 +157,11 @@ def _fetch_hf_models(
     """Fetch models from HuggingFace API with 5-minute cache. Returns empty list on error."""
     cache_key = f"{pipeline_tag}:{tags}:{sort}:{limit}"
     now = time.monotonic()
+    # Evict expired entries
+    expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
+    for k in expired:
+        del _hf_cache[k]
+
     cached = _hf_cache.get(cache_key)
     if cached and now - cached[0] < _HF_CACHE_TTL:
         return cached[1]
@@ -202,6 +207,11 @@ def _fetch_hf_models(
             )
         )
     _hf_cache[cache_key] = (now, models)
+    # Cap cache size at 50 entries, evicting oldest on overflow
+    _HF_CACHE_MAX_ENTRIES = 50
+    if len(_hf_cache) > _HF_CACHE_MAX_ENTRIES:
+        oldest_key = min(_hf_cache, key=lambda k: _hf_cache[k][0])
+        del _hf_cache[oldest_key]
     return models
 
 
@@ -355,21 +365,25 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     url = HF_DOWNLOAD_URL.format(repo=entry.hf_repo, filename=filename)
     log.info("Downloading %s → %s", url, dest)
 
-    tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
+    import tempfile
+
+    tmp_name: str | None = None
     try:
-        with httpx.stream("GET", url, timeout=None, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
-            with open(tmp_dest, "wb") as f:
+        with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".tmp", delete=False) as tmp_file:
+            tmp_name = tmp_file.name
+            with httpx.stream("GET", url, timeout=None, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0))
+                downloaded = 0
                 for chunk in resp.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
+                    tmp_file.write(chunk)
                     downloaded += len(chunk)
                     if on_progress and total > 0:
                         on_progress(downloaded, total)
-        tmp_dest.replace(dest)
+        Path(tmp_name).replace(dest)
     except BaseException:
-        tmp_dest.unlink(missing_ok=True)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
         raise
 
     return dest
