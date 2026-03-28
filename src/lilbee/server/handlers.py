@@ -21,6 +21,7 @@ from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_vers
 from lilbee.config import cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
+from lilbee.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -334,17 +335,9 @@ async def add_files(data: dict[str, Any]) -> AddResult:
     if len(paths) > MAX_ADD_FILES:
         raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
 
-    docs_resolved = cfg.documents_dir.resolve()
     for p_str in paths:
-        p = Path(p_str).resolve()
-        if not p.is_relative_to(docs_resolved) and p.exists():
-            # External paths are fine — they get copied into documents_dir.
-            # But reject paths that look like traversal (e.g. ../../../etc/passwd)
-            pass
         # Validate that the resolved target inside documents_dir won't escape
-        candidate = (cfg.documents_dir / Path(p_str).name).resolve()
-        if not candidate.is_relative_to(docs_resolved):
-            raise ValueError(f"Path traversal detected: {p_str}")
+        validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")

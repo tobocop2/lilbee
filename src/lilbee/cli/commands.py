@@ -43,6 +43,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
+from lilbee.security import validate_path_within
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -500,8 +501,9 @@ def remove(
         store.delete_source(name)
         removed.append(name)
         if delete_file:
-            path = cfg.documents_dir / name
-            if not path.resolve().is_relative_to(docs_resolved):
+            try:
+                path = validate_path_within(cfg.documents_dir / name, docs_resolved)
+            except ValueError:
                 continue
             if path.exists():
                 path.unlink()

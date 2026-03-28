@@ -59,12 +59,16 @@ def mock_svc():
     searcher.search.return_value = []
     searcher.ask_stream.return_value = _mock_stream("")
     services = Services(
-        provider=provider, store=store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
-    svc_mod._svc = services
+    svc_mod.set_services(services)
     yield services
-    svc_mod._svc = None
+    svc_mod.set_services(None)
 
 
 @pytest.fixture(autouse=True)
@@ -122,8 +126,12 @@ class TestStatus:
 
     def test_status_with_indexed_docs(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.pdf", "file_hash": "abc123", "chunk_count": 10,
-             "ingested_at": "2026-01-01T00:00:00"}
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
         ]
         result = runner.invoke(app, ["status"])
         assert "test.pdf" in result.output
@@ -611,7 +619,8 @@ class TestListInstalledModels:
 
     def test_exclude_vision_filters_vision_catalog(self, mock_svc):
         mock_svc.provider.list_models.return_value = [
-            "llama3:latest", "maternion/LightOnOCR-2:latest"
+            "llama3:latest",
+            "maternion/LightOnOCR-2:latest",
         ]
         result = list_installed_models(exclude_vision=True)
         assert result == ["llama3:latest"]
@@ -773,8 +782,12 @@ class TestRemove:
 
     def test_remove_existing_source(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.pdf", "file_hash": "abc123", "chunk_count": 10,
-             "ingested_at": "2026-01-01T00:00:00"}
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
         ]
         result = runner.invoke(app, ["remove", "test.pdf"])
         assert result.exit_code == 0
@@ -791,10 +804,18 @@ class TestRemove:
 
     def test_remove_multiple_sources(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "a.pdf", "file_hash": "hash1", "chunk_count": 5,
-             "ingested_at": "2026-01-01T00:00:00"},
-            {"filename": "b.pdf", "file_hash": "hash2", "chunk_count": 3,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "a.pdf",
+                "file_hash": "hash1",
+                "chunk_count": 5,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+            {
+                "filename": "b.pdf",
+                "file_hash": "hash2",
+                "chunk_count": 3,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         result = runner.invoke(app, ["remove", "a.pdf", "b.pdf"])
         assert result.exit_code == 0
@@ -803,8 +824,12 @@ class TestRemove:
 
     def test_remove_mixed_existing_and_not(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "a.pdf", "file_hash": "hash1", "chunk_count": 5,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "a.pdf",
+                "file_hash": "hash1",
+                "chunk_count": 5,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         result = runner.invoke(app, ["remove", "a.pdf", "nope.pdf"])
         assert result.exit_code == 0
@@ -815,8 +840,12 @@ class TestRemove:
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.txt", "file_hash": "abc123", "chunk_count": 1,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         result = runner.invoke(app, ["remove", "--delete", "test.txt"])
         assert result.exit_code == 0
@@ -824,8 +853,12 @@ class TestRemove:
 
     def test_remove_json(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.pdf", "file_hash": "abc123", "chunk_count": 10,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         result = runner.invoke(app, ["--json", "remove", "test.pdf"])
         assert result.exit_code == 0
@@ -860,19 +893,35 @@ class TestChunks:
 
     def test_chunks_with_source(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.txt", "file_hash": "abc123", "chunk_count": 2,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 2,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         mock_svc.store.get_chunks_by_source.return_value = [
             SearchChunk(
-                source="test.txt", content_type="text", page_start=0, page_end=0,
-                line_start=0, line_end=0, chunk="First chunk content",
-                chunk_index=0, vector=[0.1] * 768,
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="First chunk content",
+                chunk_index=0,
+                vector=[0.1] * 768,
             ),
             SearchChunk(
-                source="test.txt", content_type="text", page_start=0, page_end=0,
-                line_start=0, line_end=0, chunk="Second chunk content",
-                chunk_index=1, vector=[0.2] * 768,
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="Second chunk content",
+                chunk_index=1,
+                vector=[0.2] * 768,
             ),
         ]
         result = runner.invoke(app, ["chunks", "test.txt"])
@@ -882,14 +931,24 @@ class TestChunks:
 
     def test_chunks_truncates_long_chunk(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "long.txt", "file_hash": "abc123", "chunk_count": 1,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "long.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         mock_svc.store.get_chunks_by_source.return_value = [
             SearchChunk(
-                source="long.txt", content_type="text", page_start=0, page_end=0,
-                line_start=0, line_end=0, chunk="x" * 200,
-                chunk_index=0, vector=[0.1] * 768,
+                source="long.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x" * 200,
+                chunk_index=0,
+                vector=[0.1] * 768,
             ),
         ]
         result = runner.invoke(app, ["chunks", "long.txt"])
@@ -898,14 +957,24 @@ class TestChunks:
 
     def test_chunks_json(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.txt", "file_hash": "abc123", "chunk_count": 1,
-             "ingested_at": "2026-01-01T00:00:00"},
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
         ]
         mock_svc.store.get_chunks_by_source.return_value = [
             SearchChunk(
-                source="test.txt", content_type="text", page_start=0, page_end=0,
-                line_start=0, line_end=0, chunk="Chunk content",
-                chunk_index=0, vector=[0.1] * 768,
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="Chunk content",
+                chunk_index=0,
+                vector=[0.1] * 768,
             ),
         ]
         result = runner.invoke(app, ["--json", "chunks", "test.txt"])
@@ -1076,8 +1145,12 @@ class TestStatusJson:
 
     def test_status_json_with_sources(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.pdf", "file_hash": "abc123hash", "chunk_count": 10,
-             "ingested_at": "2026-01-01T00:00:00"}
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123hash",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
         ]
         result = runner.invoke(app, ["--json", "status"])
         assert result.exit_code == 0

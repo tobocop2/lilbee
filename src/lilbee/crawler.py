@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from lilbee.config import cfg
 from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
@@ -180,7 +181,9 @@ def save_crawl_results(results: list[CrawlResult]) -> list[Path]:
             continue
         rel = url_to_filename(result.url)
         dest = web_dir / rel
-        if not dest.resolve().is_relative_to(resolved_web_dir):
+        try:
+            validate_path_within(dest, resolved_web_dir)
+        except ValueError:
             log.warning("Path traversal blocked: %s → %s", result.url, dest)
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)

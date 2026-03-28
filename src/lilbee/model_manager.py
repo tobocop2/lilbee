@@ -9,6 +9,8 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.security import validate_path_within
+
 log = logging.getLogger(__name__)
 
 _LITELLM_TIMEOUT = 30.0
@@ -144,8 +146,9 @@ class ModelManager:
         return self._remove_litellm(model)
 
     def _remove_native(self, model: str) -> bool:
-        path = self._models_dir / model
-        if not path.resolve().is_relative_to(self._models_dir.resolve()):
+        try:
+            path = validate_path_within(self._models_dir / model, self._models_dir)
+        except ValueError:
             log.warning("Path traversal blocked: %s escapes %s", model, self._models_dir)
             return False
         if path.is_file():

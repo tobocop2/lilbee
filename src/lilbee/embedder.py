@@ -100,4 +100,3 @@ class Embedder:
         for vec in vectors:
             self.validate_vector(vec)
         return vectors
-

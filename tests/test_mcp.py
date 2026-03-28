@@ -61,12 +61,16 @@ def mock_svc():
     searcher = MagicMock()
     searcher.search.return_value = []
     services = Services(
-        provider=provider, store=store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
-    svc_mod._svc = services
+    svc_mod.set_services(services)
     yield services
-    svc_mod._svc = None
+    svc_mod.set_services(None)
 
 
 @pytest.fixture(autouse=True)
@@ -153,8 +157,12 @@ class TestLilbeeStatus:
 
     def test_with_sources(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
-            {"filename": "test.pdf", "file_hash": "abc123", "chunk_count": 10,
-             "ingested_at": "2026-01-01T00:00:00"}
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
         ]
         result = lilbee_status()
         assert len(result["sources"]) == 1

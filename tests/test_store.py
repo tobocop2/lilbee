@@ -47,12 +47,12 @@ def _make_records(n=3, dim=None):
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
         store.ensure_fts_index()
-        assert not store._fts.ready
+        assert not store._fts_ready
 
     def test_creates_index_after_add(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts.ready
+        assert store._fts_ready
 
     def test_handles_exception_gracefully(self, store):
         store.add_chunks(_make_records())
@@ -64,23 +64,23 @@ class TestEnsureFtsIndex:
             side_effect=RuntimeError("boom"),
         ):
             store.ensure_fts_index()
-            assert not store._fts.ready
+            assert not store._fts_ready
 
 
 class TestFtsIndexStaleFlag:
     def test_add_chunks_marks_stale(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts.ready
+        assert store._fts_ready
         store.add_chunks(_make_records(1))
-        assert not store._fts.ready
+        assert not store._fts_ready
 
     def test_drop_all_marks_stale(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        assert store._fts.ready
+        assert store._fts_ready
         store.drop_all()
-        assert not store._fts.ready
+        assert not store._fts_ready
 
 
 class TestHybridSearch:
@@ -132,10 +132,10 @@ class TestHybridSearch:
     def test_auto_ensures_fts_index_when_query_text(self, store, test_config):
         records = _make_records()
         store.add_chunks(records)
-        assert not store._fts.ready
+        assert not store._fts_ready
         query_vec = [0.5] * test_config.embedding_dim
         results = store.search(query_vec, top_k=3, query_text="chunk number")
-        assert store._fts.ready
+        assert store._fts_ready
         assert len(results) > 0
 
 
@@ -359,7 +359,7 @@ class TestBm25Probe:
     def test_returns_empty_when_no_fts(self, store):
         records = _make_records(n=1)
         store.add_chunks(records)
-        store._fts.ready = False
+        store._fts_ready = False
         results = store.bm25_probe("anything")
         assert isinstance(results, list)
 

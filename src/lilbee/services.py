@@ -65,6 +65,12 @@ def get_services() -> Services:
     return _svc
 
 
+def set_services(services: Services | None) -> None:
+    """Replace the cached Services singleton (for testing)."""
+    global _svc
+    _svc = services
+
+
 def reset_services() -> None:
     """Shut down and discard all cached instances."""
     global _svc

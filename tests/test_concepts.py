@@ -50,12 +50,16 @@ def mock_svc():
     concepts = ConceptGraph(cfg, mock_store)
     searcher = Searcher(cfg, provider, mock_store, embedder, reranker, concepts)
     services = Services(
-        provider=provider, store=mock_store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=mock_store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
-    svc_mod._svc = services
+    svc_mod.set_services(services)
     yield services
-    svc_mod._svc = None
+    svc_mod.set_services(None)
 
 
 @pytest.fixture(autouse=True)
@@ -220,9 +224,8 @@ class TestGetNlp:
     def test_caches_nlp_model(self, mock_ensure):
         """_get_nlp calls _ensure_spacy_model on first call and caches."""
         mock_ensure.return_value = MagicMock()
-        from lilbee.concepts import _get_nlp
-
         import lilbee.concepts as concepts_mod
+        from lilbee.concepts import _get_nlp
 
         concepts_mod._nlp = None
         nlp1 = _get_nlp()
@@ -275,7 +278,8 @@ class TestBoostResults:
         results = [_make_result(distance=0.5, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"}, {"concept": "ml"},
+            {"concept": "python"},
+            {"concept": "ml"},
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python", "java"])
@@ -314,9 +318,7 @@ class TestBoostResults:
 class TestExpandQuery:
     @patch("lilbee.concepts._get_nlp")
     def test_expand_query(self, mock_get_nlp, cg, mock_svc):
-        mock_get_nlp.return_value = _make_mock_nlp(
-            {"python frameworks": ["python"]}
-        )
+        mock_get_nlp.return_value = _make_mock_nlp({"python frameworks": ["python"]})
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"source": "python", "target": "django", "weight": 1.0},

@@ -54,7 +54,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     from lilbee.services import get_services
 
     try:
-        svc()  # pre-load all services (provider, embedder, etc.)
+        get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
     except Exception:
         log.warning("Failed to pre-load LLM provider", exc_info=True)

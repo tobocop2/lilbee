@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
+
 log = logging.getLogger(__name__)
 
 _OCR_PROMPT = (

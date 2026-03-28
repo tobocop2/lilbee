@@ -68,12 +68,16 @@ def mock_svc():
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
     searcher.build_rag_context.return_value = None
     services = Services(
-        provider=provider, store=store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
-    svc_mod._svc = services
+    svc_mod.set_services(services)
     yield services
-    svc_mod._svc = None
+    svc_mod.set_services(None)
 
 
 class TestSseEvent:
@@ -173,9 +177,7 @@ class TestAsk:
     async def test_no_sources(self, mock_svc):
         from lilbee.query import AskResult
 
-        mock_svc.searcher.ask_raw.return_value = AskResult(
-            answer="No docs found.", sources=[]
-        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="No docs found.", sources=[])
         result = await handlers.ask("what?")
         assert result["answer"] == "No docs found."
         assert result["sources"] == []
@@ -657,9 +659,7 @@ class TestDeleteDocuments:
     async def test_removes_known_documents(self, mock_svc):
         from lilbee.store import RemoveResult
 
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=["a.md"], not_found=[]
-        )
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await handlers.delete_documents(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []

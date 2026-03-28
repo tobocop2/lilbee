@@ -228,8 +228,7 @@ class ConceptGraph:
         ]
 
         node_records = [
-            {"concept": c, "cluster_id": 0, "degree": count}
-            for c, count in concept_counts.items()
+            {"concept": c, "cluster_id": 0, "degree": count} for c, count in concept_counts.items()
         ]
 
         with write_lock():
@@ -339,7 +338,7 @@ class ConceptGraph:
     def rebuild_clusters(self) -> None:
         """Re-run Leiden clustering on the existing edge table."""
         from lilbee.lock import write_lock
-        from lilbee.store import _safe_delete_unlocked, ensure_table
+        from lilbee.store import ensure_table
 
         edges_table = self._store.open_table(CONCEPT_EDGES_TABLE)
         if edges_table is None:
@@ -359,11 +358,11 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        with write_lock():
-            db = self._store.get_db()
-            nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
-            _safe_delete_unlocked(nodes_table, "concept IS NOT NULL")
-            if node_records:
+        self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
+        if node_records:
+            with write_lock():
+                db = self._store.get_db()
+                nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
                 nodes_table.add(node_records)
 
     def get_graph(self) -> bool:

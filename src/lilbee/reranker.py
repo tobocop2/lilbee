@@ -132,4 +132,3 @@ class Reranker:
 
         reranked = [chunk for _, chunk in blended_sorted]
         return reranked + remainder
-
