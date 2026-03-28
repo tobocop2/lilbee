@@ -328,11 +328,17 @@ class Store:
         for _ in range(_MAX_FILTER_ITERATIONS):
             if threshold > cap:
                 break
-            filtered = [r for r in results if (r.distance or 0) <= threshold]
+            filtered = [
+                r
+                for r in results
+                if (r.distance if r.distance is not None else float("inf")) <= threshold
+            ]
             if len(filtered) >= top_k:
                 return filtered
             threshold += step
-        return [r for r in results if (r.distance or 0) <= cap]
+        return [
+            r for r in results if (r.distance if r.distance is not None else float("inf")) <= cap
+        ]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return all chunks for a given source file."""

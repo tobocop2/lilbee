@@ -98,7 +98,7 @@ class RoutingProvider(LLMProvider):
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull via litellm if available, otherwise raise."""
-        if self._litellm_models() is not None:
+        if len(self._litellm_models()) > 0:
             try:
                 self._get_litellm().pull_model(model, on_progress=on_progress)
                 self.invalidate_cache()
@@ -116,3 +116,10 @@ class RoutingProvider(LLMProvider):
     def invalidate_cache(self) -> None:
         """Clear cached litellm model list (after pull/delete)."""
         self._remote_models = None
+
+    def shutdown(self) -> None:
+        """Shut down sub-providers to release resources."""
+        if self._llama_cpp is not None:
+            self._llama_cpp.shutdown()
+        if self._litellm is not None:
+            self._litellm.shutdown()

@@ -656,11 +656,13 @@ class TestCrawlAndSave:
 class TestPeriodicSync:
     async def test_sync_disabled_when_interval_zero(self, isolated_env):
         """No sync fires when crawl_sync_interval is 0."""
+        import threading
+
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 0
         crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        crawler_mod._sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -668,27 +670,32 @@ class TestPeriodicSync:
 
     async def test_sync_skipped_when_already_running(self, isolated_env):
         """No new sync is started if one is already in progress."""
+        import threading
+
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = True
+        lock = threading.Lock()
+        lock.acquire()  # simulate already-running
+        crawler_mod._sync_running = lock
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
             mock_sync.assert_not_awaited()
 
-        crawler_mod._sync_running = False
+        lock.release()
 
     async def test_sync_skipped_when_interval_not_elapsed(self, isolated_env):
         """No sync fires if the interval hasn't elapsed since last sync."""
+        import threading
         import time
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 9999
         crawler_mod._last_sync_time = time.monotonic()
-        crawler_mod._sync_running = False
+        crawler_mod._sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -697,12 +704,13 @@ class TestPeriodicSync:
     async def test_sync_fires_when_interval_elapsed(self, isolated_env):
         """Sync fires as a background task when interval has elapsed."""
         import asyncio
+        import threading
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        crawler_mod._sync_running = threading.Lock()
 
         mock_sync = AsyncMock()
         with patch("lilbee.ingest.sync", mock_sync):
@@ -711,21 +719,23 @@ class TestPeriodicSync:
             await asyncio.sleep(0)
             mock_sync.assert_awaited_once()
 
-        crawler_mod._sync_running = False
-
     async def test_sync_failure_resets_running_flag(self, isolated_env):
-        """If sync raises, _sync_running is reset so future syncs can proceed."""
+        """If sync raises, _sync_running lock is released so future syncs can proceed."""
         import asyncio
+        import threading
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
         crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        lock = threading.Lock()
+        crawler_mod._sync_running = lock
 
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
         with patch("lilbee.ingest.sync", mock_sync):
             await _maybe_periodic_sync()
             await asyncio.sleep(0)
 
-        assert not crawler_mod._sync_running
+        # Lock should be released after failure
+        assert lock.acquire(blocking=False)
+        lock.release()

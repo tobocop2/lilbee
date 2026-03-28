@@ -194,7 +194,10 @@ def lilbee_init(path: str = "") -> dict:
     Creates .lilbee/ with documents/, data/, and .gitignore.
     If path is empty, uses the current working directory.
     """
-    root = Path(path) / ".lilbee" if path else Path.cwd() / ".lilbee"
+    base = Path(path) if path else Path.cwd()
+    if not base.resolve().is_relative_to(Path.home().resolve()):
+        return {"error": "Path must be within your home directory"}
+    root = base / ".lilbee"
     if root.is_dir():
         return {"command": "init", "path": str(root), "created": False}
 
@@ -215,6 +218,7 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
     known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
+    docs_resolved = cfg.documents_dir.resolve()
     for name in names:
         if name not in known:
             not_found.append(name)
@@ -224,6 +228,8 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         removed.append(name)
         if delete_files:
             path = cfg.documents_dir / name
+            if not path.resolve().is_relative_to(docs_resolved):
+                continue
             if path.exists():
                 path.unlink()
     return {"command": "remove", "removed": removed, "not_found": not_found}

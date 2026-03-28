@@ -942,6 +942,7 @@ class TestRoutingProvider:
         mock_litellm.list_models.return_value = ["qwen3:8b"]
         mock_litellm.pull_model.return_value = None
         rp._litellm = mock_litellm
+        rp._remote_models = {"qwen3:8b"}  # pre-populate cache
 
         rp.pull_model("qwen3:8b")
         mock_litellm.pull_model.assert_called_once()

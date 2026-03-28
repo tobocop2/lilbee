@@ -18,6 +18,13 @@ def isolated_db(tmp_path):
 
 
 def _embedding_model_available() -> bool:
+    import signal
+
+    def _timeout_handler(signum, frame):  # type: ignore[no-untyped-def]
+        raise TimeoutError
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(5)
     try:
         from lilbee.embedder import embed
 
@@ -25,6 +32,9 @@ def _embedding_model_available() -> bool:
         return True
     except Exception:
         return False
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 requires_embedding = pytest.mark.skipif(

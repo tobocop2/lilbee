@@ -43,3 +43,7 @@ class LLMProvider(Protocol):
     def show_model(self, model: str) -> dict[str, str] | None:
         """Return model metadata, or None if backend doesn't expose it."""
         ...
+
+    def shutdown(self) -> None:
+        """Release resources (e.g. background threads). No-op if nothing to clean up."""
+        ...

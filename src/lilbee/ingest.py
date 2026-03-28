@@ -213,13 +213,15 @@ async def _try_tesseract_ocr(
         # Suppress Tesseract's "Detected N diacritics" stderr noise at the fd level
         # (contextlib.redirect_stderr only catches Python's sys.stderr, not subprocess output)
         old_stderr = os.dup(2)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 2)
         try:
-            return await extract_file(str(path), config=ocr_extraction_config())
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull, 2)
+                return await extract_file(str(path), config=ocr_extraction_config())
+            finally:
+                os.dup2(old_stderr, 2)
+                os.close(devnull)
         finally:
-            os.dup2(old_stderr, 2)
-            os.close(devnull)
             os.close(old_stderr)
     except Exception:
         log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)

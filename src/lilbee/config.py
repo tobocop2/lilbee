@@ -313,17 +313,24 @@ class Config(BaseModel):
         )
 
 
+def _parse_bool(raw: str) -> bool:
+    """Parse a string to bool — 'false', '0', 'no', 'off' are False."""
+    return raw.lower() not in ("false", "0", "no", "off", "")
+
+
 def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:
     """Load setting with precedence: LILBEE_<ENV> env > config.toml > default."""
     raw = os.environ.get(f"LILBEE_{env_var}")
     if raw is not None:
-        return typ(raw)
+        return _parse_bool(raw) if typ is bool else typ(raw)
     try:
         saved = settings.get(data_root, key)
     except (ValueError, OSError):
         saved = None
-    if saved:
-        return typ(saved)
+    if saved is not None:
+        if saved == "" and typ is not str:
+            return default
+        return _parse_bool(saved) if typ is bool else typ(saved)
     return default
 
 

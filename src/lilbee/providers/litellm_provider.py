@@ -21,6 +21,16 @@ log = logging.getLogger(__name__)
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
+# Allowed generation option keys — prevents injection of arbitrary API params
+_ALLOWED_OPTIONS = frozenset(
+    {"temperature", "top_p", "top_k", "seed", "num_predict", "repeat_penalty", "num_ctx"}
+)
+
+
+def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Return only allowed generation options."""
+    return {k: v for k, v in options.items() if k in _ALLOWED_OPTIONS}
+
 
 def litellm_available() -> bool:
     """Return True if litellm is installed."""
@@ -98,7 +108,7 @@ class LiteLLMProvider(LLMProvider):
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if options:
-            kwargs.update(options)
+            kwargs.update(_filter_options(options))
 
         try:
             response = litellm.completion(**kwargs)
@@ -164,6 +174,9 @@ class LiteLLMProvider(LLMProvider):
             return None
         except httpx.HTTPError:
             return None
+
+    def shutdown(self) -> None:
+        """No resources to release for litellm provider."""
 
 
 def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
