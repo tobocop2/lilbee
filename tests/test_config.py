@@ -514,5 +514,3 @@ class TestEmptyStringValidation:
             vision_model="",
         )
         assert c.vision_model == ""
-
-

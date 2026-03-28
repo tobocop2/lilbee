@@ -375,4 +375,3 @@ class ConceptGraph:
         """Clear the spaCy model cache. For testing only."""
         global _nlp
         _nlp = None
-

@@ -795,9 +795,7 @@ class TestCrawlAndSaveSemaphore:
         """When crawl_max_concurrent > 0, sem.acquire/release are called."""
         import lilbee.crawler as crawler_mod
 
-        mock_crawl_single.return_value = CrawlResult(
-            url="https://example.com", markdown="# Hello"
-        )
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cfg.crawl_max_concurrent = 2
         crawler_mod._state.semaphore = None
 
