@@ -554,3 +554,26 @@ class TestLitellmBaseUrl:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.litellm_base_url == "http://localhost:11434"
+
+
+class TestMergeIgnoreDirs:
+    def test_non_str_non_set_returns_defaults(self):
+        """Passing an unexpected type (e.g. int) falls through to the default return."""
+        c = Config(ignore_dirs=42)  # type: ignore[arg-type]
+        assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
+
+    def test_resolve_defaults_non_dict(self):
+        """_resolve_defaults returns non-dict data unchanged."""
+        result = Config._resolve_defaults("not-a-dict")
+        assert result == "not-a-dict"
+
+
+class TestPlainEnvSourceSkipsEmpty:
+    def test_empty_env_var_skipped(self):
+        """_PlainEnvSource skips empty string env vars when ignore_empty=True."""
+        from lilbee.config import _PlainEnvSource
+
+        source = _PlainEnvSource(Config, env_prefix="LILBEE_", env_ignore_empty=True)
+        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": ""}):
+            result = source()
+        assert "chat_model" not in result

@@ -673,3 +673,53 @@ class TestFetchModelFileSize:
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
         assert catalog.fetch_model_file_size("user/repo") == 0.0
+
+
+class TestHfCacheEviction:
+    """Tests for _fetch_hf_models cache eviction and size cap."""
+
+    def test_expired_entries_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Expired cache entries are removed on the next fetch."""
+        import time as _time
+
+        from lilbee.catalog import _hf_cache
+
+        # Seed an expired entry (timestamp 0, way older than TTL)
+        _hf_cache["old:key:sort:50"] = (0.0, [])
+        # Ensure monotonic returns a time that makes the entry expired
+        monkeypatch.setattr(_time, "monotonic", lambda: 1000.0)
+
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        catalog._fetch_hf_models(pipeline_tag="text-generation", tags="gguf")
+        assert "old:key:sort:50" not in _hf_cache
+
+    def test_cache_size_capped_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When cache exceeds 50 entries, the oldest is evicted."""
+        import time as _time
+
+        from lilbee.catalog import _hf_cache
+
+        base_time = 1000.0
+        # Fill cache with 50 entries (timestamps 1000..1049)
+        for i in range(50):
+            _hf_cache[f"key:{i}"] = (base_time + i, [])
+
+        # Next fetch will add entry #51, triggering eviction of oldest (key:0)
+        monkeypatch.setattr(_time, "monotonic", lambda: base_time + 50)
+
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        catalog._fetch_hf_models(pipeline_tag="unique", tags="gguf")
+        assert len(_hf_cache) == 50
+        assert "key:0" not in _hf_cache

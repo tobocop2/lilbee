@@ -339,3 +339,25 @@ class TestLockedStreamIteratorClose:
         stream.close()
         assert lock.acquire(blocking=False)
         lock.release()
+
+
+class TestLockedStreamIteratorExceptionRelease:
+    def test_non_stop_iteration_exception_releases_lock(self):
+        """When the underlying response raises a non-StopIteration exception,
+        the lock is released and the exception propagates."""
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        def exploding_iter():
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+            raise ValueError("boom")
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(exploding_iter(), lock)
+        # First call succeeds
+        assert next(stream) == "ok"
+        # Second call hits the ValueError — lock should be released
+        with pytest.raises(ValueError, match="boom"):
+            next(stream)
+        assert lock.acquire(blocking=False)
+        lock.release()

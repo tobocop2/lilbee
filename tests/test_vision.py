@@ -302,3 +302,28 @@ class TestExtractPdfVisionNonQuiet:
             from lilbee.vision import extract_pdf_vision
 
             extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
+
+
+class TestExtractPageTextTimeout:
+    def test_timeout_path_uses_thread_pool(self, mock_provider) -> None:
+        """When timeout > 0, extract_page_text uses ThreadPoolExecutor."""
+        mock_provider.chat.return_value = "ocr result"
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"fake-png", "model", timeout=30)
+        assert result == "ocr result"
+        mock_provider.chat.assert_called_once()
+
+    def test_timeout_expiry_returns_none(self, mock_provider) -> None:
+        """When the provider exceeds timeout, returns None (logs warning)."""
+        import time
+
+        def slow_chat(*args, **kwargs):
+            time.sleep(5)
+            return "too late"
+
+        mock_provider.chat.side_effect = slow_chat
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"fake-png", "model", timeout=0.01)
+        assert result is None

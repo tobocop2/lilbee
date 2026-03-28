@@ -520,3 +520,10 @@ class TestLitellmEdgeCases:
             result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
+
+
+class TestIsNativePathTraversal:
+    def test_path_traversal_returns_false(self, tmp_path: Path) -> None:
+        """_is_native returns False for path traversal attempts."""
+        mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+        assert not mgr._is_native("../../etc/passwd")

@@ -765,3 +765,47 @@ class TestPeriodicSync:
         # Lock should be released after failure
         assert lock.acquire(blocking=False)
         lock.release()
+
+
+class TestCrawlerStateReset:
+    def test_reset_clears_all_state(self, isolated_env):
+        """CrawlerState.reset() restores all fields to initial values."""
+        import threading
+
+        import lilbee.crawler as crawler_mod
+
+        state = crawler_mod._state
+        state.semaphore = threading.Semaphore(3)
+        state.semaphore_limit = 3
+        state.last_sync_time = 99.0
+
+        state.reset()
+
+        assert state.semaphore is None
+        assert state.semaphore_limit == 0
+        assert state.last_sync_time == 0.0
+        assert state.sync_running.acquire(blocking=False)
+        state.sync_running.release()
+        assert state.background_tasks == set()
+
+
+class TestCrawlAndSaveSemaphore:
+    @patch("lilbee.crawler.crawl_single")
+    async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
+        """When crawl_max_concurrent > 0, sem.acquire/release are called."""
+        import lilbee.crawler as crawler_mod
+
+        mock_crawl_single.return_value = CrawlResult(
+            url="https://example.com", markdown="# Hello"
+        )
+        cfg.crawl_max_concurrent = 2
+        crawler_mod._state.semaphore = None
+
+        paths = await crawl_and_save("https://example.com")
+        assert len(paths) == 1
+
+        # Verify semaphore was created and is still available (released)
+        sem = crawler_mod._state.semaphore
+        assert sem is not None
+        assert sem._value == 2
+        crawler_mod._state.semaphore = None
