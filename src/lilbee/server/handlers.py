@@ -589,7 +589,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
     while not task.done() or not queue.empty():
         try:
             item = await asyncio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
+        except TimeoutError:  # pragma: no cover — async polling race
             continue
         if item is None:
             break

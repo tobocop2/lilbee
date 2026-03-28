@@ -534,3 +534,21 @@ class TestAuthMiddleware:
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
             auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_empty_token_raises(self, middleware):
+        """When _session_token is empty string, requests are denied."""
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = ""
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer anything")],
+            }
+            with pytest.raises(NotAuthorizedException, match="not initialized"):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod._session_token = old
