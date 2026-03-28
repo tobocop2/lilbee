@@ -202,7 +202,7 @@ def _tokenize_query(text: str) -> set[str]:
     return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
 
 
-_HYDE_PROMPT = (
+_DEFAULT_HYDE_PROMPT = (
     "Write a 50-100 word passage that directly answers this question as if "
     "it were an excerpt from a real document. Do not include any preamble, "
     "just write the passage.\n\nQuestion: {question}"
@@ -323,9 +323,7 @@ class Searcher:
         second_score = results[1].relevance_score or 0
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
-    def _apply_concept_boost(
-        self, results: list[SearchChunk], question: str
-    ) -> list[SearchChunk]:
+    def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
         if not self._config.concept_graph:
             return results
         try:
@@ -348,7 +346,7 @@ class Searcher:
         """
         try:
             response = self._provider.chat(
-                [{"role": "user", "content": _HYDE_PROMPT.format(question=question)}],
+                [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
                 options={"num_predict": _EXPANSION_MAX_TOKENS},
             )
@@ -425,9 +423,7 @@ class Searcher:
         if variants:
             for variant in variants:
                 variant_vec = self._embedder.embed(variant)
-                variant_results = self._store.search(
-                    variant_vec, top_k=top_k, query_text=variant
-                )
+                variant_results = self._store.search(variant_vec, top_k=top_k, query_text=variant)
                 for r in variant_results:
                     key = (r.source, r.chunk_index)
                     if key not in seen:
@@ -532,3 +528,103 @@ class Searcher:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         citations = deduplicate_sources(results)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience API -- delegates through runtime singleton
+# ---------------------------------------------------------------------------
+
+
+def get_provider() -> LLMProvider:
+    """Return the runtime LLM provider singleton."""
+    from lilbee.runtime import get_provider as _get_provider
+
+    return _get_provider()
+
+
+def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
+    """Search with expansion and reranking (convenience wrapper)."""
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().search(question, top_k=top_k)
+
+
+def build_rag_context(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().build_rag_context(question, top_k=top_k, history=history)
+
+
+def ask_raw(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+    options: dict[str, Any] | None = None,
+) -> AskResult:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().ask_raw(question, top_k=top_k, history=history, options=options)
+
+
+def ask(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+    options: dict[str, Any] | None = None,
+) -> str:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().ask(question, top_k=top_k, history=history, options=options)
+
+
+def ask_stream(
+    question: str,
+    top_k: int = 0,
+    history: list[ChatMessage] | None = None,
+    options: dict[str, Any] | None = None,
+) -> Generator[StreamToken, None, None]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().ask_stream(question, top_k=top_k, history=history, options=options)
+
+
+def select_context(
+    results: list[SearchChunk], question: str, max_sources: int | None = None
+) -> list[SearchChunk]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher().select_context(results, question, max_sources=max_sources)
+
+
+def _expand_query(question: str) -> list[str]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher()._expand_query(question)
+
+
+def _should_skip_expansion(question: str) -> bool:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher()._should_skip_expansion(question)
+
+
+def _apply_guardrails(variants: list[str], question: str) -> list[str]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher()._apply_guardrails(variants, question)
+
+
+def _hyde_search(question: str, top_k: int) -> list[SearchChunk]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher()._hyde_search(question, top_k)
+
+
+def _apply_temporal_filter(results: list[SearchChunk], question: str) -> list[SearchChunk]:
+    from lilbee.runtime import get_searcher
+
+    return get_searcher()._apply_temporal_filter(results, question)

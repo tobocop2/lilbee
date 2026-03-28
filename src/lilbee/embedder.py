@@ -100,3 +100,31 @@ class Embedder:
         for vec in vectors:
             self.validate_vector(vec)
         return vectors
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience API -- delegates through runtime singleton
+# ---------------------------------------------------------------------------
+
+
+def embed(text: str) -> list[float]:
+    from lilbee.runtime import get_embedder
+
+    return get_embedder().embed(text)
+
+
+def embed_batch(
+    texts: list[str],
+    *,
+    source: str = "",
+    on_progress: DetailedProgressCallback = noop_callback,
+) -> list[list[float]]:
+    from lilbee.runtime import get_embedder
+
+    return get_embedder().embed_batch(texts, source=source, on_progress=on_progress)
+
+
+def validate_model() -> None:
+    from lilbee.runtime import get_embedder
+
+    get_embedder().validate_model()

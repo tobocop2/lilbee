@@ -233,8 +233,7 @@ class ConceptGraph:
         ]
 
         node_records = [
-            {"concept": c, "cluster_id": 0, "degree": count}
-            for c, count in concept_counts.items()
+            {"concept": c, "cluster_id": 0, "degree": count} for c, count in concept_counts.items()
         ]
 
         with write_lock():
