@@ -381,7 +381,7 @@ class TestSlashSuggester:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         s = SlashSuggester(use_cache=False)
-        with mock.patch("lilbee.store.get_sources", side_effect=Exception("err")):
+        with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
             assert s._get_document_names() == []
 
 
@@ -493,25 +493,23 @@ class TestDocumentOptions:
     def test_returns_filenames(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
-        with mock.patch(
-            "lilbee.store.get_sources",
-            return_value=[{"filename": "a.txt", "source": "a.txt"}],
-        ):
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt", "source": "a.txt"}]
+        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
             assert _document_options() == ["a.txt"]
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
-        with mock.patch("lilbee.store.get_sources", side_effect=Exception("err")):
+        with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
             assert _document_options() == []
 
     def test_falls_back_to_source_key(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
-        with mock.patch(
-            "lilbee.store.get_sources",
-            return_value=[{"source": "b.pdf"}],
-        ):
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = [{"source": "b.pdf"}]
+        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
             assert _document_options() == ["b.pdf"]
 
 

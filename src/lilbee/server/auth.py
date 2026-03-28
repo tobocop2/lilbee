@@ -61,6 +61,11 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        method = scope.get("method", "")
+        if method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
         handler = scope.get("route_handler")
         if handler and getattr(handler.fn, "_lilbee_read_only", False):
             await self.app(scope, receive, send)
