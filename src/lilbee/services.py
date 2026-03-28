@@ -76,4 +76,5 @@ def reset_services() -> None:
     global _svc
     if _svc is not None:
         _svc.provider.shutdown()
+        _svc.store.close()
     _svc = None

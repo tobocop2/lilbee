@@ -2,6 +2,7 @@
 
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -75,6 +76,7 @@ def mmr_rerank(
     if len(results) <= top_k:
         return results
 
+    relevance_map = {id(r): _cosine_sim(query_vector, r.vector) for r in results}
     selected: list[SearchChunk] = []
     remaining = list(results)
 
@@ -82,7 +84,7 @@ def mmr_rerank(
         best_score = -float("inf")
         best_idx = 0
         for i, candidate in enumerate(remaining):
-            relevance = _cosine_sim(query_vector, candidate.vector)
+            relevance = relevance_map[id(candidate)]
             redundancy = 0.0
             if selected:
                 redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
@@ -146,7 +148,7 @@ def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
 
 def escape_sql_string(value: str) -> str:
     """Escape single quotes for SQL predicates."""
-    return value.replace("'", "''")
+    return value.replace("\\", "\\\\").replace("'", "''")
 
 
 def _hybrid_search(
@@ -169,12 +171,12 @@ def _hybrid_search(
     return [SearchChunk(**r) for r in rows]
 
 
+@dataclass
 class RemoveResult:
     """Result of a remove_documents operation."""
 
-    def __init__(self, removed: list[str], not_found: list[str]) -> None:
-        self.removed = removed
-        self.not_found = not_found
+    removed: list[str]
+    not_found: list[str]
 
 
 _MAX_THRESHOLD = 1.0
@@ -318,26 +320,37 @@ class Store:
         pattern which widens thresholds on recursive retry. Step size and
         cap are configurable via ``self._config.adaptive_threshold_step``.
 
+        Pre-sorts results by distance for a single-pass cutoff search.
         Step size is ``self._config.adaptive_threshold_step`` (default 0.2).
-        Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
         """
         cap = max(initial_threshold, _MAX_THRESHOLD)
         step = self._config.adaptive_threshold_step
+
+        sorted_results = sorted(
+            results, key=lambda r: r.distance if r.distance is not None else float("inf")
+        )
+
         threshold = initial_threshold
         for _ in range(_MAX_FILTER_ITERATIONS):
             if threshold > cap:
                 break
-            filtered = [
-                r
-                for r in results
-                if (r.distance if r.distance is not None else float("inf")) <= threshold
-            ]
-            if len(filtered) >= top_k:
-                return filtered
+            cutoff = 0
+            for i, r in enumerate(sorted_results):
+                dist = r.distance if r.distance is not None else float("inf")
+                if dist > threshold:
+                    break
+                cutoff = i + 1
+            if cutoff >= top_k:
+                return sorted_results[:cutoff]
             threshold += step
-        return [
-            r for r in results if (r.distance if r.distance is not None else float("inf")) <= cap
-        ]
+        # Final pass at cap
+        cutoff = 0
+        for i, r in enumerate(sorted_results):
+            dist = r.distance if r.distance is not None else float("inf")
+            if dist > cap:
+                break
+            cutoff = i + 1
+        return sorted_results[:cutoff]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return all chunks for a given source file."""
@@ -427,12 +440,17 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
-    def clear_table(self, name: str, predicate: str) -> None:
+    def _clear_table(self, name: str, predicate: str) -> None:
         """Delete rows matching *predicate* from *name*. Acquires write lock."""
         with write_lock():
             table = self.open_table(name)
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
+
+    def close(self) -> None:
+        """Release the database connection and reset state."""
+        self._db = None
+        self._fts_ready = False
 
     def drop_all(self) -> None:
         """Drop all tables -- used by rebuild."""

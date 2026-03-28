@@ -70,6 +70,10 @@ class ModelManager:
         return self._is_litellm(model)
 
     def _is_native(self, model: str) -> bool:
+        try:
+            validate_path_within(self._models_dir / model, self._models_dir)
+        except ValueError:
+            return False
         return (self._models_dir / model).is_file()
 
     def _is_litellm(self, model: str) -> bool:
@@ -194,10 +198,6 @@ class RemoteModel:
     parameter_size: str
 
 
-# Backwards-compatible alias
-OllamaModel = RemoteModel
-
-
 def _classify_remote_task(name: str, family: str) -> str:
     """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
@@ -233,17 +233,9 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
     return result
 
 
-# Backwards-compatible alias
-classify_ollama_models = classify_remote_models
-
-
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the litellm backend."""
     return [m.name for m in classify_remote_models(base_url) if m.task == "embedding"]
-
-
-# Backwards-compatible alias
-detect_ollama_embedding_models = detect_remote_embedding_models
 
 
 _manager: ModelManager | None = None

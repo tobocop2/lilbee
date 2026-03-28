@@ -419,7 +419,7 @@ class TestCancellation:
             added = ["cancel.txt"]
             with pytest.raises(asyncio.CancelledError):
                 await ingest_batch(
-                    [("cancel.txt", isolated_env / "cancel.txt", "text")],
+                    [("cancel.txt", isolated_env / "cancel.txt", "text", "abc123")],
                     added,
                     [],
                     [],
@@ -575,7 +575,8 @@ class TestSyncResultStr:
         from lilbee.ingest import SyncResult
 
         result = SyncResult(added=["a.txt"])
-        assert repr(result) == str(result)
+        assert "SyncResult" in repr(result)
+        assert "added=1" in repr(result)
 
 
 class TestClassifyNewFormats:

@@ -16,14 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.providers.base import LLMOptions, LLMProvider, ProviderError
+from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 
 log = logging.getLogger(__name__)
-
-
-def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Validate and filter generation options through LLMOptions model."""
-    return LLMOptions(**options).to_dict()
 
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
@@ -136,7 +131,7 @@ class LlamaCppProvider(LLMProvider):
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
             if options:
-                kwargs.update(_filter_options(options))
+                kwargs.update(filter_options(options))
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
@@ -188,16 +183,22 @@ class _LockedStreamIterator:
         return self
 
     def __next__(self) -> str:
-        while True:
-            try:
-                chunk = next(self._response)
-            except StopIteration:
-                self._release()
-                raise
-            delta = chunk.get("choices", [{}])[0].get("delta", {})
-            content: str | None = delta.get("content")
-            if content:
-                return content
+        try:
+            while True:
+                try:
+                    chunk = next(self._response)
+                except StopIteration:
+                    self._release()
+                    raise
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content: str | None = delta.get("content")
+                if content:
+                    return content
+        except StopIteration:
+            raise
+        except Exception:
+            self._release()
+            raise
 
     def _release(self) -> None:
         if not self._released:
@@ -220,13 +221,12 @@ def _resolve_model_path(model: str) -> Path:
 
     # Direct path
     if model.endswith(".gguf"):
-        path = Path(model)
-        if path.exists():
-            return path
-        # Try in models_dir
-        candidate = models_dir / model
+        # Try in models_dir first
+        candidate = models_dir / Path(model).name
         if candidate.exists():
-            return candidate
+            from lilbee.security import validate_path_within
+
+            return validate_path_within(candidate, models_dir)
         raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
 
     # Try common extensions

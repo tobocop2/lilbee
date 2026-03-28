@@ -212,7 +212,7 @@ class TestAskStream:
         non_empty = [e for e in events if e]
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
-        assert "model missing" in error_events[0]
+        assert "Internal error" in error_events[0]
 
     async def test_cancel_sets_cancel_event(self, mock_svc):
         """Closing the generator mid-stream signals the thread to stop."""
@@ -314,7 +314,7 @@ class TestChatStream:
         non_empty = [e for e in events if e]
         error_events = [e for e in non_empty if e.startswith("event: error")]
         assert len(error_events) == 1
-        assert "provider down" in error_events[0]
+        assert "Internal error" in error_events[0]
 
     async def test_cancel_sets_cancel_event(self, mock_svc):
         """Closing the chat_stream generator mid-stream signals the thread to stop."""

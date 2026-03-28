@@ -28,7 +28,7 @@ def _clean_to_model(raw: dict) -> CleanedChunk:
 @read_only
 async def search_route(
     q: str = Parameter(query="q"),
-    top_k: int = Parameter(query="top_k", default=5),
+    top_k: int = Parameter(query="top_k", default=5, le=100),
 ) -> list[dict[str, Any]]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     return await handlers.search(q, top_k=top_k)

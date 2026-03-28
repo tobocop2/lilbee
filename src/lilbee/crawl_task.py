@@ -85,6 +85,7 @@ async def run_crawl(task: CrawlTask) -> None:
         log.warning("Crawl failed: %s — %s", task.url, exc)
     finally:
         task.finished_at = now_iso()
+        task._async_task = None
 
 
 def _evict_completed() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import secrets
@@ -74,13 +75,15 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if not _session_token:
+        if _session_token is None:
             await self.app(scope, receive, send)
             return
+        if not _session_token:
+            raise NotAuthorizedException("Server token not initialized")
 
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode()
-        if auth_header == f"Bearer {_session_token}":
+        if hmac.compare_digest(auth_header, f"Bearer {_session_token}"):
             await self.app(scope, receive, send)
             return
         raise NotAuthorizedException("Missing or invalid bearer token")

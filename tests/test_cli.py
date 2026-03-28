@@ -782,85 +782,71 @@ class TestRemove:
     """Test remove command."""
 
     def test_remove_existing_source(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            }
-        ]
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["test.pdf"], not_found=[]
+        )
         result = runner.invoke(app, ["remove", "test.pdf"])
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert "test.pdf" in result.output
-        mock_svc.store.delete_by_source.assert_called_with("test.pdf")
-        mock_svc.store.delete_source.assert_called_with("test.pdf")
 
     def test_remove_nonexistent_source(self, mock_svc):
-        mock_svc.store.get_sources.return_value = []
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[], not_found=["nope.pdf"]
+        )
         result = runner.invoke(app, ["remove", "nope.pdf"])
         assert result.exit_code == 1
         assert "Not found" in result.output
 
     def test_remove_multiple_sources(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "a.pdf",
-                "file_hash": "hash1",
-                "chunk_count": 5,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-            {
-                "filename": "b.pdf",
-                "file_hash": "hash2",
-                "chunk_count": 3,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-        ]
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["a.pdf", "b.pdf"], not_found=[]
+        )
         result = runner.invoke(app, ["remove", "a.pdf", "b.pdf"])
         assert result.exit_code == 0
         assert "a.pdf" in result.output
         assert "b.pdf" in result.output
 
     def test_remove_mixed_existing_and_not(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "a.pdf",
-                "file_hash": "hash1",
-                "chunk_count": 5,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-        ]
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["a.pdf"], not_found=["nope.pdf"]
+        )
         result = runner.invoke(app, ["remove", "a.pdf", "nope.pdf"])
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert "Not found" in result.output
 
     def test_remove_with_delete_flag(self, isolated_env, mock_svc):
+        from lilbee.store import RemoveResult
+
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.txt",
-                "file_hash": "abc123",
-                "chunk_count": 1,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-        ]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["test.txt"], not_found=[]
+        )
+        mock_svc.store.remove_documents.side_effect = lambda names, **kw: (
+            doc.unlink() or RemoveResult(removed=["test.txt"], not_found=[])
+            if kw.get("delete_files")
+            else RemoveResult(removed=["test.txt"], not_found=[])
+        )
         result = runner.invoke(app, ["remove", "--delete", "test.txt"])
         assert result.exit_code == 0
         assert not doc.exists()
 
     def test_remove_json(self, isolated_env, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-        ]
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["test.pdf"], not_found=[]
+        )
         result = runner.invoke(app, ["--json", "remove", "test.pdf"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -868,7 +854,11 @@ class TestRemove:
         assert "test.pdf" in data["removed"]
 
     def test_remove_json_not_found(self, mock_svc):
-        mock_svc.store.get_sources.return_value = []
+        from lilbee.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[], not_found=["nope.pdf"]
+        )
         result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -877,15 +867,12 @@ class TestRemove:
 
     def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
         """Path traversal in name with --delete is caught and skipped."""
+        from lilbee.store import RemoveResult
+
         traversal_name = "../../etc/passwd"
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": traversal_name,
-                "file_hash": "abc",
-                "chunk_count": 1,
-                "ingested_at": "2026-01-01T00:00:00",
-            },
-        ]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[traversal_name], not_found=[]
+        )
         result = runner.invoke(app, ["remove", "--delete", traversal_name])
         assert result.exit_code == 0
 
@@ -1694,7 +1681,7 @@ class TestIngestShutdownError:
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
-                    [("test.txt", __import__("pathlib").Path("test.txt"), "text")],
+                    [("test.txt", __import__("pathlib").Path("test.txt"), "text", "abc123")],
                     added,
                     updated,
                     failed,
