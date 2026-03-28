@@ -43,7 +43,6 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
-from lilbee.store import delete_by_source, delete_source, get_chunks_by_source, get_sources
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -188,9 +187,9 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.query import search_context
+    from lilbee.runtime import get_searcher
 
-    results = search_context(query, top_k=top_k or cfg.top_k)
+    results = get_searcher().search(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -433,7 +432,10 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    known = {s["filename"] for s in get_sources()}
+    from lilbee.runtime import get_store
+
+    _store = get_store()
+    known = {s["filename"] for s in _store.get_sources()}
     if source not in known:
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
@@ -441,7 +443,7 @@ def chunks(
         console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
         raise SystemExit(1)
 
-    raw_chunks = get_chunks_by_source(source)
+    raw_chunks = _store.get_chunks_by_source(source)
     cleaned = sorted(
         [clean_result(c) for c in raw_chunks],
         key=lambda c: c.get("chunk_index", 0),

@@ -541,7 +541,7 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        embedder.validate_model()
+        get_embedder().validate_model()
         await ingest_batch(
             files_to_process,
             added,
@@ -553,7 +553,7 @@ async def sync(
         )
 
     if files_to_process or removed:
-        store.ensure_fts_index()
+        _store.ensure_fts_index()
         await _rebuild_concept_clusters()
 
     result = SyncResult(
@@ -737,7 +737,9 @@ def _apply_result(
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         return
-    store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
+    from lilbee.runtime import get_store
+
+    get_store().upsert_source(result.name, file_hash(result.path), result.chunk_count)
 
 
 class Indexer:
