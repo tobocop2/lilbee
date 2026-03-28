@@ -11,8 +11,8 @@ import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
-from lilbee.server.handlers import MAX_ADD_FILES
 from lilbee.server import litestar_app as _litestar_mod
+from lilbee.server.handlers import MAX_ADD_FILES
 
 
 def _auth_headers() -> dict[str, str]:
@@ -84,7 +84,9 @@ class TestAddEndpoint:
         src.write_text("Hello world content for testing.")
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": [str(src)]}, headers=_auth_headers())
+            resp = await client.post(
+                "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
+            )
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
@@ -101,7 +103,9 @@ class TestAddEndpoint:
         from lilbee.server.litestar_app import create_app
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": ["/no/such/file.txt"]}, headers=_auth_headers())
+            resp = await client.post(
+                "/api/add", json={"paths": ["/no/such/file.txt"]}, headers=_auth_headers()
+            )
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
@@ -119,7 +123,9 @@ class TestAddEndpoint:
         (isolated_env / "dup.txt").write_text("Existing")
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": [str(src)], "force": True}, headers=_auth_headers())
+            resp = await client.post(
+                "/api/add", json={"paths": [str(src)], "force": True}, headers=_auth_headers()
+            )
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
@@ -136,7 +142,9 @@ class TestAddEndpoint:
         src.write_text("Content for done event testing.")
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": [str(src)]}, headers=_auth_headers())
+            resp = await client.post(
+                "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
+            )
 
         events = _parse_sse_events(resp.content)
         done_data = next(d for t, d in events if t == "done")
@@ -155,7 +163,9 @@ class TestAddEndpoint:
         src.write_text("Progress tracking test.")
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": [str(src)]}, headers=_auth_headers())
+            resp = await client.post(
+                "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
+            )
 
         events = _parse_sse_events(resp.content)
         file_start = next(d for t, d in events if t == "file_start")
@@ -330,7 +340,9 @@ class TestOptionsPassthrough:
             mock.patch("lilbee.store.search", return_value=[]),
         ):
             async with AsyncTestClient(create_app()) as client:
-                resp = await client.post("/api/ask", json={"question": "test"}, headers=_auth_headers())
+                resp = await client.post(
+                    "/api/ask", json={"question": "test"}, headers=_auth_headers()
+                )
             assert resp.status_code == 201
 
 
