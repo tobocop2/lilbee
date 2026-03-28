@@ -619,9 +619,7 @@ class TestStructuredQueries:
             # HyDE with a tiny model (Qwen3 0.6B) may produce poor hypothetical
             # docs that don't match anything. We verify the code path runs
             # without error; if results are found, check they're plausible.
-            results = search_context(
-                "hyde: Thunderbolt X500 engine oil capacity", top_k=5
-            )
+            results = search_context("hyde: Thunderbolt X500 engine oil capacity", top_k=5)
             assert isinstance(results, list)
             if results:
                 sources = {r.source for r in results}
