@@ -828,10 +828,20 @@ class TestConfigProvider:
 
 
 class TestRoutingProvider:
+    @pytest.fixture(autouse=True)
+    def _shutdown_provider(self):
+        """Ensure provider background threads are stopped after each test."""
+        self._providers: list[RoutingProvider] = []
+        yield
+        for p in self._providers:
+            p.shutdown()
+
     def _make_provider(self) -> RoutingProvider:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        return RoutingProvider()
+        rp = RoutingProvider()
+        self._providers.append(rp)
+        return rp
 
     def test_routes_chat_to_litellm_when_model_in_litellm(self) -> None:
         from lilbee.providers.litellm_provider import LiteLLMProvider
