@@ -14,6 +14,7 @@ Marked @pytest.mark.slow -- excluded from default `make check`.
 import asyncio
 import ipaddress
 import json
+import os
 from unittest import mock
 
 import pytest
@@ -172,6 +173,11 @@ def isolated_env(tmp_path, real_models):
 
     reset_provider()
 
+    # Point LILBEE_DATA at the test root so CLI apply_overrides() doesn't
+    # redirect cfg paths to the CI temp directory mid-command.
+    old_lilbee_data = os.environ.get("LILBEE_DATA")
+    os.environ["LILBEE_DATA"] = str(tmp_path)
+
     # Serialize async ingestion to avoid concurrent llama.cpp calls (not thread-safe)
     _max_concurrent_patch = mock.patch("lilbee.ingest._MAX_CONCURRENT", 1)
     _max_concurrent_patch.start()
@@ -183,6 +189,10 @@ def isolated_env(tmp_path, real_models):
     reset_provider()
     for name, val in snapshot.items():
         setattr(cfg, name, val)
+    if old_lilbee_data is None:
+        os.environ.pop("LILBEE_DATA", None)
+    else:
+        os.environ["LILBEE_DATA"] = old_lilbee_data
 
 
 def _write_all_docs():
