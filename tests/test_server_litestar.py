@@ -25,7 +25,7 @@ def isolated_env(tmp_path):
 
 @pytest.fixture()
 def client():
-    from lilbee.server.litestar_app import create_app
+    from lilbee.server.app import create_app
 
     app = create_app()
     return TestClient(app)
@@ -355,7 +355,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://custom.example"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             resp = c.options(
@@ -376,7 +376,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://obsidian.md", "https://my-app.com"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             for origin in cfg.cors_origins:
@@ -427,7 +427,7 @@ class TestCrawlRoute:
 
 
 class TestCreateAppReexport:
-    @mock.patch("lilbee.server.litestar_app.create_app")
+    @mock.patch("lilbee.server.app.create_app")
     def test_lazy_import(self, mock_create):
         from lilbee.server import create_app
 
@@ -439,7 +439,7 @@ class TestLifespan:
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch("lilbee.providers.factory.get_provider")
     async def test_calls_both(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
@@ -452,7 +452,7 @@ class TestLifespan:
         side_effect=RuntimeError("no provider"),
     )
     async def test_provider_failure_does_not_block(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
@@ -464,7 +464,7 @@ class TestLifespan:
     )
     @mock.patch("lilbee.providers.factory.get_provider")
     async def test_validate_model_failure_does_not_block(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass

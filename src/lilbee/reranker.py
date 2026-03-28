@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from lilbee.config import cfg
+from lilbee.config import Config
 from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
@@ -32,109 +32,103 @@ def reranker_available() -> bool:
         return False
 
 
-# Position-aware blend weights: (fusion_weight, rerank_weight)
-# Top positions already have strong signal from hybrid search.
 _BLEND_SCHEDULE = {
-    "top": (0.70, 0.30),  # positions 1-3
-    "mid": (0.50, 0.50),  # positions 4-10
-    "bottom": (0.30, 0.70),  # positions 11+
+    "top": (0.70, 0.30),
+    "mid": (0.50, 0.50),
+    "bottom": (0.30, 0.70),
 }
 
-_encoder: Any = None
 
+class Reranker:
+    """Cross-encoder reranker with position-aware blending.
 
-def _get_encoder() -> Any:
-    """Lazy-load the cross-encoder model. Returns None if not configured."""
-    global _encoder
-    if _encoder is not None:
-        return _encoder
-    model_name = cfg.reranker_model
-    if not model_name:
-        return None
-    try:
-        from sentence_transformers import CrossEncoder
-
-        _encoder = CrossEncoder(model_name)
-        log.info("Loaded reranker model: %s", model_name)
-        return _encoder
-    except ImportError:
-        log.warning("sentence-transformers not installed — reranking disabled")
-        return None
-    except Exception as exc:
-        log.warning("Failed to load reranker model %s: %s", model_name, exc)
-        return None
-
-
-def rerank(
-    query: str,
-    results: list[SearchChunk],
-    candidates: int | None = None,
-) -> list[SearchChunk]:
-    """Rerank search results using a cross-encoder model.
-
-    Returns results in reranked order. If no reranker is configured,
-    returns results unchanged.
+    Core technique: Nogueira & Cho 2019, "Passage Re-ranking with BERT"
+    (https://arxiv.org/abs/1901.04085).
     """
-    encoder = _get_encoder()
-    if encoder is None:
-        return results
 
-    if candidates is None:
-        candidates = cfg.rerank_candidates
-    to_rerank = results[:candidates]
-    remainder = results[candidates:]
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._encoder: Any = None
 
-    if not to_rerank:
-        return results
+    def _get_encoder(self) -> Any:
+        """Lazy-load the cross-encoder model. Returns None if not configured."""
+        if self._encoder is not None:
+            return self._encoder
+        model_name = self._config.reranker_model
+        if not model_name:
+            return None
+        try:
+            from sentence_transformers import CrossEncoder
 
-    # Score each (query, chunk) pair
-    pairs = [(query, chunk.chunk) for chunk in to_rerank]
-    scores = encoder.predict(pairs)
+            self._encoder = CrossEncoder(model_name)
+            log.info("Loaded reranker model: %s", model_name)
+            return self._encoder
+        except ImportError:
+            log.warning("sentence-transformers not installed -- reranking disabled")
+            return None
+        except Exception as exc:
+            log.warning("Failed to load reranker model %s: %s", model_name, exc)
+            return None
 
-    # Normalize scores to 0-1
-    min_score = min(scores)
-    max_score = max(scores)
-    score_range = max_score - min_score
-    if score_range > 0:
-        norm_scores = [(s - min_score) / score_range for s in scores]
-    else:
-        norm_scores = [0.5] * len(scores)
+    def reset_encoder(self) -> None:
+        """Clear the cached encoder. For testing only."""
+        self._encoder = None
 
-    # Blend with fusion scores (using relevance_score or distance)
-    blended: list[tuple[float, SearchChunk]] = []
-    for i, (chunk, rerank_score) in enumerate(zip(to_rerank, norm_scores, strict=True)):
-        fusion_score = chunk.relevance_score or (1.0 - (chunk.distance or 0.5))
-        # Normalize fusion score to 0-1
-        fusion_norm = max(0.0, min(1.0, fusion_score))
+    def rerank(
+        self,
+        query: str,
+        results: list[SearchChunk],
+        candidates: int | None = None,
+    ) -> list[SearchChunk]:
+        """Rerank search results using a cross-encoder model."""
+        encoder = self._get_encoder()
+        if encoder is None:
+            return results
 
-        if i < 3:
-            fw, rw = _BLEND_SCHEDULE["top"]
-        elif i < 10:
-            fw, rw = _BLEND_SCHEDULE["mid"]
+        if candidates is None:
+            candidates = self._config.rerank_candidates
+        to_rerank = results[:candidates]
+        remainder = results[candidates:]
+
+        if not to_rerank:
+            return results
+
+        pairs = [(query, chunk.chunk) for chunk in to_rerank]
+        scores = encoder.predict(pairs)
+
+        min_score = min(scores)
+        max_score = max(scores)
+        score_range = max_score - min_score
+        if score_range > 0:
+            norm_scores = [(s - min_score) / score_range for s in scores]
         else:
-            fw, rw = _BLEND_SCHEDULE["bottom"]
+            norm_scores = [0.5] * len(scores)
 
-        final_score = fw * fusion_norm + rw * rerank_score
-        blended.append((final_score, chunk))
+        blended: list[tuple[float, SearchChunk]] = []
+        for i, (chunk, rerank_score) in enumerate(zip(to_rerank, norm_scores, strict=True)):
+            fusion_score = chunk.relevance_score or (1.0 - (chunk.distance or 0.5))
+            fusion_norm = max(0.0, min(1.0, fusion_score))
 
-    # BM25 top-hit protection: if rank-1 had high BM25, keep it on top
-    if to_rerank and (to_rerank[0].relevance_score or 0) >= cfg.expansion_skip_threshold:
-        # Ensure original rank-1 stays in top position
-        original_top = to_rerank[0]
-        blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
-        # If original top was demoted, force it back
-        if blended_sorted[0][1] is not original_top:
-            blended_sorted = [(999.0, original_top)] + [
-                (s, c) for s, c in blended_sorted if c is not original_top
-            ]
-    else:
-        blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
+            if i < 3:
+                fw, rw = _BLEND_SCHEDULE["top"]
+            elif i < 10:
+                fw, rw = _BLEND_SCHEDULE["mid"]
+            else:
+                fw, rw = _BLEND_SCHEDULE["bottom"]
 
-    reranked = [chunk for _, chunk in blended_sorted]
-    return reranked + remainder
+            final_score = fw * fusion_norm + rw * rerank_score
+            blended.append((final_score, chunk))
 
+        top_score = to_rerank[0].relevance_score or 0 if to_rerank else 0
+        if top_score >= self._config.expansion_skip_threshold:
+            original_top = to_rerank[0]
+            blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
+            if blended_sorted[0][1] is not original_top:
+                blended_sorted = [(999.0, original_top)] + [
+                    (s, c) for s, c in blended_sorted if c is not original_top
+                ]
+        else:
+            blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
 
-def reset_encoder() -> None:
-    """Clear the encoder singleton. For testing only."""
-    global _encoder
-    _encoder = None
+        reranked = [chunk for _, chunk in blended_sorted]
+        return reranked + remainder

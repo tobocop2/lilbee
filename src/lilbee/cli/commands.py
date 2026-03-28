@@ -43,7 +43,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
-from lilbee.store import delete_by_source, delete_source, get_chunks_by_source, get_sources
+from lilbee.security import validate_path_within
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -188,9 +188,9 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.query import search_context
+    from lilbee.services import get_services
 
-    results = search_context(query, top_k=top_k or cfg.top_k)
+    results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -433,7 +433,10 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    known = {s["filename"] for s in get_sources()}
+    from lilbee.services import get_services
+
+    store = get_services().store
+    known = {s["filename"] for s in store.get_sources()}
     if source not in known:
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
@@ -441,7 +444,7 @@ def chunks(
         console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
         raise SystemExit(1)
 
-    raw_chunks = get_chunks_by_source(source)
+    raw_chunks = store.get_chunks_by_source(source)
     cleaned = sorted(
         [clean_result(c) for c in raw_chunks],
         key=lambda c: c.get("chunk_index", 0),
@@ -482,19 +485,26 @@ def remove(
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    known = {s["filename"] for s in get_sources()}
+    from lilbee.services import get_services
+
+    store = get_services().store
+    known = {s["filename"] for s in store.get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
+    docs_resolved = cfg.documents_dir.resolve()
 
     for name in names:
         if name not in known:
             not_found.append(name)
             continue
-        delete_by_source(name)
-        delete_source(name)
+        store.delete_by_source(name)
+        store.delete_source(name)
         removed.append(name)
         if delete_file:
-            path = cfg.documents_dir / name
+            try:
+                path = validate_path_within(cfg.documents_dir / name, docs_resolved)
+            except ValueError:
+                continue
             if path.exists():
                 path.unlink()
 
@@ -539,18 +549,16 @@ def ask(
         seed=seed,
     )
 
-    from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
+    from lilbee.services import get_services
 
     ensure_chat_model()
-    validate_model()
+    get_services().embedder.validate_model()
     auto_sync(console)
 
     try:
         if cfg.json_mode:
-            from lilbee.query import ask_raw
-
-            result = ask_raw(question)
+            result = get_services().searcher.ask_raw(question)
             json_output(
                 {
                     "command": "ask",
@@ -561,10 +569,8 @@ def ask(
             )
             return
 
-        from lilbee.query import ask_stream
-
-        for token in ask_stream(question):
-            console.print(token, end="")
+        for token in get_services().searcher.ask_stream(question):
+            console.print(token.content, end="")
         console.print()
     except RuntimeError as exc:
         if cfg.json_mode:
@@ -771,9 +777,9 @@ def topics(
         )
         raise SystemExit(1)
 
-    from lilbee.concepts import get_graph
+    from lilbee.services import get_services
 
-    if not get_graph():
+    if not get_services().concepts.get_graph():
         if cfg.json_mode:
             json_output({"error": "Concept graph not available"})
             raise SystemExit(1)
@@ -788,10 +794,11 @@ def topics(
 
 def _topics_for_query(query: str) -> None:
     """Show concepts related to a query."""
-    from lilbee.concepts import expand_query, extract_concepts
+    from lilbee.services import get_services
 
-    concepts = extract_concepts(query)
-    related = expand_query(query)
+    cg = get_services().concepts
+    concepts = cg.extract_concepts(query)
+    related = cg.expand_query(query)
     all_concepts = concepts + [r for r in related if r not in concepts]
 
     if cfg.json_mode:
@@ -809,9 +816,9 @@ def _topics_overview(top_k: int) -> None:
     """Show top concept communities."""
     from dataclasses import asdict
 
-    from lilbee.concepts import top_communities
+    from lilbee.services import get_services
 
-    communities = top_communities(k=top_k)
+    communities = get_services().concepts.top_communities(k=top_k)
     if cfg.json_mode:
         json_output({"command": "topics", "communities": [asdict(c) for c in communities]})
         return

@@ -1,7 +1,10 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
+import threading
 import tomllib
 from pathlib import Path
+
+_settings_lock = threading.Lock()
 
 
 def _config_path(data_root: Path) -> Path:
@@ -44,14 +47,16 @@ def get(data_root: Path, key: str) -> str | None:
 
 
 def set_value(data_root: Path, key: str, value: str) -> None:
-    """Read-modify-write a single key in config.toml."""
-    current = load(data_root)
-    current[key] = value
-    save(data_root, current)
+    """Read-modify-write a single key in config.toml (thread-safe)."""
+    with _settings_lock:
+        current = load(data_root)
+        current[key] = value
+        save(data_root, current)
 
 
 def delete_value(data_root: Path, key: str) -> None:
     """Remove a key from config.toml. No-op if key doesn't exist."""
-    current = load(data_root)
-    current.pop(key, None)
-    save(data_root, current)
+    with _settings_lock:
+        current = load(data_root)
+        current.pop(key, None)
+        save(data_root, current)

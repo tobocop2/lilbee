@@ -16,9 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import LLMOptions, LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
+
+
+def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model."""
+    return LLMOptions(**options).to_dict()
+
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
 
@@ -73,7 +79,7 @@ class LlamaCppProvider(LLMProvider):
                 break
 
     def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
-        """Run one batched embedding call and resolve all futures."""
+        """Serialize embedding requests one-by-one and resolve all futures."""
         llm = self._get_embed_llm()
         for req in batch:
             try:
@@ -130,7 +136,7 @@ class LlamaCppProvider(LLMProvider):
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
             if options:
-                kwargs.update(options)
+                kwargs.update(_filter_options(options))
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
@@ -197,6 +203,13 @@ class _LockedStreamIterator:
         if not self._released:
             self._released = True
             self._lock.release()
+
+    def close(self) -> None:
+        """Explicitly release the lock if the stream is abandoned early."""
+        self._release()
+
+    def __del__(self) -> None:
+        self._release()
 
 
 def _resolve_model_path(model: str) -> Path:
