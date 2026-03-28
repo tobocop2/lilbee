@@ -367,7 +367,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
                     downloaded += len(chunk)
                     if on_progress and total > 0:
                         on_progress(downloaded, total)
-        tmp_dest.rename(dest)
+        tmp_dest.replace(dest)
     except BaseException:
         tmp_dest.unlink(missing_ok=True)
         raise

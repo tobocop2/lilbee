@@ -235,7 +235,7 @@ def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
     tmp = path.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
-        tmp.rename(path)
+        tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
