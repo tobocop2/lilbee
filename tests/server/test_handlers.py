@@ -3,7 +3,6 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -56,8 +55,12 @@ def mock_svc():
     concepts.get_graph.return_value = False
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     services = Services(
-        provider=provider, store=store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
     set_services(services)
     yield services
@@ -117,9 +120,7 @@ class TestAddEndpoint:
         assert "done" in event_types
         assert "summary" in event_types
 
-    async def test_add_nonexistent_file_in_errors(
-        self, mock_extract_file, isolated_env, tmp_path
-    ):
+    async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""
         from lilbee.server.app import create_app
 
@@ -133,9 +134,7 @@ class TestAddEndpoint:
         summary = next(d for t, d in events if t == "summary")
         assert "/no/such/file.txt" in summary["errors"]
 
-    async def test_add_with_force_flag(
-        self, mock_extract_file, isolated_env, tmp_path
-    ):
+    async def test_add_with_force_flag(self, mock_extract_file, isolated_env, tmp_path):
         """The force flag allows overwriting existing files."""
         from lilbee.server.app import create_app
 
@@ -153,9 +152,7 @@ class TestAddEndpoint:
         summary = next(d for t, d in events if t == "summary")
         assert "dup.txt" in summary["copied"]
 
-    async def test_done_event_has_correct_fields(
-        self, mock_extract_file, isolated_env, tmp_path
-    ):
+    async def test_done_event_has_correct_fields(self, mock_extract_file, isolated_env, tmp_path):
         """The done event includes added, updated, removed, failed counts."""
         from lilbee.server.app import create_app
 
@@ -193,9 +190,7 @@ class TestAddEndpoint:
         assert file_start["total_files"] >= 1
         assert file_start["current_file"] >= 1
 
-    async def test_add_with_vision_model(
-        self, mock_extract_file, isolated_env, tmp_path
-    ):
+    async def test_add_with_vision_model(self, mock_extract_file, isolated_env, tmp_path):
         """Vision model parameter is temporarily set on cfg during sync."""
         from lilbee.server.app import create_app
 
@@ -345,9 +340,7 @@ class TestOptionsPassthrough:
         from lilbee.server.app import create_app
 
         async with AsyncTestClient(create_app()) as client:
-            resp = await client.post(
-                "/api/ask", json={"question": "test"}, headers=_auth_headers()
-            )
+            resp = await client.post("/api/ask", json={"question": "test"}, headers=_auth_headers())
         assert resp.status_code == 201
 
 
