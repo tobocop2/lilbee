@@ -301,13 +301,6 @@ class Config(BaseSettings):
         mapping.update(overrides)
         return {k: v for k, v in mapping.items() if v is not None}
 
-    @classmethod
-    def from_env(cls) -> "Config":
-        """Build config from environment variables and settings file.
-
-        Kept for backwards compatibility — equivalent to ``Config()``.
-        """
-        return cls()
 
 
 class _PlainEnvSource:
