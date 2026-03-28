@@ -8,9 +8,6 @@ if TYPE_CHECKING:
     from lilbee.config import Config
     from lilbee.providers.base import LLMProvider
 
-_provider: LLMProvider | None = None
-
-
 def create_provider(config: Config) -> LLMProvider:
     """Create a new LLM provider instance from the given config."""
     provider_name = config.llm_provider
@@ -39,27 +36,3 @@ def create_provider(config: Config) -> LLMProvider:
     from lilbee.providers.base import ProviderError
 
     raise ProviderError(f"Unknown LLM provider: {provider_name!r}")
-
-
-def get_provider() -> LLMProvider:
-    """Return the configured LLM provider singleton."""
-    global _provider
-    if _provider is not None:
-        return _provider
-
-    from lilbee.config import cfg
-
-    _provider = create_provider(cfg)
-    return _provider
-
-
-def reset_provider() -> None:
-    """Shut down and clear the provider singleton.
-
-    Calls shutdown() on the current provider (if any) to release resources
-    like background worker threads before discarding it.
-    """
-    global _provider
-    if _provider is not None:
-        _provider.shutdown()
-    _provider = None
