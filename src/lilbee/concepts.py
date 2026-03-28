@@ -141,9 +141,11 @@ def _compute_pmi(
     """
     pmi: dict[tuple[str, str], float] = {}
     for (a, b), count in cooccurrences.items():
-        p_ab = count / total_chunks
         p_a = concept_counts[a] / total_chunks
         p_b = concept_counts[b] / total_chunks
+        if p_a == 0 or p_b == 0:
+            continue
+        p_ab = count / total_chunks
         pmi[(a, b)] = max(0.0, math.log2(p_ab / (p_a * p_b)))
     return pmi
 

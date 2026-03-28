@@ -485,6 +485,7 @@ def remove(
     known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
+    docs_resolved = cfg.documents_dir.resolve()
 
     for name in names:
         if name not in known:
@@ -495,6 +496,8 @@ def remove(
         removed.append(name)
         if delete_file:
             path = cfg.documents_dir / name
+            if not path.resolve().is_relative_to(docs_resolved):
+                continue
             if path.exists():
                 path.unlink()
 
@@ -564,7 +567,7 @@ def ask(
         from lilbee.query import ask_stream
 
         for token in ask_stream(question):
-            console.print(token, end="")
+            console.print(token.content, end="")
         console.print()
     except RuntimeError as exc:
         if cfg.json_mode:

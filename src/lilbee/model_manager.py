@@ -145,6 +145,9 @@ class ModelManager:
 
     def _remove_native(self, model: str) -> bool:
         path = self._models_dir / model
+        if not path.resolve().is_relative_to(self._models_dir.resolve()):
+            log.warning("Path traversal blocked: %s escapes %s", model, self._models_dir)
+            return False
         if path.is_file():
             path.unlink()
             log.info("Removed native model %s", model)

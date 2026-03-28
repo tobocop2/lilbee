@@ -15,7 +15,15 @@ def env_int(key: str, default: int) -> int:
     raw = os.environ.get(f"LILBEE_{key}")
     if raw is None:
         return default
-    return int(raw)
+    try:
+        return int(raw)
+    except ValueError:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Invalid LILBEE_%s=%r, using default %d", key, raw, default
+        )
+        return default
 
 
 def env_float(key: str, default: float | None = None) -> float | None:
@@ -23,7 +31,15 @@ def env_float(key: str, default: float | None = None) -> float | None:
     raw = os.environ.get(f"LILBEE_{key}")
     if raw is None:
         return default
-    return float(raw)
+    try:
+        return float(raw)
+    except ValueError:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Invalid LILBEE_%s=%r, using default %s", key, raw, default
+        )
+        return default
 
 
 def env_int_optional(key: str) -> int | None:
@@ -31,7 +47,15 @@ def env_int_optional(key: str) -> int | None:
     raw = os.environ.get(f"LILBEE_{key}")
     if raw is None:
         return None
-    return int(raw)
+    try:
+        return int(raw)
+    except ValueError:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Invalid LILBEE_%s=%r, ignoring", key, raw
+        )
+        return None
 
 
 def default_data_dir() -> Path:

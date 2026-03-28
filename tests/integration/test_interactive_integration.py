@@ -361,11 +361,13 @@ class TestCrawl:
 
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
         loopback_v6 = ipaddress.ip_network("::1/128")
-        removed = []
-        for net in (loopback_v4, loopback_v6):
-            if net in crawler_mod.blocked_networks:
-                crawler_mod.blocked_networks.remove(net)
-                removed.append(net)
+        filtered = tuple(
+            net
+            for net in crawler_mod.get_blocked_networks()
+            if net not in (loopback_v4, loopback_v6)
+        )
+        original_fn = crawler_mod.get_blocked_networks
+        crawler_mod.get_blocked_networks = lambda: filtered  # type: ignore[assignment]
 
         try:
             url = f"http://127.0.0.1:{server.port}/quantum"
@@ -378,8 +380,7 @@ class TestCrawl:
             results = data.get("results", [])
             assert len(results) > 0, "Expected to find crawled content"
         finally:
-            for net in removed:
-                crawler_mod.blocked_networks.append(net)
+            crawler_mod.get_blocked_networks = original_fn  # type: ignore[assignment]
             server.clear()
             if server.is_running():
                 server.stop()

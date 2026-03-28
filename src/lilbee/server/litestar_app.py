@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import secrets
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from litestar import Litestar, delete, get, post, put
 from litestar.config.cors import CORSConfig
-from litestar.exceptions import ValidationException
+from litestar.exceptions import NotAuthorizedException, ValidationException
+from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 from litestar.params import Parameter
 from litestar.response import Stream
+from litestar.types import ASGIApp, Receive, Scope, Send
 
 from lilbee.cli.helpers import get_version
 from lilbee.config import cfg
@@ -175,8 +180,8 @@ async def models_catalog_route(
     size: str | None = Parameter(query="size", default=None),
     featured: bool | None = Parameter(query="featured", default=None),
     sort: str = Parameter(query="sort", default="featured"),
-    limit: int = Parameter(query="limit", default=20),
-    offset: int = Parameter(query="offset", default=0),
+    limit: int = Parameter(query="limit", default=20, le=1000),
+    offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> dict[str, Any]:
     """Browse the model catalog with optional filters."""
     return await handlers.models_catalog(
@@ -228,8 +233,8 @@ async def config_route() -> dict[str, Any]:
 @get("/api/documents")
 async def documents_list_route(
     search: str = Parameter(query="search", default=""),
-    limit: int = Parameter(query="limit", default=50),
-    offset: int = Parameter(query="offset", default=0),
+    limit: int = Parameter(query="limit", default=50, le=1000),
+    offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> dict[str, Any]:
     """List indexed documents with metadata, paginated and searchable."""
     return await handlers.list_documents(search=search, limit=limit, offset=offset)
@@ -246,19 +251,88 @@ async def documents_remove_route(data: dict[str, Any]) -> dict[str, Any]:
 @post("/api/crawl")
 async def crawl_route(data: CrawlRequest) -> Stream:
     """Crawl a URL with streaming SSE progress events (crawl_start, crawl_page, crawl_done)."""
+    from lilbee.crawler import require_valid_crawl_url
+
     try:
-        gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
+        require_valid_crawl_url(data.url)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    gen = handlers.crawl_stream(url=data.url, depth=data.depth, max_pages=data.max_pages)
     return Stream(gen, media_type="text/event-stream")
 
 
 log = logging.getLogger(__name__)
 
+# Read-only paths that skip bearer auth
+_READ_ONLY_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/status",
+        "/api/search",
+        "/api/config",
+        "/api/documents",
+        "/api/models",
+        "/api/models/catalog",
+        "/api/models/installed",
+        "/schema",
+    }
+)
+
+_session_token: str = ""
+
+
+def _server_json_path() -> Path:
+    return cfg.data_dir / "server.json"
+
+
+def _generate_session_token() -> str:
+    """Generate a random session token and persist to server.json."""
+    global _session_token
+    _session_token = secrets.token_urlsafe(32)
+    path = _server_json_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"token": _session_token}))
+    return _session_token
+
+
+def _cleanup_session_token() -> None:
+    """Remove server.json on shutdown."""
+    path = _server_json_path()
+    path.unlink(missing_ok=True)
+
+
+class _AuthMiddleware:
+    """Bearer token auth middleware for mutating endpoints."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request_path = scope.get("path", "")
+        if request_path in _READ_ONLY_PATHS or not _session_token:
+            await self.app(scope, receive, send)
+            return
+        # Check for GET requests (generally read-only)
+        method = scope.get("method", "GET")
+        if method == "GET" and request_path not in ("/api/models/pull",):
+            await self.app(scope, receive, send)
+            return
+        # Check bearer token
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
+        if auth_header == f"Bearer {_session_token}":
+            await self.app(scope, receive, send)
+            return
+        raise NotAuthorizedException("Missing or invalid bearer token")
+
 
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
+    _generate_session_token()
     try:
         from lilbee.providers.factory import get_provider
 
@@ -273,19 +347,22 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         log.info("Embedding model validated")
     except Exception:
         log.warning("Failed to validate embedding model", exc_info=True)
-    yield
+    try:
+        yield
+    finally:
+        _cleanup_session_token()
 
 
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
         allow_origins=cfg.cors_origins,
-        allow_origin_regex=r"^http://localhost(:\d+)?$",
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Authorization"],
     )
     return Litestar(
         lifespan=[_lifespan],
+        middleware=[DefineMiddleware(_AuthMiddleware)],
         route_handlers=[
             health_route,
             status_route,

@@ -36,6 +36,22 @@ from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
+_PROVIDER_SENSITIVE_KEYS = frozenset({
+    "chat_model", "embedding_model", "llm_provider", "litellm_base_url",
+})
+
+
+def _reset_stale_singletons(cfg_attr: str) -> None:
+    """Reset cached provider/embedder singletons when relevant config changes."""
+    if cfg_attr not in _PROVIDER_SENSITIVE_KEYS:
+        return
+    from lilbee.embedder import _reset_default_embedder
+    from lilbee.providers.factory import reset_provider
+
+    reset_provider()
+    _reset_default_embedder()
+
+
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
@@ -302,6 +318,7 @@ class ChatScreen(Screen[None]):
             setattr(cfg, defn.cfg_attr, parsed)
             persisted = str(parsed) if parsed is not None else ""
             settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
+            _reset_stale_singletons(defn.cfg_attr)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")

@@ -54,6 +54,12 @@ def get_provider() -> LLMProvider:
 
 
 def reset_provider() -> None:
-    """Clear the provider singleton. For testing only."""
+    """Shut down and clear the provider singleton.
+
+    Calls shutdown() on the current provider (if any) to release resources
+    like background worker threads before discarding it.
+    """
     global _provider
+    if _provider is not None:
+        _provider.shutdown()
     _provider = None

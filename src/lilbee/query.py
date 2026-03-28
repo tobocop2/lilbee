@@ -341,8 +341,8 @@ def _expand_query(question: str) -> list[str]:
             return []
         variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
         variants = variants[:count]
-        variants.extend(_concept_query_expansion(question))
         variants = _apply_guardrails(variants, question)
+        variants.extend(_concept_query_expansion(question))
         return variants
     except Exception:
         return []
@@ -444,6 +444,10 @@ def _search_structured(mode: str, query: str, top_k: int) -> list[SearchChunk]:
 
 
 def search_context(question: str, top_k: int = 0) -> list[SearchChunk]:
+    """Search with expansion and reranking.
+
+    Returns up to top_k*2 candidates for downstream filtering.
+    """
     if top_k == 0:
         top_k = cfg.top_k
     mode, clean_query = _parse_structured_query(question)

@@ -42,7 +42,7 @@ class StatusScreen(Screen[None]):
         self.query_one("#status-info", Static).update("\n".join(info_parts))
 
         table = self.query_one("#docs-table", DataTable)
-        table.add_columns("Document", "Chunks", "Type")
+        table.add_columns("Document", "Chunks")
         table.cursor_type = "row"
 
         try:
@@ -51,13 +51,12 @@ class StatusScreen(Screen[None]):
             sources = store.get_sources()
             for src in sources:
                 table.add_row(
-                    src.get("source", "?"),
+                    src.get("filename", "?"),
                     str(src.get("chunk_count", 0)),
-                    src.get("content_type", "?"),
                 )
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
-            table.add_row("(unable to read store)", "", "")
+            table.add_row("(unable to read store)", "")
 
     def action_pop_screen(self) -> None:
         self.app.pop_screen()

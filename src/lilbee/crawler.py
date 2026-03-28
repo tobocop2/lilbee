@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,12 +30,24 @@ def crawler_available() -> bool:
         return False
 
 
-def _get_crawl_semaphore() -> asyncio.Semaphore | None:
-    """Return a new concurrency semaphore for the current call, or None if unlimited (0)."""
+_crawl_semaphore: threading.Semaphore | None = None
+_crawl_semaphore_limit: int = 0
+
+
+def _get_crawl_semaphore() -> threading.Semaphore | None:
+    """Return a module-level threading semaphore for crawl concurrency, or None if unlimited (0).
+
+    Uses threading.Semaphore instead of asyncio.Semaphore to avoid event-loop binding issues
+    when crawl_and_save is called from different loops (e.g. CLI via asyncio.run).
+    """
+    global _crawl_semaphore, _crawl_semaphore_limit
     limit = cfg.crawl_max_concurrent
     if limit <= 0:
         return None
-    return asyncio.Semaphore(limit)
+    if _crawl_semaphore is None or _crawl_semaphore_limit != limit:
+        _crawl_semaphore = threading.Semaphore(limit)
+        _crawl_semaphore_limit = limit
+    return _crawl_semaphore
 
 
 # Maximum filename length before truncation (most filesystems cap at 255 bytes)
@@ -329,7 +342,7 @@ async def crawl_recursive(
 
 
 _last_sync_time: float = 0.0
-_sync_lock = asyncio.Lock()
+_sync_running = threading.Lock()
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -337,25 +350,30 @@ async def _maybe_periodic_sync() -> None:
     """Fire off a background sync if the crawl_sync_interval has elapsed.
 
     Skips if a sync is already running or periodic sync is disabled (interval=0).
+    Uses a threading.Lock to avoid asyncio event-loop binding issues when called
+    from different loops.
     """
     global _last_sync_time
     interval = cfg.crawl_sync_interval
-    if interval <= 0 or _sync_lock.locked():
+    if interval <= 0 or not _sync_running.acquire(blocking=False):
         return
+
     now = time.monotonic()
     if now - _last_sync_time < interval:
+        _sync_running.release()
         return
 
     _last_sync_time = now
 
     async def _run_sync() -> None:
-        async with _sync_lock:
-            try:
-                from lilbee.ingest import sync
+        try:
+            from lilbee.ingest import sync
 
-                await sync(quiet=True)
-            except Exception as exc:
-                log.warning("Periodic sync during crawl failed: %s", exc)
+            await sync(quiet=True)
+        except Exception as exc:
+            log.warning("Periodic sync during crawl failed: %s", exc)
+        finally:
+            _sync_running.release()
 
     task = asyncio.create_task(_run_sync())
     _background_tasks.add(task)
@@ -378,7 +396,7 @@ async def crawl_and_save(
 
     sem = _get_crawl_semaphore()
     if sem is not None:
-        await sem.acquire()
+        sem.acquire()
     try:
         if on_progress:
             on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
