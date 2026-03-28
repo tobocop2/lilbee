@@ -48,7 +48,6 @@ def _isolated_cfg(tmp_path):
 def mock_svc():
     """Inject mock Services so TUI screens never touch real backends."""
     from lilbee.query import Searcher
-    from lilbee.reranker import Reranker
 
     provider = MagicMock()
     store = MagicMock()
@@ -67,8 +66,12 @@ def mock_svc():
     concepts.get_graph.return_value = False
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     services = Services(
-        provider=provider, store=store, embedder=embedder,
-        reranker=reranker, concepts=concepts, searcher=searcher,
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
     )
     set_services(services)
     yield services
@@ -1442,7 +1445,6 @@ async def test_command_provider_document_commands(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-
         from lilbee.services import get_services
 
         get_services().store.get_sources.return_value = [
@@ -1461,7 +1463,6 @@ async def test_command_provider_document_commands_error(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-
         from lilbee.services import get_services
 
         get_services().store.get_sources.side_effect = Exception("no store")
@@ -1477,7 +1478,6 @@ async def test_command_provider_document_commands_empty_name(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-
         from lilbee.services import get_services
 
         get_services().store.get_sources.return_value = [{"source": ""}]
