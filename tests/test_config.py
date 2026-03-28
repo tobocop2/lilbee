@@ -514,3 +514,47 @@ class TestEmptyStringValidation:
             vision_model="",
         )
         assert c.vision_model == ""
+
+
+
+
+class TestEmptyStringToNone:
+    def test_empty_temperature_becomes_none(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["LILBEE_TEMPERATURE"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+        assert c.temperature is None
+
+    def test_whitespace_seed_becomes_none(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["LILBEE_SEED"] = "   "
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+        assert c.seed is None
+
+
+class TestIgnoreDirsFallback:
+    def test_non_string_non_collection_returns_defaults(self, tmp_path):
+        env = _clean_env(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config(ignore_dirs=42)  # type: ignore[arg-type]
+        assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
+
+
+class TestOllamaHostFallback:
+    def test_ollama_host_sets_litellm_base_url(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["OLLAMA_HOST"] = "http://custom:11434"
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+        assert c.litellm_base_url == "http://custom:11434"
+
+
+class TestPlainEnvSourceSkipsEmpty:
+    def test_empty_chat_model_uses_default(self, tmp_path):
+        env = _clean_env(tmp_path)
+        env["LILBEE_CHAT_MODEL"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+        assert c.chat_model == "qwen3:8b"  # default, not empty

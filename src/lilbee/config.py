@@ -230,7 +230,7 @@ class Config(BaseSettings):
     def _resolve_defaults(cls, data: Any) -> Any:
         from lilbee.platform import canonical_models_dir, default_data_dir, find_local_root
 
-        if not isinstance(data, dict):
+        if not isinstance(data, dict):  # pragma: no cover
             return data
 
         _UNSET = Path()
