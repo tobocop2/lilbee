@@ -197,6 +197,39 @@ class TestRebuild:
         assert "rb.md" in result.added
 
 
+class TestPropertyAccessors:
+    def test_store_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.store is not None
+
+    def test_embedder_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.embedder is not None
+
+    def test_searcher_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.searcher is not None
+
+
+class TestRemovePathTraversal:
+    def test_remove_path_traversal_skips(self, tmp_path):
+        """remove() with a traversal name catches ValueError and returns."""
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        _write_doc(bee.config.documents_dir, "legit.md", "# Legit\nSome content here.")
+        bee.sync()
+        bee.remove("../../etc/passwd")
+        status = bee.status()
+        assert "legit.md" in status["sources"]
+
+
 class TestIsolation:
     def test_config_isolation(self, tmp_path):
         """Lilbee instance doesn't leak config to global cfg after method call."""

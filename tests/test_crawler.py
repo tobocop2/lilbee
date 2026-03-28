@@ -168,6 +168,32 @@ class TestCrawlMetadata:
         meta = load_crawl_metadata()
         assert meta == {}
 
+    def test_load_malformed_entry_skipped(self, isolated_env):
+        """Entries that fail CrawlMeta(**data) are skipped with a warning."""
+        import json
+
+        meta_path = cfg.data_dir / "crawl_meta.json"
+        meta_path.write_text(json.dumps({"https://bad.com": {"wrong_field": "value"}}))
+        meta = load_crawl_metadata()
+        assert meta == {}
+
+    def test_save_atomic_write_cleans_up_on_error(self, isolated_env):
+        """If the atomic write fails, the tmp file is removed and error re-raised."""
+        meta = {
+            "https://example.com": CrawlMeta(
+                file="example.com/index.md",
+                content_hash="abc",
+                crawled_at="2026-01-01T00:00:00+00:00",
+            )
+        }
+        with (
+            patch("lilbee.crawler.Path.rename", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            save_crawl_metadata(meta)
+        tmp_path = cfg.data_dir / "crawl_meta.tmp"
+        assert not tmp_path.exists()
+
     def test_update_metadata(self, isolated_env):
         results = [
             CrawlResult(url="https://example.com/p1", markdown="Content 1"),

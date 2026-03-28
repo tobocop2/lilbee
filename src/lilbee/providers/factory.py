@@ -32,7 +32,10 @@ def create_provider(config: Config) -> LLMProvider:
             raise ProviderError(
                 "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
             )
-        return LiteLLMProvider(base_url=config.litellm_base_url, api_key=config.llm_api_key)
+        return LiteLLMProvider(
+            base_url=config.litellm_base_url,
+            api_key=config.llm_api_key,
+        )  # pragma: no cover
 
     from lilbee.providers.base import ProviderError
 

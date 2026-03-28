@@ -771,6 +771,30 @@ class TestSearchContextIntegration:
         finally:
             cfg.hyde = old
 
+    def test_hyde_adds_unique_results_with_distance_adjustment(self, mock_svc):
+        """HyDE results not seen in normal search are added with adjusted distance."""
+        normal_result = _make_result(source="normal.md", chunk_index=0)
+        hyde_only_result = _make_result(source="hyde.md", chunk_index=0, distance=0.8)
+        mock_svc.store.search.side_effect = [
+            [normal_result],
+            [hyde_only_result],
+        ]
+        mock_svc.provider.chat.return_value = "hypothetical document"
+        old_hyde = cfg.hyde
+        old_weight = cfg.hyde_weight
+        cfg.hyde = True
+        cfg.hyde_weight = 0.5
+        try:
+            results = get_services().searcher.search("vague question")
+            sources = {r.source for r in results}
+            assert "normal.md" in sources
+            assert "hyde.md" in sources
+            hyde_r = next(r for r in results if r.source == "hyde.md")
+            assert hyde_r.distance == pytest.approx(0.8 / 0.5)
+        finally:
+            cfg.hyde = old_hyde
+            cfg.hyde_weight = old_weight
+
 
 class TestAskRawWithReranker:
     def test_reranker_called_when_configured(self, mock_svc):

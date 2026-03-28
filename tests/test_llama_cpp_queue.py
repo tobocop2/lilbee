@@ -324,3 +324,15 @@ class TestShutdown:
         assert result2 == [[1.0]]
         provider._worker.join(timeout=2)
         assert not provider._worker.is_alive()
+
+
+class TestLockedStreamIteratorClose:
+    def test_close_releases_lock(self):
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(iter([]), lock)
+        stream.close()
+        assert lock.acquire(blocking=False)
+        lock.release()

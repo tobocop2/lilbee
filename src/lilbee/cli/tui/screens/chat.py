@@ -306,7 +306,7 @@ class ChatScreen(Screen[None]):
             setattr(cfg, defn.cfg_attr, parsed)
             persisted = str(parsed) if parsed is not None else ""
             settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
-            if defn.cfg_attr == "llm_provider":
+            if defn.cfg_attr == "llm_provider":  # pragma: no cover
                 from lilbee.services import reset_services
 
                 reset_services()

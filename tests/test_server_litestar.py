@@ -4,6 +4,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
+from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.config import cfg
@@ -470,3 +471,63 @@ class TestLifespan:
         async with _lifespan(mock.MagicMock()):
             pass
         mock_get_svc.assert_called()
+
+
+class TestAuthMiddleware:
+    @pytest.fixture()
+    def middleware(self):
+        from lilbee.server.auth import AuthMiddleware
+
+        app = AsyncMock()
+        return AuthMiddleware(app)
+
+    @pytest.mark.asyncio
+    async def test_non_http_scope_passes_through(self, middleware):
+        scope = {"type": "websocket"}
+        await middleware(scope, AsyncMock(), AsyncMock())
+        middleware.app.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_options_method_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "secret"
+        try:
+            scope = {"type": "http", "method": "OPTIONS", "headers": []}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_read_only_handler_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "secret"
+        try:
+            handler = mock.MagicMock()
+            handler.fn._lilbee_read_only = True
+            scope = {"type": "http", "method": "GET", "headers": [], "route_handler": handler}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_raises(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "valid_token"
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer wrong_token")],
+            }
+            with pytest.raises(NotAuthorizedException):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod._session_token = old

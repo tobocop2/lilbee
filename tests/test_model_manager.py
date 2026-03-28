@@ -402,6 +402,13 @@ class TestModelManagerRemove:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.remove("missing.gguf", ModelSource.NATIVE) is False
 
+    def test_native_remove_path_traversal_blocked(self, tmp_path: Path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        assert mgr.remove("../../etc/passwd", ModelSource.NATIVE) is False
+
     def test_litellm_remove_success(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 200

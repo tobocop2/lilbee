@@ -231,3 +231,11 @@ class TestRerankerAvailable:
         mock_st = mock.MagicMock()
         with mock.patch.dict("sys.modules", {"sentence_transformers": mock_st}):
             assert reranker_available() is True
+
+
+class TestResetEncoder:
+    def test_reset_clears_encoder(self, reranker):
+        reranker._encoder = mock.MagicMock()
+        assert reranker._encoder is not None
+        reranker.reset_encoder()
+        assert reranker._encoder is None
