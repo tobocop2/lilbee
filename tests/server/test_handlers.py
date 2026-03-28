@@ -10,10 +10,9 @@ import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
-from lilbee.query import Searcher
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
-from lilbee.services import Services, set_services
+from lilbee.services import set_services
 
 
 def _auth_headers() -> dict[str, str]:
@@ -39,29 +38,13 @@ def isolated_env(tmp_path: Path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so handlers never touch real backends."""
-    provider = mock.MagicMock()
-    store = mock.MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    from tests.conftest import make_mock_services
+
     embedder = mock.MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = None
-    reranker = mock.MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = mock.MagicMock()
-    concepts.get_graph.return_value = False
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(embedder=embedder)
     set_services(services)
     yield services
     set_services(None)

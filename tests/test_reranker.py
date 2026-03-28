@@ -77,8 +77,10 @@ class TestRerank:
         ]
         reranked = r.rerank("test query", results)
         assert len(reranked) == 3
-        # Reranker gave highest score to chunk A, so it should move up
         mock_encoder.predict.assert_called_once()
+        # Blended scores: B=0.56 (high fusion), A=0.51 (high rerank), C=0.50
+        assert reranked[0].chunk == "chunk B"
+        assert reranked[-1].chunk == "chunk C"
 
     def test_bm25_protection(self):
         cfg.reranker_model = "test"
@@ -133,6 +135,9 @@ class TestRerank:
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
         reranked = r.rerank("test", results)
         assert len(reranked) == 2
+        chunks = {r.chunk for r in reranked}
+        assert "A" in chunks
+        assert "B" in chunks
 
 
 class TestBlendSchedule:

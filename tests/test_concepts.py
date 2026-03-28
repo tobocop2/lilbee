@@ -34,30 +34,15 @@ def isolated_env(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all concept tests."""
-    from lilbee.providers.base import LLMProvider
-    from lilbee.query import Searcher
-    from lilbee.services import Services
+    from tests.conftest import make_mock_services
 
-    provider = MagicMock(spec=LLMProvider)
     mock_store = MagicMock()
     mock_store.search.return_value = []
     mock_store.bm25_probe.return_value = []
     mock_store.get_sources.return_value = []
     mock_store.open_table.return_value = None
-    embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
-    reranker = MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
     concepts = ConceptGraph(cfg, mock_store)
-    searcher = Searcher(cfg, provider, mock_store, embedder, reranker, concepts)
-    services = Services(
-        provider=provider,
-        store=mock_store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(store=mock_store, concepts=concepts)
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
