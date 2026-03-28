@@ -11,8 +11,10 @@ import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
+from lilbee.query import Searcher
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
+from lilbee.services import Services, set_services
 
 
 def _auth_headers() -> dict[str, str]:
@@ -35,8 +37,31 @@ def isolated_env(tmp_path: Path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _fake_embed_batch(texts: list[str], **kwargs: Any) -> list[list[float]]:
-    return [[0.1] * 768 for _ in texts]
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Inject mock Services so handlers never touch real backends."""
+    provider = mock.MagicMock()
+    store = mock.MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.side_effect = lambda records: len(records)
+    embedder = mock.MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    embedder.validate_model.return_value = None
+    reranker = mock.MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = mock.MagicMock()
+    concepts.get_graph.return_value = False
+    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    services = Services(
+        provider=provider, store=store, embedder=embedder,
+        reranker=reranker, concepts=concepts, searcher=searcher,
+    )
+    set_services(services)
+    yield services
+    set_services(None)
 
 
 def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks: int = 1):
@@ -70,13 +95,9 @@ def _parse_sse_events(body: bytes) -> list[tuple[str, dict]]:
     return events
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestAddEndpoint:
-    async def test_add_single_file(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
-    ):
+    async def test_add_single_file(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add with a valid file streams SSE events and adds it."""
         from lilbee.server.app import create_app
 
@@ -97,7 +118,7 @@ class TestAddEndpoint:
         assert "summary" in event_types
 
     async def test_add_nonexistent_file_in_errors(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+        self, mock_extract_file, isolated_env, tmp_path
     ):
         """Nonexistent paths appear in the summary errors list."""
         from lilbee.server.app import create_app
@@ -113,7 +134,7 @@ class TestAddEndpoint:
         assert "/no/such/file.txt" in summary["errors"]
 
     async def test_add_with_force_flag(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+        self, mock_extract_file, isolated_env, tmp_path
     ):
         """The force flag allows overwriting existing files."""
         from lilbee.server.app import create_app
@@ -133,7 +154,7 @@ class TestAddEndpoint:
         assert "dup.txt" in summary["copied"]
 
     async def test_done_event_has_correct_fields(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+        self, mock_extract_file, isolated_env, tmp_path
     ):
         """The done event includes added, updated, removed, failed counts."""
         from lilbee.server.app import create_app
@@ -154,7 +175,7 @@ class TestAddEndpoint:
         assert "failed" in done_data
 
     async def test_file_start_has_total_and_current(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+        self, mock_extract_file, isolated_env, tmp_path
     ):
         """file_start event includes total_files and current_file."""
         from lilbee.server.app import create_app
@@ -173,7 +194,7 @@ class TestAddEndpoint:
         assert file_start["current_file"] >= 1
 
     async def test_add_with_vision_model(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env, tmp_path
+        self, mock_extract_file, isolated_env, tmp_path
     ):
         """Vision model parameter is temporarily set on cfg during sync."""
         from lilbee.server.app import create_app
@@ -225,14 +246,10 @@ class TestAddValidation:
         from lilbee.server.app import create_app
 
         paths = [f"/fake/file_{i}.txt" for i in range(MAX_ADD_FILES)]
-        with (
-            mock.patch("lilbee.embedder.validate_model"),
-            mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch),
-            mock.patch(
-                "kreuzberg.extract_file",
-                new_callable=AsyncMock,
-                return_value=_make_kreuzberg_result(),
-            ),
+        with mock.patch(
+            "kreuzberg.extract_file",
+            new_callable=AsyncMock,
+            return_value=_make_kreuzberg_result(),
         ):
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post("/api/add", json={"paths": paths}, headers=_auth_headers())
@@ -296,54 +313,42 @@ class TestOptionsPassthrough:
     async def test_ask_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
 
-        with (
-            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
-            mock.patch("lilbee.store.search", return_value=[]),
-        ):
-            async with AsyncTestClient(create_app()) as client:
-                resp = await client.post(
-                    "/api/ask",
-                    json={"question": "test", "options": {"temperature": 0.3}},
-                    headers=_auth_headers(),
-                )
-            assert resp.status_code == 201
-            body = resp.json()
-            assert "answer" in body
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/ask",
+                json={"question": "test", "options": {"temperature": 0.3}},
+                headers=_auth_headers(),
+            )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "answer" in body
 
     async def test_chat_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
 
-        with (
-            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
-            mock.patch("lilbee.store.search", return_value=[]),
-        ):
-            async with AsyncTestClient(create_app()) as client:
-                resp = await client.post(
-                    "/api/chat",
-                    json={
-                        "question": "test",
-                        "history": [],
-                        "options": {"seed": 42},
-                    },
-                    headers=_auth_headers(),
-                )
-            assert resp.status_code == 201
-            body = resp.json()
-            assert "answer" in body
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "question": "test",
+                    "history": [],
+                    "options": {"seed": 42},
+                },
+                headers=_auth_headers(),
+            )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "answer" in body
 
     async def test_ask_without_options(self, isolated_env):
         """Request without options field still works."""
         from lilbee.server.app import create_app
 
-        with (
-            mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768),
-            mock.patch("lilbee.store.search", return_value=[]),
-        ):
-            async with AsyncTestClient(create_app()) as client:
-                resp = await client.post(
-                    "/api/ask", json={"question": "test"}, headers=_auth_headers()
-                )
-            assert resp.status_code == 201
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/ask", json={"question": "test"}, headers=_auth_headers()
+            )
+        assert resp.status_code == 201
 
 
 class TestCreateApp:
