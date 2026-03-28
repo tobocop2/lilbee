@@ -29,23 +29,14 @@ def store():
 
 
 def _embedding_model_available() -> bool:
-    import signal
-
-    def _timeout_handler(signum, frame):  # type: ignore[no-untyped-def]
-        raise TimeoutError
-
-    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(5)
+    """Check if a real embedding model is available (integration tests only)."""
     try:
-        from lilbee.services import get_services
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
-        get_services().embedder.embed("test")
+        _resolve_model_path(cfg.embedding_model)
         return True
     except Exception:
         return False
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
 
 
 requires_embedding = pytest.mark.skipif(
