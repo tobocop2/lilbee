@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
-from litestar import Litestar, get
+from litestar import Litestar
 from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
@@ -18,9 +17,7 @@ from lilbee.server.auth import (
     AuthMiddleware,
     cleanup_session_token,
     generate_session_token,
-    read_only,
 )
-from lilbee.server.models import HealthResponse
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -28,6 +25,7 @@ from lilbee.server.routes.documents import (
     documents_remove_route,
     sync_route,
 )
+from lilbee.server.routes.general import config_route, health_route, status_route
 from lilbee.server.routes.models import (
     models_catalog_route,
     models_delete_route,
@@ -47,34 +45,6 @@ from lilbee.server.routes.search import (
 )
 
 log = logging.getLogger(__name__)
-
-
-@get("/api/health")
-@read_only
-async def health_route() -> HealthResponse:
-    """Service health check returning server version and uptime status."""
-    from lilbee.server import handlers
-
-    raw = await handlers.health()
-    return HealthResponse(**raw)
-
-
-@get("/api/status")
-@read_only
-async def status_route() -> dict[str, Any]:
-    """Current configuration, indexed document sources, and chunk counts."""
-    from lilbee.server import handlers
-
-    return await handlers.status()
-
-
-@get("/api/config")
-@read_only
-async def config_route() -> dict[str, Any]:
-    """Return all user-facing configuration values."""
-    from lilbee.server import handlers
-
-    return await handlers.get_config()
 
 
 @asynccontextmanager

@@ -138,10 +138,8 @@ class Lilbee:
 
     def search(self, query: str, *, top_k: int = 0) -> list[SearchChunk]:
         """Search indexed documents. Returns ranked chunks."""
-        from lilbee.query import search_context
-
         with _swap_config(self._config):
-            return search_context(query, top_k=top_k)
+            return self._searcher.search(query, top_k=top_k)
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
@@ -158,11 +156,9 @@ class Lilbee:
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name."""
-        from lilbee import store
-
         with _swap_config(self._config):
-            store.delete_by_source(name)
-            store.delete_source(name)
+            self._store.delete_by_source(name)
+            self._store.delete_source(name)
             doc_path = self._config.documents_dir / name
             if not doc_path.resolve().is_relative_to(self._config.documents_dir.resolve()):
                 return
@@ -171,10 +167,8 @@ class Lilbee:
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""
-        from lilbee import store
-
         with _swap_config(self._config):
-            sources = store.get_sources()
+            sources = self._store.get_sources()
             return {
                 "documents_dir": str(self._config.documents_dir),
                 "data_dir": str(self._config.data_dir),
