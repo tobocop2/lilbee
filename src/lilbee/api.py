@@ -115,7 +115,7 @@ class Lilbee:
         self._store = Store(self._config)
         self._embedder = Embedder(self._config, self._provider)
         self._reranker = Reranker(self._config)
-        self._concepts = ConceptGraph(self._config)
+        self._concepts = ConceptGraph(self._config, self._store)
         self._searcher = Searcher(
             self._config,
             self._provider,

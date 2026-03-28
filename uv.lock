@@ -1441,14 +1441,14 @@ wheels = [
 
 [[package]]
 name = "kreuzberg"
-version = "4.6.3"
+version = "4.6.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/98/6e/a04a24f901e772ccdc06920fe3c0b5d366239dd5a11c4ce77c5f6815ca15/kreuzberg-4.6.3.tar.gz", hash = "sha256:eaea80d5395f35761cce9396660cf6cb06d9b94ed20d616b137c736b236c4eb0", size = 2173464 }
+sdist = { url = "https://files.pythonhosted.org/packages/42/f3/afaded26d954188be028e4f6125d8759a0f5fb2c138ef3efed0fa1a22de2/kreuzberg-4.6.2.tar.gz", hash = "sha256:18f5de76af7e243807ba30780cb13b410257f16975fcc9dd5072eb48cd3a5acb", size = 2155237 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/6d/ca7f91c7da9d22841a618350dc085ec0d543e0bc916dab1c905029412e24/kreuzberg-4.6.3-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:2a01e9bbdf0d0d316bbc26873fb40a648ce5a2cd60fdcafc62d046cfe1bace4b", size = 51045873 },
-    { url = "https://files.pythonhosted.org/packages/e3/4c/c6a777d3a90e4fb8bb3bc128d15b9767f47dac52fa5fc93b3f86bcfb3390/kreuzberg-4.6.3-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:c265ebd92e5ce4ab3d90cc6ff74a100abe6de92c067a3cffd7988e75d205e9ca", size = 59278814 },
-    { url = "https://files.pythonhosted.org/packages/6d/cc/87494127d7b991852b3e2e53b975203e1ca6296076d1886448574d526433/kreuzberg-4.6.3-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:43f3db7ada83f11bf297a14a151769b0d8572e1d0931c7bb6fe20a70c70d26ea", size = 59017388 },
-    { url = "https://files.pythonhosted.org/packages/6d/7a/d8fe90973f1047576832f019d1cc716e8c00be52fee8a48fe89712d299ab/kreuzberg-4.6.3-cp310-abi3-win_amd64.whl", hash = "sha256:fc0afd51f0a22808e87a76351b105bb82f7b352b2e7b3b33cbbc09e4b54e55df", size = 58766457 },
+    { url = "https://files.pythonhosted.org/packages/50/09/d3815085881a6b197c7f69f5ff28b404e16e98fc1915cc704cb9d2638e98/kreuzberg-4.6.2-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:4996b86a2785b7e6350d3e0d30df619c57dae6ba55d06770cfa2f8505bf2eb28", size = 50381642 },
+    { url = "https://files.pythonhosted.org/packages/b7/d0/1a599f644e03c269f831fc9b7b6030c37e514acb9ec3f295c66f18d25ea8/kreuzberg-4.6.2-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:eb6d1cafa72548f5abf8d0a9abb4f2d0b9d2658dbce458f364ca7d9e1228a62b", size = 58425528 },
+    { url = "https://files.pythonhosted.org/packages/ab/60/539fb3f6251496c958f55822d87bcb63cd71697b66f9ecd7b3336e267514/kreuzberg-4.6.2-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:5e912b8d72fb6cae38547af663fe28eefc4a08f39d00f0a1897a1571368c90e5", size = 58147757 },
+    { url = "https://files.pythonhosted.org/packages/65/94/bcbb04967de2f13e53e247e7335fb009c70dfa3ac094b154194e884f5194/kreuzberg-4.6.2-cp310-abi3-win_amd64.whl", hash = "sha256:67b53543cf4d17389f823e8ff54f0d2053715dde5fcb973802398e2a133755f6", size = 57979239 },
 ]
 
 [[package]]
@@ -1588,13 +1588,14 @@ name = "lilbee"
 version = "0.6.0"
 source = { editable = "." }
 dependencies = [
+    { name = "crawl4ai" },
     { name = "filelock" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "kreuzberg" },
     { name = "lancedb" },
+    { name = "litellm" },
     { name = "litestar" },
-    { name = "llama-cpp-python" },
     { name = "mcp" },
     { name = "pillow" },
     { name = "textual" },
@@ -1605,15 +1606,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-crawler = [
-    { name = "crawl4ai" },
-]
 graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
 ]
-litellm = [
-    { name = "litellm" },
+llama-cpp = [
+    { name = "llama-cpp-python" },
 ]
 reranker = [
     { name = "sentence-transformers" },
@@ -1634,16 +1632,16 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.8.0" },
+    { name = "crawl4ai", specifier = ">=0.8.0" },
     { name = "filelock" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
     { name = "huggingface-hub" },
-    { name = "kreuzberg", specifier = ">=4.6.3" },
+    { name = "kreuzberg", specifier = ">=4.6.2" },
     { name = "lancedb" },
-    { name = "litellm", marker = "extra == 'litellm'" },
+    { name = "litellm" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "llama-cpp-python" },
+    { name = "llama-cpp-python", marker = "extra == 'llama-cpp'" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "sentence-transformers", marker = "extra == 'reranker'" },
@@ -1654,7 +1652,7 @@ requires-dist = [
     { name = "typer" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["litellm", "reranker", "graph", "crawler"]
+provides-extras = ["llama-cpp", "reranker", "graph"]
 
 [package.metadata.requires-dev]
 dev = [
