@@ -376,5 +376,3 @@ class ConceptGraph:
         global _nlp
         _nlp = None
 
-    # Backward-compatible alias
-    reset_graph = reset_nlp_cache

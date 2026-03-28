@@ -446,11 +446,11 @@ class TestGetGraph:
 
 class TestResetGraph:
     def test_clears_nlp_cache(self, cg):
-        """reset_graph clears the spaCy model cache."""
+        """reset_nlp_cache clears the spaCy model cache."""
         import lilbee.concepts as concepts_mod
 
         concepts_mod._nlp = MagicMock()
-        cg.reset_graph()
+        cg.reset_nlp_cache()
         assert concepts_mod._nlp is None
 
 
