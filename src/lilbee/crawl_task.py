@@ -60,9 +60,6 @@ class TaskRegistry:
 
 _registry = TaskRegistry()
 
-# Backwards-compatible alias so existing imports of _active_tasks keep working.
-_active_tasks = _registry.tasks
-
 
 def now_iso() -> str:
     """Current UTC time as ISO 8601 string."""
