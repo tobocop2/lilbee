@@ -830,17 +830,20 @@ class TestConfigProvider:
 class TestRoutingProvider:
     @pytest.fixture(autouse=True)
     def _shutdown_provider(self):
-        """Ensure provider background threads are stopped after each test."""
-        self._providers: list[RoutingProvider] = []
+        """Ensure all LlamaCppProvider background threads are stopped."""
+        self._to_shutdown: list = []
         yield
-        for p in self._providers:
+        for p in self._to_shutdown:
             p.shutdown()
 
     def _make_provider(self) -> RoutingProvider:
         from lilbee.providers.routing_provider import RoutingProvider
 
         rp = RoutingProvider()
-        self._providers.append(rp)
+        # Track the real llama-cpp provider for shutdown (tests replace it with mocks)
+        if rp._llama_cpp is not None:
+            self._to_shutdown.append(rp._llama_cpp)
+        self._to_shutdown.append(rp)
         return rp
 
     def test_routes_chat_to_litellm_when_model_in_litellm(self) -> None:
