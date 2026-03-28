@@ -246,7 +246,8 @@ def build_from_chunks(
 ) -> None:
     """Build co-occurrence graph from chunk concepts, compute PMI, store tables."""
     from lilbee.lock import write_lock
-    from lilbee.store import ensure_table, get_db
+    from lilbee.services import get_services
+    from lilbee.store import ensure_table
 
     if not chunk_ids:
         return
@@ -278,7 +279,7 @@ def build_from_chunks(
     ]
 
     with write_lock():
-        db = get_db()
+        db = get_services().store.get_db()
         if node_records:
             table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
             table.add(node_records)
@@ -315,9 +316,9 @@ def boost_results(
 
 def get_chunk_concepts(source: str, chunk_index: int) -> list[str]:
     """Get concepts associated with a specific chunk."""
-    from lilbee.store import open_table
+    from lilbee.services import get_services
 
-    table = open_table(CHUNK_CONCEPTS_TABLE)
+    table = get_services().store.open_table(CHUNK_CONCEPTS_TABLE)
     if table is None:
         return []
     escaped = escape_sql_string(source)
@@ -349,9 +350,9 @@ def expand_query(query: str) -> list[str]:
 
 def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
     """Find concepts related via graph edges."""
-    from lilbee.store import open_table
+    from lilbee.services import get_services
 
-    table = open_table(CONCEPT_EDGES_TABLE)
+    table = get_services().store.open_table(CONCEPT_EDGES_TABLE)
     if table is None:
         return []
     visited: set[str] = {concept}
@@ -379,9 +380,9 @@ def get_related_concepts(concept: str, depth: int = 1) -> list[str]:
 
 def top_communities(k: int = 10) -> list[Community]:
     """Return the k largest concept communities."""
-    from lilbee.store import open_table
+    from lilbee.services import get_services
 
-    table = open_table(CONCEPT_NODES_TABLE)
+    table = get_services().store.open_table(CONCEPT_NODES_TABLE)
     if table is None:
         return []
     rows = table.to_arrow().to_pylist()
@@ -399,9 +400,10 @@ def top_communities(k: int = 10) -> list[Community]:
 def rebuild_clusters() -> None:
     """Re-run Leiden clustering on the existing edge table."""
     from lilbee.lock import write_lock
-    from lilbee.store import _safe_delete_unlocked, ensure_table, get_db, open_table
+    from lilbee.services import get_services
+    from lilbee.store import _safe_delete_unlocked, ensure_table
 
-    edges_table = open_table(CONCEPT_EDGES_TABLE)
+    edges_table = get_services().store.open_table(CONCEPT_EDGES_TABLE)
     if edges_table is None:
         return
     edge_rows = edges_table.to_arrow().to_pylist()
@@ -420,7 +422,7 @@ def rebuild_clusters() -> None:
     ]
 
     with write_lock():
-        db = get_db()
+        db = get_services().store.get_db()
         nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
         _safe_delete_unlocked(nodes_table, "concept IS NOT NULL")
         if node_records:
@@ -431,9 +433,9 @@ def get_graph() -> bool:
     """Check whether a concept graph exists in the store."""
     if not cfg.concept_graph:
         return False
-    from lilbee.store import open_table
+    from lilbee.services import get_services
 
-    return open_table(CONCEPT_NODES_TABLE) is not None
+    return get_services().store.open_table(CONCEPT_NODES_TABLE) is not None
 
 
 def reset_graph() -> None:

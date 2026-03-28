@@ -187,9 +187,9 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.query import search_context
+    from lilbee.services import get_services
 
-    results = search_context(query, top_k=top_k or cfg.top_k)
+    results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -432,8 +432,9 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee import store
+    from lilbee.services import get_services
 
+    store = get_services().store
     known = {s["filename"] for s in store.get_sources()}
     if source not in known:
         if cfg.json_mode:
@@ -483,8 +484,9 @@ def remove(
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee import store
+    from lilbee.services import get_services
 
+    store = get_services().store
     known = {s["filename"] for s in store.get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
@@ -545,17 +547,16 @@ def ask(
         seed=seed,
     )
 
-    from lilbee import query
-    from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
+    from lilbee.services import get_services
 
     ensure_chat_model()
-    validate_model()
+    get_services().embedder.validate_model()
     auto_sync(console)
 
     try:
         if cfg.json_mode:
-            result = query.ask_raw(question)
+            result = get_services().searcher.ask_raw(question)
             json_output(
                 {
                     "command": "ask",
@@ -566,7 +567,7 @@ def ask(
             )
             return
 
-        for token in query.ask_stream(question):
+        for token in get_services().searcher.ask_stream(question):
             console.print(token.content, end="")
         console.print()
     except RuntimeError as exc:

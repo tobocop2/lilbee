@@ -318,10 +318,10 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
 
     When *exclude_vision* is True, also filters out known vision catalog models.
     """
-    from lilbee.providers import get_provider
+    from lilbee.services import get_services
 
     try:
-        provider = get_provider()
+        provider = get_services().provider
         embed_base = cfg.embedding_model.split(":")[0]
         models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
         if exclude_vision:

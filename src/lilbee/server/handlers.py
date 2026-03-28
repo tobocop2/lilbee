@@ -119,9 +119,9 @@ async def status() -> dict[str, Any]:
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search and return grouped DocumentResults as dicts."""
-    from lilbee.query import search_context
+    from lilbee.services import get_services
 
-    results = search_context(q, top_k=top_k)
+    results = get_services().searcher.search(q, top_k=top_k)
     grouped = group(results)
     return to_dicts(grouped)
 
@@ -130,10 +130,10 @@ async def ask(
     question: str, top_k: int = 0, options: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """One-shot RAG answer. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
+    from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, options=opts)
+    result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -151,9 +151,9 @@ def _run_llm_stream(
     from lilbee.reasoning import filter_reasoning
 
     try:
-        from lilbee.providers.factory import get_provider
+        from lilbee.services import get_services
 
-        provider = get_provider()
+        provider = get_services().provider
         stream = provider.chat(
             cast("list[dict[str, Any]]", messages),
             stream=True,
@@ -190,9 +190,9 @@ async def _stream_rag_response(
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
 
-    from lilbee.query import build_rag_context
+    from lilbee.services import get_services
 
-    rag = build_rag_context(question, top_k=top_k, history=history)
+    rag = get_services().searcher.build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
@@ -236,10 +236,10 @@ async def chat(
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Chat with history. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
+    from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, history=history, options=opts)
+    result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -414,9 +414,9 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.store import remove_documents
+    from lilbee.services import get_services
 
-    result = remove_documents(names, delete_files=delete_files)
+    result = get_services().store.remove_documents(names, delete_files=delete_files)
     return {"removed": result.removed, "not_found": result.not_found}
 
 
@@ -426,9 +426,9 @@ async def list_documents(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Return indexed documents with metadata, paginated and filterable."""
-    from lilbee.store import get_sources
+    from lilbee.services import get_services
 
-    sources = get_sources()
+    sources = get_services().store.get_sources()
     if search:
         search_lower = search.lower()
         sources = [s for s in sources if search_lower in s["filename"].lower()]
@@ -485,9 +485,9 @@ async def get_config() -> dict[str, Any]:
 
 async def models_show(model: str) -> dict[str, Any]:
     """Return model metadata/parameters. Returns empty dict if unavailable."""
-    from lilbee.providers.factory import get_provider
+    from lilbee.services import get_services
 
-    provider = get_provider()
+    provider = get_services().provider
     result = provider.show_model(model)
     return result if result is not None else {}
 
@@ -522,9 +522,9 @@ async def models_catalog(
         limit=limit,
         offset=offset,
     )
-    from lilbee.providers.factory import get_provider
+    from lilbee.services import get_services
 
-    provider = get_provider()
+    provider = get_services().provider
     installed_names = set(provider.list_models())
 
     models = []

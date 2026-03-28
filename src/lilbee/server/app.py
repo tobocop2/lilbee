@@ -51,17 +51,15 @@ log = logging.getLogger(__name__)
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
     generate_session_token()
-    try:
-        from lilbee.providers.factory import get_provider
+    from lilbee.services import get_services
 
-        get_provider()
+    try:
+        svc()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
     except Exception:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
     try:
-        from lilbee import embedder
-
-        embedder.validate_model()
+        get_services().embedder.validate_model()
         log.info("Embedding model validated")
     except Exception:
         log.warning("Failed to validate embedding model", exc_info=True)

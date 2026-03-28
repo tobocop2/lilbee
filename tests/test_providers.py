@@ -692,72 +692,82 @@ class TestLiteLLMProvider:
 
 class TestFactory:
     def test_default_provider_is_routing(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.routing_provider import RoutingProvider
 
         cfg.llm_provider = "auto"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, RoutingProvider)
 
     def test_explicit_llama_cpp(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         cfg.llm_provider = "llama-cpp"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LlamaCppProvider)
 
     def test_ollama_alias_provider(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "ollama"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://localhost:11434"
 
     def test_litellm_provider(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "litellm"
         cfg.llm_api_key = "sk-test"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._api_key == "sk-test"
 
     def test_unknown_provider_raises(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "unknown"
         with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            get_provider()
+            create_provider(cfg)
 
-    def test_singleton(self) -> None:
-        from lilbee.providers.factory import get_provider
+    def test_services_singleton(self) -> None:
+        from lilbee.services import reset_services, get_services
 
+        reset_services()
         cfg.llm_provider = "llama-cpp"
-        p1 = get_provider()
-        p2 = get_provider()
+        p1 = get_services().provider
+        p2 = get_services().provider
         assert p1 is p2
+        reset_services()
 
-    def test_reset_clears_singleton(self) -> None:
-        from lilbee.providers.factory import get_provider, reset_provider
+    def test_services_reset_clears_singleton(self) -> None:
+        from lilbee.services import reset_services, get_services
 
+        reset_services()
         cfg.llm_provider = "llama-cpp"
-        p1 = get_provider()
-        reset_provider()
-        p2 = get_provider()
+        p1 = get_services().provider
+        reset_services()
+        p2 = get_services().provider
         assert p1 is not p2
+        reset_services()
 
     def test_custom_base_url(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "litellm"
         cfg.litellm_base_url = "http://custom:11434"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://custom:11434"
 
@@ -824,6 +834,10 @@ class TestRoutingProvider:
         return RoutingProvider()
 
     def test_routes_chat_to_litellm_when_model_in_litellm(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.list_models.return_value = ["qwen3:8b"]
@@ -1017,7 +1031,7 @@ class TestLitellmAvailable:
 
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
         cfg.llm_provider = "litellm"

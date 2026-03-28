@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import lilbee.services as svc_mod
 from lilbee.config import cfg
 from lilbee.store import SearchChunk
 
@@ -27,6 +28,34 @@ def isolated_env(tmp_path):
     yield
     for name, val in snapshot.items():
         setattr(cfg, name, val)
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Provide a mock Services container for all concept tests."""
+    from lilbee.query import Searcher
+    from lilbee.services import Services
+
+    provider = MagicMock()
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.open_table.return_value = None
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    services = Services(
+        provider=provider, store=store, embedder=embedder,
+        reranker=reranker, concepts=concepts, searcher=searcher,
+    )
+    svc_mod._svc = services
+    yield services
+    svc_mod._svc = None
 
 
 @pytest.fixture(autouse=True)
@@ -313,31 +342,29 @@ class TestExpandQuery:
 
 
 class TestGetRelatedConcepts:
-    @patch("lilbee.store.open_table")
-    def test_get_related_concepts(self, mock_open):
+    def test_get_related_concepts(self, mock_svc):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"source": "python", "target": "django", "weight": 1.0},
         ]
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import get_related_concepts
 
         related = get_related_concepts("python")
         assert "django" in related
 
-    @patch("lilbee.store.open_table", return_value=None)
-    def test_get_related_concepts_no_table(self, mock_open):
+    def test_get_related_concepts_no_table(self, mock_svc):
+        mock_svc.store.open_table.return_value = None
         from lilbee.concepts import get_related_concepts
 
         assert get_related_concepts("python") == []
 
-    @patch("lilbee.store.open_table")
-    def test_get_related_concepts_query_exception(self, mock_open):
+    def test_get_related_concepts_query_exception(self, mock_svc):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
             "query failed"
         )
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import get_related_concepts
 
         result = get_related_concepts("python")
@@ -345,15 +372,14 @@ class TestGetRelatedConcepts:
 
 
 class TestTopCommunities:
-    @patch("lilbee.store.open_table")
-    def test_top_communities(self, mock_open):
+    def test_top_communities(self, mock_svc):
         mock_table = MagicMock()
         mock_table.to_arrow.return_value.to_pylist.return_value = [
             {"concept": "python", "cluster_id": 0, "degree": 5},
             {"concept": "ml", "cluster_id": 0, "degree": 3},
             {"concept": "web", "cluster_id": 1, "degree": 2},
         ]
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import top_communities
 
         communities = top_communities(k=2)
@@ -361,69 +387,60 @@ class TestTopCommunities:
         assert communities[0].size == 2
         assert communities[0].cluster_id == 0
 
-    @patch("lilbee.store.open_table", return_value=None)
-    def test_top_communities_no_table(self, mock_open):
+    def test_top_communities_no_table(self, mock_svc):
+        mock_svc.store.open_table.return_value = None
         from lilbee.concepts import top_communities
 
         assert top_communities() == []
 
 
 class TestGetChunkConcepts:
-    @patch("lilbee.store.open_table")
-    def test_get_chunk_concepts(self, mock_open):
+    def test_get_chunk_concepts(self, mock_svc):
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"concept": "python"},
             {"concept": "ml"},
         ]
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import get_chunk_concepts
 
         concepts = get_chunk_concepts("doc.md", 0)
         assert concepts == ["python", "ml"]
 
-    @patch("lilbee.store.open_table", return_value=None)
-    def test_get_chunk_concepts_no_table(self, mock_open):
+    def test_get_chunk_concepts_no_table(self, mock_svc):
+        mock_svc.store.open_table.return_value = None
         from lilbee.concepts import get_chunk_concepts
 
         assert get_chunk_concepts("doc.md", 0) == []
 
-    @patch("lilbee.store.open_table")
-    def test_get_chunk_concepts_exception(self, mock_open):
+    def test_get_chunk_concepts_exception(self, mock_svc):
         mock_table = MagicMock()
         mock_table.search.side_effect = RuntimeError("query failed")
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import get_chunk_concepts
 
         assert get_chunk_concepts("doc.md", 0) == []
 
 
 class TestRebuildClusters:
-    @patch("lilbee.store.open_table")
-    def test_rebuild_no_table(self, mock_open):
-        mock_open.return_value = None
+    def test_rebuild_no_table(self, mock_svc):
+        mock_svc.store.open_table.return_value = None
         from lilbee.concepts import rebuild_clusters
 
         rebuild_clusters()
 
-    @patch("lilbee.store.open_table")
-    def test_rebuild_empty_edges(self, mock_open):
+    def test_rebuild_empty_edges(self, mock_svc):
         mock_table = MagicMock()
         mock_table.to_arrow.return_value.to_pylist.return_value = []
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
         from lilbee.concepts import rebuild_clusters
 
         rebuild_clusters()
 
     @patch("lilbee.lock.write_lock")
-    @patch("lilbee.store.safe_delete")
     @patch("lilbee.store.ensure_table")
-    @patch("lilbee.store.get_db")
     @patch("lilbee.concepts._leiden_partition")
-    @patch("lilbee.store.open_table")
-    def test_rebuild_with_edges(
-        self, mock_open, mock_leiden, mock_get_db, mock_ensure, mock_safe_del, mock_lock
-    ):
+    def test_rebuild_with_edges(self, mock_leiden, mock_ensure, mock_lock, mock_svc):
         mock_lock.return_value.__enter__ = MagicMock()
         mock_lock.return_value.__exit__ = MagicMock(return_value=False)
         mock_table = MagicMock()
@@ -432,7 +449,8 @@ class TestRebuildClusters:
             {"source": "ml", "target": "deep learning", "weight": 1.5},
         ]
         mock_table.to_arrow.return_value.to_pylist.return_value = edge_rows
-        mock_open.return_value = mock_table
+        mock_svc.store.open_table.return_value = mock_table
+        mock_svc.store.get_db.return_value = MagicMock()
         mock_leiden.return_value = (
             {"python": 0, "ml": 0, "deep learning": 1},
             {"python": 1, "ml": 2, "deep learning": 1},
@@ -448,9 +466,8 @@ class TestRebuildClusters:
 
 
 class TestGetGraph:
-    @patch("lilbee.store.open_table")
-    def test_returns_true_when_enabled(self, mock_open):
-        mock_open.return_value = MagicMock()
+    def test_returns_true_when_enabled(self, mock_svc):
+        mock_svc.store.open_table.return_value = MagicMock()
         from lilbee.concepts import get_graph
 
         cfg.concept_graph = True
@@ -462,8 +479,8 @@ class TestGetGraph:
         cfg.concept_graph = False
         assert get_graph() is False
 
-    @patch("lilbee.store.open_table", return_value=None)
-    def test_returns_false_when_no_tables(self, mock_open):
+    def test_returns_false_when_no_tables(self, mock_svc):
+        mock_svc.store.open_table.return_value = None
         from lilbee.concepts import get_graph
 
         cfg.concept_graph = True

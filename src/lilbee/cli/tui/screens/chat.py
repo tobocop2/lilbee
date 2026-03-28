@@ -50,13 +50,9 @@ def _reset_stale_singletons(cfg_attr: str) -> None:
     """Reset cached provider/embedder singletons when relevant config changes."""
     if cfg_attr not in _PROVIDER_SENSITIVE_KEYS:
         return
-    from lilbee.embedder import reset_embedder
-    from lilbee.providers.factory import reset_provider
-    from lilbee.store import reset_store
+    from lilbee.services import reset_services
 
-    reset_provider()
-    reset_embedder()
-    reset_store()
+    reset_services()
 
 
 _DISPATCH = build_dispatch_dict()
@@ -247,10 +243,10 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
-        from lilbee.store import get_sources
+        from lilbee.services import get_services
 
         try:
-            sources = get_sources()
+            sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
@@ -270,10 +266,9 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
 
-        from lilbee.store import delete_by_source, delete_source
-
-        delete_by_source(name)
-        delete_source(name)
+        store = get_services().store
+        store.delete_by_source(name)
+        store.delete_source(name)
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
