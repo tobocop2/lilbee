@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from tree_sitter_language_pack import ProcessConfig, has_language, init, process
+# detect_language is not in tree_sitter_language_pack's public API;
+# _native is the only module that exposes file-extension-to-language mapping.
 from tree_sitter_language_pack._native import detect_language
 
 from lilbee.chunk import chunk_text
