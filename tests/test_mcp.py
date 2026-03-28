@@ -1,10 +1,11 @@
 """Tests for the MCP server tools."""
 
 from unittest import mock
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import lilbee.services as svc_mod
 from lilbee.config import cfg
 from lilbee.crawl_task import clear_tasks
 from lilbee.ingest import SyncResult
@@ -28,21 +29,44 @@ from lilbee.store import SearchChunk
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
-    from lilbee.store import reset_store
-
     snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    reset_store()
 
     yield tmp_path
 
-    reset_store()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Provide a mock Services container for all MCP tests."""
+    from lilbee.services import Services
+
+    provider = MagicMock()
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    searcher = MagicMock()
+    searcher.search.return_value = []
+    services = Services(
+        provider=provider, store=store, embedder=embedder,
+        reranker=reranker, concepts=concepts, searcher=searcher,
+    )
+    svc_mod._svc = services
+    yield services
+    svc_mod._svc = None
 
 
 @pytest.fixture(autouse=True)
@@ -52,13 +76,6 @@ def _no_dns():
         "lilbee.crawler.socket.getaddrinfo",
         return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
     ):
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _skip_model_validation():
-    """MCP tests never need real model validation."""
-    with mock.patch("lilbee.embedder.validate_model"):
         yield
 
 
@@ -101,9 +118,8 @@ class TestClean:
 
 
 class TestLilbeeSearch:
-    @mock.patch("lilbee.query.search_context")
-    def test_returnscleaned_results(self, mock_search):
-        mock_search.return_value = [
+    def test_returnscleaned_results(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
             SearchChunk(
                 source="doc.pdf",
                 content_type="pdf",
@@ -121,24 +137,25 @@ class TestLilbeeSearch:
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_search.assert_called_once_with("test query", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3)
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
-    def test_empty_results(self, mock_search):
+    def test_empty_results(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
         assert lilbee_search("nothing") == []
 
 
 class TestLilbeeStatus:
-    def test_empty_status(self):
+    def test_empty_status(self, mock_svc):
         result = lilbee_status()
         assert "config" in result
         assert result["sources"] == []
         assert result["total_chunks"] == 0
 
-    def test_with_sources(self):
-        from lilbee.store import upsert_source
-
-        upsert_source("test.pdf", "abc123", 10)
+    def test_with_sources(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "test.pdf", "file_hash": "abc123", "chunk_count": 10,
+             "ingested_at": "2026-01-01T00:00:00"}
+        ]
         result = lilbee_status()
         assert len(result["sources"]) == 1
         assert result["sources"][0]["filename"] == "test.pdf"
@@ -174,26 +191,21 @@ class TestLilbeeSync:
 
 
 class TestLilbeeRemove:
-    @mock.patch("lilbee.mcp.get_sources")
-    @mock.patch("lilbee.mcp.delete_source")
-    @mock.patch("lilbee.mcp.delete_by_source")
-    def test_removes_known_file(self, mock_del, mock_del_src, mock_sources):
-        mock_sources.return_value = [{"filename": "a.md"}]
+    def test_removes_known_file(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
         result = lilbee_remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
+        mock_svc.store.delete_by_source.assert_called_with("a.md")
+        mock_svc.store.delete_source.assert_called_with("a.md")
 
-    @mock.patch("lilbee.mcp.get_sources")
-    def test_not_found(self, mock_sources):
-        mock_sources.return_value = []
+    def test_not_found(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = lilbee_remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    @mock.patch("lilbee.mcp.get_sources")
-    @mock.patch("lilbee.mcp.delete_source")
-    @mock.patch("lilbee.mcp.delete_by_source")
-    def test_delete_files_removes_from_disk(self, mock_del, mock_del_src, mock_sources):
-        mock_sources.return_value = [{"filename": "a.md"}]
+    def test_delete_files_removes_from_disk(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
         f = cfg.documents_dir / "a.md"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("content")
@@ -203,16 +215,14 @@ class TestLilbeeRemove:
 
 
 class TestLilbeeListDocuments:
-    @mock.patch("lilbee.mcp.get_sources")
-    def test_returns_documents(self, mock_sources):
-        mock_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
+    def test_returns_documents(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
         result = lilbee_list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
 
-    @mock.patch("lilbee.mcp.get_sources")
-    def test_empty(self, mock_sources):
-        mock_sources.return_value = []
+    def test_empty(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = lilbee_list_documents()
         assert result["total"] == 0
 

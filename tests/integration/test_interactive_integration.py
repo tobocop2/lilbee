@@ -25,7 +25,7 @@ from typer.testing import CliRunner  # noqa: E402
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
-from lilbee.providers import reset_provider  # noqa: E402
+from lilbee.services import reset_services as reset_provider  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

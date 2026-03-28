@@ -1244,122 +1244,98 @@ class TestConceptIndexing:
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_extraction_called_during_ingest(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """When concept_graph is enabled, extraction is called after ingest."""
         cfg.concept_graph = True
         (isolated_env / "concept_test1.txt").write_text("Content for concepts test one.")
 
-        with (
-            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]) as m_ext,
-            mock.patch("lilbee.concepts.build_from_chunks"),
-            mock.patch("lilbee.concepts.get_graph", return_value=True),
-            mock.patch("lilbee.concepts.rebuild_clusters"),
-        ):
-            from lilbee.ingest import sync
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts_batch.return_value = [["test"]]
+        from lilbee.ingest import sync
 
-            await sync(quiet=True)
-        m_ext.assert_called()
+        await sync(quiet=True)
+        mock_svc.concepts.extract_concepts_batch.assert_called()
 
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_disabled_skips_extraction(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """When concept_graph is disabled, extraction is not called."""
         cfg.concept_graph = False
         (isolated_env / "concept_test2.txt").write_text("Some test content.")
 
-        with mock.patch("lilbee.concepts.extract_concepts_batch") as m_ext:
-            from lilbee.ingest import sync
+        from lilbee.ingest import sync
 
-            await sync(quiet=True)
-        m_ext.assert_not_called()
+        await sync(quiet=True)
+        mock_svc.concepts.extract_concepts_batch.assert_not_called()
 
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_failure_does_not_break_ingest(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """When concept extraction raises, ingest still succeeds."""
         cfg.concept_graph = True
         (isolated_env / "concept_test2.txt").write_text("Some test content.")
 
-        with (
-            mock.patch(
-                "lilbee.concepts.extract_concepts_batch", side_effect=RuntimeError("spacy broke")
-            ),
-            mock.patch("lilbee.concepts.get_graph", return_value=True),
-            mock.patch("lilbee.concepts.rebuild_clusters"),
-        ):
-            from lilbee.ingest import sync
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts_batch.side_effect = RuntimeError("spacy broke")
+        from lilbee.ingest import sync
 
-            result = await sync(quiet=True)
+        result = await sync(quiet=True)
         assert "concept_test2.txt" in result.added
 
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_called_after_sync(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """After sync completes, rebuild_clusters is called."""
         cfg.concept_graph = True
         (isolated_env / "concept_test4.txt").write_text("Some test content.")
 
-        with (
-            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
-            mock.patch("lilbee.concepts.build_from_chunks"),
-            mock.patch("lilbee.concepts.get_graph", return_value=True),
-            mock.patch("lilbee.concepts.rebuild_clusters") as mock_rebuild,
-        ):
-            from lilbee.ingest import sync
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts_batch.return_value = [["test"]]
+        from lilbee.ingest import sync
 
-            await sync(quiet=True)
-        mock_rebuild.assert_called()
+        await sync(quiet=True)
+        mock_svc.concepts.rebuild_clusters.assert_called()
 
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_failure_does_not_break_sync(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """When cluster rebuild raises, sync still succeeds."""
         cfg.concept_graph = True
         (isolated_env / "rebuild_test.txt").write_text("Content for rebuild test.")
 
-        with (
-            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
-            mock.patch("lilbee.concepts.build_from_chunks"),
-            mock.patch("lilbee.concepts.get_graph", return_value=True),
-            mock.patch(
-                "lilbee.concepts.rebuild_clusters",
-                side_effect=RuntimeError("leiden broke"),
-            ),
-        ):
-            from lilbee.ingest import sync
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts_batch.return_value = [["test"]]
+        mock_svc.concepts.rebuild_clusters.side_effect = RuntimeError("leiden broke")
+        from lilbee.ingest import sync
 
-            result = await sync(quiet=True)
+        result = await sync(quiet=True)
         assert "rebuild_test.txt" in result.added
 
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_graph_none_skips_indexing(
-        self, mock_extract_file, isolated_env
+        self, mock_extract_file, isolated_env, mock_svc
     ):
         """When get_graph() returns None, concept indexing is skipped gracefully."""
         cfg.concept_graph = True
         (isolated_env / "graph_none_test.txt").write_text("Content for graph none test.")
 
-        with (
-            mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
-            mock.patch("lilbee.concepts.build_from_chunks"),
-            mock.patch("lilbee.concepts.get_graph", return_value=False),
-        ):
-            from lilbee.ingest import sync
+        mock_svc.concepts.get_graph.return_value = False
+        from lilbee.ingest import sync
 
-            result = await sync(quiet=True)
+        result = await sync(quiet=True)
         assert "graph_none_test.txt" in result.added

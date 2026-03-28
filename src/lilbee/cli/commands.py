@@ -775,9 +775,9 @@ def topics(
         )
         raise SystemExit(1)
 
-    from lilbee.concepts import get_graph
+    from lilbee.services import get_services
 
-    if not get_graph():
+    if not get_services().concepts.get_graph():
         if cfg.json_mode:
             json_output({"error": "Concept graph not available"})
             raise SystemExit(1)
@@ -792,10 +792,11 @@ def topics(
 
 def _topics_for_query(query: str) -> None:
     """Show concepts related to a query."""
-    from lilbee.concepts import expand_query, extract_concepts
+    from lilbee.services import get_services
 
-    concepts = extract_concepts(query)
-    related = expand_query(query)
+    cg = get_services().concepts
+    concepts = cg.extract_concepts(query)
+    related = cg.expand_query(query)
     all_concepts = concepts + [r for r in related if r not in concepts]
 
     if cfg.json_mode:
@@ -813,9 +814,9 @@ def _topics_overview(top_k: int) -> None:
     """Show top concept communities."""
     from dataclasses import asdict
 
-    from lilbee.concepts import top_communities
+    from lilbee.services import get_services
 
-    communities = top_communities(k=top_k)
+    communities = get_services().concepts.top_communities(k=top_k)
     if cfg.json_mode:
         json_output({"command": "topics", "communities": [asdict(c) for c in communities]})
         return
