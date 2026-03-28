@@ -14,29 +14,13 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
-
-if TYPE_CHECKING:
-    from lilbee.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
-
-_registry: ModelRegistry | None = None
-
-
-def _get_registry() -> ModelRegistry:
-    """Lazy-init and cache a ModelRegistry for the current models_dir."""
-    global _registry
-    if _registry is None:
-        from lilbee.config import cfg
-        from lilbee.registry import ModelRegistry as _Cls
-
-        _registry = _Cls(cfg.models_dir)
-    return _registry
 
 
 @dataclass
@@ -238,8 +222,9 @@ def _resolve_model_path(model: str) -> Path:
     4. Prefix match (e.g. "nomic-embed-text" -> "nomic-embed-text-v1.5.Q4_K_M.gguf")
     """
     from lilbee.config import cfg
+    from lilbee.services import get_services
 
-    registry = _get_registry()
+    registry = get_services().registry
     try:
         return registry.resolve(model)
     except (KeyError, ValueError):
