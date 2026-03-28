@@ -10,15 +10,17 @@ import asyncio
 import json
 import logging
 import threading
+import types
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
-from lilbee.config import cfg
+from lilbee.config import Config, cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
@@ -31,81 +33,51 @@ log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
 
-_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(
-    {
+
+# ---------------------------------------------------------------------------
+# Helpers for deriving field sets from Config metadata
+# ---------------------------------------------------------------------------
+
+
+def _get_extra(info: FieldInfo, key: str, default: bool = False) -> bool:
+    """Read a boolean flag from a field's ``json_schema_extra``."""
+    extra = info.json_schema_extra
+    if isinstance(extra, dict):
+        return bool(extra.get(key, default))
+    return default
+
+
+def _is_nullable(info: FieldInfo) -> bool:
+    """Return True if ``None`` is part of the field's type union."""
+    origin = get_origin(info.annotation)
+    if origin is Union or origin is types.UnionType:
+        return type(None) in get_args(info.annotation)
+    return False
+
+
+# Derive WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, _PUBLIC_CONFIG_FIELDS from metadata
+_writable: dict[str, bool] = {}
+_reindex: set[str] = set()
+_public: set[str] = set()
+
+for _name, _info in Config.model_fields.items():
+    if _get_extra(_info, "writable"):
+        _writable[_name] = _is_nullable(_info)
+        if not _get_extra(_info, "write_only") and _get_extra(_info, "public", default=True):
+            _public.add(_name)
+        if _get_extra(_info, "reindex"):
+            _reindex.add(_name)
+    elif _name in {
         "chat_model",
         "embedding_model",
         "vision_model",
-        "litellm_base_url",
-        "system_prompt",
-        "top_k",
-        "max_distance",
-        "chunk_size",
-        "chunk_overlap",
-        "temperature",
-        "top_p",
-        "top_k_sampling",
-        "repeat_penalty",
-        "num_ctx",
-        "seed",
-        "llm_provider",
-        "diversity_max_per_source",
-        "mmr_lambda",
-        "candidate_multiplier",
-        "query_expansion_count",
-        "adaptive_threshold_step",
-        "show_reasoning",
-        "crawl_max_depth",
-        "crawl_max_pages",
-        "crawl_timeout",
-        "crawl_sync_interval",
-        "max_context_sources",
-        "hyde",
-        "hyde_weight",
-        "temporal_filtering",
-        "concept_graph",
-        "concept_boost_weight",
-        "concept_max_per_chunk",
-    }
-)
+    }:
+        # Model fields are public but not directly writable via update_config
+        _public.add(_name)
 
-WRITABLE_CONFIG_FIELDS: dict[str, bool] = {
-    # bool value = nullable (True means null resets to model default)
-    "temperature": True,
-    "top_p": True,
-    "top_k_sampling": True,
-    "repeat_penalty": True,
-    "num_ctx": True,
-    "seed": True,
-    "system_prompt": False,
-    "show_reasoning": False,
-    "top_k": False,
-    "max_distance": False,
-    "diversity_max_per_source": False,
-    "mmr_lambda": False,
-    "candidate_multiplier": False,
-    "query_expansion_count": False,
-    "adaptive_threshold_step": False,
-    "max_context_sources": False,
-    "hyde": False,
-    "hyde_weight": False,
-    "temporal_filtering": False,
-    "reranker_model": False,
-    "rerank_candidates": False,
-    "chunk_size": False,
-    "chunk_overlap": False,
-    "crawl_max_depth": False,
-    "crawl_max_pages": False,
-    "crawl_timeout": False,
-    "crawl_sync_interval": False,
-    "concept_graph": False,
-    "concept_boost_weight": False,
-    "concept_max_per_chunk": False,
-    "llm_provider": False,
-    "litellm_base_url": False,
-    "llm_api_key": False,
-}
-REINDEX_FIELDS: frozenset[str] = frozenset({"chunk_size", "chunk_overlap"})
+WRITABLE_CONFIG_FIELDS: types.MappingProxyType[str, bool] = types.MappingProxyType(_writable)
+REINDEX_FIELDS: frozenset[str] = frozenset(_reindex)
+_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(_public)
 
 
 class ModelCatalogEntry(BaseModel):
@@ -507,17 +479,29 @@ async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
         if value is None and not nullable:
             raise ValueError(f"Field '{key}' does not accept null")
 
-    # Phase 2: apply — all keys are known-valid, apply and persist.
-    updated = []
-    for key, value in updates.items():
-        nullable = WRITABLE_CONFIG_FIELDS[key]
-        if value is None and nullable:
-            settings.delete_value(cfg.data_root, key)
-            setattr(cfg, key, None)
-        else:
-            setattr(cfg, key, value)  # pydantic validates type
-            settings.set_value(cfg.data_root, key, str(value))
-        updated.append(key)
+    # Phase 2: apply with snapshot/rollback (S2) and batch persistence (S4).
+    snapshot = {k: getattr(cfg, k) for k in updates}
+    updated: list[str] = []
+    to_persist: dict[str, str] = {}
+    to_delete: list[str] = []
+    try:
+        for key, value in updates.items():
+            nullable = WRITABLE_CONFIG_FIELDS[key]
+            if value is None and nullable:
+                setattr(cfg, key, None)
+                to_delete.append(key)
+            else:
+                setattr(cfg, key, value)  # pydantic validates type
+                to_persist[key] = str(getattr(cfg, key))  # coerced value (S3)
+            updated.append(key)
+    except Exception:
+        for k, v in snapshot.items():
+            setattr(cfg, k, v)
+        raise
+    if to_persist:
+        settings.update_values(cfg.data_root, to_persist)
+    if to_delete:
+        settings.delete_values(cfg.data_root, to_delete)
     reindex_required = bool(REINDEX_FIELDS & set(updated))
     return {"updated": updated, "reindex_required": reindex_required}
 
