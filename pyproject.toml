@@ -37,9 +37,9 @@ dependencies = [
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
+    "httpx",
     "llama-cpp-python",
     "huggingface_hub",
-    "httpx",
 ]
 
 [project.optional-dependencies]
