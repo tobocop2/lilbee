@@ -40,7 +40,7 @@ publish: build  ## Build and upload to PyPI
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\
-	from lilbee.server.litestar_app import create_app; \
+	from lilbee.server.app import create_app; \
 	import json; \
 	app = create_app(); \
 	schema = app.openapi_schema.to_schema(); \
