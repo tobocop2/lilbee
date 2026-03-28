@@ -47,9 +47,10 @@ def _isolated_cfg(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so TUI screens never touch real backends."""
+    from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
 
-    provider = MagicMock()
+    provider = MagicMock(spec=LLMProvider)
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []

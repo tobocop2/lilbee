@@ -6,7 +6,14 @@ from unittest import mock
 
 import pytest
 
-from lilbee.config import CHUNKS_TABLE, DEFAULT_IGNORE_DIRS, SOURCES_TABLE, Config, _load_setting
+from lilbee.config import (
+    CHUNKS_TABLE,
+    DEFAULT_IGNORE_DIRS,
+    SOURCES_TABLE,
+    Config,
+    _load_setting,
+    _parse_bool,
+)
 
 
 class TestFromEnvDefaults:
@@ -618,3 +625,24 @@ class TestEmptyStringValidation:
             vision_model="",
         )
         assert c.vision_model == ""
+
+
+class TestParseBool:
+    def test_true_values(self):
+        assert _parse_bool("true") is True
+        assert _parse_bool("1") is True
+        assert _parse_bool("yes") is True
+        assert _parse_bool("on") is True
+        assert _parse_bool("anything") is True
+
+    def test_false_values(self):
+        assert _parse_bool("false") is False
+        assert _parse_bool("0") is False
+        assert _parse_bool("no") is False
+        assert _parse_bool("off") is False
+        assert _parse_bool("") is False
+
+    def test_case_insensitive(self):
+        assert _parse_bool("FALSE") is False
+        assert _parse_bool("True") is True
+        assert _parse_bool("NO") is False
