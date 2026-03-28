@@ -12,7 +12,7 @@ import logging
 import threading
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel
 
@@ -55,8 +55,57 @@ _PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(
         "query_expansion_count",
         "adaptive_threshold_step",
         "show_reasoning",
+        "crawl_max_depth",
+        "crawl_max_pages",
+        "crawl_timeout",
+        "crawl_sync_interval",
+        "max_context_sources",
+        "hyde",
+        "hyde_weight",
+        "temporal_filtering",
+        "concept_graph",
+        "concept_boost_weight",
+        "concept_max_per_chunk",
     }
 )
+
+WRITABLE_CONFIG_FIELDS: dict[str, bool] = {
+    # bool value = nullable (True means null resets to model default)
+    "temperature": True,
+    "top_p": True,
+    "top_k_sampling": True,
+    "repeat_penalty": True,
+    "num_ctx": True,
+    "seed": True,
+    "system_prompt": False,
+    "show_reasoning": False,
+    "top_k": False,
+    "max_distance": False,
+    "diversity_max_per_source": False,
+    "mmr_lambda": False,
+    "candidate_multiplier": False,
+    "query_expansion_count": False,
+    "adaptive_threshold_step": False,
+    "max_context_sources": False,
+    "hyde": False,
+    "hyde_weight": False,
+    "temporal_filtering": False,
+    "reranker_model": False,
+    "rerank_candidates": False,
+    "chunk_size": False,
+    "chunk_overlap": False,
+    "crawl_max_depth": False,
+    "crawl_max_pages": False,
+    "crawl_timeout": False,
+    "crawl_sync_interval": False,
+    "concept_graph": False,
+    "concept_boost_weight": False,
+    "concept_max_per_chunk": False,
+    "llm_provider": False,
+    "litellm_base_url": False,
+    "llm_api_key": False,
+}
+REINDEX_FIELDS: frozenset[str] = frozenset({"chunk_size", "chunk_overlap"})
 
 
 class ModelCatalogEntry(BaseModel):
@@ -418,21 +467,64 @@ async def list_models() -> dict[str, Any]:
     return response.model_dump()
 
 
+async def _set_model(
+    field: Literal["chat_model", "vision_model", "embedding_model"],
+    model: str,
+    *,
+    normalize: bool = False,
+) -> dict[str, str]:
+    """Shared helper for switching a model field. Returns {model}."""
+    if normalize:
+        from lilbee.models import ensure_tag
+
+        model = ensure_tag(model)
+    setattr(cfg, field, model)
+    settings.set_value(cfg.data_root, field, model)
+    return {"model": model}
+
+
 async def set_chat_model(model: str) -> dict[str, str]:
     """Switch active chat model. Returns {model}."""
-    from lilbee.models import ensure_tag
-
-    tagged = ensure_tag(model)
-    cfg.chat_model = tagged
-    settings.set_value(cfg.data_root, "chat_model", tagged)
-    return {"model": tagged}
+    return await _set_model("chat_model", model, normalize=True)
 
 
 async def set_vision_model(model: str) -> dict[str, str]:
     """Switch active vision model. Pass empty string to disable. Returns {model}."""
-    cfg.vision_model = model
-    settings.set_value(cfg.data_root, "vision_model", model)
-    return {"model": model}
+    return await _set_model("vision_model", model)
+
+
+async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
+    """Partial update of writable config fields. Returns updated keys + reindex flag.
+
+    Validates all fields before applying any, so a bad field in a multi-field
+    PATCH won't leave config in a partially-updated state.
+    """
+    # Phase 1: validate all keys and values before mutating anything.
+    for key, value in updates.items():
+        if key not in WRITABLE_CONFIG_FIELDS:
+            raise ValueError(f"Unknown or read-only config field: {key}")
+        nullable = WRITABLE_CONFIG_FIELDS[key]
+        if value is None and not nullable:
+            raise ValueError(f"Field '{key}' does not accept null")
+
+    # Phase 2: apply — all keys are known-valid, apply and persist.
+    updated = []
+    for key, value in updates.items():
+        nullable = WRITABLE_CONFIG_FIELDS[key]
+        if value is None and nullable:
+            settings.delete_value(cfg.data_root, key)
+            setattr(cfg, key, None)
+        else:
+            setattr(cfg, key, value)  # pydantic validates type
+            settings.set_value(cfg.data_root, key, str(value))
+        updated.append(key)
+    reindex_required = bool(REINDEX_FIELDS & set(updated))
+    return {"updated": updated, "reindex_required": reindex_required}
+
+
+async def set_embedding_model(model: str) -> dict[str, str]:
+    """Switch embedding model. Same pattern as set_chat_model."""
+    return await _set_model("embedding_model", model)
 
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:

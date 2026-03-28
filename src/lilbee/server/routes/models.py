@@ -42,6 +42,13 @@ async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
     return SetModelResponse(**raw)
 
 
+@put("/api/models/embedding")
+async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
+    """Switch the active embedding model."""
+    raw = await handlers.set_embedding_model(model=data.model)
+    return SetModelResponse(**raw)
+
+
 @get("/api/models/catalog")
 @read_only
 async def models_catalog_route(
