@@ -187,9 +187,9 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.runtime import get_searcher
+    from lilbee.query import search_context
 
-    results = get_searcher().search(query, top_k=top_k or cfg.top_k)
+    results = search_context(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -432,10 +432,9 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.runtime import get_store
+    from lilbee import store
 
-    _store = get_store()
-    known = {s["filename"] for s in _store.get_sources()}
+    known = {s["filename"] for s in store.get_sources()}
     if source not in known:
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
@@ -443,7 +442,7 @@ def chunks(
         console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
         raise SystemExit(1)
 
-    raw_chunks = _store.get_chunks_by_source(source)
+    raw_chunks = store.get_chunks_by_source(source)
     cleaned = sorted(
         [clean_result(c) for c in raw_chunks],
         key=lambda c: c.get("chunk_index", 0),
@@ -484,10 +483,9 @@ def remove(
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.runtime import get_store
+    from lilbee import store
 
-    _store = get_store()
-    known = {s["filename"] for s in _store.get_sources()}
+    known = {s["filename"] for s in store.get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
     docs_resolved = cfg.documents_dir.resolve()
@@ -496,8 +494,8 @@ def remove(
         if name not in known:
             not_found.append(name)
             continue
-        _store.delete_by_source(name)
-        _store.delete_source(name)
+        store.delete_by_source(name)
+        store.delete_source(name)
         removed.append(name)
         if delete_file:
             path = cfg.documents_dir / name
@@ -547,17 +545,17 @@ def ask(
         seed=seed,
     )
 
+    from lilbee import query
+    from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
-    from lilbee.runtime import get_embedder, get_searcher
 
     ensure_chat_model()
-    get_embedder().validate_model()
+    validate_model()
     auto_sync(console)
 
     try:
-        searcher = get_searcher()
         if cfg.json_mode:
-            result = searcher.ask_raw(question)
+            result = query.ask_raw(question)
             json_output(
                 {
                     "command": "ask",
@@ -568,7 +566,7 @@ def ask(
             )
             return
 
-        for token in searcher.ask_stream(question):
+        for token in query.ask_stream(question):
             console.print(token.content, end="")
         console.print()
     except RuntimeError as exc:

@@ -39,12 +39,19 @@ def _swap_config(target: Config) -> Iterator[None]:
 
     Not thread-safe -- sequential use only.
     """
+    from lilbee.embedder import reset_embedder
+    from lilbee.store import reset_store
+
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     for name in type(target).model_fields:
         setattr(cfg, name, getattr(target, name))
+    reset_store()
+    reset_embedder()
     try:
         yield
     finally:
+        reset_store()
+        reset_embedder()
         for name, val in snapshot.items():
             setattr(cfg, name, val)
 

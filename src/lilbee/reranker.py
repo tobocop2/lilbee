@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from lilbee.config import Config
+from lilbee.config import Config, cfg
 from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
@@ -32,12 +32,10 @@ def reranker_available() -> bool:
         return False
 
 
-# Position-aware blend weights: (fusion_weight, rerank_weight)
-# Top positions already have strong signal from hybrid search.
 _BLEND_SCHEDULE = {
-    "top": (0.70, 0.30),  # positions 1-3
-    "mid": (0.50, 0.50),  # positions 4-10
-    "bottom": (0.30, 0.70),  # positions 11+
+    "top": (0.70, 0.30),
+    "mid": (0.50, 0.50),
+    "bottom": (0.30, 0.70),
 }
 
 
@@ -134,3 +132,41 @@ class Reranker:
 
         reranked = [chunk for _, chunk in blended_sorted]
         return reranked + remainder
+
+
+_encoder: Any = None
+_reranker: Reranker | None = None
+
+
+def _get_reranker() -> Reranker:
+    """Get or create the module-level Reranker instance."""
+    global _reranker
+    if _reranker is None:
+        _reranker = Reranker(cfg)
+    # Sync module-level _encoder into the Reranker (for test compat)
+    if _encoder is not None:
+        _reranker._encoder = _encoder
+    return _reranker
+
+
+def _get_encoder() -> Any:
+    """Lazy-load the cross-encoder model. Returns None if not configured."""
+    return _get_reranker()._get_encoder()
+
+
+def rerank(
+    query: str,
+    results: list[SearchChunk],
+    candidates: int | None = None,
+) -> list[SearchChunk]:
+    """Rerank search results using a cross-encoder model."""
+    return _get_reranker().rerank(query, results, candidates=candidates)
+
+
+def reset_encoder() -> None:
+    """Clear the encoder singleton. For testing only."""
+    global _reranker, _encoder
+    _encoder = None
+    if _reranker is not None:
+        _reranker.reset_encoder()
+    _reranker = None

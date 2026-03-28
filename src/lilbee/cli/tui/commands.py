@@ -100,9 +100,9 @@ class LilbeeCommandProvider(Provider):
         """Generate commands for indexed documents."""
         commands: list[tuple[str, str, Any]] = []
         try:
-            from lilbee.runtime import get_store
+            from lilbee.store import get_sources
 
-            for src in get_store().get_sources():
+            for src in get_sources():
                 name = src.get("filename", src.get("source", ""))
                 if name:
                     commands.append(
@@ -128,11 +128,10 @@ class LilbeeCommandProvider(Provider):
             self.screen.app.title = f"lilbee — {value}"
 
     def _delete_doc(self, name: str) -> None:
-        from lilbee.runtime import get_store
+        from lilbee.store import delete_by_source, delete_source
 
-        _store = get_store()
-        _store.delete_by_source(name)
-        _store.delete_source(name)
+        delete_by_source(name)
+        delete_source(name)
         self.screen.app.notify(f"Deleted {name}")
 
     def _action_sync(self) -> None:

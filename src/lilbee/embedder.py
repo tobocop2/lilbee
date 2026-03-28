@@ -102,15 +102,29 @@ class Embedder:
         return vectors
 
 
-# ---------------------------------------------------------------------------
-# Module-level convenience API -- delegates through runtime singleton
-# ---------------------------------------------------------------------------
+_embedder: Embedder | None = None
+
+
+def _get_embedder() -> Embedder:
+    """Return the cached Embedder singleton."""
+    global _embedder
+    if _embedder is None:
+        from lilbee.config import cfg
+        from lilbee.providers.factory import get_provider
+
+        _embedder = Embedder(cfg, get_provider())
+    return _embedder
+
+
+def reset_embedder() -> None:
+    """Discard the cached Embedder singleton."""
+    global _embedder
+    _embedder = None
 
 
 def embed(text: str) -> list[float]:
-    from lilbee.runtime import get_embedder
-
-    return get_embedder().embed(text)
+    """Embed a single text."""
+    return _get_embedder().embed(text)
 
 
 def embed_batch(
@@ -119,12 +133,10 @@ def embed_batch(
     source: str = "",
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[list[float]]:
-    from lilbee.runtime import get_embedder
-
-    return get_embedder().embed_batch(texts, source=source, on_progress=on_progress)
+    """Embed multiple texts with adaptive batching."""
+    return _get_embedder().embed_batch(texts, source=source, on_progress=on_progress)
 
 
 def validate_model() -> None:
-    from lilbee.runtime import get_embedder
-
-    get_embedder().validate_model()
+    """Validate the configured embedding model is available."""
+    _get_embedder().validate_model()
