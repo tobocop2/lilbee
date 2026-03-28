@@ -394,14 +394,20 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_localhost_origin_allowed(self, mock_patched, client):
-        resp = client.options(
-            "/api/health",
-            headers={
-                "Origin": "http://localhost:7433",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+    def test_localhost_origin_allowed(self, mock_patched):
+        from litestar.testing import TestClient
+
+        cfg.cors_origins = ["http://localhost:7433"]
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "http://localhost:7433",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
@@ -436,36 +442,31 @@ class TestCreateAppReexport:
 
 
 class TestLifespan:
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.providers.factory.get_provider")
-    async def test_calls_both(self, mock_provider, mock_validate):
+    @mock.patch("lilbee.services.get_services")
+    async def test_calls_get_services(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_get_svc.return_value = mock_svc
         from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_provider.assert_called_once()
-        mock_validate.assert_called_once()
+        mock_get_svc.assert_called()
+        mock_svc.embedder.validate_model.assert_called_once()
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch(
-        "lilbee.providers.factory.get_provider",
-        side_effect=RuntimeError("no provider"),
-    )
-    async def test_provider_failure_does_not_block(self, mock_provider, mock_validate):
+    @mock.patch("lilbee.services.get_services", side_effect=RuntimeError("no provider"))
+    async def test_provider_failure_does_not_block(self, mock_get_svc):
         from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_validate.assert_called_once()
 
-    @mock.patch(
-        "lilbee.embedder.validate_model",
-        side_effect=RuntimeError("no model"),
-    )
-    @mock.patch("lilbee.providers.factory.get_provider")
-    async def test_validate_model_failure_does_not_block(self, mock_provider, mock_validate):
+    @mock.patch("lilbee.services.get_services")
+    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_get_svc.return_value = mock_svc
         from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_provider.assert_called_once()
+        mock_get_svc.assert_called()

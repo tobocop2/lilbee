@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lilbee.config import cfg
+from lilbee.services import Services, set_services
 
 
 @pytest.fixture(autouse=True)
@@ -33,12 +34,38 @@ def isolated_env(tmp_path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _fake_embed_batch(texts, **kwargs):
-    return [[0.1] * 768 for _ in texts]
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Inject mock Services so ingest.sync() doesn't need a live provider."""
+    provider = mock.MagicMock()
+    store = mock.MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.side_effect = lambda records: len(records)
+    embedder = mock.MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    embedder.validate_model.return_value = None
+    reranker = mock.MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = mock.MagicMock()
+    concepts.get_graph.return_value = False
 
+    from lilbee.query import Searcher
 
-def _fake_embed(text):
-    return [0.1] * 768
+    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    services = Services(
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
+    )
+    set_services(services)
+    yield services
+    set_services(None)
 
 
 def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
@@ -67,18 +94,13 @@ def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
 # ---------------------------------------------------------------------------
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncDocx:
-    async def test_docx_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_docx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "sample.docx").write_bytes(b"fake docx content")
         from lilbee.ingest import sync
 
@@ -86,18 +108,13 @@ class TestSyncDocx:
         assert "sample.docx" in result.added
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncXlsx:
-    async def test_xlsx_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_xlsx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "data.xlsx").write_bytes(b"fake xlsx content")
         from lilbee.ingest import sync
 
@@ -105,18 +122,13 @@ class TestSyncXlsx:
         assert "data.xlsx" in result.added
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncPptx:
-    async def test_pptx_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_pptx_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "slides.pptx").write_bytes(b"fake pptx content")
         from lilbee.ingest import sync
 
@@ -129,18 +141,13 @@ class TestSyncPptx:
 # ---------------------------------------------------------------------------
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncEpub:
-    async def test_epub_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_epub_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "book.epub").write_bytes(b"fake epub content")
         from lilbee.ingest import sync
 
@@ -153,18 +160,13 @@ class TestSyncEpub:
 # ---------------------------------------------------------------------------
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncImage:
-    async def test_image_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_image_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "scan.png").write_bytes(b"fake png content")
         from lilbee.ingest import sync
 
@@ -220,14 +222,9 @@ _CODE_FIXTURES: dict[str, tuple[str, str]] = {
 }
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 class TestSyncCode:
     @pytest.mark.parametrize("filename,fixture", list(_CODE_FIXTURES.items()))
-    async def test_code_file_syncs(
-        self, mock_embed_batch, mock_embed, mock_validate_model, isolated_env, filename, fixture
-    ):
+    async def test_code_file_syncs(self, isolated_env, filename, fixture):
         _ext, content = fixture
         (isolated_env / filename).write_text(content)
 
@@ -242,27 +239,20 @@ class TestSyncCode:
 # ---------------------------------------------------------------------------
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch(
     "kreuzberg.extract_file",
     new_callable=AsyncMock,
     return_value=_make_kreuzberg_result(),
 )
 class TestSyncCsvTsv:
-    async def test_csv_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_csv_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "people.csv").write_text("name,city\nAlice,Montreal\n")
         from lilbee.ingest import sync
 
         result = await sync()
         assert "people.csv" in result.added
 
-    async def test_tsv_discovered_and_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_tsv_discovered_and_ingested(self, mock_extract_file, isolated_env):
         (isolated_env / "products.tsv").write_text("id\tproduct\n1\tWidget\n")
         from lilbee.ingest import sync
 

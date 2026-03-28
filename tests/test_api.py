@@ -19,10 +19,13 @@ def _fake_embed_batch(texts, **kwargs):
 @pytest.fixture(autouse=True)
 def _mock_embedder():
     """Mock embedding calls so tests run without a live model."""
-    with (
-        mock.patch("lilbee.embedder.embed", side_effect=_fake_embed),
-        mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch),
-        mock.patch("lilbee.embedder.validate_model"),
+    with mock.patch(
+        "lilbee.providers.factory.create_provider",
+        return_value=mock.MagicMock(
+            embed=mock.MagicMock(side_effect=lambda texts: [_fake_embed(t) for t in texts]),
+            pull_model=mock.MagicMock(),
+            shutdown=mock.MagicMock(),
+        ),
     ):
         yield
 

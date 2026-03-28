@@ -386,26 +386,27 @@ class TestSettingsScreenAsync:
 
 
 class TestStatusScreenAsync:
-    @mock.patch("lilbee.store.get_sources", return_value=[])
     @mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_status_screen(
         self,
         mock_catalog: mock.MagicMock,
-        mock_sources: mock.MagicMock,
         _mock_check: mock.MagicMock,
     ) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = []
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
 
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.push_screen(StatusScreen())
-            await pilot.pause()
-            info = app.screen.query_one("#status-info")
-            assert info is not None
+        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.push_screen(StatusScreen())
+                await pilot.pause()
+                info = app.screen.query_one("#status-info")
+                assert info is not None
 
 
 class TestDownloadModal:
