@@ -16,19 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import LLMOptions, LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
 
-# Allowed generation option keys — prevents injection of arbitrary API params
-_ALLOWED_OPTIONS = frozenset(
-    {"temperature", "top_p", "top_k", "seed", "num_predict", "repeat_penalty", "num_ctx"}
-)
-
 
 def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Return only allowed generation options."""
-    return {k: v for k, v in options.items() if k in _ALLOWED_OPTIONS}
+    """Validate and filter generation options through LLMOptions model."""
+    return LLMOptions(**options).to_dict()
 
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching

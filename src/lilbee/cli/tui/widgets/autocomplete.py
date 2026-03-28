@@ -76,9 +76,9 @@ def _setting_options() -> list[str]:
 
 def _document_options() -> list[str]:
     try:
-        from lilbee.store import get_sources
+        from lilbee.runtime import get_store
 
-        return [s.get("filename", s.get("source", "")) for s in get_sources()]
+        return [s.get("filename", s.get("source", "")) for s in get_store().get_sources()]
     except Exception:
         log.debug("Failed to list documents for autocomplete", exc_info=True)
         return []

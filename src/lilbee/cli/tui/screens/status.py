@@ -46,9 +46,9 @@ class StatusScreen(Screen[None]):
         table.cursor_type = "row"
 
         try:
-            from lilbee import store
+            from lilbee.runtime import get_store
 
-            sources = store.get_sources()
+            sources = get_store().get_sources()
             for src in sources:
                 table.add_row(
                     src.get("filename", "?"),

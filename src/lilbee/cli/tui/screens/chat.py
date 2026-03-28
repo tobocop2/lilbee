@@ -33,7 +33,6 @@ from lilbee.config import cfg
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.progress import EventType
 from lilbee.query import ChatMessage
-from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +50,9 @@ def _reset_stale_singletons(cfg_attr: str) -> None:
     """Reset cached provider/embedder singletons when relevant config changes."""
     if cfg_attr not in _PROVIDER_SENSITIVE_KEYS:
         return
-    from lilbee.embedder import _reset_default_embedder
-    from lilbee.providers.factory import reset_provider
+    from lilbee.runtime import reset
 
-    reset_provider()
-    _reset_default_embedder()
+    reset()
 
 
 _DISPATCH = build_dispatch_dict()
@@ -246,8 +243,11 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
+        from lilbee.runtime import get_store
+
+        _store = get_store()
         try:
-            sources = get_sources()
+            sources = _store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
@@ -267,8 +267,8 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
 
-        delete_by_source(name)
-        delete_source(name)
+        _store.delete_by_source(name)
+        _store.delete_source(name)
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
@@ -386,7 +386,7 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
-        from lilbee.query import ask_stream
+        from lilbee.runtime import get_searcher
 
         response_parts: list[str] = []
         sources: list[str] = []
@@ -394,7 +394,7 @@ class ChatScreen(Screen[None]):
         try:
             with self._history_lock:
                 history_snapshot = self._history[:-1]
-            stream = ask_stream(question, history=history_snapshot)
+            stream = get_searcher().ask_stream(question, history=history_snapshot)
             for token in stream:
                 if token.is_reasoning:
                     self.app.call_from_thread(widget.append_reasoning, token.content)

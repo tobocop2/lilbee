@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from lilbee.config import Config
     from lilbee.providers.base import LLMProvider
 
+
 def create_provider(config: Config) -> LLMProvider:
     """Create a new LLM provider instance from the given config."""
     provider_name = config.llm_provider

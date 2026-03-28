@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
-from lilbee.providers import get_provider
+from lilbee.runtime import get_provider
 
 log = logging.getLogger(__name__)
 

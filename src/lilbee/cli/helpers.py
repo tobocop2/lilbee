@@ -117,9 +117,9 @@ def clean_result(result: SearchChunk) -> dict:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    from lilbee.store import get_sources
+    from lilbee.runtime import get_store
 
-    sources = get_sources()
+    sources = get_store().get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
     return StatusResult(
