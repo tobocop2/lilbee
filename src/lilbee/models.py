@@ -111,7 +111,7 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 def _model_download_size_gb(model: str) -> float:
     """Estimated download size for a model."""
     catalog_sizes = {m.name: m.size_gb for m in MODEL_CATALOG}
-    fallback = next(m.size_gb for m in MODEL_CATALOG if m.name == "qwen3:8b")
+    fallback = next((m.size_gb for m in MODEL_CATALOG if m.name == "qwen3:8b"), 5.0)
     return catalog_sizes.get(model, fallback)
 
 

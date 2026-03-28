@@ -52,9 +52,7 @@ def env_int_optional(key: str) -> int | None:
     except ValueError:
         import logging
 
-        logging.getLogger(__name__).warning(
-            "Invalid LILBEE_%s=%r, ignoring", key, raw
-        )
+        logging.getLogger(__name__).warning("Invalid LILBEE_%s=%r, ignoring", key, raw)
         return None
 
 

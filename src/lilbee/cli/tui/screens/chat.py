@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -36,9 +37,14 @@ from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
-_PROVIDER_SENSITIVE_KEYS = frozenset({
-    "chat_model", "embedding_model", "llm_provider", "litellm_base_url",
-})
+_PROVIDER_SENSITIVE_KEYS = frozenset(
+    {
+        "chat_model",
+        "embedding_model",
+        "llm_provider",
+        "litellm_base_url",
+    }
+)
 
 
 def _reset_stale_singletons(cfg_attr: str) -> None:
@@ -71,6 +77,7 @@ class ChatScreen(Screen[None]):
         super().__init__()
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
+        self._history_lock = threading.Lock()
         self._streaming = False
 
     def compose(self) -> ComposeResult:
@@ -371,7 +378,8 @@ class ChatScreen(Screen[None]):
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
 
-        self._history.append({"role": "user", "content": text})
+        with self._history_lock:
+            self._history.append({"role": "user", "content": text})
         self._streaming = True
         self._stream_response(text, assistant_msg)
 
@@ -384,7 +392,9 @@ class ChatScreen(Screen[None]):
         sources: list[str] = []
 
         try:
-            stream = ask_stream(question, history=self._history[:-1])
+            with self._history_lock:
+                history_snapshot = self._history[:-1]
+            stream = ask_stream(question, history=history_snapshot)
             for token in stream:
                 if token.is_reasoning:
                     self.app.call_from_thread(widget.append_reasoning, token.content)
@@ -398,12 +408,14 @@ class ChatScreen(Screen[None]):
             self._streaming = False
             full_response = "".join(response_parts)
             if full_response:
-                self._history.append({"role": "assistant", "content": full_response})
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": full_response})
                 self._trim_history()
             self.app.call_from_thread(widget.finish, sources)
             self.app.call_from_thread(self._scroll_to_bottom)
 
     def _trim_history(self) -> None:
+        """Trim history to max size. Caller must hold _history_lock."""
         """Drop oldest messages when history exceeds the cap."""
         if len(self._history) > _MAX_HISTORY_MESSAGES:
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]

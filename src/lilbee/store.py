@@ -192,6 +192,7 @@ class Store:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._fts = _FtsState()
+        self._db: lancedb.DBConnection | None = None
 
     def _chunks_schema(self) -> pa.Schema:
         return pa.schema(
@@ -209,10 +210,13 @@ class Store:
         )
 
     def get_db(self) -> lancedb.DBConnection:
-        self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-        return lancedb.connect(
-            str(self._config.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
-        )
+        if self._db is None:
+            self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+            self._db = lancedb.connect(
+                str(self._config.lancedb_dir),
+                read_consistency_interval=READ_CONSISTENCY_INTERVAL,
+            )
+        return self._db
 
     def open_table(self, name: str) -> lancedb.table.Table | None:
         """Open a table if it exists, otherwise return None."""
