@@ -17,7 +17,6 @@ import pytest
 
 llama_cpp = pytest.importorskip("llama_cpp")
 
-from lilbee import embedder, store  # noqa: E402
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
 from lilbee.ingest import sync  # noqa: E402
@@ -232,19 +231,19 @@ def _unique_sources(results):
 class TestPipelineBasics:
     def test_ingest_creates_chunks(self, rag_pipeline):
         """Sync produces chunks in LanceDB, count > 0."""
-        table = store.open_table("chunks")
+        table = get_services().store.open_table("chunks")
         assert table is not None
         rows = table.to_arrow().to_pylist()
         assert len(rows) > 0
 
     def test_ingest_creates_fts_index(self, rag_pipeline):
         """FTS index is built after sync."""
-        results = store.bm25_probe("Thunderbolt", top_k=3)
+        results = get_services().store.bm25_probe("Thunderbolt", top_k=3)
         assert len(results) > 0
 
     def test_embed_produces_real_vectors(self, rag_pipeline):
         """Embeddings are non-zero float vectors with correct dimensionality."""
-        vec = embedder.embed("test embedding vector")
+        vec = get_services().embedder.embed("test embedding vector")
         assert len(vec) == cfg.embedding_dim
         assert any(v != 0.0 for v in vec)
 
@@ -335,16 +334,16 @@ class TestAnswerGeneration:
 
     def test_ask_returns_answer(self, rag_pipeline):
         """ask_raw() returns a non-empty answer with real search, mocked chat."""
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.return_value = "The oil capacity is 6.5 quarts."
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value="The oil capacity is 6.5 quarts."):
             result = ask_raw("What is the oil capacity?", top_k=5)
         assert result.answer
         assert len(result.answer) > 0
 
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search."""
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.return_value = "The Thunderbolt has a 3.5L V6."
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value="The Thunderbolt has a 3.5L V6."):
             result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
         assert len(result.sources) > 0
         source_names = [s.source for s in result.sources]
@@ -362,8 +361,8 @@ class TestAnswerGeneration:
             captured_messages.extend(messages)
             return "The oil capacity is 6.5 quarts."
 
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.side_effect = capture_chat
+        svc = get_services()
+        with patch.object(svc.provider, "chat", side_effect=capture_chat):
             ask_raw(
                 "What is the oil capacity of the Thunderbolt X500?",
                 top_k=5,
@@ -409,31 +408,33 @@ class TestRegressionGuards:
 
     def test_delete_removes_from_search(self, rag_pipeline):
         """Removing specs.md makes it unfindable."""
+        s = get_services().store
         # Verify it's currently findable
         before = search_context("Thunderbolt X500", top_k=5)
         assert "specs.md" in _source_names(before)
 
         # Delete it
-        store.delete_by_source("specs.md")
-        store.delete_source("specs.md")
-        store.ensure_fts_index()
+        s.delete_by_source("specs.md")
+        s.delete_source("specs.md")
+        s.ensure_fts_index()
 
         after = search_context("Thunderbolt X500", top_k=5)
         assert "specs.md" not in _source_names(after)
 
         # Re-add it for subsequent tests by re-syncing
         asyncio.run(sync(quiet=True))
-        store.ensure_fts_index()
+        s.ensure_fts_index()
 
     def test_sync_idempotent(self, rag_pipeline):
         """Running sync twice produces the same chunk count."""
-        table = store.open_table("chunks")
+        s = get_services().store
+        table = s.open_table("chunks")
         assert table is not None
         count_before = len(table.to_arrow().to_pylist())
 
         asyncio.run(sync(quiet=True))
 
-        table = store.open_table("chunks")
+        table = s.open_table("chunks")
         assert table is not None
         count_after = len(table.to_arrow().to_pylist())
         assert count_after == count_before
