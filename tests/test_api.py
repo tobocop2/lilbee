@@ -167,7 +167,6 @@ class TestRemove:
         bee = Lilbee(tmp_path / "proj")
         _write_doc(bee.config.documents_dir, "gone.md", "# Gone\nThis will be removed shortly.")
         bee.sync()
-        assert bee.search("removed") != [] or True  # search may or may not find with fake vecs
         bee.remove("gone.md")
         status = bee.status()
         assert "gone.md" not in status["sources"]

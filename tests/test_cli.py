@@ -40,10 +40,11 @@ def _skip_model_validation():
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all CLI tests."""
-    from lilbee.providers.base import LLMProvider
-    from lilbee.services import Services
+    from tests.conftest import make_mock_services
 
-    provider = MagicMock(spec=LLMProvider)
+    searcher = MagicMock()
+    searcher.search.return_value = []
+    searcher.ask_stream.return_value = _mock_stream("")
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
@@ -52,21 +53,7 @@ def mock_svc():
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.return_value = []
-    reranker = MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = MagicMock()
-    concepts.get_graph.return_value = False
-    searcher = MagicMock()
-    searcher.search.return_value = []
-    searcher.ask_stream.return_value = _mock_stream("")
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(searcher=searcher, store=store, embedder=embedder)
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)

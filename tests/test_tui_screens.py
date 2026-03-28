@@ -23,7 +23,7 @@ from lilbee.cli.tui.screens.catalog import (
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
-from lilbee.services import Services, set_services
+from lilbee.services import set_services
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -47,10 +47,8 @@ def _isolated_cfg(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so TUI screens never touch real backends."""
-    from lilbee.providers.base import LLMProvider
-    from lilbee.query import Searcher
+    from tests.conftest import make_mock_services
 
-    provider = MagicMock(spec=LLMProvider)
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
@@ -58,22 +56,7 @@ def mock_svc():
     store.add_chunks.side_effect = lambda records: len(records)
     store.delete_by_source.return_value = None
     store.delete_source.return_value = None
-    embedder = MagicMock()
-    embedder.embed.return_value = [0.1] * 768
-    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    reranker = MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = MagicMock()
-    concepts.get_graph.return_value = False
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(store=store)
     set_services(services)
     yield services
     set_services(None)

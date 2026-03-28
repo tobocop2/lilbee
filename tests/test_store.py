@@ -9,6 +9,7 @@ from lilbee.store import (
     SearchChunk,
     Store,
     _cosine_sim,
+    escape_sql_string,
     mmr_rerank,
 )
 
@@ -379,3 +380,19 @@ class TestClearTable:
 
     def test_clear_table_nonexistent_table_is_noop(self, store):
         store._clear_table("nonexistent", "source = 'doc0.md'")
+
+
+class TestEscapeSqlString:
+    def test_escapes_single_quotes(self):
+        assert escape_sql_string("it's") == "it''s"
+
+    def test_escapes_backslashes(self):
+        assert escape_sql_string("path\\file") == "path\\\\file"
+
+    def test_injection_payload(self):
+        escaped = escape_sql_string("' OR 1=1 --")
+        # The leading quote is doubled, so it becomes '' (escaped)
+        assert escaped.startswith("''")
+        # No lone single quote remains (all are doubled)
+        stripped = escaped.replace("''", "")
+        assert "'" not in stripped

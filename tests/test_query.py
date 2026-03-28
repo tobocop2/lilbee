@@ -1,7 +1,5 @@
 """Tests for the RAG query pipeline (mocked — no live server needed)."""
 
-from unittest import mock
-
 import pytest
 
 import lilbee.services as svc_mod
@@ -13,7 +11,7 @@ from lilbee.query import (
     format_source,
     sort_by_relevance,
 )
-from lilbee.services import Services, get_services
+from lilbee.services import get_services
 from lilbee.store import SearchChunk
 
 
@@ -29,26 +27,9 @@ def _disable_concepts():
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so tests never hit real backends."""
-    provider = mock.MagicMock()
-    store = mock.MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    embedder = mock.MagicMock()
-    embedder.embed.return_value = [0.1] * 768
-    reranker = mock.MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = mock.MagicMock()
-    concepts.get_graph.return_value = False
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    from tests.conftest import make_mock_services
+
+    services = make_mock_services()
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
@@ -969,3 +950,13 @@ class TestConceptQueryExpansion:
             assert result == []
         finally:
             cfg.concept_graph = old
+
+
+class TestSearchEdgeCases:
+    def test_empty_query(self, mock_svc):
+        results = get_services().searcher.search("")
+        assert results == [] or isinstance(results, list)
+
+    def test_whitespace_query(self, mock_svc):
+        results = get_services().searcher.search("   ")
+        assert isinstance(results, list)

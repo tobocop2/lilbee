@@ -36,10 +36,8 @@ def isolated_env(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all ingest tests."""
-    from lilbee.providers.base import LLMProvider
-    from lilbee.services import Services
+    from tests.conftest import make_mock_services
 
-    provider = MagicMock(spec=LLMProvider)
     _sources: dict[str, dict] = {}
     store = MagicMock()
     store.search.return_value = []
@@ -56,19 +54,8 @@ def mock_svc():
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: [0.1] * 768
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    reranker = MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = MagicMock()
-    concepts.get_graph.return_value = False
     searcher = MagicMock()
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(store=store, embedder=embedder, searcher=searcher)
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
@@ -130,6 +117,8 @@ class TestSync:
 
         result = await sync()
         assert "test.txt" in result.added
+        mock_extract_file.assert_called()
+        assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")

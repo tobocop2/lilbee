@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lilbee.config import cfg
-from lilbee.services import Services, set_services
+from lilbee.services import set_services
 
 
 @pytest.fixture(autouse=True)
@@ -37,32 +37,13 @@ def isolated_env(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so ingest.sync() doesn't need a live provider."""
-    provider = mock.MagicMock()
-    store = mock.MagicMock()
-    store.search.return_value = []
-    store.bm25_probe.return_value = []
-    store.get_sources.return_value = []
-    store.add_chunks.side_effect = lambda records: len(records)
+    from tests.conftest import make_mock_services
+
     embedder = mock.MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = None
-    reranker = mock.MagicMock()
-    reranker.rerank.side_effect = lambda q, r, **kw: r
-    concepts = mock.MagicMock()
-    concepts.get_graph.return_value = False
-
-    from lilbee.query import Searcher
-
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
-    services = Services(
-        provider=provider,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        searcher=searcher,
-    )
+    services = make_mock_services(embedder=embedder)
     set_services(services)
     yield services
     set_services(None)
