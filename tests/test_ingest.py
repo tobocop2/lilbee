@@ -23,6 +23,11 @@ def isolated_env(tmp_path):
 
     yield docs
 
+    # Reset store singleton so next test gets fresh connection
+    import lilbee.store as store_mod
+
+    store_mod._default_store = None
+
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 
@@ -89,7 +94,7 @@ class TestSync:
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "test.txt" in result.added
+        assert "concept_test2.txt" in result.added
 
     async def test_quiet_mode_suppresses_progress(
         self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
@@ -1262,7 +1267,7 @@ class TestConceptIndexing:
     ):
         """When concept_graph is enabled, extraction is called after ingest."""
         cfg.concept_graph = True
-        (isolated_env / "test.txt").write_text("Some test content for concepts.")
+        (isolated_env / "concept_test1.txt").write_text("Content for concepts test one.")
 
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]) as m_ext,
@@ -1285,7 +1290,7 @@ class TestConceptIndexing:
     ):
         """When concept_graph is disabled, extraction is not called."""
         cfg.concept_graph = False
-        (isolated_env / "test.txt").write_text("Some test content.")
+        (isolated_env / "concept_test2.txt").write_text("Some test content.")
 
         with mock.patch("lilbee.concepts.extract_concepts_batch") as m_ext:
             from lilbee.ingest import sync
@@ -1303,7 +1308,7 @@ class TestConceptIndexing:
     ):
         """When concept extraction raises, ingest still succeeds."""
         cfg.concept_graph = True
-        (isolated_env / "test.txt").write_text("Some test content.")
+        (isolated_env / "concept_test2.txt").write_text("Some test content.")
 
         with (
             mock.patch(
@@ -1315,7 +1320,7 @@ class TestConceptIndexing:
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
-        assert "test.txt" in result.added
+        assert "concept_test2.txt" in result.added
 
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
@@ -1327,7 +1332,7 @@ class TestConceptIndexing:
     ):
         """After sync completes, rebuild_clusters is called."""
         cfg.concept_graph = True
-        (isolated_env / "test.txt").write_text("Some test content.")
+        (isolated_env / "concept_test4.txt").write_text("Some test content.")
 
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
@@ -1364,7 +1369,7 @@ class TestConceptIndexing:
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
-        assert "test.txt" in result.added
+        assert "concept_test2.txt" in result.added
 
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
@@ -1386,4 +1391,4 @@ class TestConceptIndexing:
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
-        assert "test.txt" in result.added
+        assert "concept_test2.txt" in result.added
