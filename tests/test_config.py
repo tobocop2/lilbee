@@ -516,8 +516,6 @@ class TestEmptyStringValidation:
         assert c.vision_model == ""
 
 
-
-
 class TestEmptyStringToNone:
     def test_empty_temperature_becomes_none(self, tmp_path):
         env = _clean_env(tmp_path)
