@@ -34,10 +34,11 @@ def isolated_env(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all concept tests."""
+    from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
     from lilbee.services import Services
 
-    provider = MagicMock()
+    provider = MagicMock(spec=LLMProvider)
     mock_store = MagicMock()
     mock_store.search.return_value = []
     mock_store.bm25_probe.return_value = []
