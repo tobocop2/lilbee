@@ -38,6 +38,7 @@ def generate_session_token() -> str:
     path = _server_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"token": _session_token}))
+    path.chmod(0o600)
     return _session_token
 
 
@@ -66,11 +67,6 @@ class AuthMiddleware:
             return
 
         if not _session_token:
-            await self.app(scope, receive, send)
-            return
-
-        method = scope.get("method", "GET")
-        if method == "GET":
             await self.app(scope, receive, send)
             return
 

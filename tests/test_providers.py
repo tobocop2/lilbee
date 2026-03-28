@@ -739,7 +739,7 @@ class TestFactory:
             create_provider(cfg)
 
     def test_services_singleton(self) -> None:
-        from lilbee.services import reset_services, get_services
+        from lilbee.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"
@@ -749,7 +749,7 @@ class TestFactory:
         reset_services()
 
     def test_services_reset_clears_singleton(self) -> None:
-        from lilbee.services import reset_services, get_services
+        from lilbee.services import get_services, reset_services
 
         reset_services()
         cfg.llm_provider = "llama-cpp"
@@ -1039,4 +1039,4 @@ class TestLitellmAvailable:
             mock.patch.object(LiteLLMProvider, "available", return_value=False),
             pytest.raises(ProviderError, match="litellm is not installed"),
         ):
-            get_provider()
+            create_provider(cfg)

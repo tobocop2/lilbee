@@ -49,9 +49,9 @@ def mock_svc():
         concepts=concepts,
         searcher=searcher,
     )
-    svc_mod._svc = services
+    svc_mod.set_services(services)
     yield services
-    svc_mod._svc = None
+    svc_mod.set_services(None)
 
 
 def _make_result(
@@ -473,7 +473,8 @@ class TestProviderError:
 class TestApplyGuardrails:
     def test_filters_drifted_variants(self, mock_svc):
         variants = ["completely unrelated topic", "explain kubernetes deployment"]
-        result = get_services().searcher._apply_guardrails(variants, "explain kubernetes deployment")
+        searcher = get_services().searcher
+        result = searcher._apply_guardrails(variants, "explain kubernetes deployment")
         assert "completely unrelated topic" not in result
         assert "explain kubernetes deployment" in result
 
@@ -683,7 +684,8 @@ class TestTemporalFilter:
 
     def test_no_temporal_keyword_passes_through(self, mock_svc):
         results = [_make_result()]
-        assert get_services().searcher._apply_temporal_filter(results, "how does auth work") == results
+        searcher = get_services().searcher
+        assert searcher._apply_temporal_filter(results, "how does auth work") == results
 
     def test_disabled_via_config(self, mock_svc):
         old = cfg.temporal_filtering
@@ -811,8 +813,12 @@ class TestConceptBoosting:
         try:
             # Rebuild searcher with updated config
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             results = searcher.search("python code")
             mock_svc.concepts.boost_results.assert_called_once()
@@ -839,8 +845,12 @@ class TestConceptBoosting:
         cfg.query_expansion_count = 0
         try:
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             results = searcher.search("python code")
             assert results[0].distance == 0.5
@@ -856,8 +866,12 @@ class TestConceptBoosting:
         cfg.query_expansion_count = 0
         try:
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             results = searcher.search("python code")
             assert results[0].distance == 0.5
@@ -875,8 +889,12 @@ class TestConceptQueryExpansion:
         cfg.concept_graph = True
         try:
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             variants = searcher._expand_query("python frameworks")
             assert "python web frameworks" in variants
@@ -898,8 +916,12 @@ class TestConceptQueryExpansion:
         cfg.concept_graph = True
         try:
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             result = searcher._concept_query_expansion("test query")
             assert result == []
@@ -912,8 +934,12 @@ class TestConceptQueryExpansion:
         cfg.concept_graph = True
         try:
             searcher = Searcher(
-                cfg, mock_svc.provider, mock_svc.store, mock_svc.embedder,
-                mock_svc.reranker, mock_svc.concepts,
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
             )
             result = searcher._concept_query_expansion("test query")
             assert result == []

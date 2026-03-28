@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
@@ -196,7 +197,9 @@ def lilbee_init(path: str = "") -> dict:
     If path is empty, uses the current working directory.
     """
     base = Path(path) if path else Path.cwd()
-    if not base.resolve().is_relative_to(Path.home().resolve()):
+    try:
+        validate_path_within(base, Path.home())
+    except ValueError:
         return {"error": "Path must be within your home directory"}
     root = base / ".lilbee"
     if root.is_dir():
@@ -231,8 +234,9 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         store.delete_source(name)
         removed.append(name)
         if delete_files:
-            path = cfg.documents_dir / name
-            if not path.resolve().is_relative_to(docs_resolved):
+            try:
+                path = validate_path_within(cfg.documents_dir / name, docs_resolved)
+            except ValueError:
                 continue
             if path.exists():
                 path.unlink()

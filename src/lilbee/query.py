@@ -121,14 +121,78 @@ _EXPANSION_MAX_TOKENS = 200
 
 _STOP_WORDS = frozenset(
     {
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-        "on", "with", "at", "by", "from", "as", "into", "about", "between",
-        "through", "after", "before", "above", "below", "and", "or", "but",
-        "not", "no", "if", "then", "than", "that", "this", "it", "its",
-        "what", "which", "who", "whom", "how", "when", "where", "why",
-        "i", "me", "my", "we", "our", "you", "your", "he", "she", "they",
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "about",
+        "between",
+        "through",
+        "after",
+        "before",
+        "above",
+        "below",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "that",
+        "this",
+        "it",
+        "its",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
     }
 )
 
@@ -170,8 +234,6 @@ class Searcher:
         self._reranker = reranker
         self._concepts = concepts
 
-    # -- internal helpers --------------------------------------------------
-
     def _apply_temporal_filter(
         self, results: list[SearchChunk], question: str
     ) -> list[SearchChunk]:
@@ -183,9 +245,7 @@ class Searcher:
         if keyword is None:
             return results
         date_range = resolve_date_range(keyword)
-        source_dates = {
-            s["filename"]: s.get("ingested_at", "") for s in self._store.get_sources()
-        }
+        source_dates = {s["filename"]: s.get("ingested_at", "") for s in self._store.get_sources()}
         filtered: list[SearchChunk] = []
         for r in results:
             ingested_at = source_dates.get(r.source, "")
@@ -260,9 +320,7 @@ class Searcher:
         second_score = results[1].relevance_score or 0
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
-    def _apply_concept_boost(
-        self, results: list[SearchChunk], question: str
-    ) -> list[SearchChunk]:
+    def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
         if not self._config.concept_graph:
             return results
         try:
@@ -308,8 +366,6 @@ class Searcher:
         if mode == "hyde":
             return self._hyde_search(query, top_k)
         return []
-
-    # -- public API --------------------------------------------------------
 
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
@@ -366,9 +422,7 @@ class Searcher:
         if variants:
             for variant in variants:
                 variant_vec = self._embedder.embed(variant)
-                variant_results = self._store.search(
-                    variant_vec, top_k=top_k, query_text=variant
-                )
+                variant_results = self._store.search(variant_vec, top_k=top_k, query_text=variant)
                 for r in variant_results:
                     key = (r.source, r.chunk_index)
                     if key not in seen:
@@ -425,9 +479,7 @@ class Searcher:
             )
         results, messages = rag
         opts = options if options is not None else self._config.generation_options()
-        answer = self._provider.chat(
-            cast(list[dict[str, Any]], messages), options=opts or None
-        )
+        answer = self._provider.chat(cast(list[dict[str, Any]], messages), options=opts or None)
         return AskResult(answer=str(answer) or "", sources=results)
 
     def ask(
@@ -476,4 +528,3 @@ class Searcher:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         citations = deduplicate_sources(results)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
-

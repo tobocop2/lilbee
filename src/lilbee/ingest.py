@@ -38,6 +38,7 @@ from lilbee.progress import (
     noop_callback,
     shared_progress,
 )
+from lilbee.security import validate_path_within
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
@@ -151,7 +152,9 @@ def discover_files() -> dict[str, Path]:
             if fname.startswith("."):
                 continue
             path = Path(root) / fname
-            if not path.resolve().is_relative_to(docs_resolved):
+            try:
+                validate_path_within(path, docs_resolved)
+            except ValueError:
                 log.warning("Symlink escapes documents dir, skipping: %s", path)
                 continue
             if classify_file(path) is not None:
@@ -359,7 +362,8 @@ def ingest_code_sync(
     from lilbee.services import get_services
 
     texts = [cc.chunk for cc in code_chunks]
-    vectors = get_services().embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
+    embedder = get_services().embedder
+    vectors = embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
 
     return [
         ChunkRecord(
@@ -472,7 +476,8 @@ async def _ingest_file(
         )
     from lilbee.services import get_services
 
-    chunk_count = await asyncio.to_thread(get_services().store.add_chunks, cast(list[dict], records))
+    store = get_services().store
+    chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
     await _index_concepts(records, source_name)
     return chunk_count
 
@@ -739,52 +744,3 @@ def _apply_result(
     from lilbee.services import get_services
 
     get_services().store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
-
-
-class Indexer:
-    """Document ingestion engine — composes Store and Embedder for sync/add/rebuild."""
-
-    def __init__(
-        self,
-        config: Any,
-        provider: Any,
-        store_inst: Any,
-        embedder_inst: Any,
-    ) -> None:
-        self._config = config
-        self._provider = provider
-        self._store = store_inst
-        self._embedder = embedder_inst
-
-    async def sync(
-        self,
-        force_rebuild: bool = False,
-        quiet: bool = False,
-        *,
-        force_vision: bool = False,
-        on_progress: DetailedProgressCallback = noop_callback,
-    ) -> SyncResult:
-        """Sync documents with the vector store, using injected components."""
-        return await sync(
-            force_rebuild=force_rebuild,
-            quiet=quiet,
-            force_vision=force_vision,
-            on_progress=on_progress,
-        )
-
-    async def add(
-        self,
-        paths: list[Path],
-        *,
-        force: bool = True,
-        quiet: bool = True,
-    ) -> SyncResult:
-        """Copy files to documents dir and sync."""
-        from lilbee.cli.helpers import copy_files
-
-        copy_files(paths, force=force)
-        return await sync(quiet=quiet)
-
-    async def rebuild(self, *, quiet: bool = True) -> SyncResult:
-        """Force rebuild the entire index."""
-        return await sync(force_rebuild=True, quiet=quiet)

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
+from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
@@ -19,12 +20,6 @@ log = logging.getLogger(__name__)
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
 # on slow media (HDD) at the cost of serving slightly stale data.
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
-
-
-class _FtsState:
-    """Ephemeral FTS index state — resets on process start."""
-
-    ready: bool = False
 
 
 class SearchChunk(BaseModel):
@@ -191,7 +186,7 @@ class Store:
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._fts = _FtsState()
+        self._fts_ready: bool = False
         self._db: lancedb.DBConnection | None = None
 
     def _chunks_schema(self) -> pa.Schema:
@@ -228,7 +223,7 @@ class Store:
     def ensure_fts_index(self) -> None:
         """Create or replace the FTS index on the chunks table.
 
-        No-op when the table doesn't exist or is empty.  Sets _fts.ready
+        No-op when the table doesn't exist or is empty.  Sets _fts_ready
         on success so hybrid_search can be used.
         """
         with write_lock():
@@ -237,7 +232,7 @@ class Store:
                 return
             try:
                 table.create_fts_index("chunk", replace=True)
-                self._fts.ready = True
+                self._fts_ready = True
                 log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
             except Exception:
                 log.debug("FTS index creation failed (empty table?)", exc_info=True)
@@ -245,7 +240,7 @@ class Store:
     def add_chunks(self, records: list[dict]) -> int:
         """Add chunk records to the store. Returns count added."""
         with write_lock():
-            self._fts.ready = False
+            self._fts_ready = False
             if not records:
                 return 0
             for rec in records:
@@ -265,9 +260,9 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
-        if not self._fts.ready:
+        if not self._fts_ready:
             self.ensure_fts_index()
-        if not self._fts.ready:
+        if not self._fts_ready:
             return []  # pragma: no cover
         try:
             rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
@@ -296,10 +291,10 @@ class Store:
         if table is None:
             return []
 
-        if query_text and not self._fts.ready:
+        if query_text and not self._fts_ready:
             self.ensure_fts_index()
 
-        if query_text and self._fts.ready:
+        if query_text and self._fts_ready:
             try:
                 return _hybrid_search(table, query_text, query_vector, top_k)
             except Exception:
@@ -422,8 +417,9 @@ class Store:
             self.delete_source(name)
             removed.append(name)
             if delete_files:
-                path = (documents_dir / name).resolve()
-                if not path.is_relative_to(documents_dir.resolve()):
+                try:
+                    path = validate_path_within(documents_dir / name, documents_dir)
+                except ValueError:
                     log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
                     continue
                 if path.exists():
@@ -431,11 +427,17 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
+    def clear_table(self, name: str, predicate: str) -> None:
+        """Delete rows matching *predicate* from *name*. Acquires write lock."""
+        with write_lock():
+            table = self.open_table(name)
+            if table is not None:
+                _safe_delete_unlocked(table, predicate)
+
     def drop_all(self) -> None:
         """Drop all tables -- used by rebuild."""
         with write_lock():
-            self._fts.ready = False
+            self._fts_ready = False
             db = self.get_db()
             for name in _table_names(db):
                 db.drop_table(name)
-

@@ -22,7 +22,8 @@ from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # 
 from lilbee.config import cfg  # noqa: E402
 from lilbee.ingest import sync  # noqa: E402
 from lilbee.model_manager import reset_model_manager  # noqa: E402
-from lilbee.services import get_services, reset_services as reset_provider  # noqa: E402
+from lilbee.services import get_services  # noqa: E402
+from lilbee.services import reset_services as reset_provider  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
@@ -32,9 +33,8 @@ def search_context(question, top_k=0):
 
 
 def ask_raw(question, top_k=0, history=None, options=None):
-    return get_services().searcher.ask_raw(
-        question, top_k=top_k, history=history, options=options
-    )
+    return get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=options)
+
 
 # Test document contents — known facts for verifiable retrieval
 SPECS_MD = """\

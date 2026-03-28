@@ -21,10 +21,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.concepts import ConceptGraph
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.factory import create_provider
 from lilbee.query import Searcher
+from lilbee.reranker import Reranker
+from lilbee.security import validate_path_within
 from lilbee.store import Store
 
 if TYPE_CHECKING:
@@ -56,7 +59,7 @@ def _swap_config(target: Config) -> Iterator[None]:
 class Lilbee:
     """Programmatic access to lilbee's retrieval pipeline.
 
-    Composes Store, Embedder, Searcher, and Indexer. Each holds a reference
+    Composes Store, Embedder, Searcher, Reranker, and ConceptGraph. Each holds a reference
     to config and its dependencies -- no god class, no global mutation in the
     public API.
 
@@ -111,7 +114,16 @@ class Lilbee:
         self._provider = provider or create_provider(self._config)
         self._store = Store(self._config)
         self._embedder = Embedder(self._config, self._provider)
-        self._searcher = Searcher(self._config, self._provider, self._store, self._embedder)
+        self._reranker = Reranker(self._config)
+        self._concepts = ConceptGraph(self._config)
+        self._searcher = Searcher(
+            self._config,
+            self._provider,
+            self._store,
+            self._embedder,
+            self._reranker,
+            self._concepts,
+        )
 
     @property
     def config(self) -> Config:
@@ -163,8 +175,11 @@ class Lilbee:
         with _swap_config(self._config):
             self._store.delete_by_source(name)
             self._store.delete_source(name)
-            doc_path = self._config.documents_dir / name
-            if not doc_path.resolve().is_relative_to(self._config.documents_dir.resolve()):
+            try:
+                doc_path = validate_path_within(
+                    self._config.documents_dir / name, self._config.documents_dir
+                )
+            except ValueError:
                 return
             if doc_path.exists():
                 doc_path.unlink()
