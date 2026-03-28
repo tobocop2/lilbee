@@ -28,15 +28,19 @@ from lilbee.store import SearchChunk
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
+    from lilbee.store import reset_store
+
     snapshot = cfg.model_copy()
 
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    reset_store()
 
     yield tmp_path
 
+    reset_store()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
 

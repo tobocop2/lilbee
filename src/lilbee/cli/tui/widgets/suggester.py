@@ -81,9 +81,9 @@ class SlashSuggester(Suggester):
 
     def _get_document_names(self) -> list[str]:
         try:
-            from lilbee.runtime import get_store
+            from lilbee.store import get_sources
 
-            return [s.get("filename", s.get("source", "")) for s in get_store().get_sources()]
+            return [s.get("filename", s.get("source", "")) for s in get_sources()]
         except Exception:
             return []
 

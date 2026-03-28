@@ -432,7 +432,7 @@ class Store:
         return RemoveResult(removed=removed, not_found=not_found)
 
     def drop_all(self) -> None:
-        """Drop all tables — used by rebuild."""
+        """Drop all tables -- used by rebuild."""
         with write_lock():
             self._fts.ready = False
             db = self.get_db()
@@ -440,39 +440,46 @@ class Store:
                 db.drop_table(name)
 
 
-# ---------------------------------------------------------------------------
-# Module-level convenience API -- delegates through runtime singleton
-# ---------------------------------------------------------------------------
+_store: Store | None = None
+
+
+def _get_store() -> Store:
+    """Return the cached Store singleton."""
+    global _store
+    if _store is None:
+        _store = Store(cfg)
+    return _store
+
+
+def reset_store() -> None:
+    """Discard the cached Store singleton."""
+    global _store
+    _store = None
 
 
 def get_db() -> lancedb.DBConnection:
-    from lilbee.runtime import get_store
-
-    return get_store().get_db()
+    """Get LanceDB connection."""
+    return _get_store().get_db()
 
 
 def open_table(name: str) -> lancedb.table.Table | None:
-    from lilbee.runtime import get_store
-
-    return get_store().open_table(name)
+    """Open a table if it exists (convenience wrapper via runtime singleton)."""
+    return _get_store().open_table(name)
 
 
 def ensure_fts_index() -> None:
-    from lilbee.runtime import get_store
-
-    get_store().ensure_fts_index()
+    """Create FTS index (convenience wrapper via runtime singleton)."""
+    _get_store().ensure_fts_index()
 
 
 def add_chunks(records: list[dict]) -> int:
-    from lilbee.runtime import get_store
-
-    return get_store().add_chunks(records)
+    """Add chunk records (convenience wrapper via runtime singleton)."""
+    return _get_store().add_chunks(records)
 
 
 def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
-    from lilbee.runtime import get_store
-
-    return get_store().bm25_probe(query_text, top_k)
+    """BM25 search (convenience wrapper via runtime singleton)."""
+    return _get_store().bm25_probe(query_text, top_k)
 
 
 def search(
@@ -481,39 +488,33 @@ def search(
     max_distance: float | None = None,
     query_text: str | None = None,
 ) -> list[SearchChunk]:
-    from lilbee.runtime import get_store
-
-    return get_store().search(query_vector, top_k, max_distance, query_text)
+    """Vector search (convenience wrapper via runtime singleton)."""
+    return _get_store().search(query_vector, top_k, max_distance, query_text)
 
 
 def get_chunks_by_source(source: str) -> list[SearchChunk]:
-    from lilbee.runtime import get_store
-
-    return get_store().get_chunks_by_source(source)
+    """Get chunks by source (convenience wrapper via runtime singleton)."""
+    return _get_store().get_chunks_by_source(source)
 
 
 def delete_by_source(source: str) -> None:
-    from lilbee.runtime import get_store
-
-    get_store().delete_by_source(source)
+    """Delete chunks by source (convenience wrapper via runtime singleton)."""
+    _get_store().delete_by_source(source)
 
 
 def delete_source(filename: str) -> None:
-    from lilbee.runtime import get_store
-
-    get_store().delete_source(filename)
+    """Delete source record (convenience wrapper via runtime singleton)."""
+    _get_store().delete_source(filename)
 
 
 def get_sources() -> list[SourceRecord]:
-    from lilbee.runtime import get_store
-
-    return get_store().get_sources()
+    """Get all sources (convenience wrapper via runtime singleton)."""
+    return _get_store().get_sources()
 
 
 def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
-    from lilbee.runtime import get_store
-
-    get_store().upsert_source(filename, file_hash, chunk_count)
+    """Upsert source record (convenience wrapper via runtime singleton)."""
+    _get_store().upsert_source(filename, file_hash, chunk_count)
 
 
 def remove_documents(
@@ -522,14 +523,12 @@ def remove_documents(
     delete_files: bool = False,
     documents_dir: Path | None = None,
 ) -> RemoveResult:
-    from lilbee.runtime import get_store
-
-    return get_store().remove_documents(
+    """Remove documents (convenience wrapper via runtime singleton)."""
+    return _get_store().remove_documents(
         names, delete_files=delete_files, documents_dir=documents_dir
     )
 
 
 def drop_all() -> None:
-    from lilbee.runtime import get_store
-
-    get_store().drop_all()
+    """Drop all tables (convenience wrapper via runtime singleton)."""
+    _get_store().drop_all()

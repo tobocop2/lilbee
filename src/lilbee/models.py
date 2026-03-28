@@ -318,7 +318,7 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
 
     When *exclude_vision* is True, also filters out known vision catalog models.
     """
-    from lilbee.runtime import get_provider
+    from lilbee.providers import get_provider
 
     try:
         provider = get_provider()

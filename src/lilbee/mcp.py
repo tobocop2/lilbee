@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.store import delete_by_source, delete_source, get_sources
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
@@ -23,18 +24,16 @@ def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
 
     Returns chunks sorted by relevance. No LLM call — uses pre-computed embeddings.
     """
-    from lilbee.runtime import get_searcher
+    from lilbee.query import search_context
 
-    results = get_searcher().search(query, top_k=top_k)
+    results = search_context(query, top_k=top_k)
     return [clean(r) for r in results]
 
 
 @mcp.tool()
 def lilbee_status() -> dict:
     """Show indexed documents, configuration, and chunk counts."""
-    from lilbee.runtime import get_store
-
-    sources = get_store().get_sources()
+    sources = get_sources()
     return {
         "config": {
             "documents_dir": str(cfg.documents_dir),
@@ -216,10 +215,7 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         names: Source filenames to remove (as shown by lilbee_status).
         delete_files: Also delete the physical files from the documents directory.
     """
-    from lilbee.runtime import get_store
-
-    _store = get_store()
-    known = {s["filename"] for s in _store.get_sources()}
+    known = {s["filename"] for s in get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
     docs_resolved = cfg.documents_dir.resolve()
@@ -227,8 +223,8 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
         if name not in known:
             not_found.append(name)
             continue
-        _store.delete_by_source(name)
-        _store.delete_source(name)
+        delete_by_source(name)
+        delete_source(name)
         removed.append(name)
         if delete_files:
             path = cfg.documents_dir / name
@@ -242,9 +238,7 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
 @mcp.tool()
 def lilbee_list_documents() -> dict:
     """List all indexed documents with their chunk counts."""
-    from lilbee.runtime import get_store
-
-    sources = get_store().get_sources()
+    sources = get_sources()
     return {
         "documents": [
             {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in sources

@@ -27,6 +27,7 @@ def _disable_concepts():
     cfg.concept_graph = old
 
 
+
 def _make_result(
     source="test.pdf",
     content_type="pdf",
