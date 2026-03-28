@@ -69,11 +69,11 @@ def isolated_env(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.crawl_timeout = 15
     # Reset semaphore cache
-    crawler_mod._crawl_semaphore = None
+    crawler_mod._state.semaphore = None
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_mod._crawl_semaphore = None
+    crawler_mod._state.semaphore = None
 
 
 @pytest.fixture()

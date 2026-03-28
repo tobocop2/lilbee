@@ -649,12 +649,12 @@ class TestCrawlAndSave:
         """The semaphore limits concurrent crawls based on config."""
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == 5
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
     async def test_semaphore_defaults_to_cpu_count(self, isolated_env):
         """Default concurrency matches CPU count."""
@@ -662,21 +662,21 @@ class TestCrawlAndSave:
 
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == (os.cpu_count() or 4)
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
         assert _get_crawl_semaphore() is None
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
 
 class TestPeriodicSync:
@@ -687,8 +687,8 @@ class TestPeriodicSync:
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 0
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = threading.Lock()
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -701,10 +701,10 @@ class TestPeriodicSync:
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
+        crawler_mod._state.last_sync_time = 0.0
         lock = threading.Lock()
         lock.acquire()  # simulate already-running
-        crawler_mod._sync_running = lock
+        crawler_mod._state.sync_running = lock
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -720,8 +720,8 @@ class TestPeriodicSync:
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 9999
-        crawler_mod._last_sync_time = time.monotonic()
-        crawler_mod._sync_running = threading.Lock()
+        crawler_mod._state.last_sync_time = time.monotonic()
+        crawler_mod._state.sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -735,8 +735,8 @@ class TestPeriodicSync:
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = threading.Lock()
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
 
         mock_sync = AsyncMock()
         with patch("lilbee.ingest.sync", mock_sync):
@@ -753,9 +753,9 @@ class TestPeriodicSync:
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
+        crawler_mod._state.last_sync_time = 0.0
         lock = threading.Lock()
-        crawler_mod._sync_running = lock
+        crawler_mod._state.sync_running = lock
 
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
         with patch("lilbee.ingest.sync", mock_sync):

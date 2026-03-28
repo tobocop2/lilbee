@@ -43,8 +43,25 @@ class CrawlTask:
     _async_task: asyncio.Task[None] | None = field(default=None, repr=False, init=False)
 
 
-# In-memory registry of active/completed tasks
-_active_tasks: dict[str, CrawlTask] = {}
+class TaskRegistry:
+    """In-memory registry of active and completed crawl tasks.
+
+    A single module-level instance (_registry) is used because task tracking
+    is inherently per-process state (asyncio.Task references, etc.).
+    """
+
+    def __init__(self) -> None:
+        self.tasks: dict[str, CrawlTask] = {}
+
+    def clear(self) -> None:
+        """Remove all tasks from the registry."""
+        self.tasks.clear()
+
+
+_registry = TaskRegistry()
+
+# Backwards-compatible alias so existing imports of _active_tasks keep working.
+_active_tasks = _registry.tasks
 
 
 def now_iso() -> str:
@@ -91,13 +108,14 @@ async def run_crawl(task: CrawlTask) -> None:
 def _evict_completed() -> None:
     """Remove oldest completed tasks when the limit is exceeded."""
     done_statuses = (TaskStatus.DONE, TaskStatus.FAILED)
-    completed = [(tid, t) for tid, t in _active_tasks.items() if t.status in done_statuses]
+    tasks = _registry.tasks
+    completed = [(tid, t) for tid, t in tasks.items() if t.status in done_statuses]
     excess = len(completed) - _MAX_COMPLETED_TASKS
     if excess <= 0:
         return
     completed.sort(key=lambda pair: pair[1].finished_at)
     for tid, _ in completed[:excess]:
-        del _active_tasks[tid]
+        del tasks[tid]
 
 
 def start_crawl(
@@ -117,21 +135,21 @@ def start_crawl(
         depth=depth,
         max_pages=max_pages,
     )
-    _active_tasks[task_id] = task
+    _registry.tasks[task_id] = task
     task._async_task = asyncio.create_task(run_crawl(task))
     return task_id
 
 
 def get_task(task_id: str) -> CrawlTask | None:
     """Look up a crawl task by ID."""
-    return _active_tasks.get(task_id)
+    return _registry.tasks.get(task_id)
 
 
 def list_tasks() -> list[CrawlTask]:
     """Return all tracked crawl tasks (active and completed)."""
-    return list(_active_tasks.values())
+    return list(_registry.tasks.values())
 
 
 def clear_tasks() -> None:
     """Remove all tasks from the registry (for testing)."""
-    _active_tasks.clear()
+    _registry.clear()

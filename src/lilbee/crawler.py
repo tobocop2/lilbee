@@ -31,24 +31,46 @@ def crawler_available() -> bool:
         return False
 
 
-_crawl_semaphore: threading.Semaphore | None = None
-_crawl_semaphore_limit: int = 0
+class CrawlerState:
+    """Per-process mutable state for the crawler (semaphore, periodic sync tracking).
+
+    Encapsulates state that would otherwise live as bare module-level globals.
+    A single module-level instance (_state) is used because this state is inherently
+    per-process (threading primitives, asyncio tasks tied to the running loop).
+    """
+
+    def __init__(self) -> None:
+        self.semaphore: threading.Semaphore | None = None
+        self.semaphore_limit: int = 0
+        self.last_sync_time: float = 0.0
+        self.sync_running: threading.Lock = threading.Lock()
+        self.background_tasks: set[asyncio.Task[None]] = set()
+
+    def reset(self) -> None:
+        """Reset all state (useful for testing)."""
+        self.semaphore = None
+        self.semaphore_limit = 0
+        self.last_sync_time = 0.0
+        self.sync_running = threading.Lock()
+        self.background_tasks = set()
+
+
+_state = CrawlerState()
 
 
 def _get_crawl_semaphore() -> threading.Semaphore | None:
-    """Return a module-level threading semaphore for crawl concurrency, or None if unlimited (0).
+    """Return a threading semaphore for crawl concurrency, or None if unlimited (0).
 
     Uses threading.Semaphore instead of asyncio.Semaphore to avoid event-loop binding issues
     when crawl_and_save is called from different loops (e.g. CLI via asyncio.run).
     """
-    global _crawl_semaphore, _crawl_semaphore_limit
     limit = cfg.crawl_max_concurrent
     if limit <= 0:
         return None
-    if _crawl_semaphore is None or _crawl_semaphore_limit != limit:
-        _crawl_semaphore = threading.Semaphore(limit)
-        _crawl_semaphore_limit = limit
-    return _crawl_semaphore
+    if _state.semaphore is None or _state.semaphore_limit != limit:
+        _state.semaphore = threading.Semaphore(limit)
+        _state.semaphore_limit = limit
+    return _state.semaphore
 
 
 # Maximum filename length before truncation (most filesystems cap at 255 bytes)
@@ -349,11 +371,6 @@ async def crawl_recursive(
     return results
 
 
-_last_sync_time: float = 0.0
-_sync_running = threading.Lock()
-_background_tasks: set[asyncio.Task[None]] = set()
-
-
 async def _maybe_periodic_sync() -> None:
     """Fire off a background sync if the crawl_sync_interval has elapsed.
 
@@ -361,17 +378,16 @@ async def _maybe_periodic_sync() -> None:
     Uses a threading.Lock to avoid asyncio event-loop binding issues when called
     from different loops.
     """
-    global _last_sync_time
     interval = cfg.crawl_sync_interval
-    if interval <= 0 or not _sync_running.acquire(blocking=False):
+    if interval <= 0 or not _state.sync_running.acquire(blocking=False):
         return
 
     now = time.monotonic()
-    if now - _last_sync_time < interval:
-        _sync_running.release()
+    if now - _state.last_sync_time < interval:
+        _state.sync_running.release()
         return
 
-    _last_sync_time = now
+    _state.last_sync_time = now
 
     async def _run_sync() -> None:
         try:
@@ -381,11 +397,11 @@ async def _maybe_periodic_sync() -> None:
         except Exception as exc:
             log.warning("Periodic sync during crawl failed: %s", exc)
         finally:
-            _sync_running.release()
+            _state.sync_running.release()
 
     task = asyncio.create_task(_run_sync())
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    _state.background_tasks.add(task)
+    task.add_done_callback(_state.background_tasks.discard)
 
 
 async def crawl_and_save(
