@@ -415,8 +415,9 @@ class TestLilbeeAddWithUrls:
 
 
 class TestLilbeeCrawl:
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp.start_crawl", return_value="abc123")
-    def test_returns_task_id(self, mock_start, isolated_env):
+    def test_returns_task_id(self, mock_start, _mock_avail, isolated_env):
         """Non-blocking crawl returns a task_id immediately."""
         result = lilbee_crawl(url="https://example.com")
         assert result["status"] == "started"
@@ -424,8 +425,9 @@ class TestLilbeeCrawl:
         assert result["url"] == "https://example.com"
         mock_start.assert_called_once_with("https://example.com", depth=0, max_pages=50)
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp.start_crawl", return_value="def456")
-    def test_passes_depth_and_max_pages(self, mock_start, isolated_env):
+    def test_passes_depth_and_max_pages(self, mock_start, _mock_avail, isolated_env):
         """Depth and max_pages are forwarded to start_crawl."""
         result = lilbee_crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
