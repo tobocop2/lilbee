@@ -88,7 +88,7 @@ class Lilbee:
             provider: LLM provider instance. If not given, creates one from config.
 
         Pass documents_dir or config, not both. If neither is given, uses
-        ``Config.from_env()`` (same defaults as the CLI).
+        ``Config()`` (same defaults as the CLI).
         """
         if documents_dir is not None and config is not None:
             raise ValueError("Pass documents_dir or config, not both")
@@ -106,7 +106,7 @@ class Lilbee:
                 },
             )
         else:
-            self._config = Config.from_env()
+            self._config = Config()
 
         self._config.documents_dir.mkdir(parents=True, exist_ok=True)
         self._config.data_dir.mkdir(parents=True, exist_ok=True)

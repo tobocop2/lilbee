@@ -5,57 +5,6 @@ import sys
 from pathlib import Path
 
 
-def env(key: str, default: str) -> str:
-    """Read a LILBEE_<key> environment variable with fallback."""
-    return os.environ.get(f"LILBEE_{key}", default)
-
-
-def env_int(key: str, default: int) -> int:
-    """Read a LILBEE_<key> environment variable as int with fallback."""
-    raw = os.environ.get(f"LILBEE_{key}")
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Invalid LILBEE_%s=%r, using default %d", key, raw, default
-        )
-        return default
-
-
-def env_float(key: str, default: float | None = None) -> float | None:
-    """Read a LILBEE_<key> environment variable as float with fallback."""
-    raw = os.environ.get(f"LILBEE_{key}")
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Invalid LILBEE_%s=%r, using default %s", key, raw, default
-        )
-        return default
-
-
-def env_int_optional(key: str) -> int | None:
-    """Read a LILBEE_<key> environment variable as optional int."""
-    raw = os.environ.get(f"LILBEE_{key}")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        import logging
-
-        logging.getLogger(__name__).warning("Invalid LILBEE_%s=%r, ignoring", key, raw)
-        return None
-
-
 def default_data_dir() -> Path:
     """Return platform-appropriate data directory.
 

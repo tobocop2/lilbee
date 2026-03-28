@@ -1,4 +1,4 @@
-"""Tests for platform-level env helpers."""
+"""Tests for platform-level helpers."""
 
 import os
 from unittest import mock
@@ -7,69 +7,12 @@ import pytest
 
 from lilbee.platform import (
     default_data_dir,
-    env,
-    env_float,
-    env_int,
-    env_int_optional,
     find_local_root,
     is_ignored_dir,
 )
 
 
 class TestHelpers:
-    @pytest.mark.parametrize(
-        "env_vars, key, default, expected",
-        [
-            ({}, "NONEXISTENT", "fallback", "fallback"),
-            ({"LILBEE_NONEXISTENT": "override"}, "NONEXISTENT", "fallback", "override"),
-        ],
-        ids=["default", "override"],
-    )
-    def test_env(self, env_vars, key, default, expected):
-        clear = not env_vars
-        with mock.patch.dict(os.environ, env_vars, clear=clear):
-            assert env(key, default) == expected
-
-    @pytest.mark.parametrize(
-        "env_vars, key, default, expected",
-        [
-            ({}, "NONEXISTENT", 42, 42),
-            ({"LILBEE_NONEXISTENT": "99"}, "NONEXISTENT", 42, 99),
-        ],
-        ids=["default", "override"],
-    )
-    def test_env_int(self, env_vars, key, default, expected):
-        clear = not env_vars
-        with mock.patch.dict(os.environ, env_vars, clear=clear):
-            assert env_int(key, default) == expected
-
-    @pytest.mark.parametrize(
-        "env_vars, key, default, expected",
-        [
-            ({}, "NONEXISTENT", None, None),
-            ({}, "NONEXISTENT", 0.5, 0.5),
-            ({"LILBEE_TEMP": "0.7"}, "TEMP", None, 0.7),
-        ],
-        ids=["default-none", "default-value", "override"],
-    )
-    def test_env_float(self, env_vars, key, default, expected):
-        clear = not env_vars
-        with mock.patch.dict(os.environ, env_vars, clear=clear):
-            assert env_float(key, default) == expected
-
-    @pytest.mark.parametrize(
-        "env_vars, key, expected",
-        [
-            ({}, "NONEXISTENT", None),
-            ({"LILBEE_SEED": "42"}, "SEED", 42),
-        ],
-        ids=["default-none", "override"],
-    )
-    def test_env_int_optional(self, env_vars, key, expected):
-        clear = not env_vars
-        with mock.patch.dict(os.environ, env_vars, clear=clear):
-            assert env_int_optional(key) == expected
-
     def test_default_data_dir_darwin(self):
         with mock.patch("sys.platform", "darwin"):
             result = default_data_dir()

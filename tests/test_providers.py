@@ -786,7 +786,7 @@ class TestConfigProvider:
         ):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.llm_provider == "auto"
             assert c.litellm_base_url == "http://localhost:11434"
             assert c.llm_api_key == ""
@@ -804,7 +804,7 @@ class TestConfigProvider:
         ):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.llm_provider == "litellm"
             assert c.litellm_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
@@ -818,7 +818,7 @@ class TestConfigProvider:
         with mock.patch.dict(os.environ, {"LILBEE_DATA": "/tmp/test-lilbee"}):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.models_dir == canonical_models_dir()
 
 
