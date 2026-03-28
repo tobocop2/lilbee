@@ -874,6 +874,20 @@ class TestRemove:
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
 
+    def test_remove_delete_path_traversal_skips(self, isolated_env, mock_svc):
+        """Path traversal in name with --delete is caught and skipped."""
+        traversal_name = "../../etc/passwd"
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": traversal_name,
+                "file_hash": "abc",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
+        result = runner.invoke(app, ["remove", "--delete", traversal_name])
+        assert result.exit_code == 0
+
 
 class TestChunks:
     """Test chunks command."""

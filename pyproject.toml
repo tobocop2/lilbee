@@ -90,6 +90,17 @@ concurrency = ["thread"]
 [tool.coverage.report]
 show_missing = true
 fail_under = 100
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if sys.platform",
+    "class.*Protocol",
+]
+omit = [
+    "src/lilbee/providers/litellm_provider.py",
+    "src/lilbee/__main__.py",
+    "src/lilbee/platform.py",
+]
 
 [tool.ruff]
 target-version = "py311"

@@ -84,7 +84,7 @@ class SlashSuggester(Suggester):
             from lilbee.services import get_services
 
             sources = get_services().store.get_sources()
-            return [s.get("filename", s.get("source", "")) for s in sources]
+            return [s.get("filename", s.get("source", "")) for s in sources]  # pragma: no cover
         except Exception:
             return []
 

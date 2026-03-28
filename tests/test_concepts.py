@@ -493,6 +493,17 @@ class TestComputePmi:
         pmi = _compute_pmi(cooccurrences, concept_counts, 10)
         assert pmi[("a", "b")] == 0.0
 
+    def test_ppmi_skips_zero_count_concepts(self):
+        """Concepts with zero count are skipped (avoid division by zero)."""
+        from collections import Counter
+
+        from lilbee.concepts import _compute_pmi
+
+        cooccurrences = Counter({("a", "b"): 1})
+        concept_counts = Counter({"a": 0, "b": 5})
+        pmi = _compute_pmi(cooccurrences, concept_counts, 10)
+        assert ("a", "b") not in pmi
+
 
 class TestLeidenPartition:
     def test_returns_partition_and_degrees(self):

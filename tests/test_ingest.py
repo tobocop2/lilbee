@@ -602,6 +602,23 @@ class TestClassifyNewFormats:
         assert classify_file(Path(filename)) == expected
 
 
+class TestDiscoverSymlinkEscape:
+    def test_symlink_escaping_docs_dir_skipped(self, isolated_env):
+        """Symlinks that resolve outside the documents directory are skipped."""
+        import os
+
+        from lilbee.ingest import discover_files
+
+        outside_file = isolated_env.parent / "secret.txt"
+        outside_file.write_text("secret data")
+        link_path = isolated_env / "escaped.txt"
+        os.symlink(outside_file, link_path)
+
+        found = discover_files()
+        assert "escaped.txt" not in found
+        outside_file.unlink()
+
+
 class TestDiscoverNewFormats:
     def test_new_extensions_discovered(self, isolated_env):
         from lilbee.ingest import discover_files

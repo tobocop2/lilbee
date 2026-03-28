@@ -221,6 +221,13 @@ class TestLilbeeRemove:
         assert result["removed"] == ["a.md"]
         assert not f.exists()
 
+    def test_delete_files_path_traversal_skipped(self, mock_svc):
+        """Path traversal names are caught and skipped during delete_files."""
+        traversal_name = "../../etc/passwd"
+        mock_svc.store.get_sources.return_value = [{"filename": traversal_name}]
+        result = lilbee_remove([traversal_name], delete_files=True)
+        assert result["removed"] == [traversal_name]
+
 
 class TestLilbeeListDocuments:
     def test_returns_documents(self, mock_svc):
@@ -455,7 +462,8 @@ class TestLilbeeCrawl:
         assert result["task_id"] == "def456"
         mock_start.assert_called_once_with("https://example.com", depth=2, max_pages=10)
 
-    def test_rejects_invalid_url(self):
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    def test_rejects_invalid_url(self, _mock_avail):
         result = lilbee_crawl(url="ftp://bad.com")
         assert "error" in result
 

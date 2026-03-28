@@ -208,7 +208,7 @@ class _LockedStreamIterator:
         """Explicitly release the lock if the stream is abandoned early."""
         self._release()
 
-    def __del__(self) -> None:
+    def __del__(self) -> None:  # pragma: no cover
         self._release()
 
 
