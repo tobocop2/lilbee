@@ -187,7 +187,7 @@ class TestCrawlMetadata:
             )
         }
         with (
-            patch("lilbee.crawler.Path.rename", side_effect=OSError("disk full")),
+            patch("lilbee.crawler.Path.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
             save_crawl_metadata(meta)
