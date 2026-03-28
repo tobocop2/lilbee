@@ -160,7 +160,7 @@ lilbee works out of the box. These extras unlock additional capabilities:
 | **Concept graph** | `pip install lilbee[graph]` | Topic clustering + search boosting. Extracts concepts from your documents and uses their relationships to find results that pure text matching misses. Zero extra LLM calls. |
 | **Cross-encoder reranking** | `pip install lilbee[reranker]` | Precision pass on search results. Re-scores every (query, chunk) pair with a cross-encoder model. Catches ranking errors the initial search missed. |
 | **Web crawling** | `pip install lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, hash-based change detection, SSRF protection. |
-| **Remote providers** | `pip install lilbee[litellm]` | Connect to Ollama, OpenAI, Azure, Anthropic, Groq, and dozens more via litellm. Use cloud models for chat while keeping embeddings local. |
+| **Remote providers** | `pip install lilbee[litellm]` | Connect to your favorite frontier model or any litellm-supported provider. Use remote models for chat while keeping embeddings local. |
 
 Install multiple: `pip install lilbee[graph,reranker,crawler]`
 
