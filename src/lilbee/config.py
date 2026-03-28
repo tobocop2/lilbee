@@ -123,6 +123,13 @@ class Config(BaseModel):
     # Lower = less trust in hypothetical documents.
     hyde_weight: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    # HyDE prompt template. Must contain {question} placeholder.
+    hyde_prompt: str = (
+        "Write a 50-100 word passage that directly answers this question as if "
+        "it were an excerpt from a real document. Do not include any preamble, "
+        "just write the passage.\n\nQuestion: {question}"
+    )
+
     # Cross-encoder model for reranking. Empty = disabled.
     # Requires sentence-transformers installed.
     reranker_model: str = ""

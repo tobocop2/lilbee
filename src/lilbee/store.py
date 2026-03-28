@@ -438,3 +438,98 @@ class Store:
             db = self.get_db()
             for name in _table_names(db):
                 db.drop_table(name)
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience API -- delegates through runtime singleton
+# ---------------------------------------------------------------------------
+
+
+def get_db() -> lancedb.DBConnection:
+    from lilbee.runtime import get_store
+
+    return get_store().get_db()
+
+
+def open_table(name: str) -> lancedb.table.Table | None:
+    from lilbee.runtime import get_store
+
+    return get_store().open_table(name)
+
+
+def ensure_fts_index() -> None:
+    from lilbee.runtime import get_store
+
+    get_store().ensure_fts_index()
+
+
+def add_chunks(records: list[dict]) -> int:
+    from lilbee.runtime import get_store
+
+    return get_store().add_chunks(records)
+
+
+def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
+    from lilbee.runtime import get_store
+
+    return get_store().bm25_probe(query_text, top_k)
+
+
+def search(
+    query_vector: list[float],
+    top_k: int | None = None,
+    max_distance: float | None = None,
+    query_text: str | None = None,
+) -> list[SearchChunk]:
+    from lilbee.runtime import get_store
+
+    return get_store().search(query_vector, top_k, max_distance, query_text)
+
+
+def get_chunks_by_source(source: str) -> list[SearchChunk]:
+    from lilbee.runtime import get_store
+
+    return get_store().get_chunks_by_source(source)
+
+
+def delete_by_source(source: str) -> None:
+    from lilbee.runtime import get_store
+
+    get_store().delete_by_source(source)
+
+
+def delete_source(filename: str) -> None:
+    from lilbee.runtime import get_store
+
+    get_store().delete_source(filename)
+
+
+def get_sources() -> list[SourceRecord]:
+    from lilbee.runtime import get_store
+
+    return get_store().get_sources()
+
+
+def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
+    from lilbee.runtime import get_store
+
+    get_store().upsert_source(filename, file_hash, chunk_count)
+
+
+def remove_documents(
+    names: list[str],
+    *,
+    delete_files: bool = False,
+    documents_dir: Path | None = None,
+) -> RemoveResult:
+    from lilbee.runtime import get_store
+
+    return get_store().remove_documents(
+        names, delete_files=delete_files, documents_dir=documents_dir
+    )
+
+
+def drop_all() -> None:
+    from lilbee.runtime import get_store
+
+    get_store().drop_all()

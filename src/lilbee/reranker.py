@@ -121,7 +121,8 @@ class Reranker:
             final_score = fw * fusion_norm + rw * rerank_score
             blended.append((final_score, chunk))
 
-        if to_rerank and (to_rerank[0].relevance_score or 0) >= self._config.expansion_skip_threshold:
+        top_score = to_rerank[0].relevance_score or 0 if to_rerank else 0
+        if top_score >= self._config.expansion_skip_threshold:
             original_top = to_rerank[0]
             blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
             if blended_sorted[0][1] is not original_top:
