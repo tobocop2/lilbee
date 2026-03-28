@@ -302,7 +302,6 @@ class Config(BaseSettings):
         return {k: v for k, v in mapping.items() if v is not None}
 
 
-
 class _PlainEnvSource:
     """Env source that reads LILBEE_* env vars as plain strings.
 
