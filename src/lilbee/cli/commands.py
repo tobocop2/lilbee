@@ -484,7 +484,10 @@ def remove(
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    known = {s["filename"] for s in get_sources()}
+    from lilbee.runtime import get_store
+
+    _store = get_store()
+    known = {s["filename"] for s in _store.get_sources()}
     removed: list[str] = []
     not_found: list[str] = []
     docs_resolved = cfg.documents_dir.resolve()
@@ -493,8 +496,8 @@ def remove(
         if name not in known:
             not_found.append(name)
             continue
-        delete_by_source(name)
-        delete_source(name)
+        _store.delete_by_source(name)
+        _store.delete_source(name)
         removed.append(name)
         if delete_file:
             path = cfg.documents_dir / name
@@ -544,18 +547,17 @@ def ask(
         seed=seed,
     )
 
-    from lilbee.embedder import validate_model
     from lilbee.models import ensure_chat_model
+    from lilbee.runtime import get_embedder, get_searcher
 
     ensure_chat_model()
-    validate_model()
+    get_embedder().validate_model()
     auto_sync(console)
 
     try:
+        searcher = get_searcher()
         if cfg.json_mode:
-            from lilbee.query import ask_raw
-
-            result = ask_raw(question)
+            result = searcher.ask_raw(question)
             json_output(
                 {
                     "command": "ask",
@@ -566,9 +568,7 @@ def ask(
             )
             return
 
-        from lilbee.query import ask_stream
-
-        for token in ask_stream(question):
+        for token in searcher.ask_stream(question):
             console.print(token.content, end="")
         console.print()
     except RuntimeError as exc:

@@ -14,22 +14,17 @@ from typing import Any
 
 import httpx
 
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import LLMOptions, LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
 
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
-# Allowed generation option keys — prevents injection of arbitrary API params
-_ALLOWED_OPTIONS = frozenset(
-    {"temperature", "top_p", "top_k", "seed", "num_predict", "repeat_penalty", "num_ctx"}
-)
-
 
 def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Return only allowed generation options."""
-    return {k: v for k, v in options.items() if k in _ALLOWED_OPTIONS}
+    """Validate and filter generation options through LLMOptions model."""
+    return LLMOptions(**options).to_dict()
 
 
 def litellm_available() -> bool:

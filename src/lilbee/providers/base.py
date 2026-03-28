@@ -5,6 +5,28 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
+
+class LLMOptions(BaseModel):
+    """Validated options passed to LLM providers.
+
+    Only these fields are forwarded — everything else is rejected
+    to prevent injection of sensitive parameters like api_base or api_key.
+    """
+
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    seed: int | None = None
+    num_predict: int | None = None
+    repeat_penalty: float | None = None
+    num_ctx: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return only non-None values as a dict."""
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
 
 class ProviderError(Exception):
     """Raised when an LLM provider operation fails."""
