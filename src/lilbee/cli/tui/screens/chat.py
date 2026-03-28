@@ -370,7 +370,7 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
-        from lilbee import query
+        from lilbee.services import get_services
 
         response_parts: list[str] = []
         sources: list[str] = []
@@ -378,7 +378,7 @@ class ChatScreen(Screen[None]):
         try:
             with self._history_lock:
                 history_snapshot = self._history[:-1]
-            stream = query.ask_stream(question, history=history_snapshot)
+            stream = get_services().searcher.ask_stream(question, history=history_snapshot)
             for token in stream:
                 if token.is_reasoning:
                     self.app.call_from_thread(widget.append_reasoning, token.content)
