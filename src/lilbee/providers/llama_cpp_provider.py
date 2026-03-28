@@ -14,14 +14,29 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 
+if TYPE_CHECKING:
+    from lilbee.registry import ModelRegistry
+
 log = logging.getLogger(__name__)
 
-
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+
+_registry: ModelRegistry | None = None
+
+
+def _get_registry() -> ModelRegistry:
+    """Lazy-init and cache a ModelRegistry for the current models_dir."""
+    global _registry
+    if _registry is None:
+        from lilbee.config import cfg
+        from lilbee.registry import ModelRegistry as _Cls
+
+        _registry = _Cls(cfg.models_dir)
+    return _registry
 
 
 @dataclass
@@ -214,14 +229,26 @@ class _LockedStreamIterator:
 
 
 def _resolve_model_path(model: str) -> Path:
-    """Resolve a model name to a .gguf file path."""
+    """Resolve a model name to a .gguf file path.
+
+    Resolution order:
+    1. Registry manifest -> blob
+    2. Direct .gguf filename in models_dir
+    3. Append .gguf extension to model name
+    4. Prefix match (e.g. "nomic-embed-text" -> "nomic-embed-text-v1.5.Q4_K_M.gguf")
+    """
     from lilbee.config import cfg
+
+    registry = _get_registry()
+    try:
+        return registry.resolve(model)
+    except (KeyError, ValueError):
+        pass
 
     models_dir = cfg.models_dir
 
     # Direct path
     if model.endswith(".gguf"):
-        # Try in models_dir first
         candidate = models_dir / Path(model).name
         if candidate.exists():
             from lilbee.security import validate_path_within
@@ -234,6 +261,13 @@ def _resolve_model_path(model: str) -> Path:
         candidate = models_dir / f"{model}{ext}"
         if candidate.exists():
             return candidate
+
+    # Prefix match: "nomic-embed-text" matches "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    # Uses *.gguf glob + startswith filter to avoid glob injection
+    if models_dir.exists():
+        candidates = sorted(p for p in models_dir.glob("*.gguf") if p.name.startswith(model))
+        if candidates:
+            return candidates[0]
 
     raise ProviderError(
         f"Model {model!r} not found in {models_dir}. "

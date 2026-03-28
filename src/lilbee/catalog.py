@@ -351,42 +351,56 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
 
 
 def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
-    """Download a GGUF model from HuggingFace to cfg.models_dir."""
+    """Download a GGUF model from HuggingFace and register in the model registry."""
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve the filename pattern to an actual file
+    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    ref = ModelRef.parse(entry.name)
+
+    if registry.is_installed(ref):
+        blob_path = registry.resolve(ref)
+        log.info("Model already installed: %s", blob_path)
+        return blob_path
+
     filename = _resolve_filename(entry)
-    dest = cfg.models_dir / filename
-
-    if dest.exists():
-        log.info("Model already downloaded: %s", dest)
-        return dest
-
     url = HF_DOWNLOAD_URL.format(repo=entry.hf_repo, filename=filename)
-    log.info("Downloading %s → %s", url, dest)
+    log.info("Downloading %s", url)
 
     import tempfile
+    from datetime import UTC, datetime
 
     tmp_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".tmp", delete=False) as tmp_file:
-            tmp_name = tmp_file.name
+        with tempfile.NamedTemporaryFile(dir=cfg.models_dir, suffix=".tmp", delete=False) as tmp:
+            tmp_name = tmp.name
             with httpx.stream("GET", url, timeout=None, follow_redirects=True) as resp:
                 resp.raise_for_status()
                 total = int(resp.headers.get("content-length", 0))
                 downloaded = 0
                 for chunk in resp.iter_bytes(chunk_size=8192):
-                    tmp_file.write(chunk)
+                    tmp.write(chunk)
                     downloaded += len(chunk)
                     if on_progress and total > 0:
                         on_progress(downloaded, total)
-        Path(tmp_name).replace(dest)
+        tmp_path = Path(tmp_name)
+        manifest = ModelManifest(
+            name=ref.name,
+            tag=ref.tag,
+            size_bytes=tmp_path.stat().st_size,
+            task=entry.task,
+            source_repo=entry.hf_repo,
+            source_filename=filename,
+            downloaded_at=datetime.now(tz=UTC).isoformat(),
+        )
+        blob_path = registry.install(ref, tmp_path, manifest)
     except BaseException:
         if tmp_name is not None:
             Path(tmp_name).unlink(missing_ok=True)
         raise
 
-    return dest
+    return blob_path
 
 
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
