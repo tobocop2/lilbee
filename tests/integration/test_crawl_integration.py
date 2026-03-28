@@ -77,18 +77,15 @@ def isolated_env(tmp_path):
 
 
 @pytest.fixture()
-def allow_localhost():
+def allow_localhost(monkeypatch):
     """Temporarily allow crawling localhost by removing loopback from blocked_networks."""
     loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
     loopback_v6 = ipaddress.ip_network("::1/128")
-    removed = []
-    for net in (loopback_v4, loopback_v6):
-        if net in crawler_mod.blocked_networks:
-            crawler_mod.blocked_networks.remove(net)
-            removed.append(net)
+    filtered = tuple(
+        net for net in crawler_mod.get_blocked_networks() if net not in (loopback_v4, loopback_v6)
+    )
+    monkeypatch.setattr(crawler_mod, "get_blocked_networks", lambda: filtered)
     yield
-    for net in removed:
-        crawler_mod.blocked_networks.append(net)
 
 
 @pytest.fixture()

@@ -60,7 +60,8 @@ class CleanedChunk(BaseModel):
     source: str
     content_type: str
     chunk: str
-    distance: float
+    distance: float | None = None
+    relevance_score: float | None = None
     page_start: int = 0
     page_end: int = 0
     line_start: int = 0

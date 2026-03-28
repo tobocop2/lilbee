@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -32,7 +33,6 @@ from lilbee.config import cfg
 from lilbee.crawler import is_url, require_valid_crawl_url
 from lilbee.progress import EventType
 from lilbee.query import ChatMessage
-from lilbee.store import delete_by_source, delete_source, get_sources
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class ChatScreen(Screen[None]):
         super().__init__()
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
+        self._history_lock = threading.Lock()
         self._streaming = False
 
     def compose(self) -> ComposeResult:
@@ -223,8 +224,10 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
+        from lilbee.services import get_services
+
         try:
-            sources = get_sources()
+            sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
             self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
@@ -244,8 +247,9 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
             return
 
-        delete_by_source(name)
-        delete_source(name)
+        store = get_services().store
+        store.delete_by_source(name)
+        store.delete_source(name)
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
@@ -253,9 +257,13 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            cfg.chat_model = args
+            from lilbee.models import ensure_tag
+
+            tagged = ensure_tag(args)
+            cfg.chat_model = tagged
+            settings.set_value(cfg.data_root, "chat_model", tagged)
             self.app.title = f"lilbee — {cfg.chat_model}"
-            self.notify(msg.CMD_MODEL_SET.format(name=args))
+            self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
             self.app.push_screen(CatalogScreen())
@@ -296,6 +304,12 @@ class ChatScreen(Screen[None]):
             else:
                 parsed = defn.type(value)
             setattr(cfg, defn.cfg_attr, parsed)
+            persisted = str(parsed) if parsed is not None else ""
+            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
+            if defn.cfg_attr == "llm_provider":
+                from lilbee.services import reset_services
+
+                reset_services()
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
@@ -348,20 +362,23 @@ class ChatScreen(Screen[None]):
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
 
-        self._history.append({"role": "user", "content": text})
+        with self._history_lock:
+            self._history.append({"role": "user", "content": text})
         self._streaming = True
         self._stream_response(text, assistant_msg)
 
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
-        from lilbee.query import ask_stream
+        from lilbee import query
 
         response_parts: list[str] = []
         sources: list[str] = []
 
         try:
-            stream = ask_stream(question, history=self._history[:-1])
+            with self._history_lock:
+                history_snapshot = self._history[:-1]
+            stream = query.ask_stream(question, history=history_snapshot)
             for token in stream:
                 if token.is_reasoning:
                     self.app.call_from_thread(widget.append_reasoning, token.content)
@@ -375,12 +392,14 @@ class ChatScreen(Screen[None]):
             self._streaming = False
             full_response = "".join(response_parts)
             if full_response:
-                self._history.append({"role": "assistant", "content": full_response})
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": full_response})
                 self._trim_history()
             self.app.call_from_thread(widget.finish, sources)
             self.app.call_from_thread(self._scroll_to_bottom)
 
     def _trim_history(self) -> None:
+        """Trim history to max size. Caller must hold _history_lock."""
         """Drop oldest messages when history exceeds the cap."""
         if len(self._history) > _MAX_HISTORY_MESSAGES:
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
@@ -425,7 +444,7 @@ class ChatScreen(Screen[None]):
                     self.app.call_from_thread(sync_bar.set_status, status)
 
             result = asyncio.run(sync(on_progress=on_progress))
-            added = result.get("added", 0) if isinstance(result, dict) else 0
+            added = len(result.added)
             self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_DONE.format(count=added))
         except Exception:
             log.warning("Background sync failed", exc_info=True)

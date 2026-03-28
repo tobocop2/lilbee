@@ -355,20 +355,21 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     url = HF_DOWNLOAD_URL.format(repo=entry.hf_repo, filename=filename)
     log.info("Downloading %s → %s", url, dest)
 
+    tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
     try:
         with httpx.stream("GET", url, timeout=None, follow_redirects=True) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
-            with open(dest, "wb") as f:
+            with open(tmp_dest, "wb") as f:
                 for chunk in resp.iter_bytes(chunk_size=8192):
                     f.write(chunk)
                     downloaded += len(chunk)
                     if on_progress and total > 0:
                         on_progress(downloaded, total)
-    except httpx.HTTPError:
-        if dest.exists():
-            dest.unlink()
+        tmp_dest.rename(dest)
+    except BaseException:
+        tmp_dest.unlink(missing_ok=True)
         raise
 
     return dest

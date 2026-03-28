@@ -277,7 +277,7 @@ class TestChatScreenAsync:
             inp.value = "/model new-model"
             await pilot.press("enter")
             await pilot.pause()
-            assert cfg.chat_model == "new-model"
+            assert cfg.chat_model == "new-model:latest"
 
     @mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

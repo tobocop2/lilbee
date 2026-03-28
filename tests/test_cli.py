@@ -3,11 +3,12 @@
 import json
 import logging
 from unittest import mock
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
+import lilbee.services as svc_mod
 from lilbee.cli import (
     app,
     clean_result,
@@ -32,11 +33,42 @@ def _mock_stream(*texts: str):
 @pytest.fixture(autouse=True)
 def _skip_model_validation():
     """CLI tests never need real model validation or chat model checks."""
-    with (
-        mock.patch("lilbee.embedder.validate_model"),
-        mock.patch("lilbee.models.ensure_chat_model"),
-    ):
+    with mock.patch("lilbee.models.ensure_chat_model"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Provide a mock Services container for all CLI tests."""
+    from lilbee.services import Services
+
+    provider = MagicMock()
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.return_value = 0
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1] * 768
+    embedder.embed_batch.return_value = []
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    searcher = MagicMock()
+    searcher.search.return_value = []
+    searcher.ask_stream.return_value = _mock_stream("")
+    services = Services(
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        searcher=searcher,
+    )
+    svc_mod.set_services(services)
+    yield services
+    svc_mod.set_services(None)
 
 
 @pytest.fixture(autouse=True)
@@ -92,10 +124,15 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "Vision OCR:" not in result.output
 
-    def test_status_with_indexed_docs(self, isolated_env):
-        from lilbee.store import upsert_source
-
-        upsert_source("test.pdf", "abc123", 10)
+    def test_status_with_indexed_docs(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
+        ]
         result = runner.invoke(app, ["status"])
         assert "test.pdf" in result.output
         assert "10" in result.output
@@ -132,18 +169,14 @@ class TestSync:
 
 
 class TestRebuild:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_rebuild_empty(self, mock_embed, mock_embed_batch):
+    def test_rebuild_empty(self):
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
 
 
 class TestAdd:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_single_file(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    def test_add_single_file(self, isolated_env, tmp_path):
         """Adding a single file copies it and ingests it."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
@@ -154,9 +187,7 @@ class TestAdd:
         assert "Copied 1" in result.output
         assert (cfg.documents_dir / "manual.txt").exists()
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_directory(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    def test_add_directory(self, isolated_env, tmp_path):
         """Adding a directory recursively copies it."""
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
@@ -168,9 +199,7 @@ class TestAdd:
         assert (cfg.documents_dir / "docs" / "file1.txt").exists()
         assert (cfg.documents_dir / "docs" / "file2.txt").exists()
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_multiple_paths(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    def test_add_multiple_paths(self, isolated_env, tmp_path):
         """Adding multiple paths works."""
         f1 = tmp_path / "source" / "a.txt"
         f2 = tmp_path / "source" / "b.txt"
@@ -187,11 +216,7 @@ class TestAdd:
         result = runner.invoke(app, ["add", "/tmp/nonexistent_file_xyz.txt"])
         assert result.exit_code != 0
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_overwrites_existing_dir(
-        self, mock_embed, mock_embed_batch, isolated_env, tmp_path
-    ):
+    def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
         """Re-adding a directory with --force updates content."""
 
         src_dir = tmp_path / "source" / "docs"
@@ -206,9 +231,7 @@ class TestAdd:
         assert result.exit_code == 0
         assert (cfg.documents_dir / "docs" / "file1.txt").read_text() == "Version 2"
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_warns_on_existing(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    def test_add_warns_on_existing(self, isolated_env, tmp_path):
         """Adding a file that already exists warns without --force."""
         src_file = tmp_path / "source" / "manual.txt"
         src_file.parent.mkdir()
@@ -224,11 +247,7 @@ class TestAdd:
 
 
 class TestAddIgnoresDirs:
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_add_directory_skips_git_and_node_modules(
-        self, mock_embed, mock_embed_batch, isolated_env, tmp_path
-    ):
+    def test_add_directory_skips_git_and_node_modules(self, isolated_env, tmp_path):
         """Adding a directory filters out .git/ and node_modules/."""
 
         src_dir = tmp_path / "source" / "project"
@@ -252,17 +271,15 @@ class TestAddIgnoresDirs:
 
 
 class TestAsk:
-    @mock.patch("lilbee.query.ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_prints_response(self, mock_sync, mock_stream):
-        mock_stream.return_value = iter(["Hello", " world"])
+    def test_ask_prints_response(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("Hello", " world")
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.query.ask_stream")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_with_model_flag(self, mock_sync, mock_stream):
-        mock_stream.return_value = _mock_stream("answer")
+    def test_ask_with_model_flag(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         result = runner.invoke(app, ["ask", "question", "--model", "llama3"])
         assert result.exit_code == 0
 
@@ -275,9 +292,7 @@ class TestDataDirFlag:
         result = runner.invoke(app, ["status", "--data-dir", str(custom)])
         assert result.exit_code == 0
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_sync_with_data_dir(self, mock_embed, mock_embed_batch, tmp_path):
+    def test_sync_with_data_dir(self, tmp_path):
         custom = tmp_path / "custom"
         custom.mkdir()
         (custom / "documents").mkdir()
@@ -291,8 +306,8 @@ class TestAutoSync:
         new_callable=AsyncMock,
         return_value=SyncResult(added=["new.pdf"]),
     )
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
-    def test_auto_sync_prints_summary(self, mock_ask_stream, mock_sync):
+    def test_auto_sync_prints_summary(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0
         assert "Synced:" in result.output
@@ -588,33 +603,28 @@ class TestChatLaunchesTui:
 class TestListInstalledModels:
     """Test list_installed_models helper."""
 
-    def test_returns_model_names_with_tags(self):
-        mock_provider = mock.MagicMock()
-        mock_provider.list_models.return_value = ["llama3:latest"]
-        with mock.patch("lilbee.providers.get_provider", return_value=mock_provider):
-            assert list_installed_models() == ["llama3:latest"]
+    def test_returns_model_names_with_tags(self, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
+        assert list_installed_models() == ["llama3:latest"]
 
-    def test_returns_empty_on_error(self):
-        mock_provider = mock.MagicMock()
-        mock_provider.list_models.side_effect = ConnectionError("not running")
-        with mock.patch("lilbee.providers.get_provider", return_value=mock_provider):
-            assert list_installed_models() == []
+    def test_returns_empty_on_error(self, mock_svc):
+        mock_svc.provider.list_models.side_effect = ConnectionError("not running")
+        assert list_installed_models() == []
 
-    def test_excludes_embedding_model(self):
-        mock_provider = mock.MagicMock()
-        mock_provider.list_models.return_value = ["llama3:latest", "nomic-embed-text:latest"]
-        with mock.patch("lilbee.providers.get_provider", return_value=mock_provider):
-            result = list_installed_models()
-            assert result == ["llama3:latest"]
-            assert "nomic-embed-text:latest" not in result
+    def test_excludes_embedding_model(self, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest", "nomic-embed-text:latest"]
+        result = list_installed_models()
+        assert result == ["llama3:latest"]
+        assert "nomic-embed-text:latest" not in result
 
-    def test_exclude_vision_filters_vision_catalog(self):
-        mock_provider = mock.MagicMock()
-        mock_provider.list_models.return_value = ["llama3:latest", "maternion/LightOnOCR-2:latest"]
-        with mock.patch("lilbee.providers.get_provider", return_value=mock_provider):
-            result = list_installed_models(exclude_vision=True)
-            assert result == ["llama3:latest"]
-            assert "maternion/LightOnOCR-2:latest" not in result
+    def test_exclude_vision_filters_vision_catalog(self, mock_svc):
+        mock_svc.provider.list_models.return_value = [
+            "llama3:latest",
+            "maternion/LightOnOCR-2:latest",
+        ]
+        result = list_installed_models(exclude_vision=True)
+        assert result == ["llama3:latest"]
+        assert "maternion/LightOnOCR-2:latest" not in result
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:
@@ -689,8 +699,8 @@ _MOCK_SEARCH_RESULTS = [
 
 
 class TestSearch:
-    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
-    def test_search_json_with_results(self, mock_search):
+    def test_search_json_with_results(self, mock_svc):
+        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -700,54 +710,46 @@ class TestSearch:
         assert "vector" not in data["results"][0]
         assert "distance" in data["results"][0]
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
-    def test_search_json_empty_results(self, mock_search):
+    def test_search_json_empty_results(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
         result = runner.invoke(app, ["--json", "search", "nothing"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
-    @mock.patch("lilbee.query.search_context", return_value=_MOCK_SEARCH_RESULTS)
-    def test_search_human_output(self, mock_search):
+    def test_search_human_output(self, mock_svc):
+        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "manual.pdf" in result.output
 
-    @mock.patch(
-        "lilbee.query.search_context",
-        return_value=[_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})],
-    )
-    def test_search_human_truncates_long_chunks(self, mock_search):
+    def test_search_human_truncates_long_chunks(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
+            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})
+        ]
         result = runner.invoke(app, ["search", "test"])
         assert result.exit_code == 0
-        # Chunk is truncated (100 chars doesn't all appear, Rich truncates with …)
         assert result.output.count("x") < 100
 
-    @mock.patch("lilbee.query.search_context", return_value=[])
-    def test_search_human_no_results(self, mock_search):
+    def test_search_human_no_results(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
         result = runner.invoke(app, ["search", "nothing"])
         assert result.exit_code == 0
         assert "No results found" in result.output
 
-    @mock.patch(
-        "lilbee.query.search_context",
-        return_value=[
+    def test_search_human_hybrid_shows_score(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
             _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ],
-    )
-    def test_search_human_hybrid_shows_score(self, mock_search):
+        ]
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "Score" in result.output
         assert "0.85" in result.output
 
-    @mock.patch(
-        "lilbee.query.search_context",
-        return_value=[
+    def test_search_json_hybrid_has_relevance_score(self, mock_svc):
+        mock_svc.searcher.search.return_value = [
             _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ],
-    )
-    def test_search_json_hybrid_has_relevance_score(self, mock_search):
+        ]
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -778,69 +780,94 @@ class TestVersionFlag:
 class TestRemove:
     """Test remove command."""
 
-    def test_remove_existing_source(self, isolated_env):
-        from lilbee.store import get_sources, upsert_source
-
-        upsert_source("test.pdf", "abc123", 10)
-        assert len(get_sources()) == 1
-
+    def test_remove_existing_source(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
+        ]
         result = runner.invoke(app, ["remove", "test.pdf"])
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert "test.pdf" in result.output
-        assert len(get_sources()) == 0
+        mock_svc.store.delete_by_source.assert_called_with("test.pdf")
+        mock_svc.store.delete_source.assert_called_with("test.pdf")
 
-    def test_remove_nonexistent_source(self):
+    def test_remove_nonexistent_source(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = runner.invoke(app, ["remove", "nope.pdf"])
         assert result.exit_code == 1
         assert "Not found" in result.output
 
-    def test_remove_multiple_sources(self, isolated_env):
-        from lilbee.store import get_sources, upsert_source
-
-        upsert_source("a.pdf", "hash1", 5)
-        upsert_source("b.pdf", "hash2", 3)
-
+    def test_remove_multiple_sources(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "a.pdf",
+                "file_hash": "hash1",
+                "chunk_count": 5,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+            {
+                "filename": "b.pdf",
+                "file_hash": "hash2",
+                "chunk_count": 3,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
         result = runner.invoke(app, ["remove", "a.pdf", "b.pdf"])
         assert result.exit_code == 0
         assert "a.pdf" in result.output
         assert "b.pdf" in result.output
-        assert len(get_sources()) == 0
 
-    def test_remove_mixed_existing_and_not(self, isolated_env):
-        from lilbee.store import get_sources, upsert_source
-
-        upsert_source("a.pdf", "hash1", 5)
-
+    def test_remove_mixed_existing_and_not(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "a.pdf",
+                "file_hash": "hash1",
+                "chunk_count": 5,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
         result = runner.invoke(app, ["remove", "a.pdf", "nope.pdf"])
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert "Not found" in result.output
-        assert len(get_sources()) == 0
 
-    def test_remove_with_delete_flag(self, isolated_env):
-        from lilbee.store import upsert_source
-
+    def test_remove_with_delete_flag(self, isolated_env, mock_svc):
         doc = cfg.documents_dir / "test.txt"
         doc.write_text("content")
-        upsert_source("test.txt", "abc123", 1)
-
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
         result = runner.invoke(app, ["remove", "--delete", "test.txt"])
         assert result.exit_code == 0
         assert not doc.exists()
 
-    def test_remove_json(self, isolated_env):
-        from lilbee.store import upsert_source
-
-        upsert_source("test.pdf", "abc123", 10)
-
+    def test_remove_json(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
         result = runner.invoke(app, ["--json", "remove", "test.pdf"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["command"] == "remove"
         assert "test.pdf" in data["removed"]
 
-    def test_remove_json_not_found(self):
+    def test_remove_json_not_found(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -851,94 +878,105 @@ class TestRemove:
 class TestChunks:
     """Test chunks command."""
 
-    def test_chunks_nonexistent_source(self):
+    def test_chunks_nonexistent_source(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = runner.invoke(app, ["chunks", "nope.pdf"])
         assert result.exit_code == 1
         assert "Source not found" in result.output
 
-    def test_chunks_nonexistent_json(self):
+    def test_chunks_nonexistent_json(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
         result = runner.invoke(app, ["--json", "chunks", "nope.pdf"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "error" in data
 
-    def test_chunks_with_source(self, isolated_env):
-        from lilbee.store import add_chunks, upsert_source
-
-        upsert_source("test.txt", "abc123", 2)
-        add_chunks(
-            [
-                {
-                    "source": "test.txt",
-                    "content_type": "text",
-                    "page_start": 0,
-                    "page_end": 0,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "First chunk content",
-                    "chunk_index": 0,
-                    "vector": [0.1] * 768,
-                },
-                {
-                    "source": "test.txt",
-                    "content_type": "text",
-                    "page_start": 0,
-                    "page_end": 0,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "Second chunk content",
-                    "chunk_index": 1,
-                    "vector": [0.2] * 768,
-                },
-            ]
-        )
+    def test_chunks_with_source(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 2,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            SearchChunk(
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="First chunk content",
+                chunk_index=0,
+                vector=[0.1] * 768,
+            ),
+            SearchChunk(
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="Second chunk content",
+                chunk_index=1,
+                vector=[0.2] * 768,
+            ),
+        ]
         result = runner.invoke(app, ["chunks", "test.txt"])
         assert result.exit_code == 0
         assert "2 chunks" in result.output
         assert "First chunk" in result.output
 
-    def test_chunks_truncates_long_chunk(self, isolated_env):
-        from lilbee.store import add_chunks, upsert_source
-
-        upsert_source("long.txt", "abc123", 1)
-        add_chunks(
-            [
-                {
-                    "source": "long.txt",
-                    "content_type": "text",
-                    "page_start": 0,
-                    "page_end": 0,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "x" * 200,
-                    "chunk_index": 0,
-                    "vector": [0.1] * 768,
-                },
-            ]
-        )
+    def test_chunks_truncates_long_chunk(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "long.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            SearchChunk(
+                source="long.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="x" * 200,
+                chunk_index=0,
+                vector=[0.1] * 768,
+            ),
+        ]
         result = runner.invoke(app, ["chunks", "long.txt"])
         assert result.exit_code == 0
         assert "..." in result.output
 
-    def test_chunks_json(self, isolated_env):
-        from lilbee.store import add_chunks, upsert_source
-
-        upsert_source("test.txt", "abc123", 1)
-        add_chunks(
-            [
-                {
-                    "source": "test.txt",
-                    "content_type": "text",
-                    "page_start": 0,
-                    "page_end": 0,
-                    "line_start": 0,
-                    "line_end": 0,
-                    "chunk": "Chunk content",
-                    "chunk_index": 0,
-                    "vector": [0.1] * 768,
-                },
-            ]
-        )
+    def test_chunks_json(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            SearchChunk(
+                source="test.txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="Chunk content",
+                chunk_index=0,
+                vector=[0.1] * 768,
+            ),
+        ]
         result = runner.invoke(app, ["--json", "chunks", "test.txt"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1105,10 +1143,15 @@ class TestStatusJson:
         assert data["sources"] == []
         assert data["total_chunks"] == 0
 
-    def test_status_json_with_sources(self, isolated_env):
-        from lilbee.store import upsert_source
-
-        upsert_source("test.pdf", "abc123hash", 10)
+    def test_status_json_with_sources(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "test.pdf",
+                "file_hash": "abc123hash",
+                "chunk_count": 10,
+                "ingested_at": "2026-01-01T00:00:00",
+            }
+        ]
         result = runner.invoke(app, ["--json", "status"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1189,12 +1232,11 @@ class TestAddJson:
 
 
 class TestAskJson:
-    @mock.patch("lilbee.query.ask_raw")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_json(self, mock_sync, mock_ask_raw):
+    def test_ask_json(self, mock_sync, mock_svc):
         from lilbee.query import AskResult
 
-        mock_ask_raw.return_value = AskResult(
+        mock_svc.searcher.ask_raw.return_value = AskResult(
             answer="5 quarts",
             sources=[
                 SearchChunk(
@@ -1221,12 +1263,13 @@ class TestAskJson:
         assert "vector" not in data["sources"][0]
         assert "distance" in data["sources"][0]
 
-    @mock.patch("lilbee.query.ask_raw")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_json_no_results(self, mock_sync, mock_ask_raw):
+    def test_ask_json_no_results(self, mock_sync, mock_svc):
         from lilbee.query import AskResult
 
-        mock_ask_raw.return_value = AskResult(answer="No relevant documents found.", sources=[])
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="No relevant documents found.", sources=[]
+        )
         result = runner.invoke(app, ["--json", "ask", "anything"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1237,16 +1280,16 @@ class TestAskJson:
 class TestAskModelNotFound:
     """CLI should show a friendly error when the model doesn't exist."""
 
-    @mock.patch("lilbee.query.ask_stream", side_effect=RuntimeError("Model 'bad' not found"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_model_not_found_human(self, mock_sync, mock_ask_stream):
+    def test_ask_model_not_found_human(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.side_effect = RuntimeError("Model 'bad' not found")
         result = runner.invoke(app, ["ask", "hello"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @mock.patch("lilbee.query.ask_raw", side_effect=RuntimeError("Model 'bad' not found"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_model_not_found_json(self, mock_sync, mock_ask_raw):
+    def test_ask_model_not_found_json(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_raw.side_effect = RuntimeError("Model 'bad' not found")
         result = runner.invoke(app, ["--json", "ask", "hello"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
@@ -1313,19 +1356,18 @@ class TestBackendUnavailable:
 class TestEnsureChatModelWiring:
     """Verify that ask and chat call ensure_chat_model before running."""
 
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_calls_ensure_chat_model(self, mock_sync, mock_ask_stream):
+    def test_ask_calls_ensure_chat_model(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
         with mock.patch("lilbee.models.ensure_chat_model") as mock_ensure:
             runner.invoke(app, ["ask", "test"])
             mock_ensure.assert_called_once()
 
-    @mock.patch("lilbee.query.ask_stream", return_value=_mock_stream("answer"))
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_ask_calls_validate_model(self, mock_sync, mock_ask_stream):
-        with mock.patch("lilbee.embedder.validate_model") as mock_val:
-            runner.invoke(app, ["ask", "test"])
-            mock_val.assert_called_once()
+    def test_ask_calls_validate_model(self, mock_sync, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
+        runner.invoke(app, ["ask", "test"])
+        mock_svc.embedder.validate_model.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1555,9 +1597,7 @@ class TestVisionTimeout:
         assert result.exit_code == 0
         assert cfg.vision_timeout == 60.0
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_vision_timeout_on_add(self, mock_embed, mock_embed_batch, isolated_env, tmp_path):
+    def test_vision_timeout_on_add(self, isolated_env, tmp_path, mock_svc):
         """--vision-timeout sets cfg.vision_timeout for add."""
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
@@ -1567,9 +1607,7 @@ class TestVisionTimeout:
         assert result.exit_code == 0
         assert cfg.vision_timeout == 90.0
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
-    def test_vision_timeout_on_rebuild(self, mock_embed, mock_embed_batch):
+    def test_vision_timeout_on_rebuild(self, mock_svc):
         """--vision-timeout sets cfg.vision_timeout for rebuild."""
         with mock.patch("lilbee.cli.commands._ensure_vision_model"):
             result = runner.invoke(app, ["rebuild", "--vision", "--vision-timeout=120"])
@@ -1654,9 +1692,10 @@ class TestIngestShutdownError:
 class TestAddWithUrls:
     """Tests for URL crawling through the add CLI command."""
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl):
+    def test_add_url_triggers_crawl(self, mock_sync, mock_crawl, mock_avail):
         """Adding a URL calls the crawler instead of copying files."""
         result = runner.invoke(app, ["add", "https://example.com"])
         assert result.exit_code == 0
@@ -1664,33 +1703,37 @@ class TestAddWithUrls:
         args = mock_crawl.call_args
         assert args[0][0] == ["https://example.com"]
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl):
+    def test_add_url_with_crawl_flag(self, mock_sync, mock_crawl, mock_avail):
         """--crawl flag is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["crawl"] is True
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_depth(self, mock_sync, mock_crawl):
+    def test_add_url_with_depth(self, mock_sync, mock_crawl, mock_avail):
         """--depth is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--depth", "3", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["depth"] == 3
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_with_max_pages(self, mock_sync, mock_crawl):
+    def test_add_url_with_max_pages(self, mock_sync, mock_crawl, mock_avail):
         """--max-pages is passed through to the crawler."""
         result = runner.invoke(app, ["add", "--crawl", "--max-pages", "10", "https://example.com"])
         assert result.exit_code == 0
         assert mock_crawl.call_args[1]["max_pages"] == 10
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_add_url_json_mode(self, mock_sync, mock_crawl, isolated_env):
+    def test_add_url_json_mode(self, mock_sync, mock_crawl, mock_avail, isolated_env):
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
 
@@ -1701,11 +1744,10 @@ class TestAddWithUrls:
         assert data["command"] == "add"
         assert data["crawled"] == 1
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[[0.1] * 768])
-    @mock.patch("lilbee.embedder.embed", return_value=[0.1] * 768)
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     def test_add_mixed_urls_and_files(
-        self, mock_crawl, mock_embed, mock_embed_batch, isolated_env, tmp_path
+        self, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc
     ):
         """Mixing URLs and file paths in one add command."""
         src = tmp_path / "source" / "doc.txt"
@@ -1848,28 +1890,26 @@ class TestTopicsCommand:
         output = json.loads(result.output)
         assert "error" in output
 
-    @mock.patch("lilbee.concepts.top_communities")
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_overview_shows_communities(self, _mock_avail, mock_get_graph, mock_top):
+    def test_overview_shows_communities(self, _mock_avail, mock_svc):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True
-        mock_top.return_value = [
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = [
             Community(cluster_id=0, size=3, concepts=["python", "django", "flask"]),
         ]
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 0
         assert "python" in result.output
 
-    @mock.patch("lilbee.concepts.top_communities")
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_overview_json_mode(self, _mock_avail, mock_get_graph, mock_top):
+    def test_overview_json_mode(self, _mock_avail, mock_svc):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True
-        mock_top.return_value = [
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = [
             Community(cluster_id=0, size=2, concepts=["ml", "ai"]),
         ]
         result = runner.invoke(app, ["--json", "topics"])
@@ -1878,87 +1918,83 @@ class TestTopicsCommand:
         assert output["command"] == "topics"
         assert len(output["communities"]) == 1
 
-    @mock.patch("lilbee.concepts.expand_query", return_value=["django", "flask"])
-    @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_query_shows_related_concepts(
-        self, _mock_avail, mock_get_graph, mock_extract, mock_expand
-    ):
+    def test_query_shows_related_concepts(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.expand_query.return_value = ["django", "flask"]
         result = runner.invoke(app, ["topics", "python"])
         assert result.exit_code == 0
         assert "django" in result.output
 
-    @mock.patch("lilbee.concepts.expand_query", return_value=["django"])
-    @mock.patch("lilbee.concepts.extract_concepts", return_value=["python"])
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_query_json_mode(self, _mock_avail, mock_get_graph, mock_extract, mock_expand):
+    def test_query_json_mode(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.expand_query.return_value = ["django"]
         result = runner.invoke(app, ["--json", "topics", "python"])
         assert result.exit_code == 0
         output = json.loads(result.output)
         assert "python" in output["concepts"]
         assert "django" in output["concepts"]
 
-    @mock.patch("lilbee.concepts.top_communities", return_value=[])
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_no_communities(self, _mock_avail, mock_get_graph, mock_top):
+    def test_no_communities(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = []
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 0
         assert "No concept communities" in result.output
 
-    @mock.patch("lilbee.concepts.expand_query", return_value=[])
-    @mock.patch("lilbee.concepts.extract_concepts", return_value=[])
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_query_no_concepts(self, _mock_avail, mock_get_graph, mock_extract, mock_expand):
+    def test_query_no_concepts(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = []
+        mock_svc.concepts.expand_query.return_value = []
         result = runner.invoke(app, ["topics", "???"])
         assert result.exit_code == 0
         assert "No concepts found" in result.output
 
-    @mock.patch("lilbee.concepts.get_graph", return_value=False)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_graph_none_shows_error(self, _mock_avail, mock_get_graph):
+    def test_graph_none_shows_error(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = False
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 1
         assert "not available" in result.output.lower()
 
-    @mock.patch("lilbee.concepts.get_graph", return_value=False)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_graph_none_json_mode(self, _mock_avail, mock_get_graph):
+    def test_graph_none_json_mode(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = False
         result = runner.invoke(app, ["--json", "topics"])
         assert result.exit_code == 1
         output = json.loads(result.output)
         assert "error" in output
 
-    @mock.patch("lilbee.concepts.top_communities", return_value=[])
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_top_k_option(self, _mock_avail, mock_get_graph, mock_top):
+    def test_top_k_option(self, _mock_avail, mock_svc):
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = []
         runner.invoke(app, ["topics", "--top-k", "5"])
-        mock_top.assert_called_once_with(k=5)
+        mock_svc.concepts.top_communities.assert_called_once_with(k=5)
 
-    @mock.patch("lilbee.concepts.top_communities")
-    @mock.patch("lilbee.concepts.get_graph", return_value=True)
     @mock.patch("lilbee.concepts.concepts_available", return_value=True)
-    def test_large_community_shows_more_count(self, _mock_avail, mock_get_graph, mock_top):
+    def test_large_community_shows_more_count(self, _mock_avail, mock_svc):
         from lilbee.concepts import Community
 
         cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
         many_concepts = [f"concept_{i}" for i in range(8)]
-        mock_top.return_value = [
+        mock_svc.concepts.top_communities.return_value = [
             Community(cluster_id=0, size=8, concepts=many_concepts),
         ]
         result = runner.invoke(app, ["topics"])
         assert result.exit_code == 0
-        # Rich table may wrap text across lines, so check for the key parts
         assert "concept_0" in result.output
         assert "more)" in result.output

@@ -14,12 +14,17 @@ from typing import Any
 
 import httpx
 
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import LLMOptions, LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
 
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
+
+
+def _filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model."""
+    return LLMOptions(**options).to_dict()
 
 
 def litellm_available() -> bool:
@@ -98,7 +103,7 @@ class LiteLLMProvider(LLMProvider):
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if options:
-            kwargs.update(options)
+            kwargs.update(_filter_options(options))
 
         try:
             response = litellm.completion(**kwargs)
@@ -164,6 +169,9 @@ class LiteLLMProvider(LLMProvider):
             return None
         except httpx.HTTPError:
             return None
+
+    def shutdown(self) -> None:
+        """No resources to release for litellm provider."""
 
 
 def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

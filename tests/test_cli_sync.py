@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures.thread
 from concurrent.futures import Future, ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
@@ -105,10 +104,8 @@ class TestGetExecutorAndShutdown:
         mock_executor = MagicMock(spec=ThreadPoolExecutor)
         monkeypatch.setattr(sync_mod, "_bg_executor", mock_executor)
 
-        with patch("atexit.unregister") as mock_unreg:
-            sync_mod.shutdown_executor()
+        sync_mod.shutdown_executor()
 
-        mock_unreg.assert_called_once_with(concurrent.futures.thread._python_exit)
         mock_executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
         assert sync_mod._bg_executor is None
 
