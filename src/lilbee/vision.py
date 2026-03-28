@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
-from lilbee.providers.factory import get_provider
-
 log = logging.getLogger(__name__)
 
 _OCR_PROMPT = (
@@ -72,7 +70,9 @@ def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
     """Send a page image to a vision model and return extracted text."""
     try:
-        provider = get_provider()
+        from lilbee.services import get_services
+
+        provider = get_services().provider
         messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
         return cast(str, provider.chat(messages, stream=False, model=model))
     except Exception as exc:

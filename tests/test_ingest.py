@@ -2,10 +2,11 @@
 
 from pathlib import Path
 from unittest import mock
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import lilbee.services as svc_mod
 from lilbee.config import cfg
 
 
@@ -26,10 +27,46 @@ def isolated_env(tmp_path):
     # Reset store singleton so next test gets fresh connection
     import lilbee.store as store_mod
 
-    store_mod._default_store = None
+    store_mod._store = None
 
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Provide a mock Services container for all ingest tests."""
+    from lilbee.services import Services
+
+    provider = MagicMock()
+    _sources: dict[str, dict] = {}
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.side_effect = lambda: list(_sources.values())
+    store.add_chunks.side_effect = lambda records: len(records)
+    store.upsert_source.side_effect = lambda fn, fh, cc: _sources.update(
+        {fn: {"filename": fn, "file_hash": fh, "chunk_count": cc, "ingested_at": ""}}
+    )
+    store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
+    store.delete_by_source.return_value = None
+    store.drop_all.side_effect = lambda: _sources.clear()
+    store.ensure_fts_index.return_value = None
+    embedder = MagicMock()
+    embedder.embed.side_effect = lambda text, **kw: [0.1] * 768
+    embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
+    reranker = MagicMock()
+    reranker.rerank.side_effect = lambda q, r, **kw: r
+    concepts = MagicMock()
+    concepts.get_graph.return_value = False
+    searcher = MagicMock()
+    services = Services(
+        provider=provider, store=store, embedder=embedder,
+        reranker=reranker, concepts=concepts, searcher=searcher,
+    )
+    svc_mod._svc = services
+    yield services
+    svc_mod._svc = None
 
 
 def _fake_embed_batch(texts, **kwargs):
@@ -74,30 +111,23 @@ def _make_empty_result():
     return result
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestSync:
-    async def test_empty_documents_dir(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_empty_documents_dir(self, mock_extract_file, isolated_env):
         from lilbee.ingest import SyncResult, sync
 
         result = await sync()
         assert result == SyncResult()
 
-    async def test_ingest_text_file(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
-    ):
+    async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
         from lilbee.ingest import sync
 
         result = await sync()
-        assert "concept_test2.txt" in result.added
+        assert "test.txt" in result.added
 
     async def test_quiet_mode_suppresses_progress(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.ingest import sync
@@ -106,7 +136,7 @@ class TestSync:
         assert "quiet.txt" in result.added
 
     async def test_on_progress_callback_quiet(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "cb.txt").write_text("Callback test.")
         from lilbee.ingest import sync
@@ -123,7 +153,7 @@ class TestSync:
         assert file_done["status"] == "ok"
 
     async def test_on_progress_callback_with_progress_bar(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "cb2.txt").write_text("Callback with progress bar.")
         from lilbee.ingest import sync
@@ -137,7 +167,7 @@ class TestSync:
         assert file_done["status"] == "ok"
 
     async def test_ingest_markdown_file(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
         from lilbee.ingest import sync
@@ -145,7 +175,7 @@ class TestSync:
         assert "readme.md" in (await sync()).added
 
     async def test_ingest_html_file(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "page.html").write_text("<p>Content</p>")
         from lilbee.ingest import sync
@@ -153,7 +183,7 @@ class TestSync:
         assert "page.html" in (await sync()).added
 
     async def test_ingest_rst_file(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "doc.rst").write_text("Title\n=====\n\nContent.")
         from lilbee.ingest import sync
@@ -161,7 +191,7 @@ class TestSync:
         assert "doc.rst" in (await sync()).added
 
     async def test_modified_file_reingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         f = isolated_env / "changing.txt"
         f.write_text("Version 1")
@@ -172,7 +202,7 @@ class TestSync:
         assert "changing.txt" in (await sync()).updated
 
     async def test_deleted_file_removed(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         f = isolated_env / "temp.txt"
         f.write_text("Temporary")
@@ -183,7 +213,7 @@ class TestSync:
         assert "temp.txt" in (await sync()).removed
 
     async def test_unchanged_file_skipped(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "stable.txt").write_text("I stay the same")
         from lilbee.ingest import sync
@@ -194,7 +224,7 @@ class TestSync:
         assert result.added == []
 
     async def test_unsupported_extension_skipped(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "data.zip").write_bytes(b"binary data")
         from lilbee.ingest import sync
@@ -202,7 +232,7 @@ class TestSync:
         assert (await sync()).added == []
 
     async def test_hidden_files_skipped(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / ".hidden").write_text("secret")
         from lilbee.ingest import sync
@@ -210,7 +240,7 @@ class TestSync:
         assert (await sync()).added == []
 
     async def test_subdirectory_files_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         sub = isolated_env / "subdir"
         sub.mkdir()
@@ -220,7 +250,7 @@ class TestSync:
         assert any("nested.txt" in f for f in (await sync()).added)
 
     async def test_code_file_ingested(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "example.py").write_text("def hello():\n    print('hi')\n")
         from lilbee.ingest import sync
@@ -228,7 +258,7 @@ class TestSync:
         assert "example.py" in (await sync()).added
 
     async def test_force_rebuild_clears_and_reingests(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         (isolated_env / "keep.txt").write_text("I survive rebuilds")
         from lilbee.ingest import sync
@@ -238,7 +268,7 @@ class TestSync:
         assert "keep.txt" in result.added
 
     async def test_ingest_pdf(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -256,9 +286,6 @@ class TestSync:
     async def test_nonexistent_documents_dir(
         self,
         mock_extract_file,
-        mock_embed_batch,
-        mock_embed,
-        mock_validate_model,
         isolated_env,
         tmp_path,
     ):
@@ -271,7 +298,7 @@ class TestSync:
         assert nonexistent.exists()  # Directory was auto-created
 
     async def test_ingest_error_logged_not_raised(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """A file that fails ingestion is logged but doesn't crash sync."""
         from unittest.mock import patch
@@ -296,7 +323,7 @@ class TestSync:
         assert "bad.txt" in result.failed
 
     async def test_ingest_error_on_update_tracked_as_failed(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """A file that fails re-ingestion on update goes to failed, not updated."""
         from unittest.mock import patch
@@ -323,7 +350,7 @@ class TestSync:
         assert "flaky.txt" in result.failed
 
     async def test_ingest_error_in_quiet_mode(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """Quiet-mode error handling works the same as non-quiet."""
         from unittest.mock import patch
@@ -340,7 +367,7 @@ class TestSync:
         assert "bad.txt" not in result.added
 
     async def test_ingest_error_on_update_quiet_mode(
-        self, mock_extract_file, mock_embed_batch, mock_embed, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """Quiet-mode update failure tracks in failed list."""
         from unittest.mock import patch
@@ -368,10 +395,9 @@ class TestSync:
 class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_empty_result())
     async def testingest_document_empty_chunks(
-        self, mock_extract_file, mock_embed_batch, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """Document that produces no chunks returns empty list."""
         from lilbee.ingest import ingest_document
@@ -381,8 +407,7 @@ class TestIngestHelpers:
         result = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", return_value=[])
-    async def test_ingest_code_empty_chunks(self, mock_embed_batch, isolated_env):
+    async def test_ingest_code_empty_chunks(self, isolated_env):
         """Code file that produces no chunks returns empty list."""
         from unittest.mock import patch
 
@@ -394,9 +419,8 @@ class TestIngestHelpers:
             result = ingest_code_sync(f, "empty.py")
             assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def testingest_document_pdf_with_pages(self, mock_kf, mock_embed_batch, isolated_env):
+    async def testingest_document_pdf_with_pages(self, mock_kf, isolated_env):
         """PDF document returns records with page metadata."""
         mock_kf.return_value = _make_kreuzberg_result(
             text="Page 1 content. " * 10 + "Page 2 content. " * 10,
@@ -414,13 +438,11 @@ class TestIngestHelpers:
 
 
 class TestCancellation:
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_cancelled_error_propagates(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """CancelledError in _process_one is re-raised, not swallowed."""
         import asyncio
@@ -550,19 +572,16 @@ class TestApplyResultZeroChunks:
         assert "scanned.pdf" not in updated
         assert "scanned.pdf" not in failed
 
-    def test_nonzero_chunks_recorded(self):
+    def test_nonzero_chunks_recorded(self, mock_svc):
         from lilbee.ingest import _apply_result, _IngestResult
 
         added = ["doc.pdf"]
         updated: list[str] = []
         failed: list[str] = []
         result = _IngestResult("doc.pdf", Path("doc.pdf"), chunk_count=5, error=None)
-        with (
-            mock.patch("lilbee.ingest.store") as mock_store,
-            mock.patch("lilbee.ingest.file_hash", return_value="abc123"),
-        ):
+        with mock.patch("lilbee.ingest.file_hash", return_value="abc123"):
             _apply_result(result, added, updated, failed)
-        mock_store.upsert_source.assert_called_once()
+        mock_svc.store.upsert_source.assert_called_once()
         assert "doc.pdf" in added
 
 
@@ -684,17 +703,11 @@ class TestClassifyStructuredFormats:
         assert classify_file(Path(filename)) == expected
 
 
-@mock.patch("lilbee.embedder.validate_model")
-@mock.patch("lilbee.embedder.embed", side_effect=_fake_embed)
-@mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
 class TestSyncStructuredFormats:
     async def test_xml_file_ingested(
         self,
         mock_extract_file,
-        mock_embed_batch,
-        mock_embed,
-        mock_validate_model,
         isolated_env,
     ):
         (isolated_env / "data.xml").write_text("<root><item>value</item></root>")
@@ -706,9 +719,6 @@ class TestSyncStructuredFormats:
     async def test_json_file_ingested(
         self,
         mock_extract_file,
-        mock_embed_batch,
-        mock_embed,
-        mock_validate_model,
         isolated_env,
     ):
         (isolated_env / "data.json").write_text('{"key": "value"}')
@@ -720,9 +730,6 @@ class TestSyncStructuredFormats:
     async def test_jsonl_file_ingested(
         self,
         mock_extract_file,
-        mock_embed_batch,
-        mock_embed,
-        mock_validate_model,
         isolated_env,
     ):
         (isolated_env / "data.jsonl").write_text('{"key": "value"}\n{"key2": "value2"}')
@@ -734,9 +741,6 @@ class TestSyncStructuredFormats:
     async def test_csv_file_ingested(
         self,
         mock_extract_file,
-        mock_embed_batch,
-        mock_embed,
-        mock_validate_model,
         isolated_env,
     ):
         (isolated_env / "data.csv").write_text("name,age\nAlice,30\nBob,25")
@@ -777,10 +781,9 @@ class TestHasMeaningfulText:
 
 
 class TestVisionFallback:
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_called_for_empty_pdf(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When PDF extraction is empty and vision_model is set, fall back to vision."""
         cfg.vision_model = "test-vision"
@@ -806,10 +809,9 @@ class TestVisionFallback:
         assert result[0]["content_type"] == "pdf"
         assert result[0]["page_start"] == 1
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_quiet_false_by_default(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """Without quiet=True, vision fallback passes quiet=False."""
         cfg.vision_model = "test-vision"
@@ -831,10 +833,9 @@ class TestVisionFallback:
             f, "test-vision", quiet=False, timeout=120.0, on_progress=mock.ANY
         )
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_ingest_file_threads_quiet_to_vision(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """quiet=True flows from _ingest_file through ingest_document to vision."""
         cfg.vision_model = "test-vision"
@@ -856,10 +857,9 @@ class TestVisionFallback:
             f, "test-vision", quiet=True, timeout=120.0, on_progress=mock.ANY
         )
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_not_called_without_model(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When vision_model is empty, no fallback occurs (Tesseract tried first)."""
         mock_kf.return_value = _make_empty_result()
@@ -874,10 +874,9 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_not_called_for_non_pdf(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """Vision fallback only triggers for PDF content type."""
         mock_kf.return_value = _make_empty_result()
@@ -892,10 +891,9 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_empty_vision_text_returns_empty(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When vision also returns empty text, return empty list."""
         cfg.vision_model = "test-vision"
@@ -911,10 +909,9 @@ class TestVisionFallback:
             result = await ingest_document(f, "blank.pdf", "pdf")
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_no_vision_fallback_when_text_meaningful(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When kreuzberg produces meaningful text, no vision fallback."""
         mock_kf.return_value = _make_kreuzberg_result(
@@ -931,10 +928,9 @@ class TestVisionFallback:
         mock_vision.assert_not_called()
         assert len(result) > 0
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_no_chunks_returns_empty(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When vision text produces no chunks, return empty list."""
         cfg.vision_model = "test-vision"
@@ -957,10 +953,9 @@ class TestVisionFallback:
 class TestTesseractOcrMiddleTier:
     """Tests for the Tesseract OCR tier between text extraction and vision fallback."""
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_succeeds_skips_vision(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When Tesseract OCR produces meaningful text, vision is not called."""
         cfg.vision_model = ""
@@ -981,10 +976,9 @@ class TestTesseractOcrMiddleTier:
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_fails_falls_through_to_vision(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When Tesseract OCR also yields < 50 chars, fall through to vision."""
         cfg.vision_model = "test-vision"
@@ -1006,9 +1000,8 @@ class TestTesseractOcrMiddleTier:
         mock_vision.assert_called_once()
         assert len(result) > 0
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_tesseract_exception_falls_through(self, mock_kf, mock_embed_batch, isolated_env):
+    async def test_tesseract_exception_falls_through(self, mock_kf, isolated_env):
         """When Tesseract is not installed (raises exception), fall through gracefully."""
         cfg.vision_model = ""
         empty = _make_empty_result()
@@ -1022,9 +1015,8 @@ class TestTesseractOcrMiddleTier:
         result = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_non_pdf_skips_tesseract_ocr(self, mock_kf, mock_embed_batch, isolated_env):
+    async def test_non_pdf_skips_tesseract_ocr(self, mock_kf, isolated_env):
         """Non-PDF files never attempt Tesseract OCR retry."""
         mock_kf.return_value = _make_empty_result()
         cfg.vision_model = ""
@@ -1038,9 +1030,8 @@ class TestTesseractOcrMiddleTier:
         # Only one call to extract_file (the initial extraction, no OCR retry)
         assert mock_kf.call_count == 1
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_vision_explicit_skips_tesseract(self, mock_kf, mock_embed_batch, isolated_env):
+    async def test_vision_explicit_skips_tesseract(self, mock_kf, isolated_env):
         """When force_vision=True, Tesseract OCR tier is skipped entirely."""
         cfg.vision_model = "test-vision"
         cfg.vision_timeout = 120.0
@@ -1059,10 +1050,9 @@ class TestTesseractOcrMiddleTier:
         assert mock_kf.call_count == 1
         assert len(result) > 0
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_empty_no_vision_warns(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """When Tesseract fails and no vision model, warning mentions Tesseract."""
         cfg.vision_model = ""
@@ -1077,10 +1067,9 @@ class TestTesseractOcrMiddleTier:
         result = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
 
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_configured_vision_model_skips_tesseract(
-        self, mock_kf, mock_embed_batch, isolated_env
+        self, mock_kf, isolated_env
     ):
         """With vision_model set, Tesseract is skipped — vision takes precedence."""
         cfg.vision_model = "test-vision"
@@ -1102,13 +1091,11 @@ class TestTesseractOcrMiddleTier:
 
 
 class TestSharedProgress:
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_set_during_progress(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """shared_progress contextvar is set inside _collect_results_with_progress."""
         from lilbee.progress import shared_progress
@@ -1131,13 +1118,11 @@ class TestSharedProgress:
         assert progress_obj is not None
         assert task_id is not None
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_not_set_in_quiet_mode(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """shared_progress contextvar is NOT set in quiet mode (no progress bar)."""
         from lilbee.progress import shared_progress
@@ -1156,13 +1141,11 @@ class TestSharedProgress:
         await sync(quiet=True, on_progress=capture_progress)
         assert len(captured) == 0, "shared_progress should not be set in quiet mode"
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_contextvar_reset_after_progress(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """shared_progress is reset to None after _collect_results_with_progress completes."""
         from lilbee.progress import shared_progress
@@ -1257,13 +1240,11 @@ class TestChunkViaKreuzberg:
 
 
 class TestConceptIndexing:
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_extraction_called_during_ingest(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """When concept_graph is enabled, extraction is called after ingest."""
         cfg.concept_graph = True
@@ -1280,13 +1261,11 @@ class TestConceptIndexing:
             await sync(quiet=True)
         m_ext.assert_called()
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_disabled_skips_extraction(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """When concept_graph is disabled, extraction is not called."""
         cfg.concept_graph = False
@@ -1298,13 +1277,11 @@ class TestConceptIndexing:
             await sync(quiet=True)
         m_ext.assert_not_called()
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_concept_failure_does_not_break_ingest(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """When concept extraction raises, ingest still succeeds."""
         cfg.concept_graph = True
@@ -1322,13 +1299,11 @@ class TestConceptIndexing:
             result = await sync(quiet=True)
         assert "concept_test2.txt" in result.added
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_called_after_sync(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """After sync completes, rebuild_clusters is called."""
         cfg.concept_graph = True
@@ -1345,13 +1320,11 @@ class TestConceptIndexing:
             await sync(quiet=True)
         mock_rebuild.assert_called()
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_cluster_rebuild_failure_does_not_break_sync(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """When cluster rebuild raises, sync still succeeds."""
         cfg.concept_graph = True
@@ -1371,13 +1344,11 @@ class TestConceptIndexing:
             result = await sync(quiet=True)
         assert "rebuild_test.txt" in result.added
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )
     async def test_graph_none_skips_indexing(
-        self, mock_extract_file, mock_embed_batch, mock_validate_model, isolated_env
+        self, mock_extract_file, isolated_env
     ):
         """When get_graph() returns None, concept indexing is skipped gracefully."""
         cfg.concept_graph = True

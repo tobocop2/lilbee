@@ -253,10 +253,10 @@ async def _vision_fallback(
         return []
 
     texts = [c for _, c in all_chunks]
-    from lilbee.embedder import embed_batch
+    from lilbee.services import get_services
 
     vectors = await asyncio.to_thread(
-        embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
         ChunkRecord(
@@ -323,11 +323,11 @@ async def ingest_document(
     if not result.chunks:
         return []
 
-    from lilbee.embedder import embed_batch
+    from lilbee.services import get_services
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await asyncio.to_thread(
-        embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
 
     return [
@@ -356,10 +356,10 @@ def ingest_code_sync(
     if not code_chunks:
         return []
 
-    from lilbee.embedder import embed_batch
+    from lilbee.services import get_services
 
     texts = [cc.chunk for cc in code_chunks]
-    vectors = embed_batch(texts, source=source_name, on_progress=on_progress)
+    vectors = get_services().embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
 
     return [
         ChunkRecord(
@@ -394,10 +394,10 @@ async def ingest_markdown(
     texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
-    from lilbee.embedder import embed_batch
+    from lilbee.services import get_services
 
     vectors = await asyncio.to_thread(
-        embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
         ChunkRecord(
@@ -468,9 +468,9 @@ async def _ingest_file(
             quiet=quiet,
             on_progress=on_progress,
         )
-    from lilbee.store import add_chunks
+    from lilbee.services import get_services
 
-    chunk_count = await asyncio.to_thread(add_chunks, cast(list[dict], records))
+    chunk_count = await asyncio.to_thread(get_services().store.add_chunks, cast(list[dict], records))
     await _index_concepts(records, source_name)
     return chunk_count
 
@@ -487,15 +487,17 @@ async def sync(
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     """
-    from lilbee import store as _store_mod
+    from lilbee.services import get_services
+
+    _store = get_services().store
 
     if force_rebuild:
-        _store_mod.drop_all()
+        _store.drop_all()
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
-    existing_sources = {s["filename"]: s["file_hash"] for s in _store_mod.get_sources()}
+    existing_sources = {s["filename"]: s["file_hash"] for s in _store.get_sources()}
 
     added: list[str] = []
     updated: list[str] = []
@@ -506,8 +508,8 @@ async def sync(
     # Find files to remove (in DB but not on disk)
     for name in existing_sources:
         if name not in disk_files:
-            _store_mod.delete_by_source(name)
-            _store_mod.delete_source(name)
+            _store.delete_by_source(name)
+            _store.delete_source(name)
             removed.append(name)
 
     # Process files on disk
@@ -526,8 +528,8 @@ async def sync(
 
         if old_hash is not None:
             # Modified -- remove old data
-            _store_mod.delete_by_source(name)
-            _store_mod.delete_source(name)
+            _store.delete_by_source(name)
+            _store.delete_source(name)
             files_to_process.append((name, path, content_type))
             updated.append(name)
         else:
@@ -536,9 +538,7 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        from lilbee.embedder import validate_model
-
-        validate_model()
+        get_services().embedder.validate_model()
         await ingest_batch(
             files_to_process,
             added,
@@ -550,7 +550,7 @@ async def sync(
         )
 
     if files_to_process or removed:
-        _store_mod.ensure_fts_index()
+        _store.ensure_fts_index()
         await _rebuild_concept_clusters()
 
     result = SyncResult(
@@ -734,9 +734,9 @@ def _apply_result(
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         return
-    from lilbee.store import upsert_source
+    from lilbee.services import get_services
 
-    upsert_source(result.name, file_hash(result.path), result.chunk_count)
+    get_services().store.upsert_source(result.name, file_hash(result.path), result.chunk_count)
 
 
 class Indexer:

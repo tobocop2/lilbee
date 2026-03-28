@@ -11,9 +11,16 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
     """Point store at a temp directory, clean up after."""
+    from lilbee.services import reset_services
+    from lilbee.store import reset_store
+
     original = cfg.lancedb_dir
     cfg.lancedb_dir = tmp_path / "lancedb_test"
+    reset_services()
+    reset_store()
     yield
+    reset_services()
+    reset_store()
     cfg.lancedb_dir = original
 
 
@@ -251,16 +258,18 @@ class TestStoreOperations:
         """ensure_table recovers when create_table raises ValueError."""
         from unittest import mock
 
-        from lilbee.store import _chunks_schema, ensure_table, get_db
+        from lilbee.store import Store, ensure_table
 
-        db = get_db()
+        store = Store(cfg)
+        db = store.get_db()
+        schema = store._chunks_schema()
         mock_table = mock.MagicMock()
 
         with (
             mock.patch.object(db, "create_table", side_effect=ValueError("already exists")),
             mock.patch.object(db, "open_table", return_value=mock_table),
         ):
-            result = ensure_table(db, "chunks", _chunks_schema())
+            result = ensure_table(db, "chunks", schema)
             assert result is mock_table
 
     def test_add_chunks_wrong_dimension_raises(self):
