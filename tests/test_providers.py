@@ -23,11 +23,11 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.providers.factory import reset_provider
+    from lilbee.services import reset_services
 
-    reset_provider()
+    reset_services()
     yield
-    reset_provider()
+    reset_services()
 
 
 @pytest.fixture()
