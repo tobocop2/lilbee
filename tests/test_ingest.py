@@ -1355,7 +1355,7 @@ class TestConceptIndexing:
     ):
         """When cluster rebuild raises, sync still succeeds."""
         cfg.concept_graph = True
-        (isolated_env / "test.txt").write_text("Some test content.")
+        (isolated_env / "rebuild_test.txt").write_text("Content for rebuild test.")
 
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
@@ -1369,7 +1369,7 @@ class TestConceptIndexing:
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
-        assert "concept_test2.txt" in result.added
+        assert "rebuild_test.txt" in result.added
 
     @mock.patch("lilbee.embedder.validate_model")
     @mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch)
@@ -1381,7 +1381,7 @@ class TestConceptIndexing:
     ):
         """When get_graph() returns None, concept indexing is skipped gracefully."""
         cfg.concept_graph = True
-        (isolated_env / "test.txt").write_text("Some test content.")
+        (isolated_env / "graph_none_test.txt").write_text("Content for graph none test.")
 
         with (
             mock.patch("lilbee.concepts.extract_concepts_batch", return_value=[["test"]]),
@@ -1391,4 +1391,4 @@ class TestConceptIndexing:
             from lilbee.ingest import sync
 
             result = await sync(quiet=True)
-        assert "concept_test2.txt" in result.added
+        assert "graph_none_test.txt" in result.added

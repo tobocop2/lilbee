@@ -369,9 +369,10 @@ class TestLilbeeAddWithUrls:
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_add_url(self, mock_crawl, mock_sync, isolated_env):
+    async def test_add_url(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """URLs in paths list are routed to the crawler."""
         from pathlib import Path
 
@@ -380,9 +381,10 @@ class TestLilbeeAddWithUrls:
         assert result["crawled"] == 1
         mock_crawl.assert_awaited_once()
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, isolated_env):
+    async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
         mock_crawl.return_value = []
         result = await lilbee_add(paths=["https://example.com", "/nonexistent"])
@@ -395,12 +397,13 @@ class TestLilbeeAddWithUrls:
         """Vision model is temporarily applied during sync."""
         mock_crawl.return_value = []
         old_vision = cfg.vision_model
-        await lilbee_add(paths=["https://example.com"], vision_model="test-vision:latest")
-        # Vision model should be restored after sync
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            await lilbee_add(paths=["https://example.com"], vision_model="test-vision:latest")
         assert cfg.vision_model == old_vision
 
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_url_ssrf_rejected(self, mock_sync, isolated_env):
+    async def test_add_url_ssrf_rejected(self, mock_sync, _mock_avail, isolated_env):
         """Private IP URLs are rejected with an error, not crawled."""
         with mock.patch(
             "lilbee.crawler.socket.getaddrinfo",

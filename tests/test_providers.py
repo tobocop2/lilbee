@@ -290,6 +290,14 @@ class TestLlamaCppProvider:
 # ---------------------------------------------------------------------------
 
 
+_has_litellm = True
+try:
+    import litellm  # noqa: F401
+except ImportError:
+    _has_litellm = False
+
+
+@pytest.mark.skipif(not _has_litellm, reason="litellm not installed")
 class TestLiteLLMProvider:
     def test_embed(self) -> None:
         from lilbee.providers.litellm_provider import LiteLLMProvider
