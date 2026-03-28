@@ -732,6 +732,20 @@ class TestUpdateConfig:
         # temperature should be unchanged — validation happens before apply
         assert cfg.temperature == original_temp
 
+    async def test_multi_field_success(self, tmp_path):
+        """Multiple valid fields are applied and persisted in one call."""
+        result = await handlers.update_config({"temperature": 0.7, "top_k": 5})
+        assert set(result["updated"]) == {"temperature", "top_k"}
+        assert result["reindex_required"] is False
+        assert cfg.temperature == 0.7
+        assert cfg.top_k == 5
+        # Verify both persisted
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert stored["temperature"] == "0.7"
+        assert stored["top_k"] == "5"
+
 
 class TestSetEmbeddingModel:
     async def test_updates_config_and_persists(self, tmp_path):
@@ -748,6 +762,12 @@ class TestSetEmbeddingModel:
 
         with pytest.raises(ValidationError):
             await handlers.set_embedding_model("")
+
+    async def test_embedding_model_without_tag(self, tmp_path):
+        """Setting embedding model without a tag stores it as-is (no :latest append)."""
+        result = await handlers.set_embedding_model("nomic-embed-text")
+        assert result["model"] == "nomic-embed-text"
+        assert cfg.embedding_model == "nomic-embed-text"
 
 
 class TestGetConfig:
