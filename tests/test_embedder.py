@@ -112,28 +112,28 @@ class TestValidateVector:
 
 
 class TestValidateModel:
-    def test_model_found(self, embedder):
-        with mock.patch("lilbee.model_manager.get_model_manager") as mock_get_mm:
-            mock_get_mm.return_value.is_installed.return_value = True
-            embedder.validate_model()
+    def test_validate_returns_true_when_model_available(self, embedder):
+        with mock.patch("lilbee.providers.llama_cpp_provider._resolve_model_path"):
+            assert embedder.validate_model() is True
 
-    def test_auto_pull_when_model_missing(self, embedder, mock_provider):
-        with mock.patch("lilbee.model_manager.get_model_manager") as mock_get_mm:
-            mock_get_mm.return_value.is_installed.return_value = False
-            embedder.validate_model()
-            mock_provider.pull_model.assert_called_once_with(
-                cfg.embedding_model, on_progress=mock.ANY
-            )
+    def test_validate_returns_false_when_model_missing(self, embedder):
+        from lilbee.providers.base import ProviderError
 
-    def test_auto_pull_failure_propagates(self, embedder, mock_provider):
-        with mock.patch("lilbee.model_manager.get_model_manager") as mock_get_mm:
-            mock_get_mm.return_value.is_installed.return_value = False
-            mock_provider.pull_model.side_effect = RuntimeError("model not found")
-            with pytest.raises(RuntimeError):
-                embedder.validate_model()
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            side_effect=ProviderError("not found"),
+        ):
+            assert embedder.validate_model() is False
 
-    def test_connection_error(self, embedder):
-        with mock.patch("lilbee.model_manager.get_model_manager") as mock_get_mm:
-            mock_get_mm.return_value.is_installed.side_effect = ConnectionError("refused")
-            with pytest.raises(RuntimeError, match="Cannot connect"):
-                embedder.validate_model()
+    def test_embedding_available_true(self, embedder):
+        with mock.patch("lilbee.providers.llama_cpp_provider._resolve_model_path"):
+            assert embedder.embedding_available() is True
+
+    def test_embedding_available_false(self, embedder):
+        from lilbee.providers.base import ProviderError
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            side_effect=ProviderError("not found"),
+        ):
+            assert embedder.embedding_available() is False

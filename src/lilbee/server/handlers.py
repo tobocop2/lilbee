@@ -15,7 +15,6 @@ from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
 from pydantic import BaseModel
 
 from lilbee import settings
@@ -644,86 +643,28 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     yield sse_done({"files_written": [str(p) for p in paths]})
 
 
-# ---------------------------------------------------------------------------
-# External model discovery
-# ---------------------------------------------------------------------------
-
-_EXTERNAL_MODELS_TTL = 60  # seconds
-_external_models_cache: dict[str, Any] = {}
-_external_models_cache_time: float = 0.0
-_external_models_cache_key: str = ""
-
-
-_API_KEY_AUTH_PATTERNS = ("anthropic",)
-
-
-def _uses_api_key_auth(url: str) -> bool:
-    """Return True if the provider uses X-Api-Key header instead of Bearer auth."""
-    return any(p in url for p in _API_KEY_AUTH_PATTERNS)
-
-
-def _build_headers(api_key: str, base_url: str) -> dict[str, str]:
-    """Build HTTP headers based on the provider detected from the URL."""
-    if _uses_api_key_auth(base_url):
-        return {
-            "X-Api-Key": api_key,
-            "anthropic-version": "2023-06-01",
-        }
-    return {"Authorization": f"Bearer {api_key}"}
-
-
-def _build_models_url(base_url: str) -> str:
-    """Build the models list URL for the detected provider."""
-    return f"{base_url.rstrip('/')}/v1/models"
-
-
-def _parse_model_ids(data: dict[str, Any]) -> list[str]:
-    """Extract model IDs from a provider's response payload."""
-    return [m["id"] for m in data.get("data", []) if "id" in m]
-
-
-def clear_external_models_cache() -> None:
-    """Reset the external models cache. Useful for testing."""
-    global _external_models_cache, _external_models_cache_time, _external_models_cache_key
-    _external_models_cache = {}
-    _external_models_cache_time = 0.0
-    _external_models_cache_key = ""
+_EXTERNAL_MODELS_TTL = 60
+_external_cache: tuple[float, str, dict[str, Any]] = (0.0, "", {})
 
 
 async def list_external_models() -> dict[str, Any]:
-    """Query the configured provider for available models.
+    """Query the provider for available models via its list_models() API."""
+    global _external_cache
+    import asyncio
 
-    Returns ``{"models": [...]}`` on success, or
-    ``{"models": [], "error": "..."}`` on failure.
-    """
-    global _external_models_cache, _external_models_cache_time, _external_models_cache_key
-
-    if not cfg.llm_api_key:
-        return {"models": [], "error": "No API key configured"}
-
-    cache_key = f"{cfg.litellm_base_url}:{len(cfg.llm_api_key)}"
+    cache_time, cache_key, cache_result = _external_cache
+    key = f"{cfg.litellm_base_url}:{cfg.llm_api_key or ''}"
     now = time.monotonic()
-    if (
-        _external_models_cache
-        and cache_key == _external_models_cache_key
-        and (now - _external_models_cache_time) < _EXTERNAL_MODELS_TTL
-    ):
-        return _external_models_cache
-
-    url = _build_models_url(cfg.litellm_base_url)
-    headers = _build_headers(cfg.llm_api_key, cfg.litellm_base_url)
+    if cache_result and key == cache_key and (now - cache_time) < _EXTERNAL_MODELS_TTL:
+        return cache_result
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-        data = resp.json()
-        models = _parse_model_ids(data)
+        from lilbee.services import get_services
+
+        models = await asyncio.to_thread(get_services().provider.list_models)
         result: dict[str, Any] = {"models": models}
-        _external_models_cache = result
-        _external_models_cache_time = now
-        _external_models_cache_key = cache_key
+        _external_cache = (now, key, result)
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)
-        return {"models": [], "error": "Failed to fetch models from provider"}
+        return {"models": [], "error": str(exc)}

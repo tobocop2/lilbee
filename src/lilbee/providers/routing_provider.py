@@ -72,7 +72,7 @@ class RoutingProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,

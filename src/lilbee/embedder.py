@@ -41,18 +41,19 @@ class Embedder:
             if math.isnan(v) or math.isinf(v):
                 raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
 
-    def validate_model(self) -> None:
-        """Ensure the configured embedding model is available, pulling if needed."""
-        from lilbee.model_manager import get_model_manager
+    def validate_model(self) -> bool:
+        """Check if the configured embedding model is available. No side effects."""
+        return self.embedding_available()
 
+    def embedding_available(self) -> bool:
+        """Return True if the embedding model can be resolved."""
         try:
-            if not get_model_manager().is_installed(self._config.embedding_model):
-                log.info("Pulling embedding model '%s'...", self._config.embedding_model)
-                self._provider.pull_model(self._config.embedding_model, on_progress=lambda _: None)
-        except (ConnectionError, OSError) as exc:
-            raise RuntimeError(
-                f"Cannot connect to embedding backend: {exc}. Is the server running?"
-            ) from exc
+            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+            _resolve_model_path(self._config.embedding_model)
+            return True
+        except Exception:
+            return False
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string, return vector."""
