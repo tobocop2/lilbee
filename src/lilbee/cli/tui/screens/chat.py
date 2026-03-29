@@ -414,10 +414,10 @@ class ChatScreen(Screen[None]):
                 elif token.content:
                     response_parts.append(token.content)
                     self.app.call_from_thread(widget.append_content, token.content)
-                    now = time.monotonic()
-                    if now - last_scroll >= 0.2:
-                        self.app.call_from_thread(self._scroll_to_bottom)
-                        last_scroll = now
+                now = time.monotonic()
+                if now - last_scroll >= 0.15:
+                    self.app.call_from_thread(self._scroll_to_bottom)
+                    last_scroll = now
         except Exception as exc:
             log.warning("Stream error", exc_info=True)
             self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
@@ -437,7 +437,11 @@ class ChatScreen(Screen[None]):
             self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
 
     def _scroll_to_bottom(self) -> None:
-        self.query_one("#chat-log", VerticalScroll).scroll_end(animate=False)
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        # Only auto-scroll if user is near the bottom (within 5 lines).
+        # If they scrolled up to read, don't yank them back.
+        if log_widget.max_scroll_y - log_widget.scroll_y < 5:
+            log_widget.scroll_end(animate=False)
 
     def action_scroll_up(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_up()

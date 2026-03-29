@@ -29,18 +29,20 @@ class AssistantMessage(Vertical):
         self._finished = False
         self._md_widget: Markdown | None = None
         self._reasoning_widget: Collapsible | None = None
+        self._reasoning_static: Static | None = None
         self._citation_widget: Static | None = None
         self._last_md_update: float = 0.0
 
     def compose(self) -> ComposeResult:
+        self._reasoning_static = Static("", classes="reasoning-text")
         self._reasoning_widget = Collapsible(
-            Static("", id="reasoning-text"),
+            self._reasoning_static,
             title="Thinking...",
             collapsed=True,
             classes="reasoning-block",
         )
         yield self._reasoning_widget
-        self._md_widget = Markdown("", id="response-md")
+        self._md_widget = Markdown("", classes="response-md")
         yield self._md_widget
         self._citation_widget = Static("", classes="source-citation")
         yield self._citation_widget
@@ -50,8 +52,7 @@ class AssistantMessage(Vertical):
         self._reasoning_parts.append(text)
         if self._reasoning_widget is not None:
             self._reasoning_widget.collapsed = False
-            reasoning_static = self._reasoning_widget.query_one("#reasoning-text", Static)
-            reasoning_static.update("".join(self._reasoning_parts))
+            self._reasoning_static.update("".join(self._reasoning_parts))
 
     def append_content(self, text: str) -> None:
         """Append response content token (debounced markdown updates)."""
