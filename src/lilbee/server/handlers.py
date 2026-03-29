@@ -34,11 +34,6 @@ log = logging.getLogger(__name__)
 MAX_ADD_FILES = 100
 
 
-# ---------------------------------------------------------------------------
-# Helpers for deriving field sets from Config metadata
-# ---------------------------------------------------------------------------
-
-
 def _get_extra(info: FieldInfo, key: str, default: bool = False) -> bool:
     """Read a boolean flag from a field's ``json_schema_extra``."""
     extra = info.json_schema_extra
@@ -55,29 +50,26 @@ def _is_nullable(info: FieldInfo) -> bool:
     return False
 
 
-# Derive WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, _PUBLIC_CONFIG_FIELDS from metadata
-_writable: dict[str, bool] = {}
-_reindex: set[str] = set()
-_public: set[str] = set()
+def _derive_field_sets() -> tuple[
+    types.MappingProxyType[str, bool], frozenset[str], frozenset[str]
+]:
+    """Derive writable, reindex, and public field sets from Config metadata."""
+    writable: dict[str, bool] = {}
+    reindex: set[str] = set()
+    public: set[str] = set()
+    for name, info in Config.model_fields.items():
+        if _get_extra(info, "writable"):
+            writable[name] = _is_nullable(info)
+            if not _get_extra(info, "write_only") and _get_extra(info, "public", default=True):
+                public.add(name)
+            if _get_extra(info, "reindex"):
+                reindex.add(name)
+        elif name in {"chat_model", "embedding_model", "vision_model"}:
+            public.add(name)
+    return types.MappingProxyType(writable), frozenset(reindex), frozenset(public)
 
-for _name, _info in Config.model_fields.items():
-    if _get_extra(_info, "writable"):
-        _writable[_name] = _is_nullable(_info)
-        if not _get_extra(_info, "write_only") and _get_extra(_info, "public", default=True):
-            _public.add(_name)
-        if _get_extra(_info, "reindex"):
-            _reindex.add(_name)
-    elif _name in {
-        "chat_model",
-        "embedding_model",
-        "vision_model",
-    }:
-        # Model fields are public but not directly writable via update_config
-        _public.add(_name)
 
-WRITABLE_CONFIG_FIELDS: types.MappingProxyType[str, bool] = types.MappingProxyType(_writable)
-REINDEX_FIELDS: frozenset[str] = frozenset(_reindex)
-_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(_public)
+WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, _PUBLIC_CONFIG_FIELDS = _derive_field_sets()
 
 
 class ModelCatalogEntry(BaseModel):
@@ -465,13 +457,17 @@ async def set_vision_model(model: str) -> dict[str, str]:
     return await _set_model("vision_model", model)
 
 
+async def set_embedding_model(model: str) -> dict[str, str]:
+    """Switch embedding model. Returns {model}."""
+    return await _set_model("embedding_model", model)
+
+
 async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
     """Partial update of writable config fields. Returns updated keys + reindex flag.
 
     Validates all fields before applying any, so a bad field in a multi-field
     PATCH won't leave config in a partially-updated state.
     """
-    # Phase 1: validate all keys and values before mutating anything.
     for key, value in updates.items():
         if key not in WRITABLE_CONFIG_FIELDS:
             raise ValueError(f"Unknown or read-only config field: {key}")
@@ -479,7 +475,7 @@ async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
         if value is None and not nullable:
             raise ValueError(f"Field '{key}' does not accept null")
 
-    # Phase 2: apply with snapshot/rollback (S2) and batch persistence (S4).
+    # Apply with snapshot for rollback on type errors.
     snapshot = {k: getattr(cfg, k) for k in updates}
     updated: list[str] = []
     to_persist: dict[str, str] = {}
@@ -492,7 +488,7 @@ async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
                 to_delete.append(key)
             else:
                 setattr(cfg, key, value)  # pydantic validates type
-                to_persist[key] = str(getattr(cfg, key))  # coerced value (S3)
+                to_persist[key] = str(getattr(cfg, key))
             updated.append(key)
     except Exception:
         for k, v in snapshot.items():
@@ -504,11 +500,6 @@ async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
         settings.delete_values(cfg.data_root, to_delete)
     reindex_required = bool(REINDEX_FIELDS & set(updated))
     return {"updated": updated, "reindex_required": reindex_required}
-
-
-async def set_embedding_model(model: str) -> dict[str, str]:
-    """Switch embedding model. Same pattern as set_chat_model."""
-    return await _set_model("embedding_model", model)
 
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
