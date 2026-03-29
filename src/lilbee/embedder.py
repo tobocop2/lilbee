@@ -55,6 +55,7 @@ class Embedder:
             model_base = model.split(":")[0].lower()
             return any(model_base in m.lower() for m in available)
         except Exception:
+            log.debug("embedding_available check failed", exc_info=True)
             return False
 
     def embed(self, text: str) -> list[float]:

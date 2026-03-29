@@ -262,7 +262,7 @@ class TestLlamaCppProvider:
         mock_llm.metadata = {}
         with patch("llama_cpp.Llama", return_value=mock_llm):
             result = _read_gguf_metadata(models_dir / "test-model.gguf")
-        assert result == {}
+        assert result is None
 
     def test_resolve_model_path_direct(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path

@@ -247,7 +247,7 @@ def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
             result["file_type"] = str(raw["general.file_type"])
         if "general.name" in raw:
             result["name"] = str(raw["general.name"])
-        return result
+        return result or None
     finally:
         llm.close()
 
