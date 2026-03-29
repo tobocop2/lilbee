@@ -51,7 +51,13 @@ class DownloadModal(ModalScreen[bool]):
             def on_progress(downloaded: int, total: int) -> None:
                 if total > 0:
                     pct = min(int(downloaded * 100 / total), 100)
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
                     self.app.call_from_thread(self._update_progress, pct)
+                    self.app.call_from_thread(
+                        self._set_status,
+                        f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
+                    )
 
             download_model(self._model, on_progress=on_progress)
             self.app.call_from_thread(self._on_success)
