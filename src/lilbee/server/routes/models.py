@@ -28,6 +28,13 @@ async def models_list_route() -> dict[str, Any]:
     return await handlers.list_models()
 
 
+@get("/api/models/external")
+@read_only
+async def models_external_route() -> dict[str, Any]:
+    """Discover models available from the configured external provider."""
+    return await handlers.list_external_models()
+
+
 @put("/api/models/chat")
 async def models_set_chat_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active chat model used for RAG answers."""

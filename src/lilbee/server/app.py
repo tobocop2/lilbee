@@ -29,6 +29,7 @@ from lilbee.server.routes.general import config_route, health_route, status_rout
 from lilbee.server.routes.models import (
     models_catalog_route,
     models_delete_route,
+    models_external_route,
     models_installed_route,
     models_list_route,
     models_pull_route,
@@ -91,6 +92,7 @@ def create_app() -> Litestar:
             sync_route,
             add_route,
             models_list_route,
+            models_external_route,
             models_set_chat_route,
             models_set_vision_route,
             models_catalog_route,
