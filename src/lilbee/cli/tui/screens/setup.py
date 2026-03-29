@@ -121,17 +121,32 @@ class SetupWizard(Screen[str | None]):
 
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
+        """Download via catalog API with TUI-native progress (no Rich)."""
         self.app.call_from_thread(self._set_status, f"Downloading {model.name}...")
         try:
-            from lilbee.models import pull_with_progress
-            pull_with_progress(model.name)
-            self.app.call_from_thread(self._on_download_complete, model.name)
+            from lilbee.catalog import download_model
+
+            def _on_progress(downloaded: int, total: int) -> None:
+                if total > 0:
+                    pct = int(downloaded * 100 / total)
+                    self.app.call_from_thread(self._update_progress, pct)
+
+            download_model(model, on_progress=_on_progress)
+            self.app.call_from_thread(
+                self._on_download_complete, model.gguf_filename.rsplit(".", 1)[0]
+            )
         except Exception as exc:
             log.warning("Download failed for %s", model.name, exc_info=True)
-            self.app.call_from_thread(self._set_status, f"Error: {exc}")
+            error_msg = str(exc)
+            if "401" in error_msg:
+                error_msg = f"{model.name} requires HuggingFace authentication"
+            self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
 
     def _set_status(self, text: str) -> None:
         self.query_one("#setup-status", Label).update(text)
+
+    def _update_progress(self, percent: int) -> None:
+        self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
 
     def _on_download_complete(self, name: str) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=100)
@@ -141,6 +156,7 @@ class SetupWizard(Screen[str | None]):
     def _finish(self) -> None:
         from lilbee import settings
         from lilbee.services import reset_services
+
         if self._selected_chat:
             cfg.chat_model = self._selected_chat
             settings.set_value(cfg.data_root, "chat_model", self._selected_chat)
