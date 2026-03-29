@@ -23,7 +23,14 @@ from textual.widgets import (
 )
 from textual.worker import Worker, WorkerState
 
-from lilbee.catalog import FEATURED_ALL, CatalogModel, get_catalog
+from lilbee.catalog import (
+    FEATURED_ALL,
+    CatalogModel,
+    ModelFamily,
+    ModelVariant,
+    get_catalog,
+    get_families,
+)
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 
@@ -88,6 +95,39 @@ def _format_row(m: CatalogModel, cached_size: float | None = None) -> str:
     return f" {star} {m.name:<30s} {m.task:<10s} {params:>5s} {size:>8s}  {dl:>8s}  {desc}"
 
 
+def _format_size_mb(size_mb: int) -> str:
+    """Format size in MB to a human-readable string."""
+    if size_mb >= 1024:
+        return f"{size_mb / 1024:.1f} GB"
+    return f"{size_mb} MB"
+
+
+def _format_variant_row(v: ModelVariant) -> str:
+    """Format a variant row for display inside a family group."""
+    star = "★ " if v.recommended else "  "
+    quant = v.quant or "default"
+    size = _format_size_mb(v.size_mb)
+    suffix = " — recommended" if v.recommended else ""
+    return f"  {star}{v.param_count} {quant} ({size}){suffix}"
+
+
+def _format_family_header(f: ModelFamily) -> str:
+    """Format a family header row."""
+    return f"{f.name} — {f.description}"
+
+
+class VariantRow(ListItem):
+    """A model variant row within a family group."""
+
+    def __init__(self, variant: ModelVariant, family: ModelFamily) -> None:
+        super().__init__()
+        self.variant = variant
+        self.family = family
+
+    def compose(self) -> ComposeResult:
+        yield Static(_format_variant_row(self.variant), classes="model-row-text")
+
+
 class ModelRow(ListItem):
     """A catalog model row."""
 
@@ -138,6 +178,7 @@ class CatalogScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._featured: list[CatalogModel] = list(FEATURED_ALL)
+        self._families: list[ModelFamily] = get_families()
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
         self._hf_offset = 0
@@ -216,14 +257,16 @@ class CatalogScreen(Screen[None]):
             lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
             lv.clear()
 
-            featured = _filter_catalog(self._featured, task, search)
+            families = _filter_families(self._families, task, search)
             hf = _filter_catalog(self._hf_models, task, search)
             remote = _filter_remote(self._remote_models, task, search)
 
-            if featured:
+            if families:
                 lv.append(ListItem(Label("★ FEATURED", classes="section-header")))
-                for m in featured:
-                    lv.append(ModelRow(m))
+                for fam in families:
+                    lv.append(ListItem(Label(_format_family_header(fam), classes="section-header")))
+                    for v in fam.variants:
+                        lv.append(VariantRow(v, fam))
 
             if hf:
                 grouped = _group_by_size(sorted(hf, key=lambda x: x.downloads, reverse=True))
@@ -242,10 +285,10 @@ class CatalogScreen(Screen[None]):
                 for rm in remote:
                     lv.append(RemoteRow(rm))
 
-            if not featured and not remote and not hf:
+            if not families and not remote and not hf:
                 lv.append(ListItem(Label("No models match your filters.")))
 
-        n_featured = len(self._featured)
+        n_featured = sum(len(f.variants) for f in self._families)
         n_hf = len(self._hf_models)
         n_remote = len(self._remote_models)
         total = n_featured + n_hf + n_remote
@@ -261,7 +304,9 @@ class CatalogScreen(Screen[None]):
         if isinstance(item, LoadMoreRow):
             self._load_more()
             return
-        if isinstance(item, ModelRow):
+        if isinstance(item, VariantRow):
+            self._install_variant(item.variant, item.family)
+        elif isinstance(item, ModelRow):
             self._install_model(item.model)
         elif isinstance(item, RemoteRow):
             cfg.chat_model = item.remote_model.name
@@ -285,7 +330,16 @@ class CatalogScreen(Screen[None]):
             if item is None:
                 return
 
-        if isinstance(item, ModelRow):
+        if isinstance(item, VariantRow):
+            v = item.variant
+            fam = item.family
+            size = _format_size_mb(v.size_mb)
+            rec = " (recommended)" if v.recommended else ""
+            detail.update(
+                f"{fam.name} {v.param_count} — {fam.description}\n"
+                f"Task: {fam.task}  Quant: {v.quant}  Size: {size}{rec}  Repo: {v.hf_repo}"
+            )
+        elif isinstance(item, ModelRow):
             m = item.model
             cached = self._size_cache.get(m.hf_repo)
             size_gb = cached if cached is not None else m.size_gb
@@ -325,6 +379,21 @@ class CatalogScreen(Screen[None]):
         new_models = [m for m in result.models if not m.featured]
         self._hf_has_more = len(new_models) >= _HF_PAGE_SIZE
         return new_models
+
+    def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
+        """Convert a variant back to a CatalogModel and trigger install."""
+        entry = CatalogModel(
+            name=f"{family.name} {variant.param_count}",
+            hf_repo=variant.hf_repo,
+            gguf_filename=variant.filename,
+            size_gb=variant.size_mb / 1024,
+            min_ram_gb=max(2.0, (variant.size_mb / 1024) * 1.5),
+            description=family.description,
+            featured=True,
+            downloads=0,
+            task=family.task,
+        )
+        self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
         from lilbee.catalog import _resolve_filename
@@ -413,6 +482,40 @@ def _filter_remote(models: list[RemoteModel], task: str | None, search: str) -> 
         filtered = [m for m in filtered if m.task == task]
     if search:
         filtered = [m for m in filtered if search in m.name.lower()]
+    return filtered
+
+
+def _filter_families(
+    families: list[ModelFamily], task: str | None, search: str
+) -> list[ModelFamily]:
+    """Filter families by task and search text, preserving only matching variants."""
+    filtered: list[ModelFamily] = []
+    for fam in families:
+        if task and fam.task != task:
+            continue
+        if search:
+            matches_family = search in fam.name.lower() or search in fam.description.lower()
+            if matches_family:
+                filtered.append(fam)
+                continue
+            matching = tuple(
+                v
+                for v in fam.variants
+                if search in v.hf_repo.lower()
+                or search in v.param_count.lower()
+                or search in v.quant.lower()
+            )
+            if matching:
+                filtered.append(
+                    ModelFamily(
+                        name=fam.name,
+                        task=fam.task,
+                        description=fam.description,
+                        variants=matching,
+                    )
+                )
+        else:
+            filtered.append(fam)
     return filtered
 
 

@@ -15,9 +15,12 @@ from lilbee.catalog import (
     FEATURED_VISION,
     CatalogModel,
     CatalogResult,
+    ModelFamily,
+    ModelVariant,
     download_model,
     find_catalog_entry,
     get_catalog,
+    get_families,
 )
 
 
@@ -703,3 +706,129 @@ class TestHfCacheEviction:
         catalog._fetch_hf_models(pipeline_tag="unique", tags="gguf")
         assert len(_hf_cache) == 50
         assert "key:0" not in _hf_cache
+
+
+class TestModelVariantDataclass:
+    def test_frozen(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        with pytest.raises(AttributeError):
+            v.hf_repo = "nope"  # type: ignore[misc]
+
+    def test_default_mmproj(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
+        assert v.mmproj_filename == ""
+
+
+class TestModelFamilyDataclass:
+    def test_frozen(self) -> None:
+        f = ModelFamily("Qwen3", "chat", "desc", ())
+        with pytest.raises(AttributeError):
+            f.name = "nope"  # type: ignore[misc]
+
+    def test_fields(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        f = ModelFamily("Qwen3", "chat", "Fast", (v,))
+        assert f.name == "Qwen3"
+        assert f.task == "chat"
+        assert len(f.variants) == 1
+
+
+class TestExtractFamilyName:
+    def test_qwen3_8b(self) -> None:
+        assert catalog._extract_family_name("Qwen3 8B") == "Qwen3"
+
+    def test_qwen3_06b(self) -> None:
+        assert catalog._extract_family_name("Qwen3 0.6B") == "Qwen3"
+
+    def test_qwen3_coder(self) -> None:
+        assert catalog._extract_family_name("Qwen3-Coder 30B A3B") == "Qwen3-Coder"
+
+    def test_mistral(self) -> None:
+        assert catalog._extract_family_name("Mistral 7B Instruct") == "Mistral"
+
+    def test_no_space_before_version(self) -> None:
+        """Names without 'space + digit' pattern return the full name."""
+        assert catalog._extract_family_name("Nomic Embed Text v1.5") == "Nomic Embed Text v1.5"
+
+    def test_hyphenated_version(self) -> None:
+        """Names with hyphenated versions return the full name."""
+        assert catalog._extract_family_name("LightOnOCR-2") == "LightOnOCR-2"
+
+
+class TestExtractQuant:
+    def test_wildcard_pattern(self) -> None:
+        assert catalog._extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
+
+    def test_full_filename(self) -> None:
+        assert catalog._extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
+
+    def test_q8_0(self) -> None:
+        assert catalog._extract_quant("model-Q8_0.gguf") == "Q8_0"
+
+    def test_no_quant(self) -> None:
+        assert catalog._extract_quant("model.gguf") == ""
+
+
+class TestGetFamilies:
+    def test_returns_list(self) -> None:
+        families = get_families()
+        assert isinstance(families, list)
+        assert all(isinstance(f, ModelFamily) for f in families)
+
+    def test_has_chat_families(self) -> None:
+        families = get_families()
+        chat_families = [f for f in families if f.task == "chat"]
+        assert len(chat_families) > 0
+
+    def test_has_embedding_families(self) -> None:
+        families = get_families()
+        embed_families = [f for f in families if f.task == "embedding"]
+        assert len(embed_families) > 0
+
+    def test_has_vision_families(self) -> None:
+        families = get_families()
+        vision_families = [f for f in families if f.task == "vision"]
+        assert len(vision_families) > 0
+
+    def test_qwen3_grouped(self) -> None:
+        families = get_families()
+        qwen3 = [f for f in families if f.name == "Qwen3"]
+        assert len(qwen3) == 1
+        assert len(qwen3[0].variants) == 3  # 0.6B, 4B, 8B
+
+    def test_qwen3_largest_recommended(self) -> None:
+        families = get_families()
+        qwen3 = next(f for f in families if f.name == "Qwen3")
+        assert qwen3.variants[-1].recommended is True
+        assert qwen3.variants[0].recommended is False
+
+    def test_single_variant_not_recommended(self) -> None:
+        """A family with only one variant should not mark it as recommended."""
+        families = get_families()
+        singles = [f for f in families if len(f.variants) == 1]
+        for fam in singles:
+            assert fam.variants[0].recommended is False
+
+    def test_total_variants_matches_featured(self) -> None:
+        families = get_families()
+        total_variants = sum(len(f.variants) for f in families)
+        assert total_variants == len(FEATURED_ALL)
+
+    def test_variant_has_correct_fields(self) -> None:
+        families = get_families()
+        qwen3 = next(f for f in families if f.name == "Qwen3")
+        v = qwen3.variants[0]  # 0.6B
+        assert v.param_count == "0.6B"
+        assert v.quant == "Q4_K_M"
+        assert v.size_mb > 0
+        assert v.hf_repo == "Qwen/Qwen3-0.6B-GGUF"
+
+    def test_order_chat_then_embedding_then_vision(self) -> None:
+        families = get_families()
+        tasks = [f.task for f in families]
+        # All chat tasks should come before embedding, embedding before vision
+        chat_last = max(i for i, t in enumerate(tasks) if t == "chat")
+        embed_first = min(i for i, t in enumerate(tasks) if t == "embedding")
+        vision_first = min(i for i, t in enumerate(tasks) if t == "vision")
+        assert chat_last < embed_first
+        assert embed_first < vision_first
