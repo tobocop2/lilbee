@@ -69,8 +69,8 @@ class SetupWizard(Screen[str | None]):
         yield Static("Setup Wizard", id="setup-title")
         yield Label("", id="setup-step-label")
         yield ListView(id="setup-list")
-        yield ProgressBar(total=100, show_eta=False, id="setup-progress")
         yield Label("", id="setup-status")
+        yield ProgressBar(total=100, show_eta=False, id="setup-progress")
         yield Button("Skip -- chat only (no document search)", id="setup-skip")
         yield Button("Confirm", id="setup-confirm", disabled=True)
 
@@ -122,7 +122,7 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
         """Download via catalog API with TUI-native progress (no Rich)."""
-        self.app.call_from_thread(self._set_status, f"Resolving {model.name}...")
+        self.app.call_from_thread(self._set_status, "Connecting to HuggingFace...")
         try:
             from lilbee.catalog import download_model
 
@@ -142,8 +142,8 @@ class SetupWizard(Screen[str | None]):
         except Exception as exc:
             log.warning("Download failed for %s", model.name, exc_info=True)
             error_msg = str(exc)
-            if "401" in error_msg:
-                error_msg = f"{model.name} requires HuggingFace authentication"
+            if "401" in error_msg or "PermissionError" in error_msg:
+                error_msg = f"{model.name} requires login (run: lilbee login)"
             self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
 
     def _set_status(self, text: str) -> None:
