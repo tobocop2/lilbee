@@ -361,3 +361,40 @@ class TestLockedStreamIteratorExceptionRelease:
             next(stream)
         assert lock.acquire(blocking=False)
         lock.release()
+
+
+class TestLoadLlamaNCtx:
+    def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """When num_ctx is None, _load_llama passes n_ctx=0 (use model's training context)."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = None
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+
+        mock_llama_cpp.Llama.assert_called_once()
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 0
+
+    def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """When num_ctx is set, _load_llama uses it for n_ctx."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = 8192
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+
+        mock_llama_cpp.Llama.assert_called_once()
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 8192
+
+    def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """_load_llama passes embedding flag correctly."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["embedding"] is True
+
+        mock_llama_cpp.Llama.reset_mock()
+        _load_llama(models_dir / "test-model.gguf", embedding=False)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["embedding"] is False

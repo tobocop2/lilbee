@@ -249,9 +249,18 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
     """Load a llama_cpp.Llama instance."""
     from llama_cpp import Llama
 
+    from lilbee.config import cfg
+
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
         "embedding": embedding,
         "verbose": False,
     }
+    if cfg.num_ctx is not None:
+        kwargs["n_ctx"] = cfg.num_ctx
+    else:
+        # n_ctx=0 tells llama.cpp to use the model's training context.
+        # Without this, llama.cpp defaults to 512 tokens which is too small
+        # for most embedding models (e.g. nomic-embed-text trains at 2048).
+        kwargs["n_ctx"] = 0
     return Llama(**kwargs)
