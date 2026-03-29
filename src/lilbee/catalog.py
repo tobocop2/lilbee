@@ -185,7 +185,7 @@ def _fetch_hf_models(
         "tags": tags,
         "sort": sort,
         "limit": limit,
-        "offset": offset,
+        "skip": offset,
     }
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())

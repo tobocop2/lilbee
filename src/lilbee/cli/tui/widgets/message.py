@@ -25,7 +25,6 @@ class AssistantMessage(Vertical):
     DEFAULT_CSS = """
     AssistantMessage {
         height: auto;
-        overflow-y: auto;
     }
     """
 
