@@ -472,20 +472,33 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
 
 
 def _make_progress_tqdm(callback: Any) -> type:
-    """Create a tqdm-compatible class that routes progress to a callback.
+    """Create a minimal tqdm-compatible class that routes progress to a callback.
 
-    The callback receives (downloaded_bytes, total_bytes).
+    Does NOT inherit from real tqdm — avoids multiprocessing lock issues
+    that crash in Textual worker threads. Only implements the interface
+    that huggingface_hub actually calls.
     """
-    from tqdm import tqdm
 
-    class _ProgressTqdm(tqdm):  # type: ignore[type-arg]
-        def update(self, n: int = 1) -> bool | None:
-            result: bool | None = super().update(n)
-            if callback and self.total and self.total > 0:
+    class _CallbackProgress:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.total: int = kwargs.get("total", 0) or 0
+            self.n: int = kwargs.get("initial", 0) or 0
+
+        def update(self, n: int = 1) -> None:
+            self.n += n
+            if callback and self.total > 0:
                 callback(self.n, self.total)
-            return result
 
-    return _ProgressTqdm
+        def close(self) -> None:
+            pass
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            self.close()
+
+    return _CallbackProgress
 
 
 def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
