@@ -409,18 +409,24 @@ class ChatScreen(Screen[None]):
                 history_snapshot = self._history[:-1]
             stream = get_services().searcher.ask_stream(question, history=history_snapshot)
             for token in stream:
-                if token.is_reasoning:
-                    self.app.call_from_thread(widget.append_reasoning, token.content)
-                elif token.content:
-                    response_parts.append(token.content)
-                    self.app.call_from_thread(widget.append_content, token.content)
-                now = time.monotonic()
-                if now - last_scroll >= 0.15:
-                    self.app.call_from_thread(self._scroll_to_bottom)
-                    last_scroll = now
+                try:
+                    if token.is_reasoning:
+                        self.app.call_from_thread(widget.append_reasoning, token.content)
+                    elif token.content:
+                        response_parts.append(token.content)
+                        self.app.call_from_thread(widget.append_content, token.content)
+                    now = time.monotonic()
+                    if now - last_scroll >= 0.15:
+                        self.app.call_from_thread(self._scroll_to_bottom)
+                        last_scroll = now
+                except Exception:
+                    break  # App shutting down (Ctrl-C) — stop streaming
         except Exception as exc:
-            log.warning("Stream error", exc_info=True)
-            self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
+            log.debug("Stream error", exc_info=True)
+            with contextlib.suppress(Exception):
+                self.app.call_from_thread(
+                    widget.append_content, msg.STREAM_ERROR.format(error=exc)
+                )
         finally:
             self._streaming = False
             full_response = "".join(response_parts)
