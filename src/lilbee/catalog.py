@@ -8,6 +8,7 @@ Three levels:
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,29 @@ class CatalogResult:
     models: list[CatalogModel]
 
 
+@dataclass(frozen=True)
+class ModelVariant:
+    """A specific quantization/size variant within a model family."""
+
+    hf_repo: str
+    filename: str
+    param_count: str
+    quant: str
+    size_mb: int
+    recommended: bool
+    mmproj_filename: str = ""
+
+
+@dataclass(frozen=True)
+class ModelFamily:
+    """A group of related model variants (e.g. Qwen3 in multiple sizes)."""
+
+    name: str
+    task: str
+    description: str
+    variants: tuple[ModelVariant, ...]
+
+
 FEATURED_CHAT: tuple[CatalogModel, ...] = (
     CatalogModel(
         "Qwen3 0.6B",
@@ -78,17 +102,6 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         5.0,
         8,
         "Medium — strong general purpose",
-        True,
-        0,
-        "chat",
-    ),
-    CatalogModel(
-        "Mistral 7B Instruct",
-        "mistralai/Mistral-7B-Instruct-v0.3-GGUF",
-        "*Q4_K_M.gguf",
-        4.4,
-        8,
-        "Fast 7B, 32K context",
         True,
         0,
         "chat",
@@ -135,6 +148,85 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
 )
 
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
+
+_FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
+
+
+def _extract_family_name(model_name: str) -> str:
+    """Extract the family name by stripping the trailing parameter count.
+
+    "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
+    "Nomic Embed Text v1.5" -> "Nomic Embed Text v1.5" (no trailing number pattern).
+    """
+    m = _FAMILY_NAME_RE.match(model_name)
+    return m.group(1) if m else model_name
+
+
+def _extract_quant(filename: str) -> str:
+    """Extract quantization label from a GGUF filename pattern.
+
+    "*Q4_K_M.gguf" -> "Q4_K_M", "nomic-embed-text-v1.5.Q4_K_M.gguf" -> "Q4_K_M".
+    """
+    m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
+    return m.group(1).upper() if m else ""
+
+
+def _catalog_to_variant(model: CatalogModel, *, recommended: bool = False) -> ModelVariant:
+    """Convert a CatalogModel to a ModelVariant."""
+    m = re.search(r"(\d+\.?\d*B)", model.name, re.IGNORECASE)
+    param_count = m.group(1) if m else ""
+    return ModelVariant(
+        hf_repo=model.hf_repo,
+        filename=model.gguf_filename,
+        param_count=param_count,
+        quant=_extract_quant(model.gguf_filename),
+        size_mb=int(model.size_gb * 1024),
+        recommended=recommended,
+    )
+
+
+def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFamily]:
+    """Group CatalogModels into families by extracted family name."""
+    groups: dict[str, list[CatalogModel]] = {}
+    order: list[str] = []
+    for m in models:
+        family = _extract_family_name(m.name)
+        if family not in groups:
+            order.append(family)
+        groups.setdefault(family, []).append(m)
+
+    families: list[ModelFamily] = []
+    for name in order:
+        members = groups[name]
+        variants: list[ModelVariant] = []
+        for i, m in enumerate(members):
+            recommended = len(members) > 1 and i == len(members) - 1
+            variants.append(_catalog_to_variant(m, recommended=recommended))
+        description = members[0].description
+        families.append(
+            ModelFamily(
+                name=name,
+                task=task,
+                description=description,
+                variants=tuple(variants),
+            )
+        )
+    return families
+
+
+def get_families() -> list[ModelFamily]:
+    """Get all featured models grouped into families.
+
+    Returns families ordered: chat families, then embedding, then vision.
+    Within each family, variants are ordered smallest to largest, with
+    the largest marked as recommended (for multi-variant families).
+    """
+    return (
+        _build_families(FEATURED_CHAT, "chat")
+        + _build_families(FEATURED_EMBEDDING, "embedding")
+        + _build_families(FEATURED_VISION, "vision")
+    )
+
 
 _SIZE_RANGES: dict[str, tuple[float, float]] = {
     "small": (0.0, 3.0),
