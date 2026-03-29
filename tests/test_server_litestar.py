@@ -213,6 +213,18 @@ class TestModelsListRoute:
         assert "chat" in resp.json()
 
 
+class TestModelsExternalRoute:
+    @mock.patch(
+        "lilbee.server.handlers.list_external_models",
+        new_callable=AsyncMock,
+        return_value={"models": ["model-large", "model-small"]},
+    )
+    def test_returns_json(self, mock_patched, client):
+        resp = client.get("/api/models/external")
+        assert resp.status_code == 200
+        assert resp.json()["models"] == ["model-large", "model-small"]
+
+
 class TestModelsSetChatRoute:
     @mock.patch(
         "lilbee.server.handlers.set_chat_model",
