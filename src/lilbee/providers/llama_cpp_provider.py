@@ -37,11 +37,13 @@ class LlamaCppProvider(LLMProvider):
     Embedding calls are funnelled through a single background worker thread
     that batches concurrent requests into one ``create_embedding`` call.
     Chat calls are serialized via a lock (no batching possible).
+    Vision models are loaded with a CLIP chat handler for image understanding.
     """
 
     def __init__(self) -> None:
         self._chat_llm: Any | None = None
         self._embed_llm: Any | None = None
+        self._vision_llm: Any | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
         self._worker = threading.Thread(target=self._embed_worker, daemon=True)
@@ -91,10 +93,14 @@ class LlamaCppProvider(LLMProvider):
                     req.future.set_exception(exc)
 
     def _get_chat_llm(self, model: str | None = None) -> Any:
-        """Lazy-load a Llama instance for chat."""
+        """Lazy-load a Llama instance for chat (or vision if model is a vision model)."""
         from lilbee.config import cfg
 
         resolved_model = model or cfg.chat_model
+
+        if _is_vision_model(resolved_model):
+            return self._get_vision_llm(resolved_model)
+
         model_path = _resolve_model_path(resolved_model)
 
         cached = getattr(self._chat_llm, "_model_path", None)
@@ -102,6 +108,16 @@ class LlamaCppProvider(LLMProvider):
             self._chat_llm = _load_llama(model_path, embedding=False)
             self._chat_llm._model_path = str(model_path)
         return self._chat_llm
+
+    def _get_vision_llm(self, model: str) -> Any:
+        """Lazy-load a Llama instance with a vision chat handler."""
+        model_path = _resolve_model_path(model)
+
+        cached = getattr(self._vision_llm, "_model_path", None)
+        if self._vision_llm is None or cached != str(model_path):
+            self._vision_llm = _load_vision_llama(model_path)
+            self._vision_llm._model_path = str(model_path)
+        return self._vision_llm
 
     def _get_embed_llm(self) -> Any:
         """Lazy-load a Llama instance for embeddings."""
@@ -365,5 +381,79 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
             ctx_len = kwargs["n_ctx"]
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
+
+    return _suppress_stderr(Llama, **kwargs)
+
+
+def _is_vision_model(model: str) -> bool:
+    """Check if a model name corresponds to a vision model in the catalog."""
+    from lilbee.config import cfg
+
+    if model == cfg.vision_model and cfg.vision_model:
+        return True
+
+    from lilbee.catalog import FEATURED_VISION
+
+    model_lower = model.lower()
+    return any(
+        model_lower in entry.name.lower() or model_lower in entry.hf_repo.lower()
+        for entry in FEATURED_VISION
+    )
+
+
+def _find_mmproj_for_model(model_path: Path) -> Path:
+    """Find the mmproj (CLIP projection) file for a vision model.
+
+    Searches the same directory as the model for mmproj .gguf files.
+    Raises ProviderError if no mmproj file is found.
+    """
+    from lilbee.catalog import find_mmproj_file
+
+    # Try catalog-aware lookup first
+    mmproj = find_mmproj_file(model_path.stem)
+    if mmproj is not None:
+        return mmproj
+
+    # Fallback: look in same directory as the model
+    model_dir = model_path.parent
+    mmproj_files = sorted(p for p in model_dir.glob("*mmproj*.gguf"))
+    if mmproj_files:
+        return mmproj_files[0]
+
+    raise ProviderError(
+        f"No mmproj (CLIP projection) file found for vision model {model_path.name}. "
+        f"Download the mmproj file to {model_dir} or re-download the vision model "
+        "through the catalog to get both files.",
+        provider="llama-cpp",
+    )
+
+
+def _load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
+    """Load a Llama instance with a vision chat handler.
+
+    The chat handler (Llava15ChatHandler) processes image content in messages
+    through the mmproj CLIP projection model.
+    """
+    from llama_cpp import Llama
+    from llama_cpp.llama_chat_format import Llava15ChatHandler
+
+    from lilbee.config import cfg
+
+    if mmproj_path is None:
+        mmproj_path = _find_mmproj_for_model(model_path)
+
+    log.info("Loading vision model %s with mmproj %s", model_path.name, mmproj_path.name)
+    chat_handler = _suppress_stderr(Llava15ChatHandler, clip_model_path=str(mmproj_path))
+
+    kwargs: dict[str, Any] = {
+        "model_path": str(model_path),
+        "chat_handler": chat_handler,
+        "verbose": False,
+        "n_gpu_layers": -1,
+    }
+    if cfg.num_ctx is not None:
+        kwargs["n_ctx"] = cfg.num_ctx
+    else:
+        kwargs["n_ctx"] = 0
 
     return _suppress_stderr(Llama, **kwargs)

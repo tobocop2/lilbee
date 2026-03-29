@@ -832,3 +832,137 @@ class TestGetFamilies:
         vision_first = min(i for i, t in enumerate(tasks) if t == "vision")
         assert chat_last < embed_first
         assert embed_first < vision_first
+
+
+class TestVisionMmprojFiles:
+    def test_all_vision_entries_have_mmproj(self) -> None:
+        """Every featured vision model has an mmproj entry in VISION_MMPROJ_FILES."""
+        from lilbee.catalog import VISION_MMPROJ_FILES
+
+        for entry in FEATURED_VISION:
+            assert entry.hf_repo in VISION_MMPROJ_FILES, (
+                f"Vision model {entry.name} ({entry.hf_repo}) missing from VISION_MMPROJ_FILES"
+            )
+            assert VISION_MMPROJ_FILES[entry.hf_repo], (
+                f"Vision model {entry.name} has empty mmproj pattern"
+            )
+
+    def test_download_model_calls_mmproj_for_vision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """download_model downloads mmproj file for vision entries."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+        )
+
+        download_model(entry)
+
+        # Should have two downloads: main model + mmproj
+        assert len(download_calls) == 2
+        filenames = [c["filename"] for c in download_calls]
+        assert "model-Q4_K_M.gguf" in filenames
+        assert "model-mmproj-f16.gguf" in filenames
+
+    def test_download_model_skips_mmproj_for_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """download_model does NOT download mmproj for chat entries."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.write_bytes(b"x")
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        download_model(entry)
+
+        assert len(download_calls) == 1
+
+
+class TestFindMmprojFile:
+    def test_finds_mmproj_in_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        mmproj = tmp_path / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result == mmproj
+
+    def test_returns_none_when_no_mmproj(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result is None
+
+    def test_returns_none_when_dir_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path / "nonexistent")
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result is None
+
+
+class TestResolveMmprojFilename:
+    def test_exact_filename_passthrough(self) -> None:
+        result = catalog._resolve_mmproj_filename("repo", "exact-mmproj.gguf")
+        assert result == "exact-mmproj.gguf"
+
+    def test_wildcard_resolves_via_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = {
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"rfilename": "model-mmproj-f16.gguf"},
+                {"rfilename": "model-mmproj-f32.gguf"},
+            ]
+        }
+        mock_resp = httpx.Response(
+            200, json=data, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        # Prefers f16 over f32
+        assert result == "model-mmproj-f16.gguf"
+
+    def test_returns_none_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def raise_error(*a, **kw):
+            raise RuntimeError("network error")
+
+        monkeypatch.setattr(httpx, "get", raise_error)
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert result is None
+
+    def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = {"siblings": [{"rfilename": "model-Q4_K_M.gguf"}]}
+        mock_resp = httpx.Response(
+            200, json=data, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert result is None

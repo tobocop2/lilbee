@@ -366,6 +366,92 @@ class TestLockedStreamIteratorExceptionRelease:
         lock.release()
 
 
+class TestVisionModel:
+    def test_load_vision_llama_creates_handler(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """_load_vision_llama creates a Llama instance with a chat handler."""
+        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+
+        # Create mmproj file
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+
+        mock_handler = mock.MagicMock()
+        mock_handler_cls = mock.MagicMock(return_value=mock_handler)
+
+        # The mock_llama_cpp fixture puts a MagicMock in sys.modules["llama_cpp"],
+        # so submodule imports like llama_cpp.llama_chat_format need to work too.
+        mock_chat_format = mock.MagicMock()
+        mock_chat_format.Llava15ChatHandler = mock_handler_cls
+        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
+
+        try:
+            _load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+
+            mock_handler_cls.assert_called_once_with(clip_model_path=str(mmproj_path))
+            # Llama called with chat_handler
+            call_kwargs = mock_llama_cpp.Llama.call_args[1]
+            assert call_kwargs["chat_handler"] is mock_handler
+        finally:
+            sys.modules.pop("llama_cpp.llama_chat_format", None)
+
+    def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
+        """_find_mmproj_for_model raises ProviderError when no mmproj found."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+
+        with pytest.raises(ProviderError, match="mmproj"):
+            _find_mmproj_for_model(models_dir / "test-model.gguf")
+
+    def test_find_mmproj_finds_by_name(self, models_dir: Path) -> None:
+        """_find_mmproj_for_model finds mmproj files in the models directory."""
+        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+
+        mmproj = models_dir / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+        result = _find_mmproj_for_model(models_dir / "test-model.gguf")
+        assert result == mmproj
+
+    def test_is_vision_model_matches_config(self, models_dir: Path) -> None:
+        """_is_vision_model returns True for cfg.vision_model."""
+        from lilbee.providers.llama_cpp_provider import _is_vision_model
+
+        cfg.vision_model = "test-vision"
+        assert _is_vision_model("test-vision") is True
+        assert _is_vision_model("test-chat") is False
+        cfg.vision_model = ""
+
+    def test_get_vision_llm_caches(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """_get_vision_llm caches the vision model instance."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        mmproj = models_dir / "test-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake-mmproj")
+        cfg.vision_model = "test-model"
+
+        mock_handler = mock.MagicMock()
+        mock_chat_format = mock.MagicMock()
+        mock_chat_format.Llava15ChatHandler = mock.MagicMock(return_value=mock_handler)
+        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
+
+        instance = mock.MagicMock()
+        instance.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        mock_llama_cpp.Llama.return_value = instance
+
+        try:
+            provider = LlamaCppProvider()
+            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+
+            # Llama should only be called once (cached)
+            assert mock_llama_cpp.Llama.call_count == 1
+            provider.shutdown()
+        finally:
+            sys.modules.pop("llama_cpp.llama_chat_format", None)
+            cfg.vision_model = ""
+
+
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """When num_ctx is None, _load_llama passes n_ctx=0 and n_batch from metadata."""

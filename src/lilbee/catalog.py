@@ -513,6 +513,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
 
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
+    For vision models, also downloads the mmproj (CLIP projection) file.
     """
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
@@ -523,31 +524,126 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     dest = cfg.models_dir / filename
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
+    else:
+        log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
+        token = _hf_token()
+
+        kwargs: dict[str, Any] = {
+            "repo_id": entry.hf_repo,
+            "filename": filename,
+            "local_dir": cfg.models_dir,
+            "token": token,
+        }
+        if on_progress is not None:
+            kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
+
+        try:
+            path = hf_hub_download(**kwargs)
+        except GatedRepoError:
+            raise PermissionError(
+                f"{entry.name} requires HuggingFace authentication. "
+                "Set HF_TOKEN env var or visit the repo page to request access."
+            ) from None
+        except RepositoryNotFoundError:
+            raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+        dest = Path(path)
+
+    # Download mmproj file for vision models
+    if entry.task == "vision":
+        _download_mmproj(entry)
+
+    return dest
+
+
+def _download_mmproj(entry: CatalogModel) -> Path | None:
+    """Download the mmproj (CLIP projection) file for a vision model.
+
+    Returns the path to the downloaded file, or None if no mmproj is configured.
+    """
+    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, "")
+    if not mmproj_pattern:
+        log.debug("No mmproj pattern for %s, skipping", entry.hf_repo)
+        return None
+
+    mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, mmproj_pattern)
+    if not mmproj_filename:
+        log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
+        return None
+
+    dest = cfg.models_dir / mmproj_filename
+    if dest.exists():
+        log.info("mmproj already downloaded: %s", dest)
         return dest
 
-    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
-    token = _hf_token()
+    from huggingface_hub import hf_hub_download
 
-    kwargs: dict[str, Any] = {
-        "repo_id": entry.hf_repo,
-        "filename": filename,
-        "local_dir": cfg.models_dir,
-        "token": token,
-    }
-    if on_progress is not None:
-        kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
+    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, cfg.models_dir)
+    path = hf_hub_download(
+        repo_id=entry.hf_repo,
+        filename=mmproj_filename,
+        local_dir=cfg.models_dir,
+        token=_hf_token(),
+    )
+    return Path(path)
+
+
+def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
+    """Resolve an mmproj filename pattern to a concrete filename via the HF API."""
+    if "*" not in pattern:
+        return pattern
 
     try:
-        path = hf_hub_download(**kwargs)
-    except GatedRepoError:
-        raise PermissionError(
-            f"{entry.name} requires HuggingFace authentication. "
-            "Set HF_TOKEN env var or visit the repo page to request access."
-        ) from None
-    except RepositoryNotFoundError:
-        raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+        resp = httpx.get(
+            f"https://huggingface.co/api/models/{hf_repo}",
+            timeout=_DEFAULT_TIMEOUT,
+            headers=_hf_headers(),
+        )
+        resp.raise_for_status()
+        siblings = resp.json().get("siblings", [])
+    except Exception as exc:
+        log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
+        return None
 
-    return Path(path)
+    import fnmatch
+
+    mmproj_files: list[str] = [
+        s.get("rfilename", "") for s in siblings if fnmatch.fnmatch(s.get("rfilename", ""), pattern)
+    ]
+    if not mmproj_files:
+        return None
+
+    # Prefer F16 over F32 (smaller), and any over BF16
+    for preference in ("f16", "F16"):
+        for f in mmproj_files:
+            if preference in f:
+                return f
+    return mmproj_files[0]
+
+
+def find_mmproj_file(model_name: str) -> Path | None:
+    """Find the mmproj file for a vision model in the models directory.
+
+    Searches cfg.models_dir for files matching common mmproj naming patterns.
+    Returns the path if found, None otherwise.
+    """
+    models_dir = cfg.models_dir
+    if not models_dir.exists():
+        return None
+
+    # Check VISION_MMPROJ_FILES mapping via catalog entries
+    for entry in FEATURED_VISION:
+        if model_name in entry.name or model_name in entry.hf_repo:
+            pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, "")
+            if pattern:
+                import fnmatch
+
+                for p in models_dir.glob("*.gguf"):
+                    if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
+                        return p
+
+    # Generic fallback: look for any mmproj .gguf in models_dir
+    mmproj_files = sorted(p for p in models_dir.glob("*mmproj*.gguf"))
+    return mmproj_files[0] if mmproj_files else None
 
 
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
