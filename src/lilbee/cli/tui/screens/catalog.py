@@ -327,12 +327,16 @@ class CatalogScreen(Screen[None]):
         return new_models
 
     def _install_model(self, model: CatalogModel) -> None:
-        from lilbee.model_manager import get_model_manager
+        from lilbee.catalog import _resolve_filename
 
-        manager = get_model_manager()
-        if manager.is_installed(model.name):
-            self.notify(f"{model.name} is already installed")
-            return
+        try:
+            filename = _resolve_filename(model)
+            dest = cfg.models_dir / filename
+            if dest.exists():
+                self.notify(f"{model.name} is already installed")
+                return
+        except Exception:
+            pass  # Can't resolve filename — proceed with download
 
         from lilbee.cli.tui.widgets.download_modal import DownloadModal
 

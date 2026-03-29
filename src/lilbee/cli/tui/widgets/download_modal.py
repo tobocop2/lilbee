@@ -69,7 +69,8 @@ class DownloadModal(ModalScreen[bool]):
         self._update_progress(100)
         self._set_status(f"{self._model.name} installed!")
         self._dismiss_result = True
-        self.call_later(self._do_dismiss)
+        # Brief pause so user sees the "installed" message
+        self.set_timer(1.0, self._do_dismiss)
 
     def _on_error(self, msg: str) -> None:
         self._set_status(f"Error: {msg}")
