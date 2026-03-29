@@ -129,7 +129,7 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
-        def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":
             return
         text = event.value.strip()
