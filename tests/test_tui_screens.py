@@ -66,9 +66,7 @@ def mock_svc():
 def _patch_chat_setup():
     """Patch out embedding model checks so ChatScreen mounts cleanly."""
     with (
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-        ),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -953,9 +951,7 @@ async def test_chat_vim_j_k_in_input():
 async def test_chat_needs_setup_false_when_models_exist():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-        ):
+        with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False):
             assert not app.screen._needs_setup()
 
 
@@ -2204,9 +2200,7 @@ async def test_chat_needs_setup_true_pushes_wizard():
             self.push_screen(ChatScreen())
 
     app = SetupTestApp()
-    with patch(
-        "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=True
-    ):
+    with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=True):
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
             assert isinstance(app.screen, SetupWizard)
@@ -2227,15 +2221,9 @@ async def test_chat_embedding_ready_false_no_sync():
 
     app = NoSyncApp()
     with (
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-        ),
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False
-        ),
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._run_sync"
-        ) as mock_sync,
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as mock_sync,
     ):
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()

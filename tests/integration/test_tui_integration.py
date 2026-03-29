@@ -29,12 +29,8 @@ def _isolated_cfg(tmp_path):
     cfg.vision_model = ""
     cfg.chunk_size = 512
     with (
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-        ),
-        patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False
-        ),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
     ):
         yield
     for name in type(cfg).model_fields:
@@ -411,9 +407,7 @@ class TestAutocompleteIntegration:
                 assert inp.value == "/help"
 
     @patch("lilbee.models.list_installed_models", return_value=["qwen3:8b", "mistral:7b"])
-    async def test_model_name_completion(
-        self, mock_models: MagicMock
-    ) -> None:
+    async def test_model_name_completion(self, mock_models: MagicMock) -> None:
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()

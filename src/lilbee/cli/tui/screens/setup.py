@@ -131,10 +131,8 @@ class SetupWizard(Screen[str | None]):
                     pct = int(downloaded * 100 / total)
                     self.app.call_from_thread(self._update_progress, pct)
 
-            download_model(model, on_progress=_on_progress)
-            self.app.call_from_thread(
-                self._on_download_complete, model.gguf_filename.rsplit(".", 1)[0]
-            )
+            dest = download_model(model, on_progress=_on_progress)
+            self.app.call_from_thread(self._on_download_complete, dest.stem)
         except Exception as exc:
             log.warning("Download failed for %s", model.name, exc_info=True)
             error_msg = str(exc)

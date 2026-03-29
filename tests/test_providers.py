@@ -230,6 +230,40 @@ class TestLlamaCppProvider:
         provider = LlamaCppProvider()
         assert provider.show_model("some-model") is None
 
+    def test_read_gguf_metadata(self, models_dir: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+
+        mock_llm = MagicMock()
+        mock_llm.metadata = {
+            "general.architecture": "qwen3",
+            "general.name": "Qwen3 8B",
+            "general.file_type": "15",
+            "qwen3.context_length": "32768",
+            "qwen3.embedding_length": "4096",
+            "tokenizer.chat_template": "{% if messages %}...",
+        }
+        with patch("llama_cpp.Llama", return_value=mock_llm):
+            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+        assert result["architecture"] == "qwen3"
+        assert result["context_length"] == "32768"
+        assert result["embedding_length"] == "4096"
+        assert result["chat_template"] == "{% if messages %}..."
+        assert result["name"] == "Qwen3 8B"
+        mock_llm.close.assert_called_once()
+
+    def test_read_gguf_metadata_empty(self, models_dir: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+
+        mock_llm = MagicMock()
+        mock_llm.metadata = {}
+        with patch("llama_cpp.Llama", return_value=mock_llm):
+            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+        assert result == {}
+
     def test_resolve_model_path_direct(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 

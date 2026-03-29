@@ -20,7 +20,6 @@ from lilbee.config import cfg
 log = logging.getLogger(__name__)
 
 HF_API_URL = "https://huggingface.co/api/models"
-HF_DOWNLOAD_URL = "https://huggingface.co/{repo}/resolve/main/{filename}"
 _DEFAULT_TIMEOUT = 30.0
 
 
@@ -144,12 +143,14 @@ _SIZE_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
-def _hf_headers() -> dict[str, str]:
-    """Build HTTP headers for HuggingFace API requests.
+def _hf_token() -> str | None:
+    """Read HuggingFace token from LILBEE_HF_TOKEN or HF_TOKEN env vars."""
+    return os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
 
-    Reads token from LILBEE_HF_TOKEN or HF_TOKEN env vars.
-    """
-    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN")
+
+def _hf_headers() -> dict[str, str]:
+    """Build HTTP headers for HuggingFace API requests."""
+    token = _hf_token()
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}
@@ -185,9 +186,7 @@ def _fetch_hf_models(
         "limit": limit,
     }
     try:
-        resp = httpx.get(
-            HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers()
-        )
+        resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
         if resp.status_code >= 400:
             log.warning("HuggingFace API returned HTTP %d", resp.status_code)
             return []
@@ -364,51 +363,63 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
     return None
 
 
+def _make_progress_tqdm(callback: Any) -> type:
+    """Create a tqdm-compatible class that routes progress to a callback.
+
+    The callback receives (downloaded_bytes, total_bytes).
+    """
+    from tqdm import tqdm
+
+    class _ProgressTqdm(tqdm):  # type: ignore[type-arg]
+        def update(self, n: int = 1) -> bool | None:
+            result: bool | None = super().update(n)
+            if callback and self.total and self.total > 0:
+                callback(self.n, self.total)
+            return result
+
+    return _ProgressTqdm
+
+
 def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
-    """Download a GGUF model from HuggingFace to cfg.models_dir."""
+    """Download a GGUF model from HuggingFace to cfg.models_dir.
+
+    Uses huggingface_hub for resumable downloads, caching, and auth.
+    The optional *on_progress(downloaded, total)* callback receives byte counts.
+    """
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve the filename pattern to an actual file
     filename = _resolve_filename(entry)
     dest = cfg.models_dir / filename
-
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
         return dest
 
-    url = HF_DOWNLOAD_URL.format(repo=entry.hf_repo, filename=filename)
-    log.info("Downloading %s → %s", url, dest)
+    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
+    token = _hf_token()
 
-    import tempfile
+    kwargs: dict[str, Any] = {
+        "repo_id": entry.hf_repo,
+        "filename": filename,
+        "local_dir": cfg.models_dir,
+        "token": token,
+    }
+    if on_progress is not None:
+        kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
 
-    tmp_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".tmp", delete=False) as tmp_file:
-            tmp_name = tmp_file.name
-            headers = _hf_headers()
-            with httpx.stream(
-                "GET", url, timeout=None, follow_redirects=True, headers=headers
-            ) as resp:
-                if resp.status_code == 401:
-                    raise PermissionError(
-                        f"{entry.name} requires HuggingFace authentication. "
-                        "Set HF_TOKEN env var or visit the repo page to request access."
-                    )
-                resp.raise_for_status()
-                total = int(resp.headers.get("content-length", 0))
-                downloaded = 0
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    tmp_file.write(chunk)
-                    downloaded += len(chunk)
-                    if on_progress and total > 0:
-                        on_progress(downloaded, total)
-        Path(tmp_name).replace(dest)
-    except BaseException:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
+        path = hf_hub_download(**kwargs)
+    except GatedRepoError:
+        raise PermissionError(
+            f"{entry.name} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        ) from None
+    except RepositoryNotFoundError:
+        raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
 
-    return dest
+    return Path(path)
 
 
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")

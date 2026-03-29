@@ -1,7 +1,8 @@
 """Tests for catalog.py — model catalog, HF API fetching, filtering, downloading."""
 
 from pathlib import Path
-from typing import ClassVar
+from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -420,26 +421,13 @@ class TestDownloadModel:
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
-            status_code: ClassVar[int] = 200
+        def fake_download(**kwargs: Any) -> str:
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
-
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                return [b"x" * 100]
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         result = download_model(entry)
         assert result.exists()
         assert result.parent == models_dir
@@ -451,26 +439,18 @@ class TestDownloadModel:
 
         progress_calls: list[tuple[int, int]] = []
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
-            status_code: ClassVar[int] = 200
+        def fake_download(**kwargs: Any) -> str:
+            tqdm_cls = kwargs.get("tqdm_class")
+            if tqdm_cls:
+                bar = tqdm_cls(total=100)
+                bar.update(50)
+                bar.update(50)
+                bar.close()
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
-
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                return [b"x" * 50, b"x" * 50]
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
 
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
@@ -479,40 +459,37 @@ class TestDownloadModel:
         assert len(progress_calls) == 2
         assert progress_calls[-1] == (100, 100)
 
-    def test_http_error_cleans_up_partial(
+    def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
-            status_code: ClassVar[int] = 200
+        from huggingface_hub.utils import GatedRepoError
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
+        def fake_download(**kwargs: Any) -> str:
+            raise GatedRepoError("Gated repo", response=MagicMock())
 
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                raise httpx.HTTPStatusError(
-                    "500",
-                    request=httpx.Request("GET", "http://x"),
-                    response=httpx.Response(500),
-                )
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
-        with pytest.raises(httpx.HTTPStatusError):
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
-        assert not (tmp_path / entry.gguf_filename).exists()
+
+    def test_repo_not_found_raises_runtime_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        def fake_download(**kwargs: Any) -> str:
+            raise RepositoryNotFoundError("Not found", response=MagicMock())
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(RuntimeError, match="not found on HuggingFace"):
+            download_model(entry)
 
 
 class TestResolveFilename:

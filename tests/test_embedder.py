@@ -1,6 +1,5 @@
 """Tests for the embedding wrapper (mocked -- no live server needed)."""
 
-from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -112,28 +111,22 @@ class TestValidateVector:
 
 
 class TestValidateModel:
-    def test_validate_returns_true_when_model_available(self, embedder):
-        with mock.patch("lilbee.providers.llama_cpp_provider._resolve_model_path"):
-            assert embedder.validate_model() is True
+    def test_validate_returns_true_when_model_available(self, embedder, mock_provider):
+        mock_provider.list_models.return_value = [cfg.embedding_model]
+        assert embedder.validate_model() is True
 
-    def test_validate_returns_false_when_model_missing(self, embedder):
-        from lilbee.providers.base import ProviderError
+    def test_validate_returns_false_when_model_missing(self, embedder, mock_provider):
+        mock_provider.list_models.return_value = []
+        assert embedder.validate_model() is False
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            side_effect=ProviderError("not found"),
-        ):
-            assert embedder.validate_model() is False
+    def test_validate_returns_false_on_provider_error(self, embedder, mock_provider):
+        mock_provider.list_models.side_effect = RuntimeError("no connection")
+        assert embedder.validate_model() is False
 
-    def test_embedding_available_true(self, embedder):
-        with mock.patch("lilbee.providers.llama_cpp_provider._resolve_model_path"):
-            assert embedder.embedding_available() is True
+    def test_embedding_available_true(self, embedder, mock_provider):
+        mock_provider.list_models.return_value = [cfg.embedding_model]
+        assert embedder.embedding_available() is True
 
-    def test_embedding_available_false(self, embedder):
-        from lilbee.providers.base import ProviderError
-
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            side_effect=ProviderError("not found"),
-        ):
-            assert embedder.embedding_available() is False
+    def test_embedding_available_false(self, embedder, mock_provider):
+        mock_provider.list_models.return_value = []
+        assert embedder.embedding_available() is False
