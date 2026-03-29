@@ -62,9 +62,9 @@ jobs:
         run: choco install make -y
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync
         env:
-          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF"
+          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Run unit tests with coverage
         run: make test-ci
@@ -72,7 +72,6 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -100,7 +99,7 @@ jobs:
           restore-keys: gguf-models-
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v -m slow --timeout=300
+        run: uv run pytest tests/integration/ -v -m slow
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp

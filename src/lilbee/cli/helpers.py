@@ -6,6 +6,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -18,6 +19,7 @@ from rich.table import Table
 from lilbee.cli import theme
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
@@ -117,9 +119,9 @@ def clean_result(result: SearchChunk) -> dict:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    from lilbee.store import get_sources
+    from lilbee.services import get_services
 
-    sources = get_sources()
+    sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
     return StatusResult(
@@ -162,11 +164,12 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
     result = CopyResult()
     for p in paths:
         dest = cfg.documents_dir / p.name
+        validate_path_within(dest, cfg.documents_dir)
         if dest.exists() and not force:
             result.skipped.append(p.name)
             continue
         if p.is_dir():
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore)
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore, symlinks=False)
         else:
             shutil.copy2(p, dest)
         result.copied.append(p.name)
@@ -228,6 +231,7 @@ def perform_reset() -> ResetResult:
 
     if cfg.documents_dir.exists():
         for item in list(cfg.documents_dir.iterdir()):
+            validate_path_within(item, cfg.documents_dir)
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -236,6 +240,7 @@ def perform_reset() -> ResetResult:
 
     if cfg.data_dir.exists():
         for item in list(cfg.data_dir.iterdir()):
+            validate_path_within(item, cfg.data_dir)
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -286,3 +291,16 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
+
+
+@contextmanager
+def temporary_vision_model(model: str) -> Generator[None, None, None]:
+    """Temporarily override ``cfg.vision_model`` for the duration of the block."""
+    old = cfg.vision_model
+    if model:
+        cfg.vision_model = model
+    try:
+        yield
+    finally:
+        if model:
+            cfg.vision_model = old

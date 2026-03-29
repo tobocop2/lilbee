@@ -69,26 +69,23 @@ def isolated_env(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.crawl_timeout = 15
     # Reset semaphore cache
-    crawler_mod._crawl_semaphore = None
+    crawler_mod._state.semaphore = None
     yield tmp_path
     for name, val in snapshot.items():
         setattr(cfg, name, val)
-    crawler_mod._crawl_semaphore = None
+    crawler_mod._state.semaphore = None
 
 
 @pytest.fixture()
-def allow_localhost():
+def allow_localhost(monkeypatch):
     """Temporarily allow crawling localhost by removing loopback from blocked_networks."""
     loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
     loopback_v6 = ipaddress.ip_network("::1/128")
-    removed = []
-    for net in (loopback_v4, loopback_v6):
-        if net in crawler_mod.blocked_networks:
-            crawler_mod.blocked_networks.remove(net)
-            removed.append(net)
+    filtered = tuple(
+        net for net in crawler_mod.get_blocked_networks() if net not in (loopback_v4, loopback_v6)
+    )
+    monkeypatch.setattr(crawler_mod, "get_blocked_networks", lambda: filtered)
     yield
-    for net in removed:
-        crawler_mod.blocked_networks.append(net)
 
 
 @pytest.fixture()
@@ -272,3 +269,157 @@ class TestErrors:
         # Use a non-routable IP to ensure connection failure
         paths = await crawl_and_save("http://192.0.2.1:9999/nowhere")
         assert paths == []
+
+
+class TestCrawlConcurrency:
+    """Verify the threading semaphore limits concurrent crawl operations."""
+
+    async def test_semaphore_limits_to_configured_value(self, httpserver, allow_localhost):
+        """With crawl_max_concurrent=2, only 2 crawls run at once out of 3."""
+        import asyncio
+        import threading
+
+        peak_concurrent = 0
+        current_concurrent = 0
+        lock = threading.Lock()
+
+        # Serve 3 distinct pages
+        for i in range(3):
+            httpserver.expect_request(f"/slow{i}").respond_with_data(
+                f"<html><body><h1>Page {i}</h1><p>Unique content {i}.</p></body></html>",
+                content_type="text/html",
+            )
+
+        cfg.crawl_max_concurrent = 2
+        crawler_mod._state.semaphore = None
+
+        original_crawl_single = crawler_mod.crawl_single
+
+        async def tracking_crawl_single(url):
+            nonlocal peak_concurrent, current_concurrent
+            with lock:
+                current_concurrent += 1
+                peak_concurrent = max(peak_concurrent, current_concurrent)
+            try:
+                await asyncio.sleep(0.2)
+                return await original_crawl_single(url)
+            finally:
+                with lock:
+                    current_concurrent -= 1
+
+        from unittest.mock import patch
+
+        with patch.object(crawler_mod, "crawl_single", side_effect=tracking_crawl_single):
+            urls = [str(httpserver.url_for(f"/slow{i}")) for i in range(3)]
+            tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+            await asyncio.gather(*tasks)
+
+        assert peak_concurrent <= 2, (
+            f"Expected at most 2 concurrent crawls, observed {peak_concurrent}"
+        )
+
+    async def test_unlimited_when_zero(self, httpserver, allow_localhost):
+        """With crawl_max_concurrent=0 (unlimited), all 3 crawls can run at once."""
+        import asyncio
+        import threading
+
+        peak_concurrent = 0
+        current_concurrent = 0
+        lock = threading.Lock()
+
+        for i in range(3):
+            httpserver.expect_request(f"/fast{i}").respond_with_data(
+                f"<html><body><h1>Fast {i}</h1><p>Content {i}.</p></body></html>",
+                content_type="text/html",
+            )
+
+        cfg.crawl_max_concurrent = 0
+        crawler_mod._state.semaphore = None
+
+        original_crawl_single = crawler_mod.crawl_single
+
+        async def tracking_crawl_single(url):
+            nonlocal peak_concurrent, current_concurrent
+            with lock:
+                current_concurrent += 1
+                peak_concurrent = max(peak_concurrent, current_concurrent)
+            try:
+                await asyncio.sleep(0.1)
+                return await original_crawl_single(url)
+            finally:
+                with lock:
+                    current_concurrent -= 1
+
+        from unittest.mock import patch
+
+        with patch.object(crawler_mod, "crawl_single", side_effect=tracking_crawl_single):
+            urls = [str(httpserver.url_for(f"/fast{i}")) for i in range(3)]
+            tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+            await asyncio.gather(*tasks)
+
+        # With unlimited concurrency, all 3 should overlap
+        assert peak_concurrent == 3, (
+            f"Expected 3 concurrent crawls with unlimited, observed {peak_concurrent}"
+        )
+
+
+class TestPeriodicSync:
+    """Verify periodic sync fires during crawl operations."""
+
+    async def test_periodic_sync_fires_during_crawl(self, httpserver, allow_localhost):
+        """With crawl_sync_interval=1, a crawl taking >1s triggers periodic sync."""
+        import asyncio
+        import threading
+        from unittest.mock import AsyncMock, patch
+
+        # Serve a page that takes time to "crawl"
+        httpserver.expect_request("/slow-page").respond_with_data(
+            "<html><body><h1>Slow</h1><p>Takes a while.</p></body></html>",
+            content_type="text/html",
+        )
+
+        cfg.crawl_sync_interval = 1
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
+        crawler_mod._state.background_tasks = set()
+
+        mock_sync = AsyncMock()
+
+        original_crawl_single = crawler_mod.crawl_single
+
+        async def slow_crawl_single(url):
+            # Simulate a slow crawl to let the interval elapse
+            await asyncio.sleep(1.5)
+            return await original_crawl_single(url)
+
+        with (
+            patch.object(crawler_mod, "crawl_single", side_effect=slow_crawl_single),
+            patch("lilbee.ingest.sync", mock_sync),
+        ):
+            url = str(httpserver.url_for("/slow-page"))
+            await crawl_and_save(url)
+            # Let any background tasks complete
+            await asyncio.sleep(0.1)
+
+        mock_sync.assert_awaited_once()
+
+    async def test_periodic_sync_skipped_when_disabled(self, httpserver, allow_localhost):
+        """With crawl_sync_interval=0, no periodic sync fires."""
+        import threading
+        from unittest.mock import AsyncMock, patch
+
+        httpserver.expect_request("/quick").respond_with_data(
+            "<html><body><h1>Quick</h1><p>Fast page.</p></body></html>",
+            content_type="text/html",
+        )
+
+        cfg.crawl_sync_interval = 0
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
+
+        mock_sync = AsyncMock()
+        with patch("lilbee.ingest.sync", mock_sync):
+            url = str(httpserver.url_for("/quick"))
+            await crawl_and_save(url)
+
+        mock_sync.assert_not_awaited()

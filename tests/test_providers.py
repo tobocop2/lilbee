@@ -23,11 +23,14 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.providers.factory import reset_provider
+    import lilbee.providers.llama_cpp_provider as lcp
+    from lilbee.services import reset_services
 
-    reset_provider()
+    reset_services()
+    lcp._registry = None
     yield
-    reset_provider()
+    reset_services()
+    lcp._registry = None
 
 
 @pytest.fixture()
@@ -267,6 +270,31 @@ class TestLlamaCppProvider:
         with pytest.raises(ProviderError, match="Model file not found"):
             _resolve_model_path("/nonexistent/model.gguf")
 
+    def test_resolve_model_path_prefix_match(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        # "test-model.gguf" already exists from fixture; prefix "test-" should match it
+        path = _resolve_model_path("test-")
+        assert path.name == "test-model.gguf"
+
+    def test_resolve_model_path_prefix_match_picks_first_sorted(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        (models_dir / "alpha-v1.gguf").touch()
+        (models_dir / "alpha-v2.gguf").touch()
+        path = _resolve_model_path("alpha-")
+        assert path.name == "alpha-v1.gguf"
+
+    def test_resolve_model_path_prefix_no_match(self, models_dir: Path) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        with pytest.raises(ProviderError, match="not found"):
+            _resolve_model_path("nonexistent-prefix-")
+
     def test_embed_caches_llm(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
@@ -290,6 +318,14 @@ class TestLlamaCppProvider:
 # ---------------------------------------------------------------------------
 
 
+_has_litellm = True
+try:
+    import litellm  # noqa: F401
+except ImportError:
+    _has_litellm = False
+
+
+@pytest.mark.skipif(not _has_litellm, reason="litellm not installed")
 class TestLiteLLMProvider:
     def test_embed(self) -> None:
         from lilbee.providers.litellm_provider import LiteLLMProvider
@@ -684,72 +720,82 @@ class TestLiteLLMProvider:
 
 class TestFactory:
     def test_default_provider_is_routing(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.routing_provider import RoutingProvider
 
         cfg.llm_provider = "auto"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, RoutingProvider)
 
     def test_explicit_llama_cpp(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         cfg.llm_provider = "llama-cpp"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LlamaCppProvider)
 
     def test_ollama_alias_provider(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "ollama"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://localhost:11434"
 
     def test_litellm_provider(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "litellm"
         cfg.llm_api_key = "sk-test"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._api_key == "sk-test"
 
     def test_unknown_provider_raises(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "unknown"
         with pytest.raises(ProviderError, match="Unknown LLM provider"):
-            get_provider()
+            create_provider(cfg)
 
-    def test_singleton(self) -> None:
-        from lilbee.providers.factory import get_provider
+    def test_services_singleton(self) -> None:
+        from lilbee.services import get_services, reset_services
 
+        reset_services()
         cfg.llm_provider = "llama-cpp"
-        p1 = get_provider()
-        p2 = get_provider()
+        p1 = get_services().provider
+        p2 = get_services().provider
         assert p1 is p2
+        reset_services()
 
-    def test_reset_clears_singleton(self) -> None:
-        from lilbee.providers.factory import get_provider, reset_provider
+    def test_services_reset_clears_singleton(self) -> None:
+        from lilbee.services import get_services, reset_services
 
+        reset_services()
         cfg.llm_provider = "llama-cpp"
-        p1 = get_provider()
-        reset_provider()
-        p2 = get_provider()
+        p1 = get_services().provider
+        reset_services()
+        p2 = get_services().provider
         assert p1 is not p2
+        reset_services()
 
     def test_custom_base_url(self) -> None:
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         cfg.llm_provider = "litellm"
         cfg.litellm_base_url = "http://custom:11434"
-        provider = get_provider()
+        provider = create_provider(cfg)
         assert isinstance(provider, LiteLLMProvider)
         assert provider._base_url == "http://custom:11434"
 
@@ -768,7 +814,7 @@ class TestConfigProvider:
         ):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.llm_provider == "auto"
             assert c.litellm_base_url == "http://localhost:11434"
             assert c.llm_api_key == ""
@@ -786,7 +832,7 @@ class TestConfigProvider:
         ):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.llm_provider == "litellm"
             assert c.litellm_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
@@ -800,7 +846,7 @@ class TestConfigProvider:
         with mock.patch.dict(os.environ, {"LILBEE_DATA": "/tmp/test-lilbee"}):
             from lilbee.config import Config
 
-            c = Config.from_env()
+            c = Config()
             assert c.models_dir == canonical_models_dir()
 
 
@@ -810,17 +856,30 @@ class TestConfigProvider:
 
 
 class TestRoutingProvider:
+    @pytest.fixture(autouse=True)
+    def _shutdown_provider(self):
+        """Ensure all LlamaCppProvider background threads are stopped."""
+        self._to_shutdown: list = []
+        yield
+        for p in self._to_shutdown:
+            p.shutdown()
+
     def _make_provider(self) -> RoutingProvider:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        return RoutingProvider()
+        rp = RoutingProvider()
+        # Track the real llama-cpp provider for shutdown (tests replace it with mocks)
+        if rp._llama_cpp is not None:
+            self._to_shutdown.append(rp._llama_cpp)
+        self._to_shutdown.append(rp)
+        return rp
 
     def test_routes_chat_to_litellm_when_model_in_litellm(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["qwen3:8b"]
         mock_litellm.chat.return_value = "hello"
         rp._litellm = mock_litellm
+        rp._remote_models = {"qwen3:8b"}
 
         cfg.chat_model = "qwen3:8b"
         result = rp.chat([{"role": "user", "content": "hi"}])
@@ -830,8 +889,8 @@ class TestRoutingProvider:
     def test_routes_chat_to_llama_cpp_when_not_in_litellm(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = []
         rp._litellm = mock_litellm
+        rp._remote_models = set()
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
@@ -845,9 +904,9 @@ class TestRoutingProvider:
     def test_routes_embed_to_litellm_when_model_available(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["nomic-embed-text:latest"]
         mock_litellm.embed.return_value = [[0.1, 0.2]]
         rp._litellm = mock_litellm
+        rp._remote_models = {"nomic-embed-text:latest"}
 
         cfg.embedding_model = "nomic-embed-text:latest"
         result = rp.embed(["test"])
@@ -857,8 +916,8 @@ class TestRoutingProvider:
     def test_routes_embed_to_llama_cpp_when_not_in_litellm(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = []
         rp._litellm = mock_litellm
+        rp._remote_models = set()
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
@@ -871,8 +930,8 @@ class TestRoutingProvider:
     def test_list_models_merges_both_sources(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["qwen3:8b", "mistral:7b"]
         rp._litellm = mock_litellm
+        rp._remote_models = {"qwen3:8b", "mistral:7b"}
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
@@ -884,12 +943,10 @@ class TestRoutingProvider:
         assert len(result) == 3
 
     def test_litellm_unreachable_falls_back_to_llama_cpp(self) -> None:
-        from lilbee.providers.base import ProviderError
-
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.side_effect = ProviderError("unreachable")
         rp._litellm = mock_litellm
+        rp._remote_models = set()
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "fallback"
@@ -902,9 +959,9 @@ class TestRoutingProvider:
     def test_show_model_delegates_to_litellm(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["qwen3:8b"]
         mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
         rp._litellm = mock_litellm
+        rp._remote_models = {"qwen3:8b"}
 
         result = rp.show_model("qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
@@ -913,8 +970,8 @@ class TestRoutingProvider:
     def test_show_model_falls_back_to_llama_cpp(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = []
         rp._litellm = mock_litellm
+        rp._remote_models = set()
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
@@ -924,12 +981,16 @@ class TestRoutingProvider:
         assert result is None
 
     def test_invalidate_cache_clears_litellm_list(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.list_models.return_value = ["qwen3:8b"]
         rp._litellm = mock_litellm
 
-        # First call caches
+        # First call caches (litellm_available() returns True since litellm is installed)
         assert rp._is_in_litellm("qwen3:8b")
         assert rp._remote_models is not None
 
@@ -942,6 +1003,7 @@ class TestRoutingProvider:
         mock_litellm.list_models.return_value = ["qwen3:8b"]
         mock_litellm.pull_model.return_value = None
         rp._litellm = mock_litellm
+        rp._remote_models = {"qwen3:8b"}  # pre-populate cache
 
         rp.pull_model("qwen3:8b")
         mock_litellm.pull_model.assert_called_once()
@@ -953,9 +1015,9 @@ class TestRoutingProvider:
 
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = []
         mock_litellm.pull_model.side_effect = ProviderError("fail")
         rp._litellm = mock_litellm
+        rp._remote_models = set()
 
         with pytest.raises(ProviderError, match="no pull-capable backend"):
             rp.pull_model("bad-model")
@@ -963,9 +1025,9 @@ class TestRoutingProvider:
     def test_chat_with_explicit_model_override(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["vision:7b"]
         mock_litellm.chat.return_value = "saw it"
         rp._litellm = mock_litellm
+        rp._remote_models = {"vision:7b"}
 
         cfg.chat_model = "local.gguf"
         result = rp.chat(
@@ -979,9 +1041,7 @@ class TestRoutingProvider:
         """When litellm is not installed, routing provider skips remote models."""
         rp = self._make_provider()
 
-        with mock.patch(
-            "lilbee.providers.litellm_provider.litellm_available", return_value=False
-        ):
+        with mock.patch("lilbee.providers.litellm_provider.litellm_available", return_value=False):
             models = rp._litellm_models()
         assert models == set()
 
@@ -995,6 +1055,8 @@ class TestLitellmAvailable:
     def test_returns_true_when_installed(self) -> None:
         from lilbee.providers.litellm_provider import litellm_available
 
+        if not litellm_available():
+            pytest.skip("litellm not installed")
         assert litellm_available() is True
 
     def test_returns_false_when_not_installed(self) -> None:
@@ -1006,11 +1068,13 @@ class TestLitellmAvailable:
     def test_provider_static_method(self) -> None:
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
+        if not LiteLLMProvider.available():
+            pytest.skip("litellm not installed")
         assert LiteLLMProvider.available() is True
 
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.factory import get_provider
+        from lilbee.providers.factory import create_provider
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
         cfg.llm_provider = "litellm"
@@ -1018,4 +1082,4 @@ class TestLitellmAvailable:
             mock.patch.object(LiteLLMProvider, "available", return_value=False),
             pytest.raises(ProviderError, match="litellm is not installed"),
         ):
-            get_provider()
+            create_provider(cfg)

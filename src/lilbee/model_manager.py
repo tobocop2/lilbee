@@ -9,6 +9,8 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.security import validate_path_within
+
 log = logging.getLogger(__name__)
 
 _LITELLM_TIMEOUT = 30.0
@@ -28,6 +30,10 @@ class ModelManager:
         self._models_dir = models_dir
         self._litellm_base_url = litellm_base_url.rstrip("/")
 
+        from lilbee.registry import ModelRegistry
+
+        self._registry = ModelRegistry(self._models_dir)
+
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. source=None lists all sources."""
         if source is None:
@@ -39,10 +45,13 @@ class ModelManager:
         return self._list_litellm()
 
     def _list_native(self) -> list[str]:
-        """List .gguf files in the models directory."""
-        if not self._models_dir.is_dir():
-            return []
-        return sorted(p.name for p in self._models_dir.iterdir() if p.suffix == ".gguf")
+        """List native models: registry manifests + legacy .gguf files."""
+        names = [f"{m.name}:{m.tag}" for m in self._registry.list_installed()]
+        if self._models_dir.is_dir():
+            for p in self._models_dir.iterdir():
+                if p.suffix == ".gguf":
+                    names.append(p.name)
+        return sorted(set(names))
 
     def _list_litellm(self) -> list[str]:
         """List models from the litellm backend via its HTTP API."""
@@ -68,6 +77,12 @@ class ModelManager:
         return self._is_litellm(model)
 
     def _is_native(self, model: str) -> bool:
+        if self._registry.is_installed(model):
+            return True
+        try:
+            validate_path_within(self._models_dir / model, self._models_dir)
+        except ValueError:
+            return False
         return (self._models_dir / model).is_file()
 
     def _is_litellm(self, model: str) -> bool:
@@ -144,7 +159,14 @@ class ModelManager:
         return self._remove_litellm(model)
 
     def _remove_native(self, model: str) -> bool:
-        path = self._models_dir / model
+        if self._registry.remove(model):
+            log.info("Removed native model %s from registry", model)
+            return True
+        try:
+            path = validate_path_within(self._models_dir / model, self._models_dir)
+        except ValueError:
+            log.warning("Path traversal blocked: %s escapes %s", model, self._models_dir)
+            return False
         if path.is_file():
             path.unlink()
             log.info("Removed native model %s", model)
@@ -188,10 +210,6 @@ class RemoteModel:
     parameter_size: str
 
 
-# Backwards-compatible alias
-OllamaModel = RemoteModel
-
-
 def _classify_remote_task(name: str, family: str) -> str:
     """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
@@ -227,17 +245,9 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
     return result
 
 
-# Backwards-compatible alias
-classify_ollama_models = classify_remote_models
-
-
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the litellm backend."""
     return [m.name for m in classify_remote_models(base_url) if m.task == "embedding"]
-
-
-# Backwards-compatible alias
-detect_ollama_embedding_models = detect_remote_embedding_models
 
 
 _manager: ModelManager | None = None

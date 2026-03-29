@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 
 log = logging.getLogger(__name__)
 
@@ -73,21 +73,14 @@ class LlamaCppProvider(LLMProvider):
                 break
 
     def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
-        """Run one batched embedding call and resolve all futures."""
-        all_texts: list[str] = []
-        offsets: list[tuple[int, int]] = []
+        """Serialize embedding requests one-by-one and resolve all futures."""
+        llm = self._get_embed_llm()
         for req in batch:
-            offsets.append((len(all_texts), len(req.texts)))
-            all_texts.extend(req.texts)
-
-        try:
-            llm = self._get_embed_llm()
-            response = llm.create_embedding(input=all_texts)
-            all_vectors = [item["embedding"] for item in response["data"]]
-            for req, (start, count) in zip(batch, offsets, strict=True):
-                req.future.set_result(all_vectors[start : start + count])
-        except Exception as exc:
-            for req in batch:
+            try:
+                response = llm.create_embedding(input=req.texts)
+                vectors = [item["embedding"] for item in response["data"]]
+                req.future.set_result(vectors)
+            except Exception as exc:
                 if not req.future.done():
                     req.future.set_exception(exc)
 
@@ -137,7 +130,7 @@ class LlamaCppProvider(LLMProvider):
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
             if options:
-                kwargs.update(options)
+                kwargs.update(filter_options(options))
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
@@ -189,38 +182,63 @@ class _LockedStreamIterator:
         return self
 
     def __next__(self) -> str:
-        while True:
-            try:
-                chunk = next(self._response)
-            except StopIteration:
-                self._release()
-                raise
-            delta = chunk.get("choices", [{}])[0].get("delta", {})
-            content: str | None = delta.get("content")
-            if content:
-                return content
+        try:
+            while True:
+                try:
+                    chunk = next(self._response)
+                except StopIteration:
+                    self._release()
+                    raise
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content: str | None = delta.get("content")
+                if content:
+                    return content
+        except StopIteration:
+            raise
+        except Exception:
+            self._release()
+            raise
 
     def _release(self) -> None:
         if not self._released:
             self._released = True
             self._lock.release()
 
+    def close(self) -> None:
+        """Explicitly release the lock if the stream is abandoned early."""
+        self._release()
+
+    def __del__(self) -> None:  # pragma: no cover
+        self._release()
+
 
 def _resolve_model_path(model: str) -> Path:
-    """Resolve a model name to a .gguf file path."""
+    """Resolve a model name to a .gguf file path.
+
+    Resolution order:
+    1. Registry manifest -> blob
+    2. Direct .gguf filename in models_dir
+    3. Append .gguf extension to model name
+    4. Prefix match (e.g. "nomic-embed-text" -> "nomic-embed-text-v1.5.Q4_K_M.gguf")
+    """
     from lilbee.config import cfg
+    from lilbee.services import get_services
+
+    registry = get_services().registry
+    try:
+        return registry.resolve(model)
+    except (KeyError, ValueError):
+        pass
 
     models_dir = cfg.models_dir
 
     # Direct path
     if model.endswith(".gguf"):
-        path = Path(model)
-        if path.exists():
-            return path
-        # Try in models_dir
-        candidate = models_dir / model
+        candidate = models_dir / Path(model).name
         if candidate.exists():
-            return candidate
+            from lilbee.security import validate_path_within
+
+            return validate_path_within(candidate, models_dir)
         raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
 
     # Try common extensions
@@ -228,6 +246,13 @@ def _resolve_model_path(model: str) -> Path:
         candidate = models_dir / f"{model}{ext}"
         if candidate.exists():
             return candidate
+
+    # Prefix match: "nomic-embed-text" matches "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    # Uses *.gguf glob + startswith filter to avoid glob injection
+    if models_dir.exists():
+        candidates = sorted(p for p in models_dir.glob("*.gguf") if p.name.startswith(model))
+        if candidates:
+            return candidates[0]
 
     raise ProviderError(
         f"Model {model!r} not found in {models_dir}. "

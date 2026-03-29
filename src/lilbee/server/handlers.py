@@ -20,10 +20,8 @@ from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
-from lilbee.providers import get_provider
-from lilbee.query import build_rag_context, search_context
 from lilbee.results import group, to_dicts
-from lilbee.store import get_sources, remove_documents
+from lilbee.security import validate_path_within
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -32,6 +30,33 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
+
+_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(
+    {
+        "chat_model",
+        "embedding_model",
+        "vision_model",
+        "litellm_base_url",
+        "system_prompt",
+        "top_k",
+        "max_distance",
+        "chunk_size",
+        "chunk_overlap",
+        "temperature",
+        "top_p",
+        "top_k_sampling",
+        "repeat_penalty",
+        "num_ctx",
+        "seed",
+        "llm_provider",
+        "diversity_max_per_source",
+        "mmr_lambda",
+        "candidate_multiplier",
+        "query_expansion_count",
+        "adaptive_threshold_step",
+        "show_reasoning",
+    }
+)
 
 
 class ModelCatalogEntry(BaseModel):
@@ -85,7 +110,7 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     Safe to call from both the event loop thread (async code) and worker
     threads (``asyncio.to_thread`` / ``run_in_executor``).
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _callback(event_type: EventType, data: dict[str, Any]) -> None:
         payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -122,7 +147,9 @@ async def status() -> dict[str, Any]:
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search and return grouped DocumentResults as dicts."""
-    results = search_context(q, top_k=top_k)
+    from lilbee.services import get_services
+
+    results = get_services().searcher.search(q, top_k=top_k)
     grouped = group(results)
     return to_dicts(grouped)
 
@@ -131,10 +158,10 @@ async def ask(
     question: str, top_k: int = 0, options: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """One-shot RAG answer. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
+    from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, options=opts)
+    result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -152,7 +179,9 @@ def _run_llm_stream(
     from lilbee.reasoning import filter_reasoning
 
     try:
-        provider = get_provider()
+        from lilbee.services import get_services
+
+        provider = get_services().provider
         stream = provider.chat(
             cast("list[dict[str, Any]]", messages),
             stream=True,
@@ -189,7 +218,9 @@ async def _stream_rag_response(
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
 
-    rag = build_rag_context(question, top_k=top_k, history=history)
+    from lilbee.services import get_services
+
+    rag = get_services().searcher.build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
         yield sse_error("No relevant documents found.")
         return
@@ -201,8 +232,10 @@ async def _stream_rag_response(
     cancel = threading.Event()
     error_holder: list[str] = []
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run_llm_stream, messages, opts, queue, cancel, error_holder)
+    loop = asyncio.get_running_loop()
+    executor_fut = loop.run_in_executor(
+        None, _run_llm_stream, messages, opts, queue, cancel, error_holder
+    )
     try:
         async for event in _drain_token_queue(queue):
             yield event
@@ -212,8 +245,13 @@ async def _stream_rag_response(
         return
 
     if error_holder:
-        yield sse_error(error_holder[0])
+        log.warning("Stream error: %s", error_holder[0])
+        yield sse_error("Internal error")
+        cancel.set()
         return
+
+    # Ensure executor thread has finished before yielding final events
+    await executor_fut
 
     yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
     yield sse_done({})
@@ -233,10 +271,10 @@ async def chat(
     options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Chat with history. Returns {answer, sources[]}."""
-    from lilbee.query import ask_raw
+    from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
-    result = ask_raw(question, top_k=top_k, history=history, options=opts)
+    result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
     return {
         "answer": result.answer,
         "sources": [clean_result(s) for s in result.sources],
@@ -296,14 +334,10 @@ async def _run_add(
 
     copy_result = copy_files(valid, force=force)
 
-    old_vision = cfg.vision_model
-    if vision_model:
-        cfg.vision_model = vision_model
-    try:
+    from lilbee.cli.helpers import temporary_vision_model
+
+    with temporary_vision_model(vision_model):
         sync_result = await sync(quiet=True, force_vision=bool(vision_model), on_progress=callback)
-    finally:
-        if vision_model:
-            cfg.vision_model = old_vision
 
     summary = {
         "copied": copy_result.copied,
@@ -330,6 +364,10 @@ async def add_files(data: dict[str, Any]) -> AddResult:
         raise ValueError("'paths' must be a non-empty list of strings")
     if len(paths) > MAX_ADD_FILES:
         raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
+
+    for p_str in paths:
+        # Validate that the resolved target inside documents_dir won't escape
+        validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")
@@ -399,7 +437,9 @@ async def set_vision_model(model: str) -> dict[str, str]:
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name."""
-    result = remove_documents(names, delete_files=delete_files)
+    from lilbee.services import get_services
+
+    result = get_services().store.remove_documents(names, delete_files=delete_files)
     return {"removed": result.removed, "not_found": result.not_found}
 
 
@@ -409,7 +449,9 @@ async def list_documents(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Return indexed documents with metadata, paginated and filterable."""
-    sources = get_sources()
+    from lilbee.services import get_services
+
+    sources = get_services().store.get_sources()
     if search:
         search_lower = search.lower()
         sources = [s for s in sources if search_lower in s["filename"].lower()]
@@ -434,39 +476,19 @@ async def get_config() -> dict[str, Any]:
     """Return all user-facing configuration values."""
     from lilbee.reranker import reranker_available
 
-    result: dict[str, Any] = {
-        "chat_model": cfg.chat_model,
-        "embedding_model": cfg.embedding_model,
-        "vision_model": cfg.vision_model,
-        "litellm_base_url": cfg.litellm_base_url,
-        "system_prompt": cfg.system_prompt,
-        "top_k": cfg.top_k,
-        "max_distance": cfg.max_distance,
-        "chunk_size": cfg.chunk_size,
-        "chunk_overlap": cfg.chunk_overlap,
-        "temperature": cfg.temperature,
-        "top_p": cfg.top_p,
-        "top_k_sampling": cfg.top_k_sampling,
-        "repeat_penalty": cfg.repeat_penalty,
-        "num_ctx": cfg.num_ctx,
-        "seed": cfg.seed,
-        "llm_provider": cfg.llm_provider,
-        "diversity_max_per_source": cfg.diversity_max_per_source,
-        "mmr_lambda": cfg.mmr_lambda,
-        "candidate_multiplier": cfg.candidate_multiplier,
-        "query_expansion_count": cfg.query_expansion_count,
-        "adaptive_threshold_step": cfg.adaptive_threshold_step,
-        "show_reasoning": cfg.show_reasoning,
-    }
+    dumped = cfg.model_dump()
+    result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     if reranker_available():
-        result["reranker_model"] = cfg.reranker_model
-        result["rerank_candidates"] = cfg.rerank_candidates
+        result["reranker_model"] = dumped["reranker_model"]
+        result["rerank_candidates"] = dumped["rerank_candidates"]
     return result
 
 
 async def models_show(model: str) -> dict[str, Any]:
     """Return model metadata/parameters. Returns empty dict if unavailable."""
-    provider = get_provider()
+    from lilbee.services import get_services
+
+    provider = get_services().provider
     result = provider.show_model(model)
     return result if result is not None else {}
 
@@ -501,7 +523,9 @@ async def models_catalog(
         limit=limit,
         offset=offset,
     )
-    provider = get_provider()
+    from lilbee.services import get_services
+
+    provider = get_services().provider
     installed_names = set(provider.list_models())
 
     models = []
@@ -541,23 +565,35 @@ async def models_installed() -> dict[str, Any]:
 
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
-    """Yield SSE progress events while pulling a model."""
-    yield ""  # force generator
+    """Yield SSE progress events while pulling a model in real time."""
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
     src = _parse_source(source)
-    try:
-        events: list[str] = []
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
+    def _pull_blocking() -> None:
         def _on_progress(data: dict[str, Any]) -> None:
-            events.append(sse_event(SseEvent.PROGRESS, data))
+            payload = sse_event(SseEvent.PROGRESS, data)
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
 
-        manager.pull(model, src, on_progress=_on_progress)
-        for event in events:
-            yield event
-    except Exception as exc:
-        yield sse_error(str(exc))
+        try:
+            manager.pull(model, src, on_progress=_on_progress)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, sse_error(str(exc)))
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
+    while not task.done() or not queue.empty():
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except TimeoutError:  # pragma: no cover — async polling race
+            continue
+        if item is None:
+            break
+        yield item
 
 
 async def models_delete(model: str, *, source: str = "litellm") -> dict[str, Any]:

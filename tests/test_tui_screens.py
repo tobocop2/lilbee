@@ -23,6 +23,7 @@ from lilbee.cli.tui.screens.catalog import (
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
+from lilbee.services import set_services
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -41,6 +42,24 @@ def _isolated_cfg(tmp_path):
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture(autouse=True)
+def mock_svc():
+    """Inject mock Services so TUI screens never touch real backends."""
+    from tests.conftest import make_mock_services
+
+    store = MagicMock()
+    store.search.return_value = []
+    store.bm25_probe.return_value = []
+    store.get_sources.return_value = []
+    store.add_chunks.side_effect = lambda records: len(records)
+    store.delete_by_source.return_value = None
+    store.delete_source.return_value = None
+    services = make_mock_services(store=store)
+    set_services(services)
+    yield services
+    set_services(None)
 
 
 def _make_catalog_model(
@@ -391,69 +410,59 @@ class StatusTestApp(App[None]):
         self.push_screen(StatusScreen())
 
 
-async def test_status_screen_renders_info():
-    with patch(
-        "lilbee.store.get_sources",
-        return_value=[
-            {"source": "test.pdf", "chunk_count": 10, "content_type": "application/pdf"},
-        ],
-    ):
-        app = StatusTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            info = app.screen.query_one("#status-info", Static)
-            rendered = str(info.render())
-            assert "test-model:latest" in rendered
-            assert "test-embed:latest" in rendered
+async def test_status_screen_renders_info(mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"source": "test.pdf", "chunk_count": 10, "content_type": "application/pdf"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#status-info", Static)
+        rendered = str(info.render())
+        assert "test-model:latest" in rendered
+        assert "test-embed:latest" in rendered
 
 
-async def test_status_screen_shows_documents():
-    with patch(
-        "lilbee.store.get_sources",
-        return_value=[
-            {"source": "notes.md", "chunk_count": 5, "content_type": "text/markdown"},
-        ],
-    ):
-        app = StatusTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import DataTable
+async def test_status_screen_shows_documents(mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"source": "notes.md", "chunk_count": 5, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
 
-            table = app.screen.query_one("#docs-table", DataTable)
-            assert table.row_count == 1
+        table = app.screen.query_one("#docs-table", DataTable)
+        assert table.row_count == 1
 
 
-async def test_status_screen_store_error():
-    with patch("lilbee.store.get_sources", side_effect=Exception("no table")):
-        app = StatusTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import DataTable
+async def test_status_screen_store_error(mock_svc):
+    mock_svc.store.get_sources.side_effect = Exception("no table")
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
 
-            table = app.screen.query_one("#docs-table", DataTable)
-            assert table.row_count == 1
+        table = app.screen.query_one("#docs-table", DataTable)
+        assert table.row_count == 1
 
 
-async def test_status_screen_vim_keys():
-    with patch(
-        "lilbee.store.get_sources",
-        return_value=[
-            {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-            {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-        ],
-    ):
-        app = StatusTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            from textual.widgets import DataTable
+async def test_status_screen_vim_keys(mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
+        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
 
-            table = app.screen.query_one("#docs-table", DataTable)
-            table.focus()
-            await _pilot.press("j")
-            await _pilot.press("k")
+        table = app.screen.query_one("#docs-table", DataTable)
+        table.focus()
+        await _pilot.press("j")
+        await _pilot.press("k")
 
 
 async def test_status_screen_escape_pops():
-    with patch("lilbee.store.get_sources", return_value=[]):
-        app = StatusTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.press("escape")
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.press("escape")
 
 
 # ---------------------------------------------------------------------------
@@ -528,12 +537,11 @@ async def test_app_push_status(mock_check):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", return_value=[]):
-            app.action_push_status()
-            await _pilot.pause()
-            from lilbee.cli.tui.screens.status import StatusScreen
+        app.action_push_status()
+        await _pilot.pause()
+        from lilbee.cli.tui.screens.status import StatusScreen
 
-            assert isinstance(app.screen, StatusScreen)
+        assert isinstance(app.screen, StatusScreen)
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -688,56 +696,51 @@ async def test_chat_slash_vision_no_arg(mock_check):
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_with_match(mock_check):
+async def test_chat_slash_delete_with_match(mock_check, mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "notes.md", "source": "notes.md"},
+    ]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.cli.tui.screens.chat.get_sources") as mock_get,
-            patch("lilbee.cli.tui.screens.chat.delete_by_source") as mock_del_chunks,
-            patch("lilbee.cli.tui.screens.chat.delete_source") as mock_del_src,
-        ):
-            mock_get.return_value = [{"filename": "notes.md", "source": "notes.md"}]
-            app.screen._cmd_delete("notes.md")
-            mock_del_chunks.assert_called_once_with("notes.md")
-            mock_del_src.assert_called_once_with("notes.md")
+        app.screen._cmd_delete("notes.md")
+        mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
+        mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_not_found(mock_check):
+async def test_chat_slash_delete_not_found(mock_check, mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "notes.md", "source": "notes.md"},
+    ]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch(
-            "lilbee.cli.tui.screens.chat.get_sources",
-            return_value=[{"filename": "notes.md", "source": "notes.md"}],
-        ):
-            app.screen._cmd_delete("nonexistent.md")
+        app.screen._cmd_delete("nonexistent.md")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_no_arg(mock_check):
+async def test_chat_slash_delete_no_arg(mock_check, mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "notes.md", "source": "notes.md"},
+    ]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch(
-            "lilbee.cli.tui.screens.chat.get_sources",
-            return_value=[{"filename": "notes.md", "source": "notes.md"}],
-        ):
-            app.screen._cmd_delete("")
+        app.screen._cmd_delete("")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_store_error(mock_check):
+async def test_chat_slash_delete_store_error(mock_check, mock_svc):
+    mock_svc.store.get_sources.side_effect = Exception("no store")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_sources", side_effect=Exception("no store")):
-            app.screen._cmd_delete("x")
+        app.screen._cmd_delete("x")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_empty_sources(mock_check):
+async def test_chat_slash_delete_empty_sources(mock_check, mock_svc):
+    mock_svc.store.get_sources.return_value = []
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_sources", return_value=[]):
-            app.screen._cmd_delete("x")
+        app.screen._cmd_delete("x")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -898,12 +901,11 @@ async def test_chat_slash_models(mock_check):
 async def test_chat_slash_status(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", return_value=[]):
-            app.screen._handle_slash("/status")
-            await _pilot.pause()
-            from lilbee.cli.tui.screens.status import StatusScreen
+        app.screen._handle_slash("/status")
+        await _pilot.pause()
+        from lilbee.cli.tui.screens.status import StatusScreen
 
-            assert isinstance(app.screen, StatusScreen)
+        assert isinstance(app.screen, StatusScreen)
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -1084,8 +1086,7 @@ async def test_chat_slash_vision_dispatch(mock_check):
 async def test_chat_slash_delete_dispatch(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.store.get_sources", return_value=[]):
-            app.screen._handle_slash("/delete")
+        app.screen._handle_slash("/delete")
 
 
 # ---------------------------------------------------------------------------
@@ -1322,13 +1323,12 @@ async def test_command_provider_delete_doc(mock_check):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with (
-            patch("lilbee.store.delete_by_source") as mock_del_chunks,
-            patch("lilbee.store.delete_source") as mock_del_src,
-        ):
-            provider._delete_doc("notes.md")
-            mock_del_chunks.assert_called_once_with("notes.md")
-            mock_del_src.assert_called_once_with("notes.md")
+        provider._delete_doc("notes.md")
+        from lilbee.services import get_services
+
+        store = get_services().store
+        store.delete_by_source.assert_called_once_with("notes.md")
+        store.delete_source.assert_called_once_with("notes.md")
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -1429,15 +1429,15 @@ async def test_command_provider_document_commands(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
+        from lilbee.services import get_services
 
+        get_services().store.get_sources.return_value = [
+            {"filename": "notes.md", "source": "notes.md"},
+        ]
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch(
-            "lilbee.store.get_sources",
-            return_value=[{"filename": "notes.md", "source": "notes.md"}],
-        ):
-            cmds = provider._document_commands()
-            assert len(cmds) == 1
-            assert "notes.md" in cmds[0][0]
+        cmds = provider._document_commands()
+        assert len(cmds) == 1
+        assert "notes.md" in cmds[0][0]
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -1447,11 +1447,12 @@ async def test_command_provider_document_commands_error(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
+        from lilbee.services import get_services
 
+        get_services().store.get_sources.side_effect = Exception("no store")
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.store.get_sources", side_effect=Exception("no store")):
-            cmds = provider._document_commands()
-            assert cmds == []
+        cmds = provider._document_commands()
+        assert cmds == []
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -1461,11 +1462,12 @@ async def test_command_provider_document_commands_empty_name(mock_check):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
+        from lilbee.services import get_services
 
+        get_services().store.get_sources.return_value = [{"source": ""}]
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.store.get_sources", return_value=[{"source": ""}]):
-            cmds = provider._document_commands()
-            assert cmds == []
+        cmds = provider._document_commands()
+        assert cmds == []
 
 
 # ---------------------------------------------------------------------------
@@ -2128,7 +2130,7 @@ async def test_catalog_update_highlighted_detail_none_with_child():
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_worker(mock_check):
+async def test_chat_stream_response_worker(mock_check, mock_svc):
     """Cover _stream_response lines 315-336 via actual worker."""
     from dataclasses import dataclass
 
@@ -2140,37 +2142,37 @@ async def test_chat_stream_response_worker(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("Hello"), FakeToken(" world")]
-        with patch("lilbee.query.ask_stream", return_value=iter(tokens)):
-            from textual.widgets import Input
+        mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
+        from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "test question"
-            await _pilot.press("enter")
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "test question"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        # Wait for worker to complete
+        while app.screen.workers:
             await _pilot.pause()
-            # Wait for worker to complete
-            while app.screen.workers:
-                await _pilot.pause()
-            assert any(m["role"] == "assistant" for m in app.screen._history)
+        assert any(m["role"] == "assistant" for m in app.screen._history)
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_error_worker(mock_check):
+async def test_chat_stream_response_error_worker(mock_check, mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.query.ask_stream", side_effect=Exception("LLM error")):
-            from textual.widgets import Input
+        mock_svc.searcher.ask_stream = MagicMock(side_effect=Exception("LLM error"))
+        from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "test"
-            await _pilot.press("enter")
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "test"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        while app.screen.workers:
             await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_reasoning_worker(mock_check):
+async def test_chat_stream_response_reasoning_worker(mock_check, mock_svc):
     """Cover the reasoning token branch in _stream_response."""
     from dataclasses import dataclass
 
@@ -2182,15 +2184,15 @@ async def test_chat_stream_response_reasoning_worker(mock_check):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         tokens = [FakeToken("thinking", is_reasoning=True), FakeToken("answer")]
-        with patch("lilbee.query.ask_stream", return_value=iter(tokens)):
-            from textual.widgets import Input
+        mock_svc.searcher.ask_stream = MagicMock(return_value=iter(tokens))
+        from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "test"
-            await _pilot.press("enter")
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "test"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        while app.screen.workers:
             await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
@@ -2234,7 +2236,7 @@ async def test_chat_run_sync_error_worker(mock_check):
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_stream_with_streaming_workers(mock_check):
+async def test_chat_cancel_stream_with_streaming_workers(mock_check, mock_svc):
     """Cover action_cancel_stream line 350."""
     from dataclasses import dataclass
 
@@ -2253,17 +2255,17 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_check):
             time.sleep(5)  # long enough to cancel
             yield FakeToken("end")
 
-        with patch("lilbee.query.ask_stream", side_effect=slow_stream):
-            from textual.widgets import Input
+        mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
+        from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "test"
-            await _pilot.press("enter")
-            await _pilot.pause()
-            # Now cancel while streaming
-            app.screen._streaming = True
-            app.screen.action_cancel_stream()
-            assert app.screen._streaming is False
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "test"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        # Now cancel while streaming
+        app.screen._streaming = True
+        app.screen.action_cancel_stream()
+        assert app.screen._streaming is False
 
 
 @patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[])
@@ -2432,7 +2434,7 @@ async def test_chat_setup_modal_callback_with_name(mock_check):
 
 
 @patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_with_active_worker(mock_check):
+async def test_chat_cancel_with_active_worker(mock_check, mock_svc):
     """Cover the /cancel worker.cancel() line (line 110) with an active worker."""
     from dataclasses import dataclass
 
@@ -2452,17 +2454,17 @@ async def test_chat_cancel_with_active_worker(mock_check):
             barrier.wait(timeout=5)
             yield FakeToken("end")
 
-        with patch("lilbee.query.ask_stream", side_effect=slow_stream):
-            from textual.widgets import Input
+        mock_svc.searcher.ask_stream = MagicMock(side_effect=slow_stream)
+        from textual.widgets import Input
 
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "test"
-            await _pilot.press("enter")
-            await _pilot.pause()
-            # Now there should be a worker running
-            app.screen._handle_slash("/cancel")
-            barrier.set()
-            await _pilot.pause()
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "test"
+        await _pilot.press("enter")
+        await _pilot.pause()
+        # Now there should be a worker running
+        app.screen._handle_slash("/cancel")
+        barrier.set()
+        await _pilot.pause()
 
 
 # ---------------------------------------------------------------------------

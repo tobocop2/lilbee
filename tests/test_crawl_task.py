@@ -9,7 +9,7 @@ from lilbee.crawl_task import (
     _MAX_COMPLETED_TASKS,
     CrawlTask,
     TaskStatus,
-    _active_tasks,
+    _registry,
     clear_tasks,
     get_task,
     list_tasks,
@@ -166,8 +166,8 @@ class TestEviction:
                 status=TaskStatus.DONE,
                 finished_at=f"2026-01-01T00:{i:02d}:00+00:00",
             )
-            _active_tasks[task.task_id] = task
+            _registry.tasks[task.task_id] = task
 
         start_crawl("https://example.com/new")
-        completed = [t for t in _active_tasks.values() if t.status == TaskStatus.DONE]
+        completed = [t for t in _registry.tasks.values() if t.status == TaskStatus.DONE]
         assert len(completed) <= _MAX_COMPLETED_TASKS

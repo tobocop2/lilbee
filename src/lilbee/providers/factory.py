@@ -1,34 +1,29 @@
-"""Factory for creating LLM provider singletons."""
+"""Factory for creating LLM provider instances."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lilbee.config import Config
     from lilbee.providers.base import LLMProvider
 
-_provider: LLMProvider | None = None
 
-
-def get_provider() -> LLMProvider:
-    """Return the configured LLM provider singleton."""
-    global _provider
-    if _provider is not None:
-        return _provider
-
-    from lilbee.config import cfg
-
-    provider_name = cfg.llm_provider
+def create_provider(config: Config) -> LLMProvider:
+    """Create a new LLM provider instance from the given config."""
+    provider_name = config.llm_provider
 
     if provider_name == "auto":
         from lilbee.providers.routing_provider import RoutingProvider
 
-        _provider = RoutingProvider()
-    elif provider_name == "llama-cpp":
+        return RoutingProvider()
+
+    if provider_name == "llama-cpp":
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        _provider = LlamaCppProvider()
-    elif provider_name in ("litellm", "ollama"):
+        return LlamaCppProvider()
+
+    if provider_name in ("litellm", "ollama"):
         from lilbee.providers.litellm_provider import LiteLLMProvider
 
         if not LiteLLMProvider.available():
@@ -37,18 +32,11 @@ def get_provider() -> LLMProvider:
             raise ProviderError(
                 "litellm is not installed. Install with: pip install 'lilbee[litellm]'"
             )
-        _provider = LiteLLMProvider(
-            base_url=cfg.litellm_base_url, api_key=cfg.llm_api_key
-        )
-    else:
-        from lilbee.providers.base import ProviderError
+        return LiteLLMProvider(
+            base_url=config.litellm_base_url,
+            api_key=config.llm_api_key,
+        )  # pragma: no cover
 
-        raise ProviderError(f"Unknown LLM provider: {provider_name!r}")
+    from lilbee.providers.base import ProviderError
 
-    return _provider
-
-
-def reset_provider() -> None:
-    """Clear the provider singleton. For testing only."""
-    global _provider
-    _provider = None
+    raise ProviderError(f"Unknown LLM provider: {provider_name!r}")

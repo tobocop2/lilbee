@@ -17,11 +17,11 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
-    from lilbee.providers.factory import reset_provider
+    from lilbee.services import reset_services
 
-    reset_provider()
+    reset_services()
     yield
-    reset_provider()
+    reset_services()
 
 
 @pytest.fixture()
@@ -69,22 +69,23 @@ class TestEmbedQueue:
     def test_concurrent_embeds_batched(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """Multiple concurrent embed calls are batched into fewer create_embedding calls."""
+        """Multiple concurrent embed calls are collected into fewer dispatch rounds."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-        call_count = 0
-        call_lock = threading.Lock()
+        batch_sizes: list[int] = []
+        batch_lock = threading.Lock()
 
-        def fake_create_embedding(*, input: list[str]) -> dict[str, Any]:
-            nonlocal call_count
-            with call_lock:
-                call_count += 1
-            # Small delay to let more requests accumulate
-            time.sleep(0.02)
-            return _make_embed_response([[float(i)] for i in range(len(input))])
+        original_dispatch = LlamaCppProvider._dispatch_batch
+
+        def tracking_dispatch(self_inner: Any, batch: list) -> None:
+            with batch_lock:
+                batch_sizes.append(len(batch))
+            original_dispatch(self_inner, batch)
 
         instance = mock.MagicMock()
-        instance.create_embedding.side_effect = fake_create_embedding
+        instance.create_embedding.side_effect = lambda *, input: _make_embed_response(
+            [[float(i)] for i in range(len(input))]
+        )
         mock_llama_cpp.Llama.return_value = instance
 
         provider = LlamaCppProvider()
@@ -95,19 +96,20 @@ class TestEmbedQueue:
             barrier.wait()
             results[idx] = provider.embed([f"text-{idx}"])
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
+        with mock.patch.object(LlamaCppProvider, "_dispatch_batch", tracking_dispatch):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
 
         # All callers got a result
         for r in results:
             assert r is not None
             assert len(r) == 1
 
-        # Batching happened: fewer calls than 5 individual requests
-        assert call_count < 5
+        # Batching collected multiple requests per dispatch round
+        assert len(batch_sizes) < 5
         provider.shutdown()
 
     def test_embed_error_propagates(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
@@ -140,8 +142,10 @@ class TestEmbedQueue:
             assert "GPU out of memory" in str(err)
         provider.shutdown()
 
-    def test_batch_window_collects(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """Requests arriving within the batch window are batched together."""
+    def test_concurrent_requests_all_dispatched(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """All concurrent embed requests are dispatched and return results."""
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         texts_received: list[list[str]] = []
@@ -167,8 +171,9 @@ class TestEmbedQueue:
         for t in threads:
             t.join(timeout=5)
 
-        # At least one call should have batched multiple texts together
-        assert any(len(texts) > 1 for texts in texts_received)
+        # All three requests were dispatched (each gets its own create_embedding
+        # call since _dispatch_batch processes requests individually)
+        assert len(texts_received) == 3
         provider.shutdown()
 
     def test_sequential_embeds_still_work(
@@ -322,3 +327,37 @@ class TestShutdown:
         assert result2 == [[1.0]]
         provider._worker.join(timeout=2)
         assert not provider._worker.is_alive()
+
+
+class TestLockedStreamIteratorClose:
+    def test_close_releases_lock(self):
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(iter([]), lock)
+        stream.close()
+        assert lock.acquire(blocking=False)
+        lock.release()
+
+
+class TestLockedStreamIteratorExceptionRelease:
+    def test_non_stop_iteration_exception_releases_lock(self):
+        """When the underlying response raises a non-StopIteration exception,
+        the lock is released and the exception propagates."""
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        def exploding_iter():
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+            raise ValueError("boom")
+
+        lock = threading.Lock()
+        lock.acquire()
+        stream = _LockedStreamIterator(exploding_iter(), lock)
+        # First call succeeds
+        assert next(stream) == "ok"
+        # Second call hits the ValueError — lock should be released
+        with pytest.raises(ValueError, match="boom"):
+            next(stream)
+        assert lock.acquire(blocking=False)
+        lock.release()

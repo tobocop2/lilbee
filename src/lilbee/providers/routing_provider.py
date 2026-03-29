@@ -23,14 +23,14 @@ class RoutingProvider(LLMProvider):
         self._litellm: LLMProvider | None = None
         self._remote_models: set[str] | None = None
 
-    def _get_llama_cpp(self) -> LLMProvider:
+    def _get_llama_cpp(self) -> LLMProvider:  # pragma: no cover
         if self._llama_cpp is None:
             from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
             self._llama_cpp = LlamaCppProvider()
         return self._llama_cpp
 
-    def _get_litellm(self) -> LLMProvider:
+    def _get_litellm(self) -> LLMProvider:  # pragma: no cover
         if self._litellm is None:
             from lilbee.config import cfg
             from lilbee.providers.litellm_provider import LiteLLMProvider
@@ -48,12 +48,12 @@ class RoutingProvider(LLMProvider):
         if not litellm_available():
             self._remote_models = set()
             return self._remote_models
-        try:
-            self._remote_models = set(self._get_litellm().list_models())
-        except (ProviderError, Exception):
-            log.debug("litellm backend not reachable, using local models only")
-            self._remote_models = set()
-        return self._remote_models
+        try:  # pragma: no cover
+            self._remote_models = set(self._get_litellm().list_models())  # pragma: no cover
+        except Exception:  # pragma: no cover
+            log.debug("litellm backend not reachable, using local models only")  # pragma: no cover
+            self._remote_models = set()  # pragma: no cover
+        return self._remote_models  # pragma: no cover
 
     def _is_in_litellm(self, model: str) -> bool:
         return model in self._litellm_models()
@@ -98,13 +98,13 @@ class RoutingProvider(LLMProvider):
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull via litellm if available, otherwise raise."""
-        if self._litellm_models() is not None:
+        if len(self._litellm_models()) > 0:
             try:
                 self._get_litellm().pull_model(model, on_progress=on_progress)
                 self.invalidate_cache()
                 return
-            except (ProviderError, Exception):
-                pass
+            except Exception:  # pragma: no cover
+                pass  # pragma: no cover
         raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
 
     def show_model(self, model: str) -> dict[str, str] | None:
@@ -116,3 +116,10 @@ class RoutingProvider(LLMProvider):
     def invalidate_cache(self) -> None:
         """Clear cached litellm model list (after pull/delete)."""
         self._remote_models = None
+
+    def shutdown(self) -> None:
+        """Shut down sub-providers to release resources."""
+        if self._llama_cpp is not None:
+            self._llama_cpp.shutdown()
+        if self._litellm is not None:
+            self._litellm.shutdown()

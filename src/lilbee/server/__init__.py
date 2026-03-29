@@ -3,6 +3,6 @@
 
 def create_app():  # type: ignore[no-untyped-def]
     """Create the HTTP server app (lazy import to avoid loading litestar at startup)."""
-    from lilbee.server.litestar_app import create_app as _create
+    from lilbee.server.app import create_app as _create
 
     return _create()

@@ -19,10 +19,13 @@ def _fake_embed_batch(texts, **kwargs):
 @pytest.fixture(autouse=True)
 def _mock_embedder():
     """Mock embedding calls so tests run without a live model."""
-    with (
-        mock.patch("lilbee.embedder.embed", side_effect=_fake_embed),
-        mock.patch("lilbee.embedder.embed_batch", side_effect=_fake_embed_batch),
-        mock.patch("lilbee.embedder.validate_model"),
+    with mock.patch(
+        "lilbee.providers.factory.create_provider",
+        return_value=mock.MagicMock(
+            embed=mock.MagicMock(side_effect=lambda texts: [_fake_embed(t) for t in texts]),
+            pull_model=mock.MagicMock(),
+            shutdown=mock.MagicMock(),
+        ),
     ):
         yield
 
@@ -164,7 +167,6 @@ class TestRemove:
         bee = Lilbee(tmp_path / "proj")
         _write_doc(bee.config.documents_dir, "gone.md", "# Gone\nThis will be removed shortly.")
         bee.sync()
-        assert bee.search("removed") != [] or True  # search may or may not find with fake vecs
         bee.remove("gone.md")
         status = bee.status()
         assert "gone.md" not in status["sources"]
@@ -192,6 +194,39 @@ class TestRebuild:
         bee.sync()
         result = bee.rebuild()
         assert "rb.md" in result.added
+
+
+class TestPropertyAccessors:
+    def test_store_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.store is not None
+
+    def test_embedder_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.embedder is not None
+
+    def test_searcher_property(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.searcher is not None
+
+
+class TestRemovePathTraversal:
+    def test_remove_path_traversal_skips(self, tmp_path):
+        """remove() with a traversal name catches ValueError and returns."""
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        _write_doc(bee.config.documents_dir, "legit.md", "# Legit\nSome content here.")
+        bee.sync()
+        bee.remove("../../etc/passwd")
+        status = bee.status()
+        assert "legit.md" in status["sources"]
 
 
 class TestIsolation:

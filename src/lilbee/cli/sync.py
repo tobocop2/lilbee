@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
-import concurrent.futures.thread
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -58,18 +56,12 @@ def _get_executor() -> ThreadPoolExecutor:
 def shutdown_executor() -> None:
     """Shut down the background executor without blocking.
 
-    Drops the executor reference and removes Python's atexit hook that
-    would otherwise block waiting for running threads to finish (causing
-    ``/quit`` and Ctrl+C to hang).
+    Uses wait=False + cancel_futures to avoid blocking the main thread.
     """
     global _bg_executor
     if _bg_executor is None:
         return
 
-    # Python registers _python_exit as an atexit handler that calls
-    # shutdown(wait=True) on every live executor.  Remove it so the
-    # interpreter doesn't block on our sync thread.
-    atexit.unregister(concurrent.futures.thread._python_exit)
     _bg_executor.shutdown(wait=False, cancel_futures=True)
     _bg_executor = None
 

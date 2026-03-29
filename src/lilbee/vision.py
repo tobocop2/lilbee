@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
-from lilbee.providers import get_provider
 
 log = logging.getLogger(__name__)
 
@@ -70,10 +69,24 @@ def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
 
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
-    """Send a page image to a vision model and return extracted text."""
+    """Send a page image to a vision model and return extracted text.
+
+    The *timeout* parameter (seconds) caps wall-clock time for the provider
+    call using ``concurrent.futures``.  ``None`` or ``0`` means no limit.
+    """
     try:
-        provider = get_provider()
+        from lilbee.services import get_services
+
+        provider = get_services().provider
         messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
+
+        if timeout and timeout > 0:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(provider.chat, messages, stream=False, model=model)
+                return cast(str, future.result(timeout=timeout))
+
         return cast(str, provider.chat(messages, stream=False, model=model))
     except Exception as exc:
         log.warning("Vision OCR: page skipped (%s: %s)", type(exc).__name__, exc)

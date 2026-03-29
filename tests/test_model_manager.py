@@ -402,6 +402,13 @@ class TestModelManagerRemove:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr.remove("missing.gguf", ModelSource.NATIVE) is False
 
+    def test_native_remove_path_traversal_blocked(self, tmp_path: Path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        assert mgr.remove("../../etc/passwd", ModelSource.NATIVE) is False
+
     def test_litellm_remove_success(self) -> None:
         mock_response = mock.Mock()
         mock_response.status_code = 200
@@ -513,3 +520,66 @@ class TestLitellmEdgeCases:
             result = mgr.list_installed(ModelSource.LITELLM)
 
         assert result == []
+
+
+class TestIsNativePathTraversal:
+    def test_path_traversal_returns_false(self, tmp_path: Path) -> None:
+        """_is_native returns False for path traversal attempts."""
+        mgr = ModelManager(models_dir=tmp_path, litellm_base_url="http://localhost:11434")
+        assert not mgr._is_native("../../etc/passwd")
+
+
+class TestIsNativeRegistry:
+    def test_is_native_true_when_in_registry(self, tmp_path: Path) -> None:
+        """_is_native returns True when model exists in registry."""
+
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        source = tmp_path / "model.gguf"
+        source.write_bytes(b"registry-model-data")
+        ref = ModelRef(name="my-reg-model")
+        manifest = ModelManifest(
+            name="my-reg-model",
+            tag="latest",
+            size_bytes=len(b"registry-model-data"),
+            task="chat",
+            source_repo="org/repo",
+            source_filename="model.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        registry.install(ref, source, manifest)
+
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        assert mgr._is_native("my-reg-model") is True
+
+
+class TestRemoveNativeRegistry:
+    def test_remove_native_from_registry(self, tmp_path: Path) -> None:
+        """_remove_native removes model from registry."""
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        source = tmp_path / "model.gguf"
+        source.write_bytes(b"registry-model-data")
+        ref = ModelRef(name="removable")
+        manifest = ModelManifest(
+            name="removable",
+            tag="latest",
+            size_bytes=len(b"registry-model-data"),
+            task="chat",
+            source_repo="org/repo",
+            source_filename="model.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        registry.install(ref, source, manifest)
+
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        assert mgr._remove_native("removable") is True
+        assert not registry.is_installed("removable")

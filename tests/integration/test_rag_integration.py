@@ -17,15 +17,23 @@ import pytest
 
 llama_cpp = pytest.importorskip("llama_cpp")
 
-from lilbee import embedder, store  # noqa: E402
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
 from lilbee.ingest import sync  # noqa: E402
 from lilbee.model_manager import reset_model_manager  # noqa: E402
-from lilbee.providers.factory import reset_provider  # noqa: E402
-from lilbee.query import ask_raw, search_context  # noqa: E402
+from lilbee.services import get_services  # noqa: E402
+from lilbee.services import reset_services as reset_provider  # noqa: E402
 
 pytestmark = pytest.mark.slow
+
+
+def search_context(question, top_k=0):
+    return get_services().searcher.search(question, top_k=top_k)
+
+
+def ask_raw(question, top_k=0, history=None, options=None):
+    return get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=options)
+
 
 # Test document contents — known facts for verifiable retrieval
 SPECS_MD = """\
@@ -223,19 +231,19 @@ def _unique_sources(results):
 class TestPipelineBasics:
     def test_ingest_creates_chunks(self, rag_pipeline):
         """Sync produces chunks in LanceDB, count > 0."""
-        table = store.open_table("chunks")
+        table = get_services().store.open_table("chunks")
         assert table is not None
         rows = table.to_arrow().to_pylist()
         assert len(rows) > 0
 
     def test_ingest_creates_fts_index(self, rag_pipeline):
         """FTS index is built after sync."""
-        results = store.bm25_probe("Thunderbolt", top_k=3)
+        results = get_services().store.bm25_probe("Thunderbolt", top_k=3)
         assert len(results) > 0
 
     def test_embed_produces_real_vectors(self, rag_pipeline):
         """Embeddings are non-zero float vectors with correct dimensionality."""
-        vec = embedder.embed("test embedding vector")
+        vec = get_services().embedder.embed("test embedding vector")
         assert len(vec) == cfg.embedding_dim
         assert any(v != 0.0 for v in vec)
 
@@ -326,16 +334,16 @@ class TestAnswerGeneration:
 
     def test_ask_returns_answer(self, rag_pipeline):
         """ask_raw() returns a non-empty answer with real search, mocked chat."""
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.return_value = "The oil capacity is 6.5 quarts."
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value="The oil capacity is 6.5 quarts."):
             result = ask_raw("What is the oil capacity?", top_k=5)
         assert result.answer
         assert len(result.answer) > 0
 
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search."""
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.return_value = "The Thunderbolt has a 3.5L V6."
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value="The Thunderbolt has a 3.5L V6."):
             result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
         assert len(result.sources) > 0
         source_names = [s.source for s in result.sources]
@@ -353,8 +361,8 @@ class TestAnswerGeneration:
             captured_messages.extend(messages)
             return "The oil capacity is 6.5 quarts."
 
-        with patch("lilbee.query.get_provider") as mock_gp:
-            mock_gp.return_value.chat.side_effect = capture_chat
+        svc = get_services()
+        with patch.object(svc.provider, "chat", side_effect=capture_chat):
             ask_raw(
                 "What is the oil capacity of the Thunderbolt X500?",
                 top_k=5,
@@ -400,31 +408,271 @@ class TestRegressionGuards:
 
     def test_delete_removes_from_search(self, rag_pipeline):
         """Removing specs.md makes it unfindable."""
+        s = get_services().store
         # Verify it's currently findable
         before = search_context("Thunderbolt X500", top_k=5)
         assert "specs.md" in _source_names(before)
 
         # Delete it
-        store.delete_by_source("specs.md")
-        store.delete_source("specs.md")
-        store.ensure_fts_index()
+        s.delete_by_source("specs.md")
+        s.delete_source("specs.md")
+        s.ensure_fts_index()
 
         after = search_context("Thunderbolt X500", top_k=5)
         assert "specs.md" not in _source_names(after)
 
         # Re-add it for subsequent tests by re-syncing
         asyncio.run(sync(quiet=True))
-        store.ensure_fts_index()
+        s.ensure_fts_index()
 
     def test_sync_idempotent(self, rag_pipeline):
         """Running sync twice produces the same chunk count."""
-        table = store.open_table("chunks")
+        s = get_services().store
+        table = s.open_table("chunks")
         assert table is not None
         count_before = len(table.to_arrow().to_pylist())
 
         asyncio.run(sync(quiet=True))
 
-        table = store.open_table("chunks")
+        table = s.open_table("chunks")
         assert table is not None
         count_after = len(table.to_arrow().to_pylist())
         assert count_after == count_before
+
+
+# ---------------------------------------------------------------------------
+# Query Expansion (LLM-generated variant queries)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryExpansion:
+    """Tests with query_expansion_count enabled so the LLM generates variant queries."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_expansion(self):
+        original = cfg.query_expansion_count
+        # Disable skip-expansion so expansion always runs
+        original_skip = cfg.expansion_skip_threshold
+        cfg.query_expansion_count = 1
+        cfg.expansion_skip_threshold = 0.0
+        reset_provider()
+        yield
+        cfg.query_expansion_count = original
+        cfg.expansion_skip_threshold = original_skip
+        reset_provider()
+
+    def test_expansion_finds_specs(self, rag_pipeline):
+        """'engine specs' finds specs.md when expansion generates a variant query."""
+        results = search_context("engine specs", top_k=10)
+        sources = _source_names(results)
+        assert "specs.md" in sources, f"specs.md not in {sources}"
+
+    def test_expansion_produces_variants(self, rag_pipeline):
+        """Expansion broadens results — at least as many as without expansion."""
+        results = search_context("engine specs", top_k=10)
+        assert len(results) > 0, "Expected non-empty results with expansion enabled"
+
+
+# ---------------------------------------------------------------------------
+# HyDE Search (Hypothetical Document Embedding)
+# ---------------------------------------------------------------------------
+
+
+class TestHydeSearch:
+    """Tests with HyDE enabled — generates a hypothetical answer, embeds it, searches."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_hyde(self):
+        original = cfg.hyde
+        cfg.hyde = True
+        reset_provider()
+        yield
+        cfg.hyde = original
+        reset_provider()
+
+    def test_hyde_finds_specs_from_vague_query(self, rag_pipeline):
+        """'what machine am I reading about' finds specs.md via HyDE."""
+        results = search_context("what machine am I reading about", top_k=10)
+        assert len(results) > 0, "HyDE search returned no results"
+        sources = _source_names(results)
+        assert "specs.md" in sources, f"specs.md not in {sources}"
+
+    def test_hyde_returns_nonempty(self, rag_pipeline):
+        """HyDE search for a general question returns at least one result."""
+        results = search_context("tell me about the vehicle", top_k=5)
+        assert len(results) > 0
+
+
+# ---------------------------------------------------------------------------
+# Concept Graph (spaCy-based concept extraction + graph boost)
+# ---------------------------------------------------------------------------
+
+
+class TestConceptGraph:
+    """Tests with concept_graph enabled — requires spacy and graspologic."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_concepts(self, rag_pipeline):
+        spacy = pytest.importorskip("spacy")
+        pytest.importorskip("graspologic_native")
+        # Ensure the en_core_web_sm model is available
+        try:
+            spacy.load("en_core_web_sm")
+        except OSError:
+            pytest.skip("spacy model en_core_web_sm not installed")
+
+        original = cfg.concept_graph
+        cfg.concept_graph = True
+        reset_provider()
+
+        # Re-sync so concept tables get built
+        asyncio.run(sync(quiet=True))
+
+        yield
+
+        cfg.concept_graph = original
+        reset_provider()
+
+    def test_concept_tables_exist(self, rag_pipeline):
+        """After sync with concept_graph=True, concept tables exist in LanceDB."""
+        store = get_services().store
+        nodes_table = store.open_table("concept_nodes")
+        edges_table = store.open_table("concept_edges")
+        assert nodes_table is not None, "concept_nodes table not found"
+        assert edges_table is not None, "concept_edges table not found"
+
+    def test_concept_search_finds_related(self, rag_pipeline):
+        """Searching with concept boost finds related documents."""
+        results = search_context("engine specifications", top_k=10)
+        sources = _source_names(results)
+        assert "specs.md" in sources, f"specs.md not in {sources}"
+
+    def test_extract_concepts_nonempty(self, rag_pipeline):
+        """Extracting concepts from a query returns at least one concept."""
+        concepts_svc = get_services().concepts
+        concepts = concepts_svc.extract_concepts("Thunderbolt engine specifications horsepower")
+        assert len(concepts) > 0, f"Expected non-empty concepts, got {concepts}"
+
+
+# ---------------------------------------------------------------------------
+# Temporal Filtering (date-based result filtering)
+# ---------------------------------------------------------------------------
+
+
+class TestTemporalFilter:
+    """Tests with temporal_filtering enabled — filters by ingestion date."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_temporal(self):
+        original = cfg.temporal_filtering
+        cfg.temporal_filtering = True
+        yield
+        cfg.temporal_filtering = original
+
+    def test_temporal_query_returns_results(self, rag_pipeline):
+        """A temporal query like 'recent changes' still returns results.
+
+        All test docs were ingested at the same time (now), so temporal
+        filtering keeps them all. The key assertion is that the filter
+        runs without error and does not discard everything.
+        """
+        results = search_context("recent changes", top_k=10)
+        assert len(results) > 0, "Temporal query returned no results"
+
+    def test_temporal_keywords_detected(self, rag_pipeline):
+        """Temporal keywords are detected in queries."""
+        from lilbee.temporal import detect_temporal
+
+        assert detect_temporal("recent changes") is not None
+        assert detect_temporal("latest updates") is not None
+        assert detect_temporal("engine specifications") is None
+
+
+# ---------------------------------------------------------------------------
+# Structured Queries (prefix syntax: term:, vec:, hyde:)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredQueries:
+    """Tests for structured query prefix syntax."""
+
+    def test_term_prefix_bm25_only(self, rag_pipeline):
+        """'term: Thunderbolt' performs BM25-only search and returns results."""
+        results = search_context("term: Thunderbolt", top_k=5)
+        assert len(results) > 0, "term: prefix returned no results"
+        sources = _source_names(results)
+        assert "specs.md" in sources
+
+    def test_vec_prefix_vector_only(self, rag_pipeline):
+        """'vec: engine specifications' performs vector-only search and returns results."""
+        results = search_context("vec: engine specifications", top_k=5)
+        assert len(results) > 0, "vec: prefix returned no results"
+        sources = _source_names(results)
+        assert "specs.md" in sources
+
+    def test_hyde_prefix_search(self, rag_pipeline):
+        """'hyde:' prefix triggers the HyDE code path without crashing."""
+        original = cfg.hyde
+        cfg.hyde = True
+        reset_provider()
+        try:
+            # HyDE with a tiny model (Qwen3 0.6B) may produce poor hypothetical
+            # docs that don't match anything. We verify the code path runs
+            # without error; if results are found, check they're plausible.
+            results = search_context("hyde: Thunderbolt X500 engine oil capacity", top_k=5)
+            assert isinstance(results, list)
+            if results:
+                sources = {r.source for r in results}
+                assert any("specs" in s for s in sources), f"Got {sources}"
+        finally:
+            cfg.hyde = original
+            reset_provider()
+
+
+# ---------------------------------------------------------------------------
+# Ask Stream (streaming answer generation)
+# ---------------------------------------------------------------------------
+
+
+class TestAskStream:
+    """Tests for ask_stream() — real search, mocked LLM chat."""
+
+    def test_stream_yields_tokens(self, rag_pipeline):
+        """ask_stream() yields StreamToken objects with content."""
+        from lilbee.reasoning import StreamToken
+
+        svc = get_services()
+        with patch.object(
+            svc.provider,
+            "chat",
+            return_value=iter(["The ", "oil ", "capacity ", "is ", "6.5 quarts."]),
+        ):
+            tokens = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
+        assert len(tokens) > 0
+        assert all(isinstance(t, StreamToken) for t in tokens)
+
+    def test_stream_ends_with_citations(self, rag_pipeline):
+        """The last token from ask_stream() contains source citations."""
+        from lilbee.reasoning import StreamToken
+
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value=iter(["The engine is a V6."])):
+            tokens = list(svc.searcher.ask_stream("What engine does it have?", top_k=5))
+        assert len(tokens) > 0
+        last_token = tokens[-1]
+        assert isinstance(last_token, StreamToken)
+        assert "Sources:" in last_token.content
+
+    def test_stream_is_reasoning_flag(self, rag_pipeline):
+        """Tokens from ask_stream() have is_reasoning=False for normal content."""
+        from lilbee.reasoning import StreamToken
+
+        svc = get_services()
+        with patch.object(svc.provider, "chat", return_value=iter(["Answer here."])):
+            tokens = list(svc.searcher.ask_stream("Tell me about the car", top_k=5))
+        non_empty = [t for t in tokens if t.content.strip()]
+        assert len(non_empty) > 0
+        # Normal content tokens (no <think> tags) should all be is_reasoning=False
+        for t in non_empty:
+            assert isinstance(t, StreamToken)
+            assert t.is_reasoning is False

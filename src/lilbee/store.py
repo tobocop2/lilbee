@@ -2,6 +2,7 @@
 
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict
@@ -10,8 +11,9 @@ import lancedb
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field
 
-from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, cfg
+from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
+from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
@@ -19,15 +21,6 @@ log = logging.getLogger(__name__)
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
 # on slow media (HDD) at the cost of serving slightly stale data.
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
-
-
-class _FtsState:
-    """Ephemeral FTS index state — resets on process start."""
-
-    ready: bool = False
-
-
-_fts = _FtsState()
 
 
 class SearchChunk(BaseModel):
@@ -83,6 +76,7 @@ def mmr_rerank(
     if len(results) <= top_k:
         return results
 
+    relevance_map = {id(r): _cosine_sim(query_vector, r.vector) for r in results}
     selected: list[SearchChunk] = []
     remaining = list(results)
 
@@ -90,7 +84,7 @@ def mmr_rerank(
         best_score = -float("inf")
         best_idx = 0
         for i, candidate in enumerate(remaining):
-            relevance = _cosine_sim(query_vector, candidate.vector)
+            relevance = relevance_map[id(candidate)]
             redundancy = 0.0
             if selected:
                 redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
@@ -112,22 +106,6 @@ class SourceRecord(TypedDict):
     chunk_count: int
 
 
-def _chunks_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("source", pa.utf8()),
-            pa.field("content_type", pa.utf8()),
-            pa.field("page_start", pa.int32()),
-            pa.field("page_end", pa.int32()),
-            pa.field("line_start", pa.int32()),
-            pa.field("line_end", pa.int32()),
-            pa.field("chunk", pa.utf8()),
-            pa.field("chunk_index", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), cfg.embedding_dim)),
-        ]
-    )
-
-
 def _sources_schema() -> pa.Schema:
     return pa.schema(
         [
@@ -136,13 +114,6 @@ def _sources_schema() -> pa.Schema:
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
         ]
-    )
-
-
-def get_db() -> lancedb.DBConnection:
-    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
-    return lancedb.connect(
-        str(cfg.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
     )
 
 
@@ -161,14 +132,6 @@ def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lanc
         return db.open_table(name)
 
 
-def open_table(name: str) -> lancedb.table.Table | None:
-    """Open a table if it exists, otherwise return None."""
-    db = get_db()
-    if name not in _table_names(db):
-        return None
-    return db.open_table(name)
-
-
 def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
     """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
     try:
@@ -185,44 +148,7 @@ def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
 
 def escape_sql_string(value: str) -> str:
     """Escape single quotes for SQL predicates."""
-    return value.replace("'", "''")
-
-
-def ensure_fts_index() -> None:
-    """Create or replace the FTS index on the chunks table.
-
-    No-op when the table doesn't exist or is empty.  Sets _fts.ready
-    on success so hybrid_search can be used.
-    """
-    with write_lock():
-        table = open_table(CHUNKS_TABLE)
-        if table is None:
-            return
-        try:
-            table.create_fts_index("chunk", replace=True)
-            _fts.ready = True
-            log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
-        except Exception:
-            log.debug("FTS index creation failed (empty table?)", exc_info=True)
-
-
-def add_chunks(records: list[dict]) -> int:
-    """Add chunk records to the store. Returns count added."""
-    with write_lock():
-        _fts.ready = False
-        if not records:
-            return 0
-        for rec in records:
-            vec = rec.get("vector", [])
-            if len(vec) != cfg.embedding_dim:
-                raise ValueError(
-                    f"Vector dimension mismatch: expected {cfg.embedding_dim}, got {len(vec)} "
-                    f"(source={rec.get('source', '?')})"
-                )
-        db = get_db()
-        table = ensure_table(db, CHUNKS_TABLE, _chunks_schema())
-        table.add(records)
-        return len(records)
+    return value.replace("\\", "\\\\").replace("'", "''")
 
 
 def _hybrid_search(
@@ -245,194 +171,291 @@ def _hybrid_search(
     return [SearchChunk(**r) for r in rows]
 
 
-def bm25_probe(query_text: str, top_k: int = 5) -> list[SearchChunk]:
-    """Quick BM25-only search for confidence checking. Returns up to top_k results."""
-    table = open_table(CHUNKS_TABLE)
-    if table is None:
-        return []
-    if not _fts.ready:
-        ensure_fts_index()
-    if not _fts.ready:
-        return []  # pragma: no cover
-    try:
-        rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
-        return [SearchChunk(**r) for r in rows]
-    except Exception:
-        log.debug("BM25 probe failed", exc_info=True)
-        return []
+@dataclass
+class RemoveResult:
+    """Result of a remove_documents operation."""
 
-
-def search(
-    query_vector: list[float],
-    top_k: int | None = None,
-    max_distance: float | None = None,
-    query_text: str | None = None,
-) -> list[SearchChunk]:
-    """Search for similar chunks — hybrid when FTS index is available, else vector-only.
-
-    Results with distance > max_distance are filtered out (vector-only path).
-    Pass max_distance=0 to disable filtering.
-    """
-    if top_k is None:
-        top_k = cfg.top_k
-    if max_distance is None:
-        max_distance = cfg.max_distance
-    table = open_table(CHUNKS_TABLE)
-    if table is None:
-        return []
-
-    if query_text and not _fts.ready:
-        ensure_fts_index()
-
-    if query_text and _fts.ready:
-        try:
-            return _hybrid_search(table, query_text, query_vector, top_k)
-        except Exception:
-            log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
-
-    candidate_k = top_k * cfg.candidate_multiplier
-    rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
-    results = [SearchChunk(**r) for r in rows]
-    if max_distance > 0:
-        results = _adaptive_filter(results, top_k, max_distance)
-    if len(results) > top_k:
-        results = mmr_rerank(query_vector, results, top_k)
-    return results
+    removed: list[str]
+    not_found: list[str]
 
 
 _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
-def _adaptive_filter(
-    results: list[SearchChunk], top_k: int, initial_threshold: float
-) -> list[SearchChunk]:
-    """Widen cosine distance threshold when too few results.
+class Store:
+    """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
-    Inspired by grantflow's (grantflow-ai/grantflow) adaptive retrieval
-    pattern which widens thresholds on recursive retry. Step size and
-    cap are configurable via ``cfg.adaptive_threshold_step``.
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._fts_ready: bool = False
+        self._db: lancedb.DBConnection | None = None
 
-    Step size is ``cfg.adaptive_threshold_step`` (default 0.2).
-    Stops after ``_MAX_FILTER_ITERATIONS`` to prevent runaway loops.
-    """
-    cap = max(initial_threshold, _MAX_THRESHOLD)
-    step = cfg.adaptive_threshold_step
-    threshold = initial_threshold
-    for _ in range(_MAX_FILTER_ITERATIONS):
-        if threshold > cap:
-            break
-        filtered = [r for r in results if (r.distance or 0) <= threshold]
-        if len(filtered) >= top_k:
-            return filtered
-        threshold += step
-    return [r for r in results if (r.distance or 0) <= cap]
-
-
-def get_chunks_by_source(source: str) -> list[SearchChunk]:
-    """Return all chunks for a given source file."""
-    table = open_table(CHUNKS_TABLE)
-    if table is None:
-        return []
-    escaped = escape_sql_string(source)
-    rows = table.search().where(f"source = '{escaped}'").to_list()
-    return [SearchChunk(**r) for r in rows]
-
-
-def delete_by_source(source: str) -> None:
-    """Delete all chunks from a given source file."""
-    with write_lock():
-        table = open_table(CHUNKS_TABLE)
-        if table is not None:
-            _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
-
-
-def get_sources() -> list[SourceRecord]:
-    """Get all tracked source file records."""
-    table = open_table(SOURCES_TABLE)
-    if table is None:
-        return []
-    result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
-    return result
-
-
-def upsert_source(filename: str, file_hash: str, chunk_count: int) -> None:
-    """Add or update a source file tracking record."""
-    with write_lock():
-        db = get_db()
-        table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-        _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
-        table.add(
+    def _chunks_schema(self) -> pa.Schema:
+        return pa.schema(
             [
-                {
-                    "filename": filename,
-                    "file_hash": file_hash,
-                    "ingested_at": datetime.now(UTC).isoformat(),
-                    "chunk_count": chunk_count,
-                }
+                pa.field("source", pa.utf8()),
+                pa.field("content_type", pa.utf8()),
+                pa.field("page_start", pa.int32()),
+                pa.field("page_end", pa.int32()),
+                pa.field("line_start", pa.int32()),
+                pa.field("line_end", pa.int32()),
+                pa.field("chunk", pa.utf8()),
+                pa.field("chunk_index", pa.int32()),
+                pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
             ]
         )
 
+    def get_db(self) -> lancedb.DBConnection:
+        if self._db is None:
+            self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+            self._db = lancedb.connect(
+                str(self._config.lancedb_dir),
+                read_consistency_interval=READ_CONSISTENCY_INTERVAL,
+            )
+        return self._db
 
-def delete_source(filename: str) -> None:
-    """Remove a source file tracking record."""
-    with write_lock():
-        table = open_table(SOURCES_TABLE)
-        if table is not None:
+    def open_table(self, name: str) -> lancedb.table.Table | None:
+        """Open a table if it exists, otherwise return None."""
+        db = self.get_db()
+        if name not in _table_names(db):
+            return None
+        return db.open_table(name)
+
+    def ensure_fts_index(self) -> None:
+        """Create or replace the FTS index on the chunks table.
+
+        No-op when the table doesn't exist or is empty.  Sets _fts_ready
+        on success so hybrid_search can be used.
+        """
+        with write_lock():
+            table = self.open_table(CHUNKS_TABLE)
+            if table is None:
+                return
+            try:
+                table.create_fts_index("chunk", replace=True)
+                self._fts_ready = True
+                log.debug("FTS index created/replaced on '%s'", CHUNKS_TABLE)
+            except Exception:
+                log.debug("FTS index creation failed (empty table?)", exc_info=True)
+
+    def add_chunks(self, records: list[dict]) -> int:
+        """Add chunk records to the store. Returns count added."""
+        with write_lock():
+            self._fts_ready = False
+            if not records:
+                return 0
+            for rec in records:
+                vec = rec.get("vector", [])
+                if len(vec) != self._config.embedding_dim:
+                    raise ValueError(
+                        f"Vector dimension mismatch: expected {self._config.embedding_dim}, "
+                        f"got {len(vec)} (source={rec.get('source', '?')})"
+                    )
+            db = self.get_db()
+            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+            table.add(records)
+            return len(records)
+
+    def bm25_probe(self, query_text: str, top_k: int = 5) -> list[SearchChunk]:
+        """Quick BM25-only search for confidence checking. Returns up to top_k results."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+        if not self._fts_ready:
+            self.ensure_fts_index()
+        if not self._fts_ready:
+            return []  # pragma: no cover
+        try:
+            rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
+            return [SearchChunk(**r) for r in rows]
+        except Exception:
+            log.debug("BM25 probe failed", exc_info=True)
+            return []
+
+    def search(
+        self,
+        query_vector: list[float],
+        top_k: int | None = None,
+        max_distance: float | None = None,
+        query_text: str | None = None,
+    ) -> list[SearchChunk]:
+        """Search for similar chunks — hybrid when FTS available, else vector-only.
+
+        Results with distance > max_distance are filtered out (vector-only path).
+        Pass max_distance=0 to disable filtering.
+        """
+        if top_k is None:
+            top_k = self._config.top_k
+        if max_distance is None:
+            max_distance = self._config.max_distance
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+
+        if query_text and not self._fts_ready:
+            self.ensure_fts_index()
+
+        if query_text and self._fts_ready:
+            try:
+                return _hybrid_search(table, query_text, query_vector, top_k)
+            except Exception:
+                log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
+
+        candidate_k = top_k * self._config.candidate_multiplier
+        rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
+        results = [SearchChunk(**r) for r in rows]
+        if max_distance > 0:
+            results = self._adaptive_filter(results, top_k, max_distance)
+        if len(results) > top_k:
+            results = mmr_rerank(query_vector, results, top_k, self._config.mmr_lambda)
+        return results
+
+    def _adaptive_filter(
+        self, results: list[SearchChunk], top_k: int, initial_threshold: float
+    ) -> list[SearchChunk]:
+        """Widen cosine distance threshold when too few results.
+
+        Inspired by grantflow's (grantflow-ai/grantflow) adaptive retrieval
+        pattern which widens thresholds on recursive retry. Step size and
+        cap are configurable via ``self._config.adaptive_threshold_step``.
+
+        Pre-sorts results by distance for a single-pass cutoff search.
+        Step size is ``self._config.adaptive_threshold_step`` (default 0.2).
+        """
+        cap = max(initial_threshold, _MAX_THRESHOLD)
+        step = self._config.adaptive_threshold_step
+
+        sorted_results = sorted(
+            results, key=lambda r: r.distance if r.distance is not None else float("inf")
+        )
+
+        threshold = initial_threshold
+        for _ in range(_MAX_FILTER_ITERATIONS):
+            if threshold > cap:
+                break
+            cutoff = 0
+            for i, r in enumerate(sorted_results):
+                dist = r.distance if r.distance is not None else float("inf")
+                if dist > threshold:
+                    break
+                cutoff = i + 1
+            if cutoff >= top_k:
+                return sorted_results[:cutoff]
+            threshold += step
+        # Final pass at cap
+        cutoff = 0
+        for i, r in enumerate(sorted_results):
+            dist = r.distance if r.distance is not None else float("inf")
+            if dist > cap:
+                break
+            cutoff = i + 1
+        return sorted_results[:cutoff]
+
+    def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
+        """Return all chunks for a given source file."""
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source)
+        rows = table.search().where(f"source = '{escaped}'").to_list()
+        return [SearchChunk(**r) for r in rows]
+
+    def delete_by_source(self, source: str) -> None:
+        """Delete all chunks from a given source file."""
+        with write_lock():
+            table = self.open_table(CHUNKS_TABLE)
+            if table is not None:
+                _safe_delete_unlocked(table, f"source = '{escape_sql_string(source)}'")
+
+    def get_sources(self) -> list[SourceRecord]:
+        """Get all tracked source file records."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
+        return result
+
+    def upsert_source(self, filename: str, file_hash: str, chunk_count: int) -> None:
+        """Add or update a source file tracking record."""
+        with write_lock():
+            db = self.get_db()
+            table = ensure_table(db, SOURCES_TABLE, _sources_schema())
             _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
+            table.add(
+                [
+                    {
+                        "filename": filename,
+                        "file_hash": file_hash,
+                        "ingested_at": datetime.now(UTC).isoformat(),
+                        "chunk_count": chunk_count,
+                    }
+                ]
+            )
 
+    def delete_source(self, filename: str) -> None:
+        """Remove a source file tracking record."""
+        with write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is not None:
+                _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
 
-class RemoveResult:
-    """Result of a remove_documents operation."""
+    def remove_documents(
+        self,
+        names: list[str],
+        *,
+        delete_files: bool = False,
+        documents_dir: Path | None = None,
+    ) -> RemoveResult:
+        """Remove documents from the knowledge base by source name.
 
-    def __init__(self, removed: list[str], not_found: list[str]) -> None:
-        self.removed = removed
-        self.not_found = not_found
+        Looks up known sources, deletes chunks and source records for each.
+        If *delete_files* is True, resolves the path and verifies it is
+        contained within *documents_dir* before unlinking (path traversal guard).
 
+        Returns a RemoveResult with removed and not_found lists.
+        """
+        if documents_dir is None:
+            documents_dir = self._config.documents_dir
 
-def remove_documents(
-    names: list[str],
-    *,
-    delete_files: bool = False,
-    documents_dir: Path | None = None,
-) -> RemoveResult:
-    """Remove documents from the knowledge base by source name.
+        known = {s["filename"] for s in self.get_sources()}
+        removed: list[str] = []
+        not_found: list[str] = []
 
-    Looks up known sources, deletes chunks and source records for each.
-    If *delete_files* is True, resolves the path and verifies it is
-    contained within *documents_dir* before unlinking (path traversal guard).
-
-    Returns a RemoveResult with removed and not_found lists.
-    """
-    if documents_dir is None:
-        documents_dir = cfg.documents_dir
-
-    known = {s["filename"] for s in get_sources()}
-    removed: list[str] = []
-    not_found: list[str] = []
-
-    for name in names:
-        if name not in known:
-            not_found.append(name)
-            continue
-        delete_by_source(name)
-        delete_source(name)
-        removed.append(name)
-        if delete_files:
-            path = (documents_dir / name).resolve()
-            if not path.is_relative_to(documents_dir.resolve()):
-                log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
+        for name in names:
+            if name not in known:
+                not_found.append(name)
                 continue
-            if path.exists():
-                path.unlink()
+            self.delete_by_source(name)
+            self.delete_source(name)
+            removed.append(name)
+            if delete_files:
+                try:
+                    path = validate_path_within(documents_dir / name, documents_dir)
+                except ValueError:
+                    log.warning("Path traversal blocked: %s escapes %s", name, documents_dir)
+                    continue
+                if path.exists():
+                    path.unlink()
 
-    return RemoveResult(removed=removed, not_found=not_found)
+        return RemoveResult(removed=removed, not_found=not_found)
 
+    def _clear_table(self, name: str, predicate: str) -> None:
+        """Delete rows matching *predicate* from *name*. Acquires write lock."""
+        with write_lock():
+            table = self.open_table(name)
+            if table is not None:
+                _safe_delete_unlocked(table, predicate)
 
-def drop_all() -> None:
-    """Drop all tables — used by rebuild."""
-    with write_lock():
-        _fts.ready = False
-        db = get_db()
-        for name in _table_names(db):
-            db.drop_table(name)
+    def close(self) -> None:
+        """Release the database connection and reset state."""
+        self._db = None
+        self._fts_ready = False
+
+    def drop_all(self) -> None:
+        """Drop all tables -- used by rebuild."""
+        with write_lock():
+            self._fts_ready = False
+            db = self.get_db()
+            for name in _table_names(db):
+                db.drop_table(name)

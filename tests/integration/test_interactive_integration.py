@@ -14,6 +14,7 @@ Marked @pytest.mark.slow -- excluded from default `make check`.
 import asyncio
 import ipaddress
 import json
+import os
 from unittest import mock
 
 import pytest
@@ -25,7 +26,7 @@ from typer.testing import CliRunner  # noqa: E402
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
-from lilbee.providers import reset_provider  # noqa: E402
+from lilbee.services import reset_services as reset_provider  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
@@ -172,6 +173,11 @@ def isolated_env(tmp_path, real_models):
 
     reset_provider()
 
+    # Point LILBEE_DATA at the test root so CLI apply_overrides() doesn't
+    # redirect cfg paths to the CI temp directory mid-command.
+    old_lilbee_data = os.environ.get("LILBEE_DATA")
+    os.environ["LILBEE_DATA"] = str(tmp_path)
+
     # Serialize async ingestion to avoid concurrent llama.cpp calls (not thread-safe)
     _max_concurrent_patch = mock.patch("lilbee.ingest._MAX_CONCURRENT", 1)
     _max_concurrent_patch.start()
@@ -183,6 +189,10 @@ def isolated_env(tmp_path, real_models):
     reset_provider()
     for name, val in snapshot.items():
         setattr(cfg, name, val)
+    if old_lilbee_data is None:
+        os.environ.pop("LILBEE_DATA", None)
+    else:
+        os.environ["LILBEE_DATA"] = old_lilbee_data
 
 
 def _write_all_docs():
@@ -361,11 +371,13 @@ class TestCrawl:
 
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
         loopback_v6 = ipaddress.ip_network("::1/128")
-        removed = []
-        for net in (loopback_v4, loopback_v6):
-            if net in crawler_mod.blocked_networks:
-                crawler_mod.blocked_networks.remove(net)
-                removed.append(net)
+        filtered = tuple(
+            net
+            for net in crawler_mod.get_blocked_networks()
+            if net not in (loopback_v4, loopback_v6)
+        )
+        original_fn = crawler_mod.get_blocked_networks
+        crawler_mod.get_blocked_networks = lambda: filtered  # type: ignore[assignment]
 
         try:
             url = f"http://127.0.0.1:{server.port}/quantum"
@@ -378,8 +390,7 @@ class TestCrawl:
             results = data.get("results", [])
             assert len(results) > 0, "Expected to find crawled content"
         finally:
-            for net in removed:
-                crawler_mod.blocked_networks.append(net)
+            crawler_mod.get_blocked_networks = original_fn  # type: ignore[assignment]
             server.clear()
             if server.is_running():
                 server.stop()

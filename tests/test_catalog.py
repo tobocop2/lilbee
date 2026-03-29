@@ -409,10 +409,25 @@ class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        existing = tmp_path / entry.gguf_filename
-        existing.write_bytes(b"fake model")
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+        registry = ModelRegistry(tmp_path)
+        source = tmp_path / entry.gguf_filename
+        source.write_bytes(b"fake model")
+        ref = ModelRef.parse(entry.name)
+        manifest = ModelManifest(
+            name=ref.name,
+            tag=ref.tag,
+            blob="",
+            size_bytes=10,
+            task=entry.task,
+            source_repo=entry.hf_repo,
+            source_filename=entry.gguf_filename,
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        blob_path = registry.install(ref, source, manifest)
         result = download_model(entry)
-        assert result == existing
+        assert result == blob_path
 
     def test_creates_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         models_dir = tmp_path / "models"
@@ -441,7 +456,7 @@ class TestDownloadModel:
         monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
         result = download_model(entry)
         assert result.exists()
-        assert result.parent == models_dir
+        assert result.parent == models_dir / "blobs"
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
@@ -673,3 +688,53 @@ class TestFetchModelFileSize:
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
         assert catalog.fetch_model_file_size("user/repo") == 0.0
+
+
+class TestHfCacheEviction:
+    """Tests for _fetch_hf_models cache eviction and size cap."""
+
+    def test_expired_entries_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Expired cache entries are removed on the next fetch."""
+        import time as _time
+
+        from lilbee.catalog import _hf_cache
+
+        # Seed an expired entry (timestamp 0, way older than TTL)
+        _hf_cache["old:key:sort:50"] = (0.0, [])
+        # Ensure monotonic returns a time that makes the entry expired
+        monkeypatch.setattr(_time, "monotonic", lambda: 1000.0)
+
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        catalog._fetch_hf_models(pipeline_tag="text-generation", tags="gguf")
+        assert "old:key:sort:50" not in _hf_cache
+
+    def test_cache_size_capped_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When cache exceeds 50 entries, the oldest is evicted."""
+        import time as _time
+
+        from lilbee.catalog import _hf_cache
+
+        base_time = 1000.0
+        # Fill cache with 50 entries (timestamps 1000..1049)
+        for i in range(50):
+            _hf_cache[f"key:{i}"] = (base_time + i, [])
+
+        # Next fetch will add entry #51, triggering eviction of oldest (key:0)
+        monkeypatch.setattr(_time, "monotonic", lambda: base_time + 50)
+
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
+
+        catalog._fetch_hf_models(pipeline_tag="unique", tags="gguf")
+        assert len(_hf_cache) == 50
+        assert "key:0" not in _hf_cache

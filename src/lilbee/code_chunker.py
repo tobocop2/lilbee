@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from tree_sitter_language_pack import ProcessConfig, has_language, init, process
+
+# TODO: use public API once tree-sitter-language-pack >= 1.3.4
 from tree_sitter_language_pack._native import detect_language
 
 from lilbee.chunk import chunk_text

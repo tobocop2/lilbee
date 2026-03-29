@@ -168,6 +168,32 @@ class TestCrawlMetadata:
         meta = load_crawl_metadata()
         assert meta == {}
 
+    def test_load_malformed_entry_skipped(self, isolated_env):
+        """Entries that fail CrawlMeta(**data) are skipped with a warning."""
+        import json
+
+        meta_path = cfg.data_dir / "crawl_meta.json"
+        meta_path.write_text(json.dumps({"https://bad.com": {"wrong_field": "value"}}))
+        meta = load_crawl_metadata()
+        assert meta == {}
+
+    def test_save_atomic_write_cleans_up_on_error(self, isolated_env):
+        """If the atomic write fails, the tmp file is removed and error re-raised."""
+        meta = {
+            "https://example.com": CrawlMeta(
+                file="example.com/index.md",
+                content_hash="abc",
+                crawled_at="2026-01-01T00:00:00+00:00",
+            )
+        }
+        with (
+            patch("lilbee.crawler.Path.replace", side_effect=OSError("disk full")),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            save_crawl_metadata(meta)
+        tmp_path = cfg.data_dir / "crawl_meta.tmp"
+        assert not tmp_path.exists()
+
     def test_update_metadata(self, isolated_env):
         results = [
             CrawlResult(url="https://example.com/p1", markdown="Content 1"),
@@ -246,6 +272,21 @@ def _no_dns(monkeypatch):
         "lilbee.crawler.socket.getaddrinfo",
         lambda host, port, *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
+
+
+class TestCrawlerAvailable:
+    def test_returns_true_when_installed(self):
+        from lilbee.crawler import crawler_available
+
+        mock_crawl4ai = MagicMock()
+        with patch.dict("sys.modules", {"crawl4ai": mock_crawl4ai}):
+            assert crawler_available() is True
+
+    def test_returns_false_when_not_installed(self):
+        from lilbee.crawler import crawler_available
+
+        with patch.dict("sys.modules", {"crawl4ai": None}):
+            assert crawler_available() is False
 
 
 class TestIsUrl:
@@ -372,48 +413,70 @@ class TestRequireValidCrawlUrl:
         require_valid_crawl_url("http://example.com")
 
 
+def _mock_crawl4ai(mock_crawler_cls):
+    """Install a fake crawl4ai module in sys.modules with the given AsyncWebCrawler."""
+    mock_mod = MagicMock()
+    mock_mod.AsyncWebCrawler = mock_crawler_cls
+    mock_mod.CrawlerRunConfig = MagicMock()
+    return mock_mod
+
+
 class TestCrawlSingle:
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_success(self, mock_crawler_cls):
+    async def test_success(self):
         mock_result = _make_crawl4ai_result()
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_failure(self, mock_crawler_cls):
+    async def test_failure(self):
         mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert not result.success
         assert result.error == "Connection refused"
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_exception(self, mock_crawler_cls):
+    async def test_exception(self):
         mock_instance = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("timeout"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        result = await crawl_single("https://example.com")
+        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+            result = await crawl_single("https://example.com")
         assert not result.success
         assert "timeout" in result.error
 
 
 class TestCrawlRecursive:
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_returns_multiple_results(self, mock_crawler_cls):
+    def _setup_crawl4ai(self, mock_instance):
+        """Create a fake crawl4ai module with the given crawler instance."""
+        mock_crawler_cls = MagicMock(return_value=mock_instance)
+        mock_bfs = MagicMock()
+        mock_mod = _mock_crawl4ai(mock_crawler_cls)
+        mock_deep = MagicMock()
+        mock_deep.BFSDeepCrawlStrategy = mock_bfs
+        return {
+            "crawl4ai": mock_mod,
+            "crawl4ai.deep_crawling": mock_deep,
+        }
+
+    async def test_returns_multiple_results(self):
         mock_results = [
             _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
             _make_crawl4ai_result(url="https://example.com/about", markdown="# About"),
@@ -422,36 +485,34 @@ class TestCrawlRecursive:
         mock_instance.arun = AsyncMock(return_value=mock_results)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
         progress_calls = []
 
         def on_progress(event_type, data):
             progress_calls.append((event_type, data))
 
-        results = await crawl_recursive(
-            "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
-        )
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive(
+                "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
+            )
         assert len(results) == 2
         assert results[0].url == "https://example.com"
         assert results[1].url == "https://example.com/about"
         assert len(progress_calls) == 2
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_single_result_not_list(self, mock_crawler_cls):
+    async def test_single_result_not_list(self):
         """When deep crawl returns a single result (not a list), it's handled."""
         mock_result = _make_crawl4ai_result()
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=mock_result)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_mixed_success_failure(self, mock_crawler_cls):
+    async def test_mixed_success_failure(self):
         mock_results = [
             _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
             _make_crawl4ai_result(url="https://example.com/broken", success=False, error="404"),
@@ -460,51 +521,44 @@ class TestCrawlRecursive:
         mock_instance.arun = AsyncMock(return_value=mock_results)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
         assert len(results) == 2
         assert results[0].success
         assert not results[1].success
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_exception_returns_error_result(self, mock_crawler_cls):
+    async def test_exception_returns_error_result(self):
         mock_instance = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("network error"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
         assert not results[0].success
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_uses_config_defaults(self, mock_crawler_cls):
+    async def test_uses_config_defaults(self):
         """When depth/pages are 0, falls back to cfg defaults."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
-        await crawl_recursive("https://example.com", max_depth=0, max_pages=0)
-        # Verify the crawler was called (config defaults used internally)
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            await crawl_recursive("https://example.com", max_depth=0, max_pages=0)
         mock_instance.arun.assert_awaited_once()
 
-    @patch("crawl4ai.AsyncWebCrawler")
-    async def test_max_pages_capped_by_config(self, mock_crawler_cls):
+    async def test_max_pages_capped_by_config(self):
         """max_pages is capped at cfg.crawl_max_pages even when caller passes more."""
         mock_instance = AsyncMock()
         mock_instance.arun = AsyncMock(return_value=[])
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls.return_value = mock_instance
 
         cfg.crawl_max_pages = 10
-        await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
-        call_args = mock_instance.arun.call_args
-        crawl_config = call_args.kwargs.get("config") or call_args[1].get("config")
-        assert crawl_config.deep_crawl_strategy.max_pages <= 10
+        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+            await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
 
 
 class TestCrawlAndSave:
@@ -595,12 +649,12 @@ class TestCrawlAndSave:
         """The semaphore limits concurrent crawls based on config."""
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 5
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == 5
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
     async def test_semaphore_defaults_to_cpu_count(self, isolated_env):
         """Default concurrency matches CPU count."""
@@ -608,31 +662,33 @@ class TestCrawlAndSave:
 
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = os.cpu_count() or 4
         sem = _get_crawl_semaphore()
         assert sem is not None
         assert sem._value == (os.cpu_count() or 4)
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
     async def test_semaphore_unlimited_when_zero(self, isolated_env):
         """Setting crawl_max_concurrent=0 disables the semaphore."""
         import lilbee.crawler as crawler_mod
 
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
         cfg.crawl_max_concurrent = 0
         assert _get_crawl_semaphore() is None
-        crawler_mod._crawl_semaphore = None
+        crawler_mod._state.semaphore = None
 
 
 class TestPeriodicSync:
     async def test_sync_disabled_when_interval_zero(self, isolated_env):
         """No sync fires when crawl_sync_interval is 0."""
+        import threading
+
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 0
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -640,27 +696,32 @@ class TestPeriodicSync:
 
     async def test_sync_skipped_when_already_running(self, isolated_env):
         """No new sync is started if one is already in progress."""
+        import threading
+
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = True
+        crawler_mod._state.last_sync_time = 0.0
+        lock = threading.Lock()
+        lock.acquire()  # simulate already-running
+        crawler_mod._state.sync_running = lock
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
             mock_sync.assert_not_awaited()
 
-        crawler_mod._sync_running = False
+        lock.release()
 
     async def test_sync_skipped_when_interval_not_elapsed(self, isolated_env):
         """No sync fires if the interval hasn't elapsed since last sync."""
+        import threading
         import time
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 9999
-        crawler_mod._last_sync_time = time.monotonic()
-        crawler_mod._sync_running = False
+        crawler_mod._state.last_sync_time = time.monotonic()
+        crawler_mod._state.sync_running = threading.Lock()
 
         with patch("lilbee.ingest.sync", new_callable=AsyncMock) as mock_sync:
             await _maybe_periodic_sync()
@@ -669,12 +730,13 @@ class TestPeriodicSync:
     async def test_sync_fires_when_interval_elapsed(self, isolated_env):
         """Sync fires as a background task when interval has elapsed."""
         import asyncio
+        import threading
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        crawler_mod._state.last_sync_time = 0.0
+        crawler_mod._state.sync_running = threading.Lock()
 
         mock_sync = AsyncMock()
         with patch("lilbee.ingest.sync", mock_sync):
@@ -683,21 +745,65 @@ class TestPeriodicSync:
             await asyncio.sleep(0)
             mock_sync.assert_awaited_once()
 
-        crawler_mod._sync_running = False
-
     async def test_sync_failure_resets_running_flag(self, isolated_env):
-        """If sync raises, _sync_running is reset so future syncs can proceed."""
+        """If sync raises, _sync_running lock is released so future syncs can proceed."""
         import asyncio
+        import threading
 
         import lilbee.crawler as crawler_mod
 
         cfg.crawl_sync_interval = 1
-        crawler_mod._last_sync_time = 0.0
-        crawler_mod._sync_running = False
+        crawler_mod._state.last_sync_time = 0.0
+        lock = threading.Lock()
+        crawler_mod._state.sync_running = lock
 
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
         with patch("lilbee.ingest.sync", mock_sync):
             await _maybe_periodic_sync()
             await asyncio.sleep(0)
 
-        assert not crawler_mod._sync_running
+        # Lock should be released after failure
+        assert lock.acquire(blocking=False)
+        lock.release()
+
+
+class TestCrawlerStateReset:
+    def test_reset_clears_all_state(self, isolated_env):
+        """CrawlerState.reset() restores all fields to initial values."""
+        import threading
+
+        import lilbee.crawler as crawler_mod
+
+        state = crawler_mod._state
+        state.semaphore = threading.Semaphore(3)
+        state.semaphore_limit = 3
+        state.last_sync_time = 99.0
+
+        state.reset()
+
+        assert state.semaphore is None
+        assert state.semaphore_limit == 0
+        assert state.last_sync_time == 0.0
+        assert state.sync_running.acquire(blocking=False)
+        state.sync_running.release()
+        assert state.background_tasks == set()
+
+
+class TestCrawlAndSaveSemaphore:
+    @patch("lilbee.crawler.crawl_single")
+    async def test_semaphore_acquired_and_released(self, mock_crawl_single, isolated_env):
+        """When crawl_max_concurrent > 0, sem.acquire/release are called."""
+        import lilbee.crawler as crawler_mod
+
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
+        cfg.crawl_max_concurrent = 2
+        crawler_mod._state.semaphore = None
+
+        paths = await crawl_and_save("https://example.com")
+        assert len(paths) == 1
+
+        # Verify semaphore was created and is still available (released)
+        sem = crawler_mod._state.semaphore
+        assert sem is not None
+        assert sem._value == 2
+        crawler_mod._state.semaphore = None

@@ -4,6 +4,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 import pytest
+from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.config import cfg
@@ -25,10 +26,13 @@ def isolated_env(tmp_path):
 
 @pytest.fixture()
 def client():
-    from lilbee.server.litestar_app import create_app
+    import lilbee.server.auth as auth_mod
+    from lilbee.server.app import create_app
 
+    auth_mod._session_token = None  # disable auth for route-level tests
     app = create_app()
-    return TestClient(app)
+    yield TestClient(app)
+    auth_mod._session_token = None
 
 
 async def mock_async_gen(*events):
@@ -355,7 +359,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://custom.example"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             resp = c.options(
@@ -376,7 +380,7 @@ class TestCors:
         from litestar.testing import TestClient
 
         cfg.cors_origins = ["app://obsidian.md", "https://my-app.com"]
-        from lilbee.server.litestar_app import create_app
+        from lilbee.server.app import create_app
 
         with TestClient(create_app()) as c:
             for origin in cfg.cors_origins:
@@ -394,14 +398,20 @@ class TestCors:
         new_callable=AsyncMock,
         return_value={"status": "ok", "version": "1.0.0"},
     )
-    def test_localhost_origin_allowed(self, mock_patched, client):
-        resp = client.options(
-            "/api/health",
-            headers={
-                "Origin": "http://localhost:7433",
-                "Access-Control-Request-Method": "GET",
-            },
-        )
+    def test_localhost_origin_allowed(self, mock_patched):
+        from litestar.testing import TestClient
+
+        cfg.cors_origins = ["http://localhost:7433"]
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "http://localhost:7433",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
@@ -427,7 +437,7 @@ class TestCrawlRoute:
 
 
 class TestCreateAppReexport:
-    @mock.patch("lilbee.server.litestar_app.create_app")
+    @mock.patch("lilbee.server.app.create_app")
     def test_lazy_import(self, mock_create):
         from lilbee.server import create_app
 
@@ -436,36 +446,109 @@ class TestCreateAppReexport:
 
 
 class TestLifespan:
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch("lilbee.providers.factory.get_provider")
-    async def test_calls_both(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+    @mock.patch("lilbee.services.get_services")
+    async def test_calls_get_services(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_provider.assert_called_once()
-        mock_validate.assert_called_once()
+        mock_get_svc.assert_called()
+        mock_svc.embedder.validate_model.assert_called_once()
 
-    @mock.patch("lilbee.embedder.validate_model")
-    @mock.patch(
-        "lilbee.providers.factory.get_provider",
-        side_effect=RuntimeError("no provider"),
-    )
-    async def test_provider_failure_does_not_block(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+    @mock.patch("lilbee.services.get_services", side_effect=RuntimeError("no provider"))
+    async def test_provider_failure_does_not_block(self, mock_get_svc):
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_validate.assert_called_once()
 
-    @mock.patch(
-        "lilbee.embedder.validate_model",
-        side_effect=RuntimeError("no model"),
-    )
-    @mock.patch("lilbee.providers.factory.get_provider")
-    async def test_validate_model_failure_does_not_block(self, mock_provider, mock_validate):
-        from lilbee.server.litestar_app import _lifespan
+    @mock.patch("lilbee.services.get_services")
+    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
-        mock_provider.assert_called_once()
+        mock_get_svc.assert_called()
+
+
+class TestAuthMiddleware:
+    @pytest.fixture()
+    def middleware(self):
+        from lilbee.server.auth import AuthMiddleware
+
+        app = AsyncMock()
+        return AuthMiddleware(app)
+
+    @pytest.mark.asyncio
+    async def test_non_http_scope_passes_through(self, middleware):
+        scope = {"type": "websocket"}
+        await middleware(scope, AsyncMock(), AsyncMock())
+        middleware.app.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_options_method_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "secret"
+        try:
+            scope = {"type": "http", "method": "OPTIONS", "headers": []}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_read_only_handler_passes_through(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "secret"
+        try:
+            handler = mock.MagicMock()
+            handler.fn._lilbee_read_only = True
+            scope = {"type": "http", "method": "GET", "headers": [], "route_handler": handler}
+            await middleware(scope, AsyncMock(), AsyncMock())
+            middleware.app.assert_awaited_once()
+        finally:
+            auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_raises(self, middleware):
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = "valid_token"
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer wrong_token")],
+            }
+            with pytest.raises(NotAuthorizedException):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod._session_token = old
+
+    @pytest.mark.asyncio
+    async def test_empty_token_raises(self, middleware):
+        """When _session_token is empty string, requests are denied."""
+        import lilbee.server.auth as auth_mod
+
+        old = auth_mod._session_token
+        auth_mod._session_token = ""
+        try:
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"authorization", b"Bearer anything")],
+            }
+            with pytest.raises(NotAuthorizedException, match="not initialized"):
+                await middleware(scope, AsyncMock(), AsyncMock())
+        finally:
+            auth_mod._session_token = old
