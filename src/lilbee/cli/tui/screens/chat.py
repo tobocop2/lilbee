@@ -14,7 +14,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Input
+from textual.widgets import Footer, Input, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
@@ -30,7 +30,7 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
-from lilbee.crawler import is_url, require_valid_crawl_url
+from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType
 from lilbee.query import ChatMessage
 
@@ -60,6 +60,10 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
+        yield Static(
+            "Chat only -- no document search. Press F5 to set up embedding model.",
+            id="chat-only-banner",
+        )
         yield VerticalScroll(id="chat-log")
         yield SyncBar(id="sync-bar")
         yield CompletionOverlay(id="completion-overlay")
@@ -74,38 +78,58 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
-        self._check_embedding_model_async()
-        if self._auto_sync:
+        self.query_one("#chat-only-banner", Static).display = False
+        if self._needs_setup():
+            from lilbee.cli.tui.screens.setup import SetupWizard
+
+            self.app.push_screen(SetupWizard(), self._on_setup_complete)
+        elif self._auto_sync and self._embedding_ready():
             self._run_sync()
 
-    @work(thread=True)
-    def _check_embedding_model_async(self) -> None:
-        """Check for embedding model in a background thread (non-blocking)."""
-        from lilbee.model_manager import detect_remote_embedding_models, get_model_manager
+    def _needs_setup(self) -> bool:
+        """Check if both chat and embedding models are resolvable."""
+        try:
+            from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
-        manager = get_model_manager()
-        if manager.is_installed(cfg.embedding_model):
-            return
+            _resolve_model_path(cfg.chat_model)
+            _resolve_model_path(cfg.embedding_model)
+            return False
+        except Exception:
+            return True
 
-        embed_base = cfg.embedding_model.split(":")[0]
-        remote_embeds = detect_remote_embedding_models(cfg.litellm_base_url)
-        if any(embed_base in name for name in remote_embeds):
-            return
+    def _embedding_ready(self) -> bool:
+        """Quick check if embedding model exists (no network calls)."""
+        try:
+            from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
-        self.app.call_from_thread(self._show_setup_modal, remote_embeds)
+            _resolve_model_path(cfg.embedding_model)
+            return True
+        except Exception:
+            return False
 
-    def _show_setup_modal(self, remote_embeds: list[str]) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def _on_setup_complete(self, result: str | None) -> None:
+        """Called when wizard completes or is skipped."""
+        if result == "skipped":
+            self._show_chat_only_banner()
+        elif self._auto_sync and self._embedding_ready():
+            self._run_sync()
+        self._refresh_model_bar()
 
-        def on_setup_complete(name: str | None) -> None:
-            if name:
-                cfg.embedding_model = name
-                self.notify(msg.EMBEDDING_SET.format(name=name))
-                self._refresh_model_bar()
+    def _show_chat_only_banner(self) -> None:
+        """Show the persistent chat-only banner."""
+        self.query_one("#chat-only-banner", Static).display = True
 
-        self.app.push_screen(SetupModal(ollama_embeddings=remote_embeds), on_setup_complete)
+    def _hide_chat_only_banner(self) -> None:
+        """Hide the chat-only banner."""
+        self.query_one("#chat-only-banner", Static).display = False
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def key_f5(self) -> None:
+        """Open the setup wizard."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.app.push_screen(SetupWizard(), self._on_setup_complete)
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":
             return
         text = event.value.strip()
@@ -159,6 +183,9 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_crawl(self, args: str) -> None:
+        if not crawler_available():
+            self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
+            return
         if not args:
             self.notify("Usage: /crawl <url> [--depth N] [--max-pages N]", severity="warning")
             return
