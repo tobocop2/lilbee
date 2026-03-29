@@ -462,44 +462,65 @@ async def set_embedding_model(model: str) -> dict[str, str]:
     return await _set_model("embedding_model", model)
 
 
-async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
-    """Partial update of writable config fields. Returns updated keys + reindex flag.
-
-    Validates all fields before applying any, so a bad field in a multi-field
-    PATCH won't leave config in a partially-updated state.
-    """
+def _validate_config_updates(updates: dict[str, Any]) -> None:
+    """Reject unknown fields and null values on non-nullable fields."""
     for key, value in updates.items():
         if key not in WRITABLE_CONFIG_FIELDS:
             raise ValueError(f"Unknown or read-only config field: {key}")
-        nullable = WRITABLE_CONFIG_FIELDS[key]
-        if value is None and not nullable:
+        if value is None and not WRITABLE_CONFIG_FIELDS[key]:
             raise ValueError(f"Field '{key}' does not accept null")
 
-    # Apply with snapshot for rollback on type errors.
+
+def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Apply updates to the in-memory config, rolling back on error.
+
+    Returns (fields_to_persist, fields_to_delete) for disk write.
+    """
     snapshot = {k: getattr(cfg, k) for k in updates}
-    updated: list[str] = []
     to_persist: dict[str, str] = {}
     to_delete: list[str] = []
     try:
         for key, value in updates.items():
-            nullable = WRITABLE_CONFIG_FIELDS[key]
-            if value is None and nullable:
+            if value is None:
                 setattr(cfg, key, None)
                 to_delete.append(key)
             else:
-                setattr(cfg, key, value)  # pydantic validates type
+                setattr(cfg, key, value)
                 to_persist[key] = str(getattr(cfg, key))
-            updated.append(key)
     except Exception:
         for k, v in snapshot.items():
             setattr(cfg, k, v)
         raise
+    return to_persist, to_delete
+
+
+async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
+    """Partial update of writable config fields. Returns updated keys + reindex flag.
+
+    Algorithm: validate-then-apply with rollback.
+
+    1. Validate all keys and null-acceptability upfront (no mutations yet).
+       This catches typos and bad input before anything changes.
+    2. Snapshot current values, then apply each update via setattr (pydantic's
+       validate_assignment catches type errors). If any field fails type
+       validation, roll back ALL fields from the snapshot so the config
+       stays consistent — no half-applied updates.
+    3. Persist to disk in batch (one file write for sets, one for deletes)
+       rather than per-field, avoiding partial writes on crash.
+
+    Why not just setattr-and-save per field? A multi-field PATCH like
+    {"chunk_size": 1024, "chunk_overlap": "bad"} would leave chunk_size
+    changed but chunk_overlap unchanged — the caller gets an error but
+    the config is silently modified. The snapshot/rollback prevents that.
+    """
+    _validate_config_updates(updates)
+    to_persist, to_delete = _apply_config_updates(updates)
     if to_persist:
         settings.update_values(cfg.data_root, to_persist)
     if to_delete:
         settings.delete_values(cfg.data_root, to_delete)
-    reindex_required = bool(REINDEX_FIELDS & set(updated))
-    return {"updated": updated, "reindex_required": reindex_required}
+    reindex_required = bool(REINDEX_FIELDS & set(updates))
+    return {"updated": list(updates), "reindex_required": reindex_required}
 
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
