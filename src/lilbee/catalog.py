@@ -158,6 +158,13 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
     ),
 )
 
+# Maps vision catalog entries to their mmproj (CLIP projection) filenames.
+# Vision models need both the main GGUF and the mmproj file to work.
+# Keys are hf_repo identifiers; values are glob patterns resolved at download time.
+VISION_MMPROJ_FILES: dict[str, str] = {
+    "LightOnIO/LightOnOCR-2-0.5B-GGUF": "*mmproj*.gguf",
+}
+
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")

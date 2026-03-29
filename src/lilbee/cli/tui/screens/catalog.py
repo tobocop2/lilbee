@@ -414,7 +414,8 @@ class CatalogScreen(Screen[None]):
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         try:
-            task_bar = self.app.query_one("#task-bar", TaskBar)
+            # TaskBar lives on ChatScreen, not CatalogScreen — search all screens
+            task_bar = self.app.screen_stack[0].query_one("#task-bar", TaskBar)
         except Exception:
             self.notify("Cannot download: task bar not found", severity="error")
             return
