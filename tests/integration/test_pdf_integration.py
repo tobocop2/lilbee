@@ -66,6 +66,7 @@ def pdf_pipeline(tmp_path_factory):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
+    cfg.vision_model = ""
 
     reset_provider()
     reset_model_manager()
@@ -140,12 +141,11 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_text(self):
         """Tesseract OCR produces non-empty text from the scanned PDF fixture."""
-        from kreuzberg import ExtractionConfig, extract_file
+        from kreuzberg import ExtractionConfig, OcrConfig, extract_file
 
-        config = ExtractionConfig(ocr=True)
+        config = ExtractionConfig(ocr=OcrConfig())
         result = await extract_file(str(SCANNED_PDF), config=config)
-        all_text = " ".join(chunk.content for chunk in result.chunks) if result.chunks else ""
-        assert len(all_text.strip()) > 0, "Tesseract produced empty text"
+        assert len(result.content.strip()) > 0, "Tesseract produced empty text"
 
     @pytest.mark.skipif(
         not shutil.which("tesseract"),
@@ -153,12 +153,11 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_known_phrases(self):
         """Tesseract OCR captures key phrases from the scanned document."""
-        from kreuzberg import ExtractionConfig, extract_file
+        from kreuzberg import ExtractionConfig, OcrConfig, extract_file
 
-        config = ExtractionConfig(ocr=True)
+        config = ExtractionConfig(ocr=OcrConfig())
         result = await extract_file(str(SCANNED_PDF), config=config)
-        all_text = " ".join(chunk.content for chunk in result.chunks) if result.chunks else ""
-        text_lower = all_text.lower()
+        text_lower = result.content.lower()
         # At least some of the rendered text should be recognized
         recognized = any(
             phrase in text_lower
@@ -167,12 +166,25 @@ class TestTesseractOcrFallback:
         assert recognized, f"No expected phrases found in OCR output: {all_text[:200]}"
 
 
+def _vision_model_available() -> bool:
+    """Check if a vision model is configured and actually exists locally."""
+    if not cfg.vision_model:
+        return False
+    try:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        _resolve_model_path(cfg.vision_model)
+        return True
+    except Exception:
+        return False
+
+
 class TestVisionOcrFallback:
     """Verify vision model OCR fallback on scanned PDFs."""
 
     @pytest.mark.skipif(
-        not cfg.vision_model,
-        reason="No vision model configured (set LILBEE_VISION_MODEL)",
+        not _vision_model_available(),
+        reason="No vision model available locally (set LILBEE_VISION_MODEL)",
     )
     async def test_vision_extracts_text(self):
         """Vision model OCR produces non-empty text from the scanned PDF fixture."""
@@ -188,8 +200,8 @@ class TestVisionOcrFallback:
         assert len(all_text.strip()) > 0, "Vision OCR produced empty text"
 
     @pytest.mark.skipif(
-        not cfg.vision_model,
-        reason="No vision model configured (set LILBEE_VISION_MODEL)",
+        not _vision_model_available(),
+        reason="No vision model available locally (set LILBEE_VISION_MODEL)",
     )
     async def test_vision_extracts_known_phrases(self):
         """Vision model OCR captures key phrases from the scanned document."""

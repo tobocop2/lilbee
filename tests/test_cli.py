@@ -600,6 +600,7 @@ class TestListInstalledModels:
         assert list_installed_models() == []
 
     def test_excludes_embedding_model(self, mock_svc):
+        cfg.embedding_model = "nomic-embed-text"
         mock_svc.provider.list_models.return_value = ["llama3:latest", "nomic-embed-text:latest"]
         result = list_installed_models()
         assert result == ["llama3:latest"]

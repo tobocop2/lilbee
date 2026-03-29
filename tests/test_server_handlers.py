@@ -803,154 +803,52 @@ class TestListExternalModels:
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
         """Reset the external models cache before each test."""
-        handlers.clear_external_models_cache()
+        import lilbee.server.handlers as h
+
+        h._external_cache = (0.0, "", {})
         yield
-        handlers.clear_external_models_cache()
+        h._external_cache = (0.0, "", {})
 
-    async def test_no_api_key_returns_empty(self):
-        cfg.llm_api_key = ""
+    @patch("lilbee.services.get_services")
+    async def test_returns_provider_models(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a", "model-b"]
         result = await handlers.list_external_models()
-        assert result == {"models": [], "error": "No API key configured"}
+        assert result == {"models": ["model-a", "model-b"]}
 
-    @patch("lilbee.server.handlers.httpx")
-    async def test_bearer_auth_provider_models(self, mock_httpx):
-        cfg.llm_api_key = "sk-test-key"
-        cfg.litellm_base_url = "https://api.provider-a.example"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": [
-                {"id": "model-large"},
-                {"id": "model-small"},
-            ]
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_httpx.AsyncClient.return_value = mock_client
-
+    @patch("lilbee.services.get_services")
+    async def test_error_returns_empty_with_message(self, mock_svc):
+        mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
-
-        assert result == {"models": ["model-large", "model-small"]}
-        mock_client.get.assert_awaited_once()
-        call_args = mock_client.get.call_args
-        assert call_args[0][0] == "https://api.provider-a.example/v1/models"
-        assert call_args[1]["headers"]["Authorization"] == "Bearer sk-test-key"
-
-    @patch("lilbee.server.handlers.httpx")
-    async def test_api_key_auth_provider_models(self, mock_httpx):
-        cfg.llm_api_key = "sk-ant-test"
-        cfg.litellm_base_url = "https://api.api.anthropic.example"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": [
-                {"id": "provider-b-large"},
-                {"id": "provider-b-small"},
-            ]
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_httpx.AsyncClient.return_value = mock_client
-
-        result = await handlers.list_external_models()
-
-        assert result == {"models": ["provider-b-large", "provider-b-small"]}
-        call_args = mock_client.get.call_args
-        headers = call_args[1]["headers"]
-        assert headers["X-Api-Key"] == "sk-ant-test"
-        assert headers["anthropic-version"] == "2023-06-01"
-        assert "Authorization" not in headers
-
-    @patch("lilbee.server.handlers.httpx")
-    async def test_http_error_returns_error(self, mock_httpx):
-        cfg.llm_api_key = "sk-test"
-        cfg.litellm_base_url = "https://api.provider-a.example"
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(side_effect=RuntimeError("connection refused"))
-        mock_httpx.AsyncClient.return_value = mock_client
-
-        result = await handlers.list_external_models()
-
         assert result["models"] == []
-        assert result["error"] == "Failed to fetch models from provider"
+        assert "error" in result
 
-    @patch("lilbee.server.handlers.httpx")
-    async def test_cache_reuses_result(self, mock_httpx):
-        cfg.llm_api_key = "sk-test"
-        cfg.litellm_base_url = "https://api.provider-a.example"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"data": [{"id": "model-large"}]}
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_httpx.AsyncClient.return_value = mock_client
-
+    @patch("lilbee.services.get_services")
+    async def test_cache_reuses_result(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         result1 = await handlers.list_external_models()
         result2 = await handlers.list_external_models()
-
-        assert result1 == result2 == {"models": ["model-large"]}
-        assert mock_client.get.await_count == 1
+        assert result1 == result2 == {"models": ["model-a"]}
+        mock_svc.return_value.provider.list_models.assert_called_once()
 
     @patch("lilbee.server.handlers.time")
-    @patch("lilbee.server.handlers.httpx")
-    async def test_cache_expires(self, mock_httpx, mock_time):
-        cfg.llm_api_key = "sk-test"
-        cfg.litellm_base_url = "https://api.provider-a.example"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"data": [{"id": "model-large"}]}
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_httpx.AsyncClient.return_value = mock_client
-
-        # First call at t=0
+    @patch("lilbee.services.get_services")
+    async def test_cache_expires(self, mock_svc, mock_time):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         mock_time.monotonic.return_value = 0.0
         await handlers.list_external_models()
 
-        # Second call at t=61 (past TTL)
         mock_time.monotonic.return_value = 61.0
         await handlers.list_external_models()
 
-        assert mock_client.get.await_count == 2
+        assert mock_svc.return_value.provider.list_models.call_count == 2
 
-    @patch("lilbee.server.handlers.httpx")
-    async def test_cache_invalidates_on_config_change(self, mock_httpx):
-        cfg.llm_api_key = "sk-test"
-        cfg.litellm_base_url = "https://api.provider-a.example"
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"data": [{"id": "model-large"}]}
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_httpx.AsyncClient.return_value = mock_client
-
+    @patch("lilbee.services.get_services")
+    async def test_cache_invalidates_on_config_change(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+        cfg.litellm_base_url = "https://provider-a.example"
         await handlers.list_external_models()
 
-        # Change base URL — cache should be invalidated
-        cfg.litellm_base_url = "https://api.api.anthropic.example"
+        cfg.litellm_base_url = "https://provider-b.example"
         await handlers.list_external_models()
 
-        assert mock_client.get.await_count == 2
+        assert mock_svc.return_value.provider.list_models.call_count == 2
