@@ -7,6 +7,7 @@ Three levels:
 """
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +144,17 @@ _SIZE_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
+def _hf_headers() -> dict[str, str]:
+    """Build HTTP headers for HuggingFace API requests.
+
+    Reads token from LILBEE_HF_TOKEN or HF_TOKEN env vars.
+    """
+    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
 # TTL cache for HuggingFace API results (5 minutes)
 _HF_CACHE_TTL = 300
 _hf_cache: dict[str, tuple[float, list["CatalogModel"]]] = {}
@@ -173,7 +185,9 @@ def _fetch_hf_models(
         "limit": limit,
     }
     try:
-        resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT)
+        resp = httpx.get(
+            HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers()
+        )
         if resp.status_code >= 400:
             log.warning("HuggingFace API returned HTTP %d", resp.status_code)
             return []
@@ -371,7 +385,15 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     try:
         with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".tmp", delete=False) as tmp_file:
             tmp_name = tmp_file.name
-            with httpx.stream("GET", url, timeout=None, follow_redirects=True) as resp:
+            headers = _hf_headers()
+            with httpx.stream(
+                "GET", url, timeout=None, follow_redirects=True, headers=headers
+            ) as resp:
+                if resp.status_code == 401:
+                    raise PermissionError(
+                        f"{entry.name} requires HuggingFace authentication. "
+                        "Set HF_TOKEN env var or visit the repo page to request access."
+                    )
                 resp.raise_for_status()
                 total = int(resp.headers.get("content-length", 0))
                 downloaded = 0
@@ -405,9 +427,17 @@ def _resolve_filename(entry: CatalogModel) -> str:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{entry.hf_repo}",
             timeout=_DEFAULT_TIMEOUT,
+            headers=_hf_headers(),
         )
+        if resp.status_code == 401:
+            raise PermissionError(
+                f"{entry.hf_repo} requires HuggingFace authentication. "
+                "Set HF_TOKEN env var or visit the repo page to request access."
+            )
         resp.raise_for_status()
         siblings = resp.json().get("siblings", [])
+    except PermissionError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"Cannot query files for {entry.hf_repo}: {exc}") from exc
 
@@ -438,6 +468,7 @@ def fetch_model_file_size(hf_repo: str) -> float:
         resp = httpx.get(
             f"https://huggingface.co/api/models/{hf_repo}/tree/main",
             timeout=_DEFAULT_TIMEOUT,
+            headers=_hf_headers(),
         )
         resp.raise_for_status()
         files = resp.json()

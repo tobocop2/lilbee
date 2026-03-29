@@ -422,6 +422,7 @@ class TestDownloadModel:
 
         class FakeStream:
             headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+            status_code: ClassVar[int] = 200
 
             def __init__(self, *a: object, **kw: object) -> None:
                 pass
@@ -452,6 +453,7 @@ class TestDownloadModel:
 
         class FakeStream:
             headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+            status_code: ClassVar[int] = 200
 
             def __init__(self, *a: object, **kw: object) -> None:
                 pass
@@ -486,6 +488,7 @@ class TestDownloadModel:
 
         class FakeStream:
             headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+            status_code: ClassVar[int] = 200
 
             def __init__(self, *a: object, **kw: object) -> None:
                 pass

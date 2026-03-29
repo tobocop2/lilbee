@@ -826,143 +826,66 @@ class _SetupApp(App):
         yield Static("bg")
 
 
-class TestSetupModal:
-    def test_creates_without_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+class TestSetupWizard:
+    def test_creates(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
-        modal = SetupModal()
-        assert modal._remote_embeddings == []
+        wizard = SetupWizard()
+        assert wizard._selected_chat is None
+        assert wizard._selected_embed is None
 
-    def test_creates_with_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        modal = SetupModal(ollama_embeddings=["nomic:latest"])
-        assert modal._remote_embeddings == ["nomic:latest"]
-
-    async def test_compose_with_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    async def test_compose_mounts(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(ollama_embeddings=["nomic:latest"]))
+            app.push_screen(SetupWizard())
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_compose_without_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
-
-    async def test_action_cancel(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    async def test_action_cancel_dismisses_skipped(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
         results: list[object] = []
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(), callback=lambda r: results.append(r))
+            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
             app.screen.action_cancel()
             await pilot.pause()
-        assert None in results
+        assert "skipped" in results
 
-    async def test_remote_row_selection_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-        app = _SetupApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(ollama_embeddings=["nomic:latest"]),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            # Find the list and select the remote row (index 1 -- first is header label)
-            from textual.widgets import ListView
+        chat, embed = _scan_installed_models(tmp_path / "nonexistent")
+        assert chat == []
+        assert embed == []
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 1  # _RemoteRow
-            await pilot.pause()
-            # Simulate selection via action
-            lv.action_select_cursor()
-            await pilot.pause()
-        assert "nomic:latest" in results
+    def test_scan_installed_models_splits_by_name(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-    @mock.patch("lilbee.models.pull_with_progress")
-    async def test_embedding_row_triggers_download(self, mock_pull: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+        (tmp_path / "chat-model.gguf").touch()
+        (tmp_path / "nomic-embed-text.gguf").touch()
+        chat, embed = _scan_installed_models(tmp_path)
+        assert len(chat) == 1
+        assert len(embed) == 1
+        assert "chat" in chat[0].name.lower()
+        assert "embed" in embed[0].name.lower()
 
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
+    def test_installed_row_compose(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _InstalledRow
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 0  # First EmbeddingRow (recommended)
-            await pilot.pause()
-            lv.action_select_cursor()
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
-        mock_pull.assert_called_once()
-
-    @mock.patch("lilbee.models.pull_with_progress", side_effect=RuntimeError("fail"))
-    async def test_download_error_shows_status(self, mock_pull: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
-
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 0
-            await pilot.pause()
-            lv.action_select_cursor()
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-
-    def test_finish_dismiss_no_downloaded_name(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        modal = SetupModal()
-        # _finish_dismiss without _downloaded_name should use getattr default
-        # Can't call dismiss outside of app, but test the attribute access logic
-        assert getattr(modal, "_downloaded_name", None) is None
-
-
-class TestEmbeddingRow:
-    def test_recommended_suffix(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
-
-        m = _make_model("Test", task="embedding")
-        row = _EmbeddingRow(m, recommended=True)
-        assert row._recommended is True
+        model_file = tmp_path / "test.gguf"
+        model_file.write_bytes(b"x" * 1024)
+        row = _InstalledRow(model_file)
         children = list(row.compose())
         assert len(children) == 1
 
-    def test_not_recommended(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
+    def test_catalog_row_compose(self) -> None:
+        from lilbee.cli.tui.screens.setup import _CatalogRow
 
-        m = _make_model("Test", task="embedding")
-        row = _EmbeddingRow(m, recommended=False)
-        assert row._recommended is False
-        children = list(row.compose())
-        assert len(children) == 1
-
-
-class TestRemoteSetupRow:
-    def test_compose(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _RemoteRow
-
-        row = _RemoteRow("nomic:latest")
-        assert row.remote_name == "nomic:latest"
+        model = _make_model("Test", task="chat")
+        row = _CatalogRow(model)
         children = list(row.compose())
         assert len(children) == 1
