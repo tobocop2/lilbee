@@ -23,11 +23,14 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
+    import lilbee.providers.llama_cpp_provider as lcp
     from lilbee.services import reset_services
 
     reset_services()
+    lcp._registry = None
     yield
     reset_services()
+    lcp._registry = None
 
 
 @pytest.fixture()
@@ -332,6 +335,31 @@ class TestLlamaCppProvider:
         cfg.models_dir = models_dir
         with pytest.raises(ProviderError, match="Model file not found"):
             _resolve_model_path("/nonexistent/model.gguf")
+
+    def test_resolve_model_path_prefix_match(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        # "test-model.gguf" already exists from fixture; prefix "test-" should match it
+        path = _resolve_model_path("test-")
+        assert path.name == "test-model.gguf"
+
+    def test_resolve_model_path_prefix_match_picks_first_sorted(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        (models_dir / "alpha-v1.gguf").touch()
+        (models_dir / "alpha-v2.gguf").touch()
+        path = _resolve_model_path("alpha-")
+        assert path.name == "alpha-v1.gguf"
+
+    def test_resolve_model_path_prefix_no_match(self, models_dir: Path) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        with pytest.raises(ProviderError, match="not found"):
+            _resolve_model_path("nonexistent-prefix-")
 
     def test_embed_caches_llm(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
