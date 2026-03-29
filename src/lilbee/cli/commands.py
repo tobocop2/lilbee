@@ -819,6 +819,32 @@ def _topics_overview(top_k: int) -> None:
     console.print(table)
 
 
+@app.command()
+def login() -> None:
+    """Log in to HuggingFace for access to gated models (Mistral, Llama, etc.)."""
+    import webbrowser
+
+    from huggingface_hub import get_token
+    from huggingface_hub import login as hf_login
+
+    if get_token():
+        typer.echo("Already logged in to HuggingFace.")
+        if not typer.confirm("Log in again?", default=False):
+            return
+
+    typer.echo("Opening HuggingFace token page in your browser...")
+    typer.echo("Create a token with 'Read' access, then paste it below.\n")
+    webbrowser.open("https://huggingface.co/settings/tokens")
+
+    token = typer.prompt("Paste your HuggingFace token", hide_input=True)
+    if not token.strip():
+        typer.echo("No token provided.", err=True)
+        raise typer.Exit(1)
+
+    hf_login(token=token.strip(), add_to_git_credential=False)
+    typer.echo("Logged in! Gated models (Mistral, Llama, etc.) are now accessible.")
+
+
 @app.command(name="mcp")
 def mcp_cmd() -> None:
     """Start the MCP server (stdio transport) for agent integration."""
