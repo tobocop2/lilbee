@@ -22,6 +22,13 @@ class UserMessage(Static):
 class AssistantMessage(Vertical):
     """An assistant's response with streaming markdown, reasoning, and citations."""
 
+    DEFAULT_CSS = """
+    AssistantMessage {
+        height: auto;
+        overflow-y: auto;
+    }
+    """
+
     def __init__(self) -> None:
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []

@@ -166,9 +166,10 @@ def _fetch_hf_models(
     tags: str = "gguf",
     sort: str = "downloads",
     limit: int = 50,
+    offset: int = 0,
 ) -> list[CatalogModel]:
     """Fetch models from HuggingFace API with 5-minute cache. Returns empty list on error."""
-    cache_key = f"{pipeline_tag}:{tags}:{sort}:{limit}"
+    cache_key = f"{pipeline_tag}:{tags}:{sort}:{limit}:{offset}"
     now = time.monotonic()
     # Evict expired entries
     expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -184,6 +185,7 @@ def _fetch_hf_models(
         "tags": tags,
         "sort": sort,
         "limit": limit,
+        "offset": offset,
     }
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
@@ -254,13 +256,13 @@ def get_catalog(
     model_manager: Any = None,
 ) -> CatalogResult:
     """Get paginated, filtered catalog of models."""
-    # Start with featured models
-    all_models = list(FEATURED_ALL)
+    # Featured models only on the first page
+    all_models = list(FEATURED_ALL) if offset == 0 else []
 
     # Optionally fetch from HF API
     if not featured:
         hf_task = _task_to_pipeline(task)
-        hf_models = _fetch_hf_models(pipeline_tag=hf_task, limit=50)
+        hf_models = _fetch_hf_models(pipeline_tag=hf_task, limit=limit, offset=offset)
         # Deduplicate: skip HF models whose repo matches a featured model
         featured_repos = {m.hf_repo for m in FEATURED_ALL}
         hf_models = [m for m in hf_models if m.hf_repo not in featured_repos]
@@ -302,7 +304,10 @@ def get_catalog(
     all_models = _sort_models(all_models, sort)
 
     total = len(all_models)
-    paginated = all_models[offset : offset + limit]
+
+    # When HF API pagination is active (offset passed to API), skip local slicing
+    # to avoid double-applying the offset. Only slice for featured-only requests.
+    paginated = all_models[offset : offset + limit] if featured else all_models[:limit]
 
     return CatalogResult(total=total, limit=limit, offset=offset, models=paginated)
 
