@@ -62,8 +62,7 @@ TabbedContent > ContentSwitcher {
 
 /* Modal screens */
 DownloadModal > Vertical,
-HelpModal > Vertical,
-SetupModal > Vertical {
+HelpModal > Vertical {
     width: 70;
     height: auto;
     max-height: 80%;
@@ -71,6 +70,23 @@ SetupModal > Vertical {
     padding: 1 2;
 }
 
-DownloadModal, HelpModal, SetupModal {
+DownloadModal, HelpModal {
     align: center middle;
+}
+
+#chat-only-banner {
+    dock: top;
+    height: 1;
+    padding: 0 1;
+    background: $warning;
+    color: $text;
+    text-style: bold;
+}
+#setup-title {
+    text-style: bold;
+    padding: 1 0;
+    text-align: center;
+}
+#setup-skip {
+    margin: 1 0 0 0;
 }
