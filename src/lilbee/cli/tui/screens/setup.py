@@ -122,14 +122,20 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
         """Download via catalog API with TUI-native progress (no Rich)."""
-        self.app.call_from_thread(self._set_status, f"Downloading {model.name}...")
+        self.app.call_from_thread(self._set_status, f"Resolving {model.name}...")
         try:
             from lilbee.catalog import download_model
 
             def _on_progress(downloaded: int, total: int) -> None:
                 if total > 0:
                     pct = int(downloaded * 100 / total)
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
                     self.app.call_from_thread(self._update_progress, pct)
+                    self.app.call_from_thread(
+                        self._set_status,
+                        f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
+                    )
 
             dest = download_model(model, on_progress=_on_progress)
             self.app.call_from_thread(self._on_download_complete, dest.stem)
