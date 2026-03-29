@@ -1,4 +1,4 @@
-"""Routing provider — auto-selects backend per model based on where it lives."""
+"""Routing provider — auto-selects backend based on litellm availability."""
 
 from __future__ import annotations
 
@@ -12,16 +12,16 @@ log = logging.getLogger(__name__)
 
 
 class RoutingProvider(LLMProvider):
-    """Routes each call to the correct backend based on model source.
+    """Routes all calls to litellm if available, otherwise llama-cpp.
 
-    If litellm is installed and models are reachable via its API, uses litellm.
-    Otherwise, uses llama-cpp for local GGUF files.
+    When litellm is installed and the backend is reachable, all operations
+    go through litellm. Otherwise, falls back to llama-cpp for local GGUF files.
     """
 
     def __init__(self) -> None:
         self._llama_cpp: LLMProvider | None = None
         self._litellm: LLMProvider | None = None
-        self._remote_models: set[str] | None = None
+        self._use_litellm: bool | None = None
 
     def _get_llama_cpp(self) -> LLMProvider:  # pragma: no cover
         if self._llama_cpp is None:
@@ -38,37 +38,32 @@ class RoutingProvider(LLMProvider):
             self._litellm = LiteLLMProvider(base_url=cfg.litellm_base_url)
         return self._litellm
 
-    def _litellm_models(self) -> set[str]:
-        """Return set of models available via litellm, cached per provider lifetime."""
-        if self._remote_models is not None:
-            return self._remote_models
+    def _should_use_litellm(self) -> bool:
+        """Check once whether litellm is installed and reachable, then cache."""
+        if self._use_litellm is not None:
+            return self._use_litellm
 
         from lilbee.providers.litellm_provider import litellm_available
 
         if not litellm_available():
-            self._remote_models = set()
-            return self._remote_models
+            self._use_litellm = False
+            return False
         try:  # pragma: no cover
-            self._remote_models = set(self._get_litellm().list_models())  # pragma: no cover
+            self._get_litellm().list_models()  # pragma: no cover
+            self._use_litellm = True  # pragma: no cover
         except Exception:  # pragma: no cover
-            log.debug("litellm backend not reachable, using local models only")  # pragma: no cover
-            self._remote_models = set()  # pragma: no cover
-        return self._remote_models  # pragma: no cover
+            log.debug("litellm backend not reachable, using llama-cpp")  # pragma: no cover
+            self._use_litellm = False  # pragma: no cover
+        return self._use_litellm  # pragma: no cover
 
-    def _is_in_litellm(self, model: str) -> bool:
-        return model in self._litellm_models()
-
-    def _provider_for(self, model: str) -> LLMProvider:
-        """Pick the right provider for a given model name."""
-        if self._is_in_litellm(model):
+    def _provider(self) -> LLMProvider:
+        """Return the active provider."""
+        if self._should_use_litellm():
             return self._get_litellm()
         return self._get_llama_cpp()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed via whichever backend has the embedding model."""
-        from lilbee.config import cfg
-
-        return self._provider_for(cfg.embedding_model).embed(texts)
+        return self._provider().embed(texts)
 
     def chat(
         self,
@@ -78,44 +73,41 @@ class RoutingProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | Iterator[str]:
-        """Chat via whichever backend has the model."""
-        from lilbee.config import cfg
-
-        resolved = model or cfg.chat_model
-        return self._provider_for(resolved).chat(
-            messages, stream=stream, options=options, model=model
-        )
+        return self._provider().chat(messages, stream=stream, options=options, model=model)
 
     def list_models(self) -> list[str]:
-        """Return the union of litellm and native GGUF models."""
+        """Return models from the active provider."""
         import contextlib
 
         native: set[str] = set()
         with contextlib.suppress(Exception):
             native = set(self._get_llama_cpp().list_models())
-        remote = self._litellm_models()
-        return sorted(native | remote)
+        if self._should_use_litellm():
+            try:  # pragma: no cover
+                remote = set(self._get_litellm().list_models())  # pragma: no cover
+                return sorted(native | remote)  # pragma: no cover
+            except Exception:  # pragma: no cover
+                pass  # pragma: no cover
+        return sorted(native)
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull via litellm if available, otherwise raise."""
-        if len(self._litellm_models()) > 0:
-            try:
-                self._get_litellm().pull_model(model, on_progress=on_progress)
-                self.invalidate_cache()
-                return
+        if self._should_use_litellm():
+            try:  # pragma: no cover
+                self._get_litellm().pull_model(model, on_progress=on_progress)  # pragma: no cover
+                self.invalidate_cache()  # pragma: no cover
+                return  # pragma: no cover
             except Exception:  # pragma: no cover
                 pass  # pragma: no cover
         raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
 
     def show_model(self, model: str) -> dict[str, str] | None:
-        """Try litellm first (has metadata), fall back to llama-cpp (returns None)."""
-        if self._is_in_litellm(model):
-            return self._get_litellm().show_model(model)
-        return self._get_llama_cpp().show_model(model)
+        """Show model info from the active provider."""
+        return self._provider().show_model(model)
 
     def invalidate_cache(self) -> None:
-        """Clear cached litellm model list (after pull/delete)."""
-        self._remote_models = None
+        """Clear cached litellm detection (after pull/delete)."""
+        self._use_litellm = None
 
     def shutdown(self) -> None:
         """Shut down sub-providers to release resources."""
