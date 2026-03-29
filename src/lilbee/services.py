@@ -7,6 +7,7 @@ process lifetime.  Tests call ``reset_services()`` between runs.
 
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -83,3 +84,6 @@ def reset_services() -> None:
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None
+
+
+atexit.register(reset_services)
