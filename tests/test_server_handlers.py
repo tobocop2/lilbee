@@ -677,19 +677,19 @@ class TestDeleteDocuments:
 class TestUpdateConfig:
     async def test_update_config_valid(self, tmp_path):
         result = await handlers.update_config({"temperature": 0.7})
-        assert result["updated"] == ["temperature"]
-        assert result["reindex_required"] is False
+        assert result.updated == ["temperature"]
+        assert result.reindex_required is False
         assert cfg.temperature == 0.7
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
-        assert result["reindex_required"] is True
+        assert result.reindex_required is True
         assert cfg.chunk_size == 1024
 
     async def test_update_config_null_reset(self, tmp_path):
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
-        assert result["updated"] == ["temperature"]
+        assert result.updated == ["temperature"]
         assert cfg.temperature is None
         # Verify delete_value was called (file should not contain temperature)
         from lilbee import settings as s
@@ -707,7 +707,8 @@ class TestUpdateConfig:
 
     async def test_empty_dict_returns_no_updates(self):
         result = await handlers.update_config({})
-        assert result == {"updated": [], "reindex_required": False}
+        assert result.updated == []
+        assert result.reindex_required is False
 
     async def test_invalid_type_raises(self):
         from pydantic import ValidationError
@@ -718,7 +719,7 @@ class TestUpdateConfig:
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
         result = await handlers.update_config({"llm_api_key": "sk-test123"})
-        assert result["updated"] == ["llm_api_key"]
+        assert result.updated == ["llm_api_key"]
         assert cfg.llm_api_key == "sk-test123"
         # Verify it's excluded from GET /api/config
         config = await handlers.get_config()
@@ -735,8 +736,8 @@ class TestUpdateConfig:
     async def test_multi_field_success(self, tmp_path):
         """Multiple valid fields are applied and persisted in one call."""
         result = await handlers.update_config({"temperature": 0.7, "top_k": 5})
-        assert set(result["updated"]) == {"temperature", "top_k"}
-        assert result["reindex_required"] is False
+        assert set(result.updated) == {"temperature", "top_k"}
+        assert result.reindex_required is False
         assert cfg.temperature == 0.7
         assert cfg.top_k == 5
         # Verify both persisted

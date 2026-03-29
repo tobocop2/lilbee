@@ -8,7 +8,7 @@ from litestar import get, patch
 from pydantic import ValidationError
 
 from lilbee.server.auth import read_only
-from lilbee.server.models import HealthResponse
+from lilbee.server.models import ConfigUpdateResponse, HealthResponse
 
 
 @get("/api/health")
@@ -40,7 +40,7 @@ async def config_route() -> dict[str, Any]:
 
 
 @patch("/api/config")
-async def config_update_route(data: dict[str, Any]) -> dict[str, Any]:
+async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
     """Partial update of writable configuration fields."""
     from lilbee.server import handlers
 
