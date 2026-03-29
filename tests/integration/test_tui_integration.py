@@ -676,43 +676,6 @@ class TestHelpModal:
             assert cmd.name in _HELP_TEXT
 
 
-class TestDownloadModalIntegration:
-    @patch("lilbee.catalog.download_model")
-    async def test_download_modal_shows_progress(self, mock_dl: MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        def capture_progress(model, *, on_progress=None):
-            if on_progress:
-                on_progress(50, 100)
-
-        mock_dl.side_effect = capture_progress
-        m = _make_model("Test")
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(DownloadModal(m))
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
-
-    async def test_download_modal_escape_cancels(self) -> None:
-        import threading
-
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("Test")
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with patch("lilbee.catalog.download_model") as mock_dl:
-                evt = threading.Event()
-                mock_dl.side_effect = lambda *a, **kw: evt.wait(5)
-                app.push_screen(DownloadModal(m))
-                await pilot.pause()
-                app.screen.action_cancel()
-                evt.set()
-                await pilot.pause()
-
-
 class TestSetupWizardIntegration:
     async def test_setup_wizard_mounts(self) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard

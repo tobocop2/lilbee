@@ -167,27 +167,127 @@ class TestHelpModal:
 
 
 # ---------------------------------------------------------------------------
-# sync_bar.py
+# task_bar.py
 # ---------------------------------------------------------------------------
 
 
-class _SyncApp(App):
+class _TaskBarApp(App):
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.sync_bar import SyncBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        yield SyncBar()
+        yield TaskBar(id="task-bar")
 
 
-class TestSyncBar:
-    async def test_set_status_updates(self) -> None:
-        from lilbee.cli.tui.widgets.sync_bar import SyncBar
+class TestTaskBar:
+    async def test_hidden_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        app = _SyncApp()
+        app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(SyncBar)
-            bar.set_status("Syncing 3 files...")
+            bar = app.query_one(TaskBar)
+            assert bar.display is False
+
+    async def test_shows_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
             await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Sync docs", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
+    async def test_shows_multiple_queued(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Download A", "download")
+            bar.queue.advance()
+            bar.add_task("Sync", "sync")
+            bar.add_task("Crawl", "crawl")
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+            assert len(bar.queue.queued_tasks) == 2
+
+    async def test_complete_removes_after_flash(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar.complete_task(task_id)
+            await pilot.pause()
+            # After flash timer fires, task is removed
+            await pilot.pause(delay=1.5)
+            assert bar.queue.is_empty
+
+    async def test_queue_advances_on_complete(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            t1 = bar.add_task("Download A", "download")
+            bar.queue.advance()
+            bar.add_task("Sync B", "sync")
+            bar.complete_task(t1)
+            # After flash, next task should advance
+            await pilot.pause(delay=1.5)
+            active = bar.queue.active_task
+            assert active is not None
+            assert active.name == "Sync B"
+
+    async def test_cancel_removes_immediately(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar.cancel_task(task_id)
+            await pilot.pause()
+            assert bar.queue.is_empty
+
+    async def test_update_task_changes_progress(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar.update_task(task_id, 42, "21/50 MB")
+            await pilot.pause()
+            assert bar.queue.active_task is not None
+            assert bar.queue.active_task.progress == 42
+
+    async def test_fail_task_shows_then_removes(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar.fail_task(task_id, "Network error")
+            await pilot.pause(delay=1.5)
+            assert bar.queue.is_empty
 
 
 # ---------------------------------------------------------------------------
@@ -712,108 +812,78 @@ class TestCompletionOverlay:
 
 
 # ---------------------------------------------------------------------------
-# download_modal.py
+# task_queue.py (unit tests for queue logic)
 # ---------------------------------------------------------------------------
 
 
-class _DlApp(App):
-    def compose(self) -> ComposeResult:
-        yield Static("bg")
+class TestTaskQueue:
+    def test_enqueue_and_advance(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
+        q = TaskQueue()
+        q.enqueue(lambda: None, "Sync", "sync")
+        assert q.is_empty is False
+        task = q.advance()
+        assert task is not None
+        assert task.status == TaskStatus.ACTIVE
+        assert q.active_task is task
 
-class TestDownloadModal:
-    def test_stores_model(self) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+    def test_complete_clears_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
 
-        m = _make_model("Test")
-        modal = DownloadModal(m)
-        assert modal._model is m
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.complete_task(tid)
+        q.remove_task(tid)
+        assert q.is_empty
 
-    @mock.patch("lilbee.catalog.download_model")
-    async def test_download_success(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+    def test_cancel_queued(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
 
-        mock_dl.return_value = None
-        m = _make_model("Test")
-        app = _DlApp()
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        queued_id = q.enqueue(lambda: None, "B", "sync")
+        assert q.cancel(queued_id) is True
+        assert len(q.queued_tasks) == 0
 
-        results: list[bool] = []
+    def test_cancel_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
 
-        async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m), callback=lambda r: results.append(r))
-            await pilot.pause()
-            # Wait for the worker to complete
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        assert q.active_task is None
 
-        mock_dl.assert_called_once()
+    def test_advance_returns_none_when_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
 
-    @mock.patch("lilbee.catalog.download_model", side_effect=RuntimeError("net error"))
-    async def test_download_failure(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.enqueue(lambda: None, "B", "sync")
+        assert q.advance() is None  # already has active
 
-        m = _make_model("Test")
-        app = _DlApp()
+    def test_fail_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
-        async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m))
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.fail_task(tid, "oops")
+        task = q._tasks.get(tid)
+        assert task is not None
+        assert task.status == TaskStatus.FAILED
 
-    async def test_cancel_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+    def test_on_change_callback(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
 
-        m = _make_model("Test")
-        app = _DlApp()
-
-        async with app.run_test() as pilot:
-            # Patch download to block so we can cancel
-            with mock.patch("lilbee.catalog.download_model") as mock_dl:
-                import threading
-
-                evt = threading.Event()
-                mock_dl.side_effect = lambda *a, **kw: evt.wait(5)
-                app.push_screen(DownloadModal(m))
-                await pilot.pause()
-                screen = app.screen
-                screen.action_cancel()
-                evt.set()
-                await pilot.pause()
-
-    def test_set_status_and_update_progress(self) -> None:
-        """Test internal helpers directly (they need mounted widgets, so test via compose)."""
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("TestDl")
-        modal = DownloadModal(m)
-        # _do_dismiss with no _dismiss_result defaults to False
-        modal._dismiss_result = True
-        assert modal._dismiss_result is True
-
-    @mock.patch("lilbee.catalog.download_model")
-    async def test_progress_callback(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        def capture_progress(model, *, on_progress=None):
-            if on_progress:
-                on_progress(50, 100)
-                on_progress(100, 100)
-                # Edge: total=0 should not crash
-                on_progress(0, 0)
-
-        mock_dl.side_effect = capture_progress
-        m = _make_model("Test")
-        app = _DlApp()
-
-        async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m))
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
+        calls: list[bool] = []
+        q = TaskQueue(on_change=lambda: calls.append(True))
+        q.enqueue(lambda: None, "A", "sync")
+        assert len(calls) >= 1
 
 
 # ---------------------------------------------------------------------------

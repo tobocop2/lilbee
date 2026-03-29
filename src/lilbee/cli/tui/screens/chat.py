@@ -29,7 +29,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.sync_bar import SyncBar
+from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType
@@ -66,7 +66,7 @@ class ChatScreen(Screen[None]):
             id="chat-only-banner",
         )
         yield VerticalScroll(id="chat-log")
-        yield SyncBar(id="sync-bar")
+        yield TaskBar(id="task-bar")
         yield CompletionOverlay(id="completion-overlay")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
@@ -198,8 +198,10 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
-        self.notify(f"Crawling {url}...")
-        self._run_crawl_background(url, depth, max_pages)
+        task_bar = self.query_one("#task-bar", TaskBar)
+        task_id = task_bar.add_task(f"Crawl {url}", "crawl")
+        task_bar.queue.advance()
+        self._run_crawl_background(url, depth, max_pages, task_id)
 
     @staticmethod
     def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
@@ -218,12 +220,12 @@ class ChatScreen(Screen[None]):
         return parsed["depth"], parsed["max_pages"]
 
     @work(thread=True)
-    def _run_crawl_background(self, url: str, depth: int, max_pages: int) -> None:
+    def _run_crawl_background(self, url: str, depth: int, max_pages: int, task_id: str) -> None:
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
-        sync_bar = self.query_one("#sync-bar", SyncBar)
-        self.app.call_from_thread(sync_bar.set_status, f"Crawling {url}...")
+        task_bar = self.query_one("#task-bar", TaskBar)
+        self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
 
@@ -232,21 +234,22 @@ class ChatScreen(Screen[None]):
                     current = data.get("current", 0)
                     total = data.get("total", 0)
                     page_url = data.get("url", "")
-                    msg = f"Crawling [{current}/{total}]: {page_url}"
-                    self.app.call_from_thread(sync_bar.set_status, msg)
+                    pct = int(current * 100 / total) if total > 0 else 50
+                    detail = f"[{current}/{total}]: {page_url}"
+                    self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(
                 crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
             )
+            self.app.call_from_thread(task_bar.complete_task, task_id)
             self.app.call_from_thread(self.notify, f"Crawled {len(paths)} page(s) from {url}")
         except Exception as exc:
+            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
             self.app.call_from_thread(self.notify, f"Crawl failed: {exc}", severity="error")
-            self.app.call_from_thread(sync_bar.set_status, "Crawl failed")
             return
 
         # Trigger sync to ingest the crawled markdown files
-        self.app.call_from_thread(sync_bar.set_status, "Syncing crawled pages...")
-        self._run_sync()
+        self.app.call_from_thread(self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
         self.app.push_screen(CatalogScreen())
@@ -424,9 +427,7 @@ class ChatScreen(Screen[None]):
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
             with contextlib.suppress(Exception):
-                self.app.call_from_thread(
-                    widget.append_content, msg.STREAM_ERROR.format(error=exc)
-                )
+                self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
             self._streaming = False
             full_response = "".join(response_parts)
@@ -461,8 +462,15 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self._streaming = False
 
-    @work(thread=True)
     def _run_sync(self) -> None:
+        """Enqueue a document sync in the task bar."""
+        task_bar = self.query_one("#task-bar", TaskBar)
+        task_id = task_bar.add_task("Sync documents", "sync")
+        task_bar.queue.advance()
+        self._run_sync_worker(task_id)
+
+    @work(thread=True)
+    def _run_sync_worker(self, task_id: str) -> None:
         """Run background document sync.
 
         Uses asyncio.run() because Textual workers run in threads, not the
@@ -470,11 +478,11 @@ class ChatScreen(Screen[None]):
         """
         import asyncio
 
-        sync_bar = self.query_one("#sync-bar", SyncBar)
+        task_bar = self.query_one("#task-bar", TaskBar)
         try:
             from lilbee.ingest import sync
 
-            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_SYNCING)
+            self.app.call_from_thread(task_bar.update_task, task_id, 0, "Syncing...")
 
             def on_progress(event_type: EventType, data: dict[str, object]) -> None:
                 if event_type == EventType.FILE_START:
@@ -483,14 +491,13 @@ class ChatScreen(Screen[None]):
                         total=data.get("total_files", "?"),
                         file=data.get("file", ""),
                     )
-                    self.app.call_from_thread(sync_bar.set_status, status)
+                    self.app.call_from_thread(task_bar.update_task, task_id, 50, status)
 
-            result = asyncio.run(sync(on_progress=on_progress))
-            added = len(result.added)
-            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_DONE.format(count=added))
+            asyncio.run(sync(on_progress=on_progress))
+            self.app.call_from_thread(task_bar.complete_task, task_id)
         except Exception:
             log.warning("Background sync failed", exc_info=True)
-            self.app.call_from_thread(sync_bar.set_status, msg.SYNC_STATUS_FAILED)
+            self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

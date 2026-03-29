@@ -10,7 +10,6 @@ from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, RemoteRow
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
-from lilbee.cli.tui.widgets.sync_bar import SyncBar
 from lilbee.config import cfg
 
 
@@ -102,11 +101,14 @@ class TestAssistantMessage:
         assert msg._finished
 
 
-class TestSyncBar:
-    def test_set_status(self) -> None:
-        bar = SyncBar()
-        bar.set_status("Syncing...")
-        # Widget update is queued, just verify no crash
+class TestTaskBarUnit:
+    def test_queue_enqueue_returns_id(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        task_id = q.enqueue(lambda: None, "Test", "sync")
+        assert isinstance(task_id, str)
+        assert len(task_id) == 8
 
 
 class TestHelpModal:
@@ -376,15 +378,6 @@ class TestStatusScreenAsync:
                 await pilot.pause()
                 info = app.screen.query_one("#status-info")
                 assert info is not None
-
-
-class TestDownloadModal:
-    def test_creates(self) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("Test")
-        modal = DownloadModal(m)
-        assert modal._model is m
 
 
 class TestCLIIntegration:

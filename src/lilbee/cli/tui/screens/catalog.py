@@ -405,11 +405,59 @@ class CatalogScreen(Screen[None]):
                 self.notify(f"{model.name} is already installed")
                 return
         except Exception:
-            pass  # Can't resolve filename — proceed with download
+            pass  # Can't resolve filename -- proceed with download
 
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+        self._enqueue_download(model)
 
-        self.app.push_screen(DownloadModal(model))
+    def _enqueue_download(self, model: CatalogModel) -> None:
+        """Enqueue a model download in the ChatScreen's TaskBar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        try:
+            task_bar = self.app.query_one("#task-bar", TaskBar)
+        except Exception:
+            self.notify("Cannot download: task bar not found", severity="error")
+            return
+
+        task_id = task_bar.add_task(f"Downloading {model.name}", "download")
+        task_bar.queue.advance()
+        self.notify(f"Queued download: {model.name}")
+        self._run_download(model, task_id, task_bar)
+
+    @work(thread=True)
+    def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
+        """Download a model in a background thread, reporting to TaskBar."""
+        import time
+
+        from lilbee.catalog import download_model
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        bar: TaskBar = task_bar  # type: ignore[assignment]
+
+        try:
+            last_update = 0.0
+
+            def on_progress(downloaded: int, total: int) -> None:
+                nonlocal last_update
+                now = time.monotonic()
+                if now - last_update < 0.25:
+                    return
+                last_update = now
+                if total > 0:
+                    pct = min(int(downloaded * 100 / total), 100)
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    self.app.call_from_thread(
+                        bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
+                    )
+
+            download_model(model, on_progress=on_progress)
+            self.app.call_from_thread(bar.complete_task, task_id)
+            self.app.call_from_thread(self.notify, f"{model.name} installed")
+        except Exception as exc:
+            log.warning("Download failed for %s", model.name, exc_info=True)
+            self.app.call_from_thread(bar.fail_task, task_id, str(exc))
+            self.app.call_from_thread(self.notify, f"Download failed: {exc}", severity="error")
 
     def action_focus_search(self) -> None:
         self.query_one("#catalog-search", Input).focus()
