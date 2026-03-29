@@ -1,11 +1,9 @@
-"""Textual TUI for lilbee — full-screen interactive knowledge base."""
+"""Textual TUI for lilbee -- full-screen interactive knowledge base."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from lilbee.cli.sync import shutdown_executor
+from lilbee.services import reset_services
 
 
 def run_tui(*, auto_sync: bool = False) -> None:
@@ -13,4 +11,8 @@ def run_tui(*, auto_sync: bool = False) -> None:
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp(auto_sync=auto_sync)
-    app.run()
+    try:
+        app.run()
+    finally:
+        shutdown_executor()
+        reset_services()
