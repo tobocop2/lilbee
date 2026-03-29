@@ -48,17 +48,7 @@ class LlamaCppProvider(LLMProvider):
         self._worker.start()
 
     def _embed_worker(self) -> None:
-        """Background thread: drain queue, batch, inference, dispatch results.
-
-        Suppresses C-level stderr for the entire thread lifetime because
-        llama.cpp prints noisy messages on every create_embedding call.
-        """
-        import os
-
-        devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull_fd, 2)
-        os.close(devnull_fd)
-
+        """Background thread: drain queue, batch, inference, dispatch results."""
         while True:
             first = self._embed_queue.get()
             if first is None:
@@ -256,8 +246,8 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def _embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text. Caller must have stderr suppressed."""
-    response = llm.create_embedding(input=[text])
+    """Embed a single text with llama.cpp stderr noise suppressed."""
+    response = _suppress_stderr(llm.create_embedding, input=[text])
     return response["data"][0]["embedding"]
 
 
@@ -269,7 +259,9 @@ def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
     """
     from llama_cpp import Llama
 
-    llm = Llama(model_path=str(model_path), vocab_only=True, verbose=False)
+    llm = _suppress_stderr(
+        Llama, model_path=str(model_path), vocab_only=True, verbose=False, n_gpu_layers=0
+    )
     try:
         raw = llm.metadata or {}
         result: dict[str, str] = {}
