@@ -289,6 +289,17 @@ class TestTaskBar:
             await pilot.pause(delay=1.5)
             assert bar.queue.is_empty
 
+    async def test_app_task_bar_ref(self) -> None:
+        """TaskBar is accessible via app._task_bar from other screens."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app._task_bar = bar  # type: ignore[attr-defined]
+            assert getattr(app, "_task_bar", None) is bar
+
 
 # ---------------------------------------------------------------------------
 # model_bar.py

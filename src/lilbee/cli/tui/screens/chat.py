@@ -80,6 +80,8 @@ class ChatScreen(Screen[None]):
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self.query_one("#chat-only-banner", Static).display = False
+        # Store TaskBar on app so other screens (CatalogScreen) can find it
+        self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 

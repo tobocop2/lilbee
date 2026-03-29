@@ -411,12 +411,8 @@ class CatalogScreen(Screen[None]):
 
     def _enqueue_download(self, model: CatalogModel) -> None:
         """Enqueue a model download in the ChatScreen's TaskBar."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        try:
-            # TaskBar lives on ChatScreen, not CatalogScreen — search all screens
-            task_bar = self.app.screen_stack[0].query_one("#task-bar", TaskBar)
-        except Exception:
+        task_bar = getattr(self.app, "_task_bar", None)
+        if task_bar is None:
             self.notify("Cannot download: task bar not found", severity="error")
             return
 
