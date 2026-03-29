@@ -81,16 +81,17 @@ class TestLlamaCppProvider:
         cfg.models_dir = models_dir
 
         mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_embedding.return_value = {
-            "data": [{"embedding": [0.1, 0.2, 0.3]}, {"embedding": [0.4, 0.5, 0.6]}]
-        }
+        mock_llama_instance.create_embedding.side_effect = [
+            {"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+            {"data": [{"embedding": [0.4, 0.5, 0.6]}]},
+        ]
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
         provider = LlamaCppProvider()
         result = provider.embed(["hello", "world"])
 
         assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        mock_llama_instance.create_embedding.assert_called_once_with(input=["hello", "world"])
+        assert mock_llama_instance.create_embedding.call_count == 2
 
     def test_chat_non_stream(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
@@ -264,6 +265,37 @@ class TestLlamaCppProvider:
             result = _read_gguf_metadata(models_dir / "test-model.gguf")
         assert result is None
 
+    def test_load_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = None
+        with (
+            patch("llama_cpp.Llama") as mock_llama_cls,
+            patch(
+                "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            _load_llama(models_dir / "test-model.gguf", embedding=True)
+            call_kwargs = mock_llama_cls.call_args[1]
+            assert call_kwargs["n_batch"] == 2048
+            assert call_kwargs["n_ubatch"] == 2048
+            assert call_kwargs["embedding"] is True
+
+    def test_load_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        with patch("llama_cpp.Llama"):
+            _load_llama(models_dir / "test-model.gguf", embedding=False)
+            import llama_cpp
+
+            call_kwargs = llama_cpp.Llama.call_args[1]
+            assert "n_batch" not in call_kwargs
+
     def test_resolve_model_path_direct(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
@@ -311,11 +343,13 @@ class TestLlamaCppProvider:
         mock_llama_instance.create_embedding.return_value = {"data": [{"embedding": [0.1] * 3}]}
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
+        cfg.num_ctx = 4096  # Explicit ctx skips metadata read
         provider = LlamaCppProvider()
         provider.embed(["a"])
         provider.embed(["b"])
 
-        # Llama should only be instantiated once for embeddings
+        # With explicit num_ctx, no metadata read needed — only 1 Llama call.
+        # Second embed reuses the cached instance.
         assert mock_llama_cpp.Llama.call_count == 1
 
 

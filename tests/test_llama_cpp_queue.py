@@ -56,14 +56,17 @@ class TestEmbedQueue:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         instance = mock.MagicMock()
-        instance.create_embedding.return_value = _make_embed_response([[0.1, 0.2], [0.3, 0.4]])
+        instance.create_embedding.side_effect = [
+            _make_embed_response([[0.1, 0.2]]),
+            _make_embed_response([[0.3, 0.4]]),
+        ]
         mock_llama_cpp.Llama.return_value = instance
 
         provider = LlamaCppProvider()
         result = provider.embed(["hello", "world"])
 
         assert result == [[0.1, 0.2], [0.3, 0.4]]
-        instance.create_embedding.assert_called_once_with(input=["hello", "world"])
+        assert instance.create_embedding.call_count == 2
         provider.shutdown()
 
     def test_concurrent_embeds_batched(
@@ -365,31 +368,39 @@ class TestLockedStreamIteratorExceptionRelease:
 
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is None, _load_llama passes n_ctx=0 (use model's training context)."""
+        """When num_ctx is None, _load_llama passes n_ctx=0 and n_batch from metadata."""
         from lilbee.providers.llama_cpp_provider import _load_llama
 
         cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "2048",
+        }
         _load_llama(models_dir / "test-model.gguf", embedding=True)
 
-        mock_llama_cpp.Llama.assert_called_once()
+        # Called twice: once for metadata (vocab_only), once for model
+        assert mock_llama_cpp.Llama.call_count == 2
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 0
+        assert call_kwargs["n_batch"] == 2048
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is set, _load_llama uses it for n_ctx."""
+        """When num_ctx is set, _load_llama uses it for n_ctx and n_batch."""
         from lilbee.providers.llama_cpp_provider import _load_llama
 
         cfg.num_ctx = 8192
         _load_llama(models_dir / "test-model.gguf", embedding=True)
 
-        mock_llama_cpp.Llama.assert_called_once()
+        # No metadata read needed when n_ctx is explicit
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 8192
+        assert call_kwargs["n_batch"] == 8192
 
     def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """_load_llama passes embedding flag correctly."""
         from lilbee.providers.llama_cpp_provider import _load_llama
 
+        mock_llama_cpp.Llama.return_value.metadata = {}
         _load_llama(models_dir / "test-model.gguf", embedding=True)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is True

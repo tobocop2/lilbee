@@ -247,6 +247,39 @@ class TestPipelineBasics:
         assert len(vec) == cfg.embedding_dim
         assert any(v != 0.0 for v in vec)
 
+    def test_ingest_realistic_length_document(self, rag_pipeline):
+        """Verify embedding works with realistic text lengths, not just short strings.
+
+        Regression test: llama-cpp-python defaults n_batch=512, silently
+        truncating embeddings. With multiple chunks exceeding this limit,
+        llama_decode returns -1. This test catches that by ingesting a
+        document long enough to produce multiple real-sized chunks.
+        """
+        docs_dir = rag_pipeline["docs_dir"]
+        # ~8000 chars → multiple chunks at 512-token chunk_size
+        content = (
+            "# Vehicle Maintenance Procedures\n\n"
+            "Regular maintenance extends the life of your vehicle and prevents "
+            "costly repairs. This comprehensive guide covers all essential "
+            "maintenance procedures for modern vehicles.\n\n"
+            "## Oil Change Procedure\n\n"
+            "Drain the old oil completely by removing the drain plug. Replace "
+            "the oil filter with a new one, applying a thin film of fresh oil "
+            "to the gasket. Reinstall the drain plug and fill with the correct "
+            "grade of synthetic motor oil. Check the dipstick to verify the "
+            "correct oil level has been reached.\n\n"
+        ) * 10  # Repeat to ensure multiple chunks
+
+        (docs_dir / "maintenance_guide.md").write_text(content)
+        result = asyncio.run(sync(quiet=True))
+        assert result.failed == 0, f"Ingest failed: {result}"
+        assert result.added > 0 or result.updated > 0
+
+        results = get_services().searcher.search("oil change procedure", top_k=3)
+        assert len(results) > 0
+        sources = [r.source for r in results]
+        assert "maintenance_guide.md" in sources
+
 
 # ---------------------------------------------------------------------------
 # Search Quality
