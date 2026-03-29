@@ -74,12 +74,18 @@ class LlamaCppProvider(LLMProvider):
                 break
 
     def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
-        """Serialize embedding requests one-by-one and resolve all futures."""
+        """Serialize embedding requests and resolve all futures.
+
+        Embeds one text at a time because some model architectures (e.g.
+        nomic-bert) fail with llama_decode -1 on multi-text batches.
+        """
         llm = self._get_embed_llm()
         for req in batch:
             try:
-                response = llm.create_embedding(input=req.texts)
-                vectors = [item["embedding"] for item in response["data"]]
+                vectors: list[list[float]] = []
+                for text in req.texts:
+                    response = llm.create_embedding(input=[text])
+                    vectors.append(response["data"][0]["embedding"])
                 req.future.set_result(vectors)
             except Exception as exc:
                 if not req.future.done():
@@ -299,4 +305,17 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
         # Without this, llama.cpp defaults to 512 tokens which is too small
         # for most embedding models (e.g. nomic-embed-text trains at 2048).
         kwargs["n_ctx"] = 0
+
+    if embedding:
+        # llama-cpp-python defaults n_batch = min(n_ctx, 512), silently
+        # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
+        # text can use the model's full context window.
+        if kwargs["n_ctx"] == 0:
+            meta = _read_gguf_metadata(model_path)
+            ctx_len = int(meta.get("context_length", 2048)) if meta else 2048
+        else:
+            ctx_len = kwargs["n_ctx"]
+        kwargs["n_batch"] = ctx_len
+        kwargs["n_ubatch"] = ctx_len
+
     return Llama(**kwargs)
