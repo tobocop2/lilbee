@@ -11,18 +11,21 @@ import json
 import logging
 import threading
 import time
+import types
 from collections.abc import AsyncGenerator, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
-from lilbee.config import cfg
+from lilbee.config import Config, cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
+from lilbee.server.models import ConfigUpdateResponse
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -32,32 +35,43 @@ log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
 
-_PUBLIC_CONFIG_FIELDS: frozenset[str] = frozenset(
-    {
-        "chat_model",
-        "embedding_model",
-        "vision_model",
-        "litellm_base_url",
-        "system_prompt",
-        "top_k",
-        "max_distance",
-        "chunk_size",
-        "chunk_overlap",
-        "temperature",
-        "top_p",
-        "top_k_sampling",
-        "repeat_penalty",
-        "num_ctx",
-        "seed",
-        "llm_provider",
-        "diversity_max_per_source",
-        "mmr_lambda",
-        "candidate_multiplier",
-        "query_expansion_count",
-        "adaptive_threshold_step",
-        "show_reasoning",
-    }
-)
+
+def _get_extra(info: FieldInfo, key: str, default: bool = False) -> bool:
+    """Read a boolean flag from a field's ``json_schema_extra``."""
+    extra = info.json_schema_extra
+    if isinstance(extra, dict):
+        return bool(extra.get(key, default))
+    return default
+
+
+def _is_nullable(info: FieldInfo) -> bool:
+    """Return True if ``None`` is part of the field's type union."""
+    origin = get_origin(info.annotation)
+    if origin is Union or origin is types.UnionType:
+        return type(None) in get_args(info.annotation)
+    return False
+
+
+def _derive_field_sets() -> tuple[
+    types.MappingProxyType[str, bool], frozenset[str], frozenset[str]
+]:
+    """Derive writable, reindex, and public field sets from Config metadata."""
+    writable: dict[str, bool] = {}
+    reindex: set[str] = set()
+    public: set[str] = set()
+    for name, info in Config.model_fields.items():
+        if _get_extra(info, "writable"):
+            writable[name] = _is_nullable(info)
+            if not _get_extra(info, "write_only") and _get_extra(info, "public", default=True):
+                public.add(name)
+            if _get_extra(info, "reindex"):
+                reindex.add(name)
+        elif name in {"chat_model", "embedding_model", "vision_model"}:
+            public.add(name)
+    return types.MappingProxyType(writable), frozenset(reindex), frozenset(public)
+
+
+WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, _PUBLIC_CONFIG_FIELDS = _derive_field_sets()
 
 
 class ModelCatalogEntry(BaseModel):
@@ -419,21 +433,96 @@ async def list_models() -> dict[str, Any]:
     return response.model_dump()
 
 
+async def _set_model(
+    field: Literal["chat_model", "vision_model", "embedding_model"],
+    model: str,
+    *,
+    normalize: bool = False,
+) -> dict[str, str]:
+    """Shared helper for switching a model field. Returns {model}."""
+    if normalize:
+        from lilbee.models import ensure_tag
+
+        model = ensure_tag(model)
+    setattr(cfg, field, model)
+    settings.set_value(cfg.data_root, field, model)
+    return {"model": model}
+
+
 async def set_chat_model(model: str) -> dict[str, str]:
     """Switch active chat model. Returns {model}."""
-    from lilbee.models import ensure_tag
-
-    tagged = ensure_tag(model)
-    cfg.chat_model = tagged
-    settings.set_value(cfg.data_root, "chat_model", tagged)
-    return {"model": tagged}
+    return await _set_model("chat_model", model, normalize=True)
 
 
 async def set_vision_model(model: str) -> dict[str, str]:
     """Switch active vision model. Pass empty string to disable. Returns {model}."""
-    cfg.vision_model = model
-    settings.set_value(cfg.data_root, "vision_model", model)
-    return {"model": model}
+    return await _set_model("vision_model", model)
+
+
+async def set_embedding_model(model: str) -> dict[str, str]:
+    """Switch embedding model. Returns {model}."""
+    return await _set_model("embedding_model", model)
+
+
+def _validate_config_updates(updates: dict[str, Any]) -> None:
+    """Reject unknown fields and null values on non-nullable fields."""
+    for key, value in updates.items():
+        if key not in WRITABLE_CONFIG_FIELDS:
+            raise ValueError(f"Unknown or read-only config field: {key}")
+        if value is None and not WRITABLE_CONFIG_FIELDS[key]:
+            raise ValueError(f"Field '{key}' does not accept null")
+
+
+def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Apply updates to the in-memory config, rolling back on error.
+
+    Returns (fields_to_persist, fields_to_delete) for disk write.
+    """
+    snapshot = {k: getattr(cfg, k) for k in updates}
+    to_persist: dict[str, str] = {}
+    to_delete: list[str] = []
+    try:
+        for key, value in updates.items():
+            if value is None:
+                setattr(cfg, key, None)
+                to_delete.append(key)
+            else:
+                setattr(cfg, key, value)
+                to_persist[key] = str(getattr(cfg, key))
+    except Exception:
+        for k, v in snapshot.items():
+            setattr(cfg, k, v)
+        raise
+    return to_persist, to_delete
+
+
+async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
+    """Partial update of writable config fields.
+
+    Algorithm: validate-then-apply with rollback.
+
+    1. Validate all keys and null-acceptability upfront (no mutations yet).
+       This catches typos and bad input before anything changes.
+    2. Snapshot current values, then apply each update via setattr (pydantic's
+       validate_assignment catches type errors). If any field fails type
+       validation, roll back ALL fields from the snapshot so the config
+       stays consistent — no half-applied updates.
+    3. Persist to disk in batch (one file write for sets, one for deletes)
+       rather than per-field, avoiding partial writes on crash.
+
+    Why not just setattr-and-save per field? A multi-field PATCH like
+    {"chunk_size": 1024, "chunk_overlap": "bad"} would leave chunk_size
+    changed but chunk_overlap unchanged — the caller gets an error but
+    the config is silently modified. The snapshot/rollback prevents that.
+    """
+    _validate_config_updates(updates)
+    to_persist, to_delete = _apply_config_updates(updates)
+    if to_persist:
+        settings.update_values(cfg.data_root, to_persist)
+    if to_delete:
+        settings.delete_values(cfg.data_root, to_delete)
+    reindex_required = bool(REINDEX_FIELDS & set(updates))
+    return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
 
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:

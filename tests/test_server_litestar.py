@@ -318,6 +318,63 @@ class TestConfigRoute:
         assert "system_prompt" in resp.json()
 
 
+class TestConfigUpdateRoute:
+    @mock.patch(
+        "lilbee.server.handlers.update_config",
+        new_callable=AsyncMock,
+        return_value={"updated": ["temperature"], "reindex_required": False},
+    )
+    def test_returns_json(self, mock_update, client):
+        resp = client.patch("/api/config", json={"temperature": 0.7})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["temperature"]
+
+    @mock.patch(
+        "lilbee.server.handlers.update_config",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Unknown or read-only config field: bogus"),
+    )
+    def test_unknown_field_returns_error(self, mock_update, client):
+        resp = client.patch("/api/config", json={"bogus": 1})
+        assert resp.status_code == 400
+
+    def test_pydantic_validation_error_returns_400(self, client):
+        from pydantic import ValidationError
+
+        @mock.patch(
+            "lilbee.server.handlers.update_config",
+            new_callable=AsyncMock,
+            side_effect=ValidationError.from_exception_data(
+                "Config",
+                [
+                    {
+                        "type": "int_parsing",
+                        "loc": ("chunk_size",),
+                        "msg": "Input should be a valid integer",
+                        "input": "not_a_number",
+                    }
+                ],
+            ),
+        )
+        def _inner(mock_update):
+            resp = client.patch("/api/config", json={"chunk_size": "not_a_number"})
+            assert resp.status_code == 400
+
+        _inner()
+
+
+class TestModelsSetEmbeddingRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_embedding_model",
+        new_callable=AsyncMock,
+        return_value={"model": "nomic-embed-text:latest"},
+    )
+    def test_returns_model(self, mock_set, client):
+        resp = client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "nomic-embed-text:latest"
+
+
 class TestDocumentsListRoute:
     @mock.patch(
         "lilbee.server.handlers.list_documents",
@@ -564,3 +621,25 @@ class TestAuthMiddleware:
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
             auth_mod._session_token = old
+
+
+class TestAuthRequiredRoutes:
+    """Verify mutating endpoints return 401 without a valid bearer token."""
+
+    @pytest.fixture()
+    def auth_client(self):
+        import lilbee.server.auth as auth_mod
+        from lilbee.server.app import create_app
+
+        auth_mod._session_token = "test-secret"
+        app = create_app()
+        yield TestClient(app)
+        auth_mod._session_token = None
+
+    def test_patch_config_requires_auth(self, auth_client):
+        resp = auth_client.patch("/api/config", json={"temperature": 0.5})
+        assert resp.status_code == 401
+
+    def test_put_models_embedding_requires_auth(self, auth_client):
+        resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
+        assert resp.status_code == 401

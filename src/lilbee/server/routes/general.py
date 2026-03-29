@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from litestar import get
+from litestar import get, patch
+from pydantic import ValidationError
 
 from lilbee.server.auth import read_only
-from lilbee.server.models import HealthResponse
+from lilbee.server.models import ConfigUpdateResponse, HealthResponse
 
 
 @get("/api/health")
@@ -36,3 +37,16 @@ async def config_route() -> dict[str, Any]:
     from lilbee.server import handlers
 
     return await handlers.get_config()
+
+
+@patch("/api/config")
+async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
+    """Partial update of writable configuration fields."""
+    from lilbee.server import handlers
+
+    try:
+        return await handlers.update_config(data)
+    except (ValueError, ValidationError) as exc:
+        from litestar.exceptions import ValidationException
+
+        raise ValidationException(str(exc)) from exc

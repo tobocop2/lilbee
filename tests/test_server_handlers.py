@@ -674,6 +674,103 @@ class TestDeleteDocuments:
         assert not f.exists()
 
 
+class TestUpdateConfig:
+    async def test_update_config_valid(self, tmp_path):
+        result = await handlers.update_config({"temperature": 0.7})
+        assert result.updated == ["temperature"]
+        assert result.reindex_required is False
+        assert cfg.temperature == 0.7
+
+    async def test_update_config_reindex(self, tmp_path):
+        result = await handlers.update_config({"chunk_size": 1024})
+        assert result.reindex_required is True
+        assert cfg.chunk_size == 1024
+
+    async def test_update_config_null_reset(self, tmp_path):
+        cfg.temperature = 0.5
+        result = await handlers.update_config({"temperature": None})
+        assert result.updated == ["temperature"]
+        assert cfg.temperature is None
+        # Verify delete_value was called (file should not contain temperature)
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert "temperature" not in stored
+
+    async def test_update_config_unknown_field(self):
+        with pytest.raises(ValueError, match="Unknown or read-only config field"):
+            await handlers.update_config({"bogus_field": 123})
+
+    async def test_non_nullable_field_rejects_null(self):
+        with pytest.raises(ValueError, match="does not accept null"):
+            await handlers.update_config({"system_prompt": None})
+
+    async def test_empty_dict_returns_no_updates(self):
+        result = await handlers.update_config({})
+        assert result.updated == []
+        assert result.reindex_required is False
+
+    async def test_invalid_type_raises(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            await handlers.update_config({"chunk_size": "not_a_number"})
+
+    async def test_llm_api_key_write_only(self, tmp_path):
+        """llm_api_key can be written via PATCH but is excluded from GET."""
+        result = await handlers.update_config({"llm_api_key": "sk-test123"})
+        assert result.updated == ["llm_api_key"]
+        assert cfg.llm_api_key == "sk-test123"
+        # Verify it's excluded from GET /api/config
+        config = await handlers.get_config()
+        assert "llm_api_key" not in config
+
+    async def test_multi_field_bad_second_no_partial_apply(self):
+        """If second field is invalid, first field should NOT be applied."""
+        original_temp = cfg.temperature
+        with pytest.raises(ValueError, match="does not accept null"):
+            await handlers.update_config({"temperature": 0.9, "system_prompt": None})
+        # temperature should be unchanged — validation happens before apply
+        assert cfg.temperature == original_temp
+
+    async def test_multi_field_success(self, tmp_path):
+        """Multiple valid fields are applied and persisted in one call."""
+        result = await handlers.update_config({"temperature": 0.7, "top_k": 5})
+        assert set(result.updated) == {"temperature", "top_k"}
+        assert result.reindex_required is False
+        assert cfg.temperature == 0.7
+        assert cfg.top_k == 5
+        # Verify both persisted
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert stored["temperature"] == "0.7"
+        assert stored["top_k"] == "5"
+
+
+class TestSetEmbeddingModel:
+    async def test_updates_config_and_persists(self, tmp_path):
+        result = await handlers.set_embedding_model("nomic-embed-text:latest")
+        assert result["model"] == "nomic-embed-text:latest"
+        assert cfg.embedding_model == "nomic-embed-text:latest"
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert stored["embedding_model"] == "nomic-embed-text:latest"
+
+    async def test_empty_string_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            await handlers.set_embedding_model("")
+
+    async def test_embedding_model_without_tag(self, tmp_path):
+        """Setting embedding model without a tag stores it as-is (no :latest append)."""
+        result = await handlers.set_embedding_model("nomic-embed-text")
+        assert result["model"] == "nomic-embed-text"
+        assert cfg.embedding_model == "nomic-embed-text"
+
+
 class TestGetConfig:
     async def test_returns_all_config_keys(self):
         result = await handlers.get_config()
@@ -685,6 +782,14 @@ class TestGetConfig:
         assert "query_expansion_count" in result
         assert "adaptive_threshold_step" in result
         assert "temperature" in result
+        assert "max_context_sources" in result
+        assert "hyde" in result
+        assert "hyde_weight" in result
+        assert "temporal_filtering" in result
+        assert "concept_graph" in result
+        assert "concept_boost_weight" in result
+        assert "concept_max_per_chunk" in result
+        assert "llm_api_key" not in result
 
 
 class TestListDocuments:
