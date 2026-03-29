@@ -409,10 +409,25 @@ class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        existing = tmp_path / entry.gguf_filename
-        existing.write_bytes(b"fake model")
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+        registry = ModelRegistry(tmp_path)
+        source = tmp_path / entry.gguf_filename
+        source.write_bytes(b"fake model")
+        ref = ModelRef.parse(entry.name)
+        manifest = ModelManifest(
+            name=ref.name,
+            tag=ref.tag,
+            blob="",
+            size_bytes=10,
+            task=entry.task,
+            source_repo=entry.hf_repo,
+            source_filename=entry.gguf_filename,
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        blob_path = registry.install(ref, source, manifest)
         result = download_model(entry)
-        assert result == existing
+        assert result == blob_path
 
     def test_creates_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         models_dir = tmp_path / "models"
@@ -441,7 +456,7 @@ class TestDownloadModel:
         monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
         result = download_model(entry)
         assert result.exists()
-        assert result.parent == models_dir
+        assert result.parent == models_dir / "blobs"
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)

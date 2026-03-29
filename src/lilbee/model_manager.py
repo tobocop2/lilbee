@@ -30,6 +30,10 @@ class ModelManager:
         self._models_dir = models_dir
         self._litellm_base_url = litellm_base_url.rstrip("/")
 
+        from lilbee.registry import ModelRegistry
+
+        self._registry = ModelRegistry(self._models_dir)
+
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. source=None lists all sources."""
         if source is None:
@@ -41,10 +45,13 @@ class ModelManager:
         return self._list_litellm()
 
     def _list_native(self) -> list[str]:
-        """List .gguf files in the models directory."""
-        if not self._models_dir.is_dir():
-            return []
-        return sorted(p.name for p in self._models_dir.iterdir() if p.suffix == ".gguf")
+        """List native models: registry manifests + legacy .gguf files."""
+        names = [f"{m.name}:{m.tag}" for m in self._registry.list_installed()]
+        if self._models_dir.is_dir():
+            for p in self._models_dir.iterdir():
+                if p.suffix == ".gguf":
+                    names.append(p.name)
+        return sorted(set(names))
 
     def _list_litellm(self) -> list[str]:
         """List models from the litellm backend via its HTTP API."""
@@ -70,6 +77,8 @@ class ModelManager:
         return self._is_litellm(model)
 
     def _is_native(self, model: str) -> bool:
+        if self._registry.is_installed(model):
+            return True
         try:
             validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:
@@ -150,6 +159,9 @@ class ModelManager:
         return self._remove_litellm(model)
 
     def _remove_native(self, model: str) -> bool:
+        if self._registry.remove(model):
+            log.info("Removed native model %s from registry", model)
+            return True
         try:
             path = validate_path_within(self._models_dir / model, self._models_dir)
         except ValueError:
