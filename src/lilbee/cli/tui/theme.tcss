@@ -29,10 +29,12 @@
     text-style: bold;
     padding: 0 1;
     margin: 1 0 0 0;
+    height: auto;
 }
 
 .assistant-message {
     padding: 0 1;
+    height: auto;
 }
 
 .source-citation {

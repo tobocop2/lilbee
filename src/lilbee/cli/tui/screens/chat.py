@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -401,6 +402,7 @@ class ChatScreen(Screen[None]):
 
         response_parts: list[str] = []
         sources: list[str] = []
+        last_scroll = 0.0
 
         try:
             with self._history_lock:
@@ -412,6 +414,10 @@ class ChatScreen(Screen[None]):
                 elif token.content:
                     response_parts.append(token.content)
                     self.app.call_from_thread(widget.append_content, token.content)
+                    now = time.monotonic()
+                    if now - last_scroll >= 0.2:
+                        self.app.call_from_thread(self._scroll_to_bottom)
+                        last_scroll = now
         except Exception as exc:
             log.warning("Stream error", exc_info=True)
             self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
