@@ -163,7 +163,7 @@ class TestTesseractOcrFallback:
             phrase in text_lower
             for phrase in ["oil", "maintenance", "filter", "quarts", "engine", "dipstick"]
         )
-        assert recognized, f"No expected phrases found in OCR output: {all_text[:200]}"
+        assert recognized, f"No expected phrases found in OCR output: {text_lower[:200]}"
 
 
 def _vision_model_available() -> bool:

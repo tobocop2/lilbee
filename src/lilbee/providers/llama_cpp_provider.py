@@ -161,8 +161,12 @@ class LlamaCppProvider(LLMProvider):
         )
 
     def show_model(self, model: str) -> dict[str, str] | None:
-        """llama-cpp doesn't expose model metadata."""
-        return None
+        """Return model metadata from GGUF headers."""
+        try:
+            path = _resolve_model_path(model)
+        except ProviderError:
+            return None
+        return _read_gguf_metadata(path)
 
     def shutdown(self) -> None:
         """Stop the embed worker thread."""
@@ -214,6 +218,38 @@ class _LockedStreamIterator:
 
     def __del__(self) -> None:  # pragma: no cover
         self._release()
+
+
+def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
+    """Read metadata from a GGUF file's headers via llama-cpp-python.
+
+    Returns a dict with keys like 'architecture', 'context_length',
+    'embedding_length', 'chat_template', 'file_type'.
+    """
+    from llama_cpp import Llama
+
+    llm = Llama(model_path=str(model_path), vocab_only=True, verbose=False)
+    try:
+        raw = llm.metadata or {}
+        result: dict[str, str] = {}
+        if "general.architecture" in raw:
+            result["architecture"] = str(raw["general.architecture"])
+        arch = raw.get("general.architecture", "llama")
+        ctx_key = f"{arch}.context_length"
+        if ctx_key in raw:
+            result["context_length"] = str(raw[ctx_key])
+        emb_key = f"{arch}.embedding_length"
+        if emb_key in raw:
+            result["embedding_length"] = str(raw[emb_key])
+        if "tokenizer.chat_template" in raw:
+            result["chat_template"] = str(raw["tokenizer.chat_template"])
+        if "general.file_type" in raw:
+            result["file_type"] = str(raw["general.file_type"])
+        if "general.name" in raw:
+            result["name"] = str(raw["general.name"])
+        return result
+    finally:
+        llm.close()
 
 
 def _resolve_model_path(model: str) -> Path:

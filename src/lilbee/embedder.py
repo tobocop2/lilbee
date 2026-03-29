@@ -46,12 +46,14 @@ class Embedder:
         return self.embedding_available()
 
     def embedding_available(self) -> bool:
-        """Return True if the embedding model can be resolved."""
+        """Return True if the embedding model can be resolved by the active provider."""
+        model = self._config.embedding_model
+        if not model:
+            return False
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
-
-            _resolve_model_path(self._config.embedding_model)
-            return True
+            available = self._provider.list_models()
+            model_base = model.split(":")[0].lower()
+            return any(model_base in m.lower() for m in available)
         except Exception:
             return False
 

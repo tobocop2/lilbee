@@ -29,9 +29,7 @@ def _isolated_cfg(tmp_path):
 def _patch_chat_setup():
     """Patch out embedding model checks so ChatScreen mounts cleanly."""
     with (
-        mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-        ),
+        mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -175,9 +173,7 @@ class TestModelRow:
 
 class TestChatScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_app_launches(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_app_launches(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -187,9 +183,7 @@ class TestChatScreenAsync:
             assert app.title.startswith("lilbee")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_chat_input_exists(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_chat_input_exists(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -201,9 +195,7 @@ class TestChatScreenAsync:
             assert inp is not None
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_quit_keybinding(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_quit_keybinding(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -212,9 +204,7 @@ class TestChatScreenAsync:
             await pilot.press("ctrl+q")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_help_modal(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_help_modal(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -226,9 +216,7 @@ class TestChatScreenAsync:
             assert len(app.screen_stack) > 1
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_catalog_push(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_catalog_push(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -240,9 +228,7 @@ class TestChatScreenAsync:
             assert len(app.screen_stack) > 1
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_help(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_slash_help(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -256,9 +242,7 @@ class TestChatScreenAsync:
             assert len(app.screen_stack) > 1
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_unknown_notifies(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_slash_unknown_notifies(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -271,9 +255,7 @@ class TestChatScreenAsync:
             await pilot.pause()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_model_changes_model(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_slash_model_changes_model(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -287,9 +269,7 @@ class TestChatScreenAsync:
             assert cfg.chat_model == "new-model:latest"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_set_changes_setting(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_slash_set_changes_setting(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -303,9 +283,7 @@ class TestChatScreenAsync:
             assert cfg.top_k == 10
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_set_invalid_key(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_slash_set_invalid_key(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -318,9 +296,7 @@ class TestChatScreenAsync:
             await pilot.pause()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_empty_input_ignored(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_empty_input_ignored(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -335,9 +311,7 @@ class TestChatScreenAsync:
 
 class TestCatalogScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_catalog_shows_featured(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_catalog_shows_featured(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -349,9 +323,7 @@ class TestCatalogScreenAsync:
             await pilot.pause()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_catalog_quit(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_catalog_quit(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -370,9 +342,7 @@ class TestCatalogScreenAsync:
 
 class TestSettingsScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_settings_shows_table(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_settings_shows_table(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -465,9 +435,7 @@ class TestThemes:
         assert "dracula" in DARK_THEMES
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_cycle_theme(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_cycle_theme(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -478,9 +446,7 @@ class TestThemes:
             assert app.theme != "gruvbox"  # cycled to next
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_set_theme(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_set_theme(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -491,9 +457,7 @@ class TestThemes:
             assert app.theme == "dracula"
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_set_invalid_theme_noop(
-        self, mock_catalog: mock.MagicMock
-    ) -> None:
+    async def test_set_invalid_theme_noop(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
