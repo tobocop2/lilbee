@@ -119,7 +119,7 @@ class LlamaCppProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
@@ -131,7 +131,10 @@ class LlamaCppProvider(LLMProvider):
             llm = self._get_chat_llm(model)
             kwargs: dict[str, Any] = {}
             if options:
-                kwargs.update(filter_options(options))
+                filtered = filter_options(options)
+                if "num_predict" in filtered:
+                    filtered["max_tokens"] = filtered.pop("num_predict")
+                kwargs.update(filtered)
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
                 return _LockedStreamIterator(response, self._chat_lock)
