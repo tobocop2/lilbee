@@ -226,12 +226,12 @@ class _LockedStreamIterator:
         self._release()
 
 
-def _embed_one(llm: Any, text: str) -> list[float]:
-    """Embed a single text, suppressing llama.cpp C-level stderr noise.
+def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Call *fn* with C-level stderr suppressed.
 
-    llama.cpp prints 'init: embeddings required but some input tokens were
-    not marked as outputs -> overriding' on every create_embedding call.
-    This is harmless but spams the terminal.
+    llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
+    that bypass Python logging. This redirects fd 2 to /dev/null for the
+    duration of the call.
     """
     import os
 
@@ -239,12 +239,17 @@ def _embed_one(llm: Any, text: str) -> list[float]:
     old_stderr = os.dup(2)
     os.dup2(devnull, 2)
     try:
-        response = llm.create_embedding(input=[text])
-        return response["data"][0]["embedding"]
+        return fn(*args, **kwargs)
     finally:
         os.dup2(old_stderr, 2)
         os.close(devnull)
         os.close(old_stderr)
+
+
+def _embed_one(llm: Any, text: str) -> list[float]:
+    """Embed a single text with stderr suppressed."""
+    response = _suppress_stderr(llm.create_embedding, input=[text])
+    return response["data"][0]["embedding"]
 
 
 def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
@@ -318,6 +323,7 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
         "model_path": str(model_path),
         "embedding": embedding,
         "verbose": False,
+        "n_gpu_layers": -1,  # Offload all layers to GPU (Metal/CUDA)
     }
     if cfg.num_ctx is not None:
         kwargs["n_ctx"] = cfg.num_ctx
@@ -339,4 +345,4 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
         kwargs["n_batch"] = ctx_len
         kwargs["n_ubatch"] = ctx_len
 
-    return Llama(**kwargs)
+    return _suppress_stderr(Llama, **kwargs)
