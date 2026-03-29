@@ -1180,6 +1180,11 @@ class TestChunkViaKreuzberg:
 
 
 class TestConceptIndexing:
+    @pytest.fixture(autouse=True)
+    def _mock_concepts_available(self):
+        with mock.patch("lilbee.concepts.concepts_available", return_value=True):
+            yield
+
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )

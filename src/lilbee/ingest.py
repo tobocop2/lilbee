@@ -465,6 +465,10 @@ async def _rebuild_concept_clusters() -> None:
     """Re-run Leiden clustering after sync. No-op if disabled."""
     if not cfg.concept_graph:
         return
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
+        return
     try:
         from lilbee.services import get_services
 
@@ -479,6 +483,10 @@ async def _rebuild_concept_clusters() -> None:
 async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
     """Extract and index concepts for ingested chunks. No-op if disabled."""
     if not cfg.concept_graph or not records:
+        return
+    from lilbee.concepts import concepts_available
+
+    if not concepts_available():
         return
     try:
         from lilbee.services import get_services
