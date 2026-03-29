@@ -84,8 +84,8 @@ class LlamaCppProvider(LLMProvider):
             try:
                 vectors: list[list[float]] = []
                 for text in req.texts:
-                    response = llm.create_embedding(input=[text])
-                    vectors.append(response["data"][0]["embedding"])
+                    response = _embed_one(llm, text)
+                    vectors.append(response)
                 req.future.set_result(vectors)
             except Exception as exc:
                 if not req.future.done():
@@ -224,6 +224,27 @@ class _LockedStreamIterator:
 
     def __del__(self) -> None:  # pragma: no cover
         self._release()
+
+
+def _embed_one(llm: Any, text: str) -> list[float]:
+    """Embed a single text, suppressing llama.cpp C-level stderr noise.
+
+    llama.cpp prints 'init: embeddings required but some input tokens were
+    not marked as outputs -> overriding' on every create_embedding call.
+    This is harmless but spams the terminal.
+    """
+    import os
+
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    os.dup2(devnull, 2)
+    try:
+        response = llm.create_embedding(input=[text])
+        return response["data"][0]["embedding"]
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(devnull)
+        os.close(old_stderr)
 
 
 def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
