@@ -89,6 +89,13 @@ class SetModelResponse(BaseModel):
     model: str
 
 
+class ConfigUpdateResponse(BaseModel):
+    """Response for PATCH /api/config."""
+
+    updated: list[str]
+    reindex_required: bool
+
+
 class CrawlRequest(BaseModel):
     """Request body for /api/crawl."""
 

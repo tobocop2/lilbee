@@ -24,6 +24,7 @@ from lilbee.config import Config, cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
+from lilbee.server.models import ConfigUpdateResponse
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -494,8 +495,8 @@ def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list
     return to_persist, to_delete
 
 
-async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
-    """Partial update of writable config fields. Returns updated keys + reindex flag.
+async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
+    """Partial update of writable config fields.
 
     Algorithm: validate-then-apply with rollback.
 
@@ -520,7 +521,7 @@ async def update_config(updates: dict[str, Any]) -> dict[str, Any]:
     if to_delete:
         settings.delete_values(cfg.data_root, to_delete)
     reindex_required = bool(REINDEX_FIELDS & set(updates))
-    return {"updated": list(updates), "reindex_required": reindex_required}
+    return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
 
 
 async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
