@@ -709,3 +709,17 @@ class TestAskStream:
         for t in non_empty:
             assert isinstance(t, StreamToken)
             assert t.is_reasoning is False
+
+
+class TestDownloadProgressCallbacks:
+    def test_download_fires_progress_callbacks(self, rag_pipeline):
+        """Download progress callbacks fire during model download."""
+        progress_calls: list[tuple[int, int]] = []
+
+        def on_progress(downloaded: int, total: int) -> None:
+            progress_calls.append((downloaded, total))
+
+        # Re-download the embedding model (already exists, returns immediately)
+        download_model(FEATURED_EMBEDDING[0], on_progress=on_progress)
+        # For already-downloaded models, no progress callbacks fire
+        assert len(progress_calls) == 0

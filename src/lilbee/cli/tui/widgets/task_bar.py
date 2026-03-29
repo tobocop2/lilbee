@@ -108,6 +108,12 @@ class TaskBar(Static):
         if task:
             self._refresh_display()
 
+    def _tick_spinner(self) -> None:
+        """Advance the spinner frame and refresh if there's an active task."""
+        if self._queue.active_task is not None:
+            self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
+            self._refresh_display()
+
     def _on_queue_change(self) -> None:
         """Called by TaskQueue when state changes (may be from worker thread)."""
         with contextlib.suppress(Exception):
@@ -129,9 +135,12 @@ class TaskBar(Static):
         queued_label = self.query_one("#task-queued-label", Label)
 
         if active:
-            status_icon = self._status_icon(active.status)
+            if active.status == TaskStatus.ACTIVE:
+                icon = _SPINNER_FRAMES[self._spinner_index]
+            else:
+                icon = self._status_icon(active.status)
             detail = f"  {active.detail}" if active.detail else ""
-            active_label.update(f" {status_icon} {active.name}{detail}")
+            active_label.update(f" {icon} {active.name}{detail}")
             active_label.display = True
             progress_bar.update(total=100, progress=active.progress)
             progress_bar.display = True
