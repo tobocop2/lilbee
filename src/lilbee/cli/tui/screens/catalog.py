@@ -28,6 +28,7 @@ from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
     ModelVariant,
+    _build_families,
     clean_display_name,
     get_catalog,
     get_families,
@@ -47,6 +48,8 @@ _TAB_TO_TASK: dict[str, str | None] = {
 }
 
 _HF_PAGE_SIZE = 25
+_HF_BROWSE_CHAT_ONLY = "Featured models only — HuggingFace browsing available for chat models"
+_HF_BROWSE_TASKS = {"chat", "All"}
 
 _SORT_CYCLE = ("downloads", "name", "size_desc", "featured")
 _SORT_LABELS = {
@@ -274,16 +277,19 @@ class CatalogScreen(Screen[None]):
                         lv.append(VariantRow(v, fam))
 
             if hf:
-                grouped = _group_by_size(sorted(hf, key=lambda x: x.downloads, reverse=True))
-                for group_label, group_models in grouped:
-                    lv.append(
-                        ListItem(Label(f"HUGGINGFACE — {group_label}", classes="section-header"))
-                    )
-                    for m in group_models:
-                        lv.append(ModelRow(m))
+                hf_families = _group_hf_by_family(
+                    sorted(hf, key=lambda x: x.downloads, reverse=True)
+                )
+                for fam in hf_families:
+                    header = f"HUGGINGFACE — {_format_family_header(fam)}"
+                    lv.append(ListItem(Label(header, classes="section-header")))
+                    for v in fam.variants:
+                        lv.append(VariantRow(v, fam))
 
                 if self._hf_has_more and not search:
                     lv.append(LoadMoreRow())
+            elif tab_label not in _HF_BROWSE_TASKS and not search:
+                lv.append(ListItem(Label(_HF_BROWSE_CHAT_ONLY)))
 
             if remote:
                 lv.append(ListItem(Label("INSTALLED (Remote)", classes="section-header")))
@@ -580,7 +586,25 @@ def _group_by_size(models: list[CatalogModel]) -> list[tuple[str, list[CatalogMo
     groups: dict[str, list[CatalogModel]] = {}
     for m in models:
         category = _parse_param_size(m.name)
+        if category == "unknown":
+            category = "Other"
         groups.setdefault(category, []).append(m)
 
-    order = ["Small (≤3B)", "Medium (3-8B)", "Large (8-30B)", "Extra Large (30B+)", "unknown"]
+    order = ["Small (≤3B)", "Medium (3-8B)", "Large (8-30B)", "Extra Large (30B+)", "Other"]
     return [(label, groups[label]) for label in order if label in groups]
+
+
+def _group_hf_by_family(models: list[CatalogModel]) -> list[ModelFamily]:
+    """Group HF models into families using the same logic as featured models.
+
+    Infers task from each model's task field. Groups by family name extracted
+    from the display name.
+    """
+    task_groups: dict[str, list[CatalogModel]] = {}
+    for m in models:
+        task_groups.setdefault(m.task, []).append(m)
+
+    families: list[ModelFamily] = []
+    for task, group in task_groups.items():
+        families.extend(_build_families(tuple(group), task))
+    return families

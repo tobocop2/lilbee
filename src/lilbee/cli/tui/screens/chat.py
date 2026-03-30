@@ -288,6 +288,24 @@ class ChatScreen(Screen[None]):
     def _cmd_help(self, _args: str) -> None:
         self.app.push_screen(HelpModal())
 
+    def _cmd_login(self, args: str) -> None:
+        token = args.strip()
+        if not token:
+            self.notify("Usage: /login <HF_TOKEN>", severity="warning")
+            return
+        self._run_hf_login(token)
+
+    @work(thread=True)
+    def _run_hf_login(self, token: str) -> None:
+        try:
+            from huggingface_hub import login
+
+            login(token=token, add_to_git_credential=False)
+            self.app.call_from_thread(self.notify, "Logged in to HuggingFace")
+        except Exception as exc:
+            log.warning("HuggingFace login failed", exc_info=True)
+            self.app.call_from_thread(self.notify, f"Login failed: {exc}", severity="error")
+
     def _cmd_model(self, args: str) -> None:
         if args:
             from lilbee.models import ensure_tag

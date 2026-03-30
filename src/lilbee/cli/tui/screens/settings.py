@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -13,6 +14,22 @@ from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.config import cfg
 
 _MAX_VALUE_LEN = 60
+_HF_TOKEN_KEY = "hf_token"
+
+
+def _get_hf_token_display() -> str:
+    """Get a masked display of the HuggingFace token, or 'not set'."""
+    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or ""
+    if not token:
+        try:
+            from huggingface_hub import HfFolder
+
+            token = HfFolder.get_token() or ""
+        except Exception:
+            token = ""
+    if not token:
+        return "not set"
+    return token[:4] + "..." + token[-4:]
 
 
 class SettingsScreen(Screen[None]):
@@ -37,11 +54,18 @@ class SettingsScreen(Screen[None]):
             value = str(getattr(cfg, defn.cfg_attr, "?"))
             display = value[:_MAX_VALUE_LEN] + "..." if len(value) > _MAX_VALUE_LEN else value
             table.add_row(key, display, defn.type.__name__, key=key)
+        table.add_row(_HF_TOKEN_KEY, _get_hf_token_display(), "str", key=_HF_TOKEN_KEY)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         detail = self.query_one("#setting-detail", Static)
         if event.row_key and event.row_key.value:
             key = str(event.row_key.value)
+            if key == _HF_TOKEN_KEY:
+                detail.update(
+                    f"{_HF_TOKEN_KEY} (str)\n{_get_hf_token_display()}\n"
+                    "Use /login <token> to set your HuggingFace token"
+                )
+                return
             defn = SETTINGS_MAP.get(key)
             if defn:
                 value = str(getattr(cfg, defn.cfg_attr, "?"))

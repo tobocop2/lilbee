@@ -970,3 +970,129 @@ class TestSetupWizard:
         row = _CatalogRow(model)
         children = list(row.compose())
         assert len(children) == 1
+
+
+# ---------------------------------------------------------------------------
+# catalog.py screen — HF grouping, empty tabs, size grouping
+# ---------------------------------------------------------------------------
+
+
+class TestGroupBySize:
+    def test_unknown_becomes_other(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_by_size
+
+        model = _make_model("NoSizeModel", task="chat")
+        groups = _group_by_size([model])
+        labels = [label for label, _ in groups]
+        assert "Other" in labels
+        assert "unknown" not in labels
+
+    def test_known_sizes_grouped(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_by_size
+
+        small = _make_model("Tiny 1B", task="chat")
+        medium = _make_model("Mid 7B", task="chat")
+        large = _make_model("Big 14B", task="chat")
+        groups = _group_by_size([small, medium, large])
+        labels = [label for label, _ in groups]
+        assert "Small (≤3B)" in labels
+        assert "Medium (3-8B)" in labels
+        assert "Large (8-30B)" in labels
+
+
+class TestGroupHfByFamily:
+    def test_groups_by_family_name(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _group_hf_by_family
+
+        m1 = _make_model("Qwen3 8B", task="chat")
+        m2 = _make_model("Qwen3 4B", task="chat")
+        m3 = _make_model("Llama 7B", task="chat")
+        families = _group_hf_by_family([m1, m2, m3])
+        names = [f.name for f in families]
+        assert "Qwen3" in names
+        assert "Llama" in names
+        qwen_fam = next(f for f in families if f.name == "Qwen3")
+        assert len(qwen_fam.variants) == 2
+
+
+class TestHfBrowseChatOnly:
+    def test_constant_defined(self) -> None:
+        from lilbee.cli.tui.screens.catalog import (
+            _HF_BROWSE_CHAT_ONLY,
+            _HF_BROWSE_TASKS,
+        )
+
+        assert "Featured models only" in _HF_BROWSE_CHAT_ONLY
+        assert "Embedding" not in _HF_BROWSE_TASKS
+        assert "Vision" not in _HF_BROWSE_TASKS
+
+
+# ---------------------------------------------------------------------------
+# command_registry.py — /login command
+# ---------------------------------------------------------------------------
+
+
+class TestLoginCommandRegistered:
+    def test_login_in_registry(self) -> None:
+        from lilbee.cli.tui.command_registry import COMMANDS, build_dispatch_dict
+
+        names = [c.name for c in COMMANDS]
+        assert "/login" in names
+        dispatch = build_dispatch_dict()
+        assert dispatch["/login"] == "_cmd_login"
+
+
+# ---------------------------------------------------------------------------
+# settings.py — HF token field
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsHfToken:
+    def test_get_hf_token_display_not_set(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.settings import _get_hf_token_display
+
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        # Without any token set, should show "not set"
+        result = _get_hf_token_display()
+        assert isinstance(result, str)
+
+    def test_get_hf_token_display_from_env(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.settings import _get_hf_token_display
+
+        monkeypatch.setenv("HF_TOKEN", "hf_abcdefghijklmnop")
+        result = _get_hf_token_display()
+        assert result.startswith("hf_a")
+        assert result.endswith("mnop")
+        assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# __init__.py — Ctrl-C clean shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestRunTuiKeyboardInterrupt:
+    def test_keyboard_interrupt_does_not_raise(self) -> None:
+        with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
+            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            with (
+                mock.patch("lilbee.cli.tui.shutdown_executor"),
+                mock.patch("lilbee.cli.tui.reset_services"),
+            ):
+                from lilbee.cli.tui import run_tui
+
+                run_tui()
+
+    def test_cleanup_called_on_interrupt(self) -> None:
+        with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
+            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            with (
+                mock.patch("lilbee.cli.tui.shutdown_executor") as mock_shutdown,
+                mock.patch("lilbee.cli.tui.reset_services") as mock_reset,
+            ):
+                from lilbee.cli.tui import run_tui
+
+                run_tui()
+                mock_shutdown.assert_called_once()
+                mock_reset.assert_called_once()

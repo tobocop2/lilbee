@@ -13,6 +13,8 @@ def run_tui(*, auto_sync: bool = False) -> None:
     app = LilbeeApp(auto_sync=auto_sync)
     try:
         app.run()
+    except KeyboardInterrupt:
+        pass
     finally:
         shutdown_executor()
         reset_services()
