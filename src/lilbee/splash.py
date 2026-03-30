@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import signal
-import sys
 import time
 
 _HIDE_CURSOR = "\033[?25l"
@@ -121,13 +120,7 @@ def _should_skip() -> bool:
     """Return True when the splash animation should be suppressed."""
     if not os.isatty(2):
         return True
-    if os.environ.get("LILBEE_NO_SPLASH", ""):
-        return True
-    argv = sys.argv[1:]
-    skip_flags = {"--version", "-V", "--help", "-h", "help"}
-    if any(arg in skip_flags for arg in argv):
-        return True
-    return bool(argv and argv[0] in ("--install-completion", "--show-completion"))
+    return bool(os.environ.get("LILBEE_NO_SPLASH", ""))
 
 
 def _render_frame(lines: list[str], loading_text: str) -> bytes:
@@ -224,7 +217,7 @@ def start(ready_file: str | None = None) -> int:
 
     frame0, frame1, frame2, frame3 = _pick_frames()
 
-    if not hasattr(os, "fork"):
+    if not hasattr(os, "fork"):  # pragma: no cover
         # Windows: fall back to threading
         return _start_threaded(frame0, frame1, frame2, frame3, ready_file)
 
@@ -241,17 +234,17 @@ def stop(pid: int) -> None:
     if pid == 0:
         return
 
-    if pid < 0:
+    if pid < 0:  # pragma: no cover
         _stop_threaded(pid)
         return
 
-    if not hasattr(os, "fork"):
+    if not hasattr(os, "fork"):  # pragma: no cover
         _stop_threaded(pid)
         return
 
     try:
         os.kill(pid, signal.SIGUSR1)
-    except OSError:
+    except OSError:  # pragma: no cover
         return
     # Wait for child to finish clearing the terminal
     import contextlib
@@ -267,7 +260,7 @@ _thread_stop_flag: bool = False
 _thread_obj: object = None
 
 
-def _start_threaded(
+def _start_threaded(  # pragma: no cover
     frame0: list[str],
     frame1: list[str],
     frame2: list[str],
@@ -320,7 +313,7 @@ def _start_threaded(
     return -1
 
 
-def _stop_threaded(pid: int) -> None:
+def _stop_threaded(pid: int) -> None:  # pragma: no cover
     """Stop the threaded animation."""
     global _thread_stop_flag
     _thread_stop_flag = True

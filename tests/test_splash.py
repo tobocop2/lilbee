@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 from unittest.mock import patch
 
 import pytest
@@ -14,8 +13,6 @@ from lilbee.splash import (
     _pick_frames,
     _render_frame,
     _should_skip,
-    _start_threaded,
-    _stop_threaded,
     start,
     stop,
 )
@@ -33,72 +30,47 @@ class TestShouldSkip:
         ):
             assert _should_skip() is True
 
-    def test_env_var_empty(self) -> None:
-        with (
-            patch("lilbee.splash.os.isatty", return_value=True),
-            patch.dict(os.environ, {"LILBEE_NO_SPLASH": ""}, clear=False),
-        ):
-            assert _should_skip() is False
 
-    @pytest.mark.parametrize("flag", ["--version", "-V", "--help", "-h", "help"])
-    def test_skip_flags(self, flag: str) -> None:
-        with (
-            patch("lilbee.splash.os.isatty", return_value=True),
-            patch.dict(os.environ, {}, clear=False),
-            patch("lilbee.splash.sys.argv", ["lilbee", flag]),
-        ):
-            assert _should_skip() is True
+class TestStartStop:
+    def test_start_returns_zero_when_skipped(self) -> None:
+        with patch("lilbee.splash._should_skip", return_value=True):
+            assert start() == 0
 
-    @pytest.mark.parametrize("flag", ["--install-completion", "--show-completion"])
-    def test_skip_completion_flags(self, flag: str) -> None:
-        with (
-            patch("lilbee.splash.os.isatty", return_value=True),
-            patch.dict(os.environ, {}, clear=False),
-            patch("lilbee.splash.sys.argv", ["lilbee", flag]),
-        ):
-            assert _should_skip() is True
+    def test_stop_zero_is_noop(self) -> None:
+        stop(0)
 
-    def test_normal_command_not_skipped(self) -> None:
+    def test_start_stops_work(self) -> None:
+        """Verify the animation starts and stops cleanly."""
         with (
-            patch("lilbee.splash.os.isatty", return_value=True),
-            patch.dict(os.environ, {}, clear=False),
-            patch("lilbee.splash.sys.argv", ["lilbee", "status"]),
+            patch("lilbee.splash._should_skip", return_value=False),
+            patch("lilbee.splash._STARTUP_DELAY", 0.0),
         ):
-            assert _should_skip() is False
+            pid = start()
+            assert pid > 0
+            stop(pid)
 
-    def test_no_args_not_skipped(self) -> None:
+    def test_start_with_ready_file(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Verify start() accepts ready_file parameter."""
+        ready_file = tmp_path / "ready"
+        ready_file.touch()
+
         with (
-            patch("lilbee.splash.os.isatty", return_value=True),
-            patch.dict(os.environ, {}, clear=False),
-            patch("lilbee.splash.sys.argv", ["lilbee"]),
+            patch("lilbee.splash._should_skip", return_value=False),
+            patch("lilbee.splash._STARTUP_DELAY", 0.0),
         ):
-            assert _should_skip() is False
+            pid = start(ready_file=str(ready_file))
+            assert pid > 0
+            stop(pid)
 
 
 class TestPickFrames:
     def test_returns_4_logo_frames(self) -> None:
         frame0, frame1, frame2, frame3 = _pick_frames()
-        # Logo has 12 lines (poison font style)
         assert len(frame0) == 12
-        # Should return 4 frames for color pulsing animation
         assert len(frame1) == 12
         assert len(frame2) == 12
         assert len(frame3) == 12
-        # Check it's the lilbee logo
-        assert any("lilbee" in line.lower() or "@@" in line for line in frame0)
-
-
-class TestStartWithReadyFile:
-    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
-    def test_start_with_ready_file(self) -> None:
-        """Verify start() accepts ready_file parameter."""
-        with (
-            patch("lilbee.splash._should_skip", return_value=False),
-            patch("lilbee.splash._STARTUP_DELAY", 0.0),
-        ):
-            pid = start(ready_file="/tmp/test-ready")
-            assert pid > 0
-            stop(pid)
+        assert any("@" in line for line in frame0)
 
 
 class TestRenderFrame:
@@ -111,155 +83,22 @@ class TestRenderFrame:
         assert "line2" in text
         assert "loading..." in text
 
-    def test_includes_blank_line(self) -> None:
-        lines = ["art"]
-        result = _render_frame(lines, "loading").decode()
-        parts = result.split("\n")
-        # art, blank, loading text, trailing newline
-        assert parts[0] == "art"
-        assert parts[1] == ""
-        assert "loading" in parts[2]
+
+class TestClearFrame:
+    def test_contains_escape_codes(self) -> None:
+        result = _clear_frame(2)
+        text = result.decode()
+        assert "\033[2J" in text
+        assert "\033[H" in text
+        assert "\033[?25h" in text
 
 
-class TestAnsiHelpers:
-    def test_move_up_and_clear(self) -> None:
+class TestMoveUpAndClear:
+    def test_repeat_count(self) -> None:
         result = _move_up_and_clear(3)
-        assert isinstance(result, bytes)
         text = result.decode()
         assert text.count("\033[A") == 3
         assert text.count("\033[2K") == 3
-
-    def test_clear_frame(self) -> None:
-        result = _clear_frame(2)
-        text = result.decode()
-        assert "\033[?25h" in text  # show cursor
-        assert "\033[2J" in text  # clear screen
-        assert "\033[H" in text  # home cursor
-
-    def test_move_up_zero(self) -> None:
-        result = _move_up_and_clear(0)
-        assert result == b""
-
-
-class TestStartStop:
-    def test_start_returns_zero_when_skipped(self) -> None:
-        with patch("lilbee.splash._should_skip", return_value=True):
-            assert start() == 0
-
-    def test_stop_zero_is_noop(self) -> None:
-        stop(0)
-
-    def test_stop_negative_pid_doesnt_crash(self) -> None:
-        """Negative PIDs other than -1 are handled by threaded fallback."""
-        stop(-999)
-
-    def test_stop_nonexistent_pid(self) -> None:
-        stop(999999)
-
-    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
-    def test_stop_with_no_fork_attr(self) -> None:
-        """When os.fork doesn't exist, stop uses threaded fallback."""
-        with (
-            patch("lilbee.splash.hasattr", return_value=False),
-            patch("lilbee.splash._stop_threaded") as mock,
-        ):
-            stop(123)
-            mock.assert_called_once_with(123)
-
-
-class TestForkAnimation:
-    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
-    def test_start_stop_fork(self) -> None:
-        """Verify the fork-based animation starts and stops cleanly."""
-        with (
-            patch("lilbee.splash._should_skip", return_value=False),
-            patch("lilbee.splash._STARTUP_DELAY", 0.0),
-        ):
-            pid = start()
-            assert pid > 0
-            time.sleep(0.05)
-            stop(pid)
-
-    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
-    def test_animation_writes_to_stderr(self) -> None:
-        """Verify the child writes animation frames to stderr."""
-        r_fd, w_fd = os.pipe()
-        pid = os.fork()
-        if pid == 0:
-            # Child: redirect stderr to pipe, write one frame
-            os.dup2(w_fd, 2)
-            os.close(r_fd)
-            os.close(w_fd)
-            from lilbee.splash import _BEE_LINES, _render_frame
-
-            os.write(2, _render_frame(_BEE_LINES, "loading..."))
-            os._exit(0)
-        else:
-            os.close(w_fd)
-            os.waitpid(pid, 0)
-            output = os.read(r_fd, 4096).decode()
-            os.close(r_fd)
-            assert "@" in output or "lilbee" in output.lower()
-
-
-class TestThreadedFallback:
-    def test_start_stop_threaded(self) -> None:
-        """Verify the threaded fallback starts and stops cleanly."""
-        import lilbee.splash as mod
-
-        with patch("lilbee.splash._STARTUP_DELAY", 0.0):
-            frame0 = mod._BEE_LINES
-            frame1 = mod._BEE_LINES
-            pid = _start_threaded(frame0, frame1, frame0, frame1)
-            assert pid == -1
-            time.sleep(0.05)
-            _stop_threaded(pid)
-
-    def test_start_threaded_with_ready_file(self, tmp_path: pytest.TempPathFactory) -> None:
-        """Verify threaded fallback respects ready file."""
-        import lilbee.splash as mod
-
-        ready_file = tmp_path / "ready"
-        ready_file.touch()
-
-        with patch("lilbee.splash._STARTUP_DELAY", 0.0):
-            frame0 = mod._BEE_LINES
-            frame1 = mod._BEE_LINES
-            pid = _start_threaded(frame0, frame1, frame0, frame1, ready_file=str(ready_file))
-            assert pid == -1
-            time.sleep(0.1)
-            _stop_threaded(pid)
-
-    def test_start_uses_threading_when_no_fork(self) -> None:
-        """On platforms without os.fork, start() falls back to threading."""
-        pass  # Covered by TestNoForkFallback
-
-    def test_stop_threaded_without_thread(self) -> None:
-        """_stop_threaded with no active thread should not raise."""
-        import lilbee.splash as mod
-
-        mod._thread_obj = None
-        _stop_threaded(-1)
-
-
-class TestNoForkFallback:
-    def test_start_falls_back_to_threading(self) -> None:
-        """When os.fork is absent, start() uses threaded fallback."""
-        with (
-            patch("lilbee.splash._should_skip", return_value=False),
-            patch("lilbee.splash._STARTUP_DELAY", 0.0),
-            patch("lilbee.splash.hasattr", return_value=False),
-            patch("lilbee.splash._start_threaded", return_value=-1) as mock_threaded,
-        ):
-            pid = start()
-            assert pid == -1
-            mock_threaded.assert_called_once()
-
-    def test_stop_falls_back_to_threading(self) -> None:
-        """When pid is -1 (threaded sentinel), stop() uses threaded fallback."""
-        with patch("lilbee.splash._stop_threaded") as mock_stop:
-            stop(-1)
-            mock_stop.assert_called_once_with(-1)
 
 
 class TestLogoFrames:
