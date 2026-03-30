@@ -28,8 +28,10 @@ from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
     ModelVariant,
+    clean_display_name,
     get_catalog,
     get_families,
+    quant_tier,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -87,12 +89,13 @@ def _format_downloads(n: int) -> str:
 def _format_row(m: CatalogModel, cached_size: float | None = None) -> str:
     """Format a model row string."""
     star = "★" if m.featured else " "
+    display = clean_display_name(m.hf_repo)
     params = _parse_param_label(m.name)
     size_gb = cached_size if cached_size is not None else m.size_gb
     size = f"{size_gb:.1f} GB" if size_gb > 0 else "  —   "
     dl = f"↓{_format_downloads(m.downloads)}" if m.downloads > 0 else ""
     desc = m.description[:45] if m.description else ""
-    return f" {star} {m.name:<30s} {m.task:<10s} {params:>5s} {size:>8s}  {dl:>8s}  {desc}"
+    return f" {star} {display:<30s} {m.task:<10s} {params:>5s} {size:>8s}  {dl:>8s}  {desc}"
 
 
 def _format_size_mb(size_mb: int) -> str:
@@ -105,10 +108,12 @@ def _format_size_mb(size_mb: int) -> str:
 def _format_variant_row(v: ModelVariant) -> str:
     """Format a variant row for display inside a family group."""
     star = "★ " if v.recommended else "  "
-    quant = v.quant or "default"
+    quant_label = v.quant or "default"
+    tier = quant_tier(v.quant)
+    tier_tag = f" [{tier}]" if tier != "unknown" else ""
     size = _format_size_mb(v.size_mb)
     suffix = " — recommended" if v.recommended else ""
-    return f"  {star}{v.param_count} {quant} ({size}){suffix}"
+    return f"  {star}{v.param_count} {quant_label} ({size}){tier_tag}{suffix}"
 
 
 def _format_family_header(f: ModelFamily) -> str:
@@ -451,10 +456,16 @@ class CatalogScreen(Screen[None]):
             download_model(model, on_progress=on_progress)
             self.app.call_from_thread(bar.complete_task, task_id)
             self.app.call_from_thread(self.notify, f"{model.name} installed")
-        except Exception as exc:
+        except PermissionError:
+            msg = f"{model.name} requires login \u2014 run /login or lilbee login"
+            log.warning("Gated repo: %s", model.hf_repo)
+            self.app.call_from_thread(bar.fail_task, task_id, msg)
+            self.app.call_from_thread(self.notify, msg, severity="warning")
+        except Exception:
             log.warning("Download failed for %s", model.name, exc_info=True)
-            self.app.call_from_thread(bar.fail_task, task_id, str(exc))
-            self.app.call_from_thread(self.notify, f"Download failed: {exc}", severity="error")
+            msg = f"{model.name}: download failed"
+            self.app.call_from_thread(bar.fail_task, task_id, msg)
+            self.app.call_from_thread(self.notify, msg, severity="error")
 
     def action_focus_search(self) -> None:
         self.query_one("#catalog-search", Input).focus()

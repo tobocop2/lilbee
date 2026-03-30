@@ -151,7 +151,7 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
         "*Q4_K_M.gguf",
         1.5,
         4,
-        "Fast OCR — clean markdown output, tiny footprint",
+        "Fast OCR — clean markdown output, tiny footprint (requires login)",
         True,
         0,
         "vision",
@@ -312,11 +312,14 @@ def _fetch_hf_models(
         repo_id = item.get("id", "")
         if not repo_id:
             continue
+        siblings = item.get("siblings", [])
+        if not _has_gguf_siblings(siblings):
+            continue
         downloads = item.get("downloads", 0)
         card_data = item.get("cardData", {}) or {}
         model_desc = item.get("description") or card_data.get("description") or ""
         # Estimate size from siblings — find largest GGUF file
-        size_gb = _estimate_size_from_siblings(item.get("siblings", []))
+        size_gb = _estimate_size_from_siblings(siblings)
         task = _pipeline_to_task(item.get("pipeline_tag", ""))
         models.append(
             CatalogModel(
@@ -338,6 +341,11 @@ def _fetch_hf_models(
         oldest_key = min(_hf_cache, key=lambda k: _hf_cache[k][0])
         del _hf_cache[oldest_key]
     return models
+
+
+def _has_gguf_siblings(siblings: list[dict[str, Any]]) -> bool:
+    """Return True if the sibling list contains at least one .gguf file."""
+    return any(s.get("rfilename", "").endswith(".gguf") for s in siblings)
 
 
 def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
@@ -721,3 +729,92 @@ def fetch_model_file_size(hf_repo: str) -> float:
     best_name = _pick_best_gguf([name for name, _ in gguf_files])
     size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
     return round(size_bytes / (1024**3), 1) if size_bytes else 0.0
+
+
+_DISPLAY_NAME_SUFFIXES = re.compile(r"-(GGUF|Instruct|Chat)(?=-|$)", re.IGNORECASE)
+_DISPLAY_NAME_DATE_SUFFIX = re.compile(r"-\d{4}$")
+_DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
+
+
+def clean_display_name(repo_id: str) -> str:
+    """Derive a human-friendly display name from a HuggingFace repo ID.
+
+    Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
+    and Meta- prefix. Replaces hyphens with spaces.
+
+    Examples:
+        "Qwen/Qwen2.5-7B-Instruct-GGUF" -> "Qwen2.5 7B"
+        "meta-llama/Meta-Llama-3-8B"     -> "Llama 3 8B"
+    """
+    name = repo_id.split("/")[-1]
+    name = _DISPLAY_NAME_SUFFIXES.sub("", name)
+    name = _DISPLAY_NAME_DATE_SUFFIX.sub("", name)
+    name = _DISPLAY_NAME_META_PREFIX.sub("", name)
+    name = name.replace("-", " ").strip()
+    return re.sub(r"\s+", " ", name)
+
+
+QUANT_TIERS: dict[str, str] = {
+    "Q2_K": "compact",
+    "Q3_K_S": "compact",
+    "Q3_K_M": "compact",
+    "Q3_K_L": "compact",
+    "Q4_K_S": "balanced",
+    "Q4_K_M": "balanced",
+    "Q4_0": "balanced",
+    "Q5_K_S": "high quality",
+    "Q5_K_M": "high quality",
+    "Q6_K": "high quality",
+    "Q8_0": "full precision",
+    "F16": "unquantized",
+    "F32": "unquantized",
+}
+
+
+def quant_tier(quant: str) -> str:
+    """Map a quantization label to a human-readable quality tier."""
+    return QUANT_TIERS.get(quant, "unknown")
+
+
+@dataclass(frozen=True)
+class EnrichedModel:
+    """A catalog model enriched with display metadata and install status."""
+
+    name: str
+    hf_repo: str
+    gguf_filename: str
+    size_gb: float
+    min_ram_gb: float
+    description: str
+    featured: bool
+    downloads: int
+    task: str
+    display_name: str
+    quality_tier: str
+    installed: bool
+    source: str
+
+
+def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[EnrichedModel]:
+    """Enrich catalog models with display names, quality tiers, and install status."""
+    enriched: list[EnrichedModel] = []
+    for m in result.models:
+        is_installed = m.name in installed_names
+        enriched.append(
+            EnrichedModel(
+                name=m.name,
+                hf_repo=m.hf_repo,
+                gguf_filename=m.gguf_filename,
+                size_gb=m.size_gb,
+                min_ram_gb=m.min_ram_gb,
+                description=m.description,
+                featured=m.featured,
+                downloads=m.downloads,
+                task=m.task,
+                display_name=clean_display_name(m.hf_repo),
+                quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
+                installed=is_installed,
+                source="litellm" if is_installed else "native",
+            )
+        )
+    return enriched

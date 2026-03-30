@@ -13,14 +13,19 @@ from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
     FEATURED_VISION,
+    QUANT_TIERS,
     CatalogModel,
     CatalogResult,
+    EnrichedModel,
     ModelFamily,
     ModelVariant,
+    clean_display_name,
     download_model,
+    enrich_catalog,
     find_catalog_entry,
     get_catalog,
     get_families,
+    quant_tier,
 )
 
 
@@ -117,7 +122,9 @@ class TestFetchHfModels:
                 "id": "user/model-13b-gguf",
                 "downloads": 1000,
                 "description": "",
-                "siblings": [],
+                "siblings": [
+                    {"rfilename": "model-13b-Q4_K_M.gguf", "size": 0},
+                ],
             },
         ]
 
@@ -143,11 +150,11 @@ class TestFetchHfModels:
         # Largest GGUF file is 7GB -> ~6.5 GB estimate
         assert 6.0 < models[0].size_gb < 7.5
 
-    def test_no_gguf_files_fallback_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_gguf_size_info_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
-        # Second model has no siblings -> fallback 0.0 (unknown)
+        # Second model has gguf sibling with size=0 -> fallback 0.0 (unknown)
         assert models[1].size_gb == 0.0
 
     def test_skips_entries_without_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,7 +192,7 @@ class TestFetchHfModels:
                 "id": "user/test",
                 "downloads": 0,
                 "description": "A" * 200,
-                "siblings": [],
+                "siblings": [{"rfilename": "model.gguf"}],
             }
         ]
         mock_resp = httpx.Response(200, json=data)
@@ -199,13 +206,13 @@ class TestFetchHfModels:
                 "id": "user/embed-model",
                 "downloads": 100,
                 "pipeline_tag": "feature-extraction",
-                "siblings": [],
+                "siblings": [{"rfilename": "embed.gguf"}],
             },
             {
                 "id": "user/vision-model",
                 "downloads": 50,
                 "pipeline_tag": "image-text-to-text",
-                "siblings": [],
+                "siblings": [{"rfilename": "vision.gguf"}],
             },
         ]
         mock_resp = httpx.Response(200, json=data)
@@ -215,7 +222,7 @@ class TestFetchHfModels:
         assert models[1].task == "vision"
 
     def test_missing_pipeline_tag_defaults_to_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        data = [{"id": "user/model", "downloads": 100, "siblings": [{"rfilename": "m.gguf"}]}]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
@@ -966,3 +973,187 @@ class TestResolveMmprojFilename:
 
         result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
         assert result is None
+
+
+class TestHfModelsWithoutGgufExcluded:
+    """Models tagged 'gguf' but without actual .gguf files are filtered out."""
+
+    def test_no_gguf_siblings_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [
+            {
+                "id": "user/gpt2",
+                "downloads": 50000,
+                "siblings": [
+                    {"rfilename": "pytorch_model.bin"},
+                    {"rfilename": "config.json"},
+                ],
+            },
+            {
+                "id": "user/real-gguf-model",
+                "downloads": 1000,
+                "siblings": [
+                    {"rfilename": "model-Q4_K_M.gguf", "size": 4_000_000_000},
+                ],
+            },
+        ]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert len(models) == 1
+        assert models[0].hf_repo == "user/real-gguf-model"
+
+    def test_empty_siblings_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [
+            {"id": "user/no-files", "downloads": 100, "siblings": []},
+        ]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert len(models) == 0
+
+
+class TestGatedRepoShowsLoginMessage:
+    def test_permission_error_mentions_login(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        from huggingface_hub.utils import GatedRepoError
+
+        def fake_download(**kwargs: Any) -> str:
+            raise GatedRepoError("Gated repo", response=MagicMock())
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            download_model(entry)
+
+    def test_featured_vision_description_mentions_login(self) -> None:
+        for entry in FEATURED_VISION:
+            if "LightOnOCR" in entry.name:
+                assert "requires login" in entry.description
+
+
+class TestCleanDisplayName:
+    def test_strips_org_and_gguf(self) -> None:
+        assert clean_display_name("Qwen/Qwen2.5-7B-Instruct-GGUF") == "Qwen2.5 7B"
+
+    def test_strips_meta_prefix(self) -> None:
+        assert clean_display_name("meta-llama/Meta-Llama-3-8B") == "Llama 3 8B"
+
+    def test_strips_chat_suffix(self) -> None:
+        assert clean_display_name("org/Model-7B-Chat-GGUF") == "Model 7B"
+
+    def test_strips_date_suffix(self) -> None:
+        assert clean_display_name("org/Model-7B-2507") == "Model 7B"
+
+    def test_no_org_prefix(self) -> None:
+        assert clean_display_name("Model-7B-GGUF") == "Model 7B"
+
+    def test_plain_name(self) -> None:
+        assert clean_display_name("org/SimpleModel") == "SimpleModel"
+
+    def test_multiple_suffixes(self) -> None:
+        result = clean_display_name("org/Model-7B-Instruct-GGUF")
+        assert result == "Model 7B"
+
+    def test_mistral_instruct(self) -> None:
+        result = clean_display_name("mistralai/Mistral-7B-Instruct-v0.3-GGUF")
+        assert result == "Mistral 7B v0.3"
+
+
+class TestQuantTier:
+    def test_all_quant_types_mapped(self) -> None:
+        for quant_name, expected_tier in QUANT_TIERS.items():
+            assert quant_tier(quant_name) == expected_tier
+
+    def test_unknown_returns_unknown(self) -> None:
+        assert quant_tier("") == "unknown"
+        assert quant_tier("WEIRD_QUANT") == "unknown"
+
+    def test_compact_tiers(self) -> None:
+        for q in ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L"):
+            assert quant_tier(q) == "compact"
+
+    def test_balanced_tiers(self) -> None:
+        for q in ("Q4_K_S", "Q4_K_M", "Q4_0"):
+            assert quant_tier(q) == "balanced"
+
+    def test_high_quality_tiers(self) -> None:
+        for q in ("Q5_K_S", "Q5_K_M", "Q6_K"):
+            assert quant_tier(q) == "high quality"
+
+    def test_full_precision(self) -> None:
+        assert quant_tier("Q8_0") == "full precision"
+
+    def test_unquantized(self) -> None:
+        assert quant_tier("F16") == "unquantized"
+        assert quant_tier("F32") == "unquantized"
+
+
+class TestEnrichCatalog:
+    def _make_result(self) -> CatalogResult:
+        models = [
+            CatalogModel(
+                "Model-7B-GGUF",
+                "user/Model-7B-Instruct-GGUF",
+                "*Q4_K_M.gguf",
+                4.0,
+                8.0,
+                "A test model",
+                False,
+                1000,
+                "chat",
+            ),
+            CatalogModel(
+                "Qwen3 8B",
+                "Qwen/Qwen3-8B-GGUF",
+                "*Q4_K_M.gguf",
+                5.0,
+                8.0,
+                "Strong general purpose",
+                True,
+                0,
+                "chat",
+            ),
+        ]
+        return CatalogResult(total=2, limit=20, offset=0, models=models)
+
+    def test_returns_enriched_models(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert len(enriched) == 2
+        assert all(isinstance(e, EnrichedModel) for e in enriched)
+
+    def test_display_name_populated(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert enriched[0].display_name == "Model 7B"
+        assert enriched[1].display_name == "Qwen3 8B"
+
+    def test_quality_tier_populated(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert enriched[0].quality_tier == "balanced"
+
+    def test_installed_status(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, {"Qwen3 8B"})
+        assert enriched[0].installed is False
+        assert enriched[0].source == "native"
+        assert enriched[1].installed is True
+        assert enriched[1].source == "litellm"
+
+    def test_preserves_original_fields(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        original = result.models[0]
+        e = enriched[0]
+        assert e.name == original.name
+        assert e.hf_repo == original.hf_repo
+        assert e.size_gb == original.size_gb
+        assert e.description == original.description
+        assert e.featured == original.featured
+        assert e.downloads == original.downloads
+        assert e.task == original.task

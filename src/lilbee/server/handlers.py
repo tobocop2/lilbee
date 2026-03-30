@@ -601,7 +601,7 @@ async def models_catalog(
     offset: int = 0,
 ) -> dict[str, Any]:
     """Return paginated model catalog with installed status."""
-    from lilbee.catalog import get_catalog
+    from lilbee.catalog import enrich_catalog, get_catalog
 
     result = get_catalog(
         task=task,
@@ -617,20 +617,21 @@ async def models_catalog(
 
     provider = get_services().provider
     installed_names = set(provider.list_models())
+    enriched = enrich_catalog(result, installed_names)
 
-    models = []
-    for m in result.models:
-        source = "litellm" if m.name in installed_names else "native"
-        models.append(
-            {
-                "name": m.name,
-                "size_gb": m.size_gb,
-                "min_ram_gb": m.min_ram_gb,
-                "description": m.description,
-                "installed": m.name in installed_names,
-                "source": source,
-            }
-        )
+    models = [
+        {
+            "name": e.name,
+            "display_name": e.display_name,
+            "size_gb": e.size_gb,
+            "min_ram_gb": e.min_ram_gb,
+            "description": e.description,
+            "quality_tier": e.quality_tier,
+            "installed": e.installed,
+            "source": e.source,
+        }
+        for e in enriched
+    ]
 
     return {
         "total": result.total,
