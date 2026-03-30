@@ -110,9 +110,7 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
                     if reasoning_chars > _MAX_REASONING_CHARS:
                         parser.in_thinking = False
                         parser.buf = ""
-                        yield StreamToken(
-                            content="\n[reasoning truncated]", is_reasoning=True
-                        )
+                        yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
                         break
                 yield st
         else:

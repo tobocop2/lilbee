@@ -85,7 +85,8 @@ class AssistantMessage(Vertical):
         self._reasoning_parts.append(text)
         if self._reasoning_widget is not None:
             self._reasoning_widget.collapsed = False
-            self._reasoning_static.update("".join(self._reasoning_parts))
+            if self._reasoning_static is not None:
+                self._reasoning_static.update("".join(self._reasoning_parts))
 
     def append_content(self, text: str) -> None:
         """Append response content token (debounced markdown updates)."""

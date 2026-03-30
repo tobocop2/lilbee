@@ -29,7 +29,7 @@ dependencies = [
     "lancedb",
     "kreuzberg>=4.6.3",
     "filelock",
-    "tree-sitter-language-pack>=1.3.2",
+    "tree-sitter-language-pack>=1.4.0",
     "typer",
     "tiktoken",
     "textual>=0.75",

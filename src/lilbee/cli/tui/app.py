@@ -38,17 +38,17 @@ class LilbeeApp(App[None]):
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("f1", "push_help", "? Help", show=True),
-        Binding("question_mark", "push_help", "Help", show=False),
+        Binding("question_mark", "push_help", "? help", show=True),
+        Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
-        Binding("f2", "push_catalog", "^n Models", show=True),
+        Binding("f2", "push_catalog", "Models", show=False),
         Binding("ctrl+n", "push_catalog", "Models", show=False),
-        Binding("f3", "push_status", "^s Status", show=True),
+        Binding("f3", "push_status", "Status", show=False),
         Binding("ctrl+s", "push_status", "Status", show=False),
-        Binding("f4", "push_settings", "^e Settings", show=True),
+        Binding("f4", "push_settings", "Settings", show=False),
         Binding("ctrl+e", "push_settings", "Settings", show=False),
-        Binding("ctrl+t", "cycle_theme", "^t Theme", show=True),
-        Binding("ctrl+c", "quit", "^c Quit", show=True, priority=True),
+        Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -74,6 +74,21 @@ class LilbeeApp(App[None]):
         """Set theme by name (used by /theme command)."""
         if name in self.available_themes:
             self.theme = name
+
+    async def action_quit(self) -> None:
+        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        task_bar = getattr(self, "_task_bar", None)
+        if task_bar and not task_bar.queue.is_empty:
+            active = task_bar.queue.active_task
+            if active:
+                task_bar.cancel_task(active.task_id)
+                self.notify("Cancelled")
+                return
+        screen = self.screen
+        if hasattr(screen, "_streaming") and screen._streaming:
+            screen.action_cancel_stream()  # type: ignore[attr-defined]
+            return
+        self.exit()
 
     def action_push_catalog(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen

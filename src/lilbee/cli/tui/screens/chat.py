@@ -206,11 +206,11 @@ class ChatScreen(Screen[None]):
 
             from lilbee.ingest import sync
 
-            def on_progress(event_type: EventType, data: dict[str, object]) -> None:
+            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
                 if event_type == EventType.FILE_START:
                     current = data.get("current_file", 0)
                     total = data.get("total_files", 0)
-                    pct = 50 + int(int(current) * 50 / int(total)) if total else 75
+                    pct = 50 + int(current * 50 / total) if total else 75
                     self.app.call_from_thread(
                         task_bar.update_task, task_id, pct, f"Syncing {data.get('file', '')}..."
                     )
@@ -596,11 +596,11 @@ class ChatScreen(Screen[None]):
 
             self.app.call_from_thread(task_bar.update_task, task_id, 0, "Syncing...")
 
-            def on_progress(event_type: EventType, data: dict[str, object]) -> None:
+            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
                 if event_type == EventType.FILE_START:
                     current = data.get("current_file", 0)
                     total = data.get("total_files", 0)
-                    pct = int(int(current) * 100 / int(total)) if total else 0
+                    pct = int(current * 100 / total) if total else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=current,
                         total=total,

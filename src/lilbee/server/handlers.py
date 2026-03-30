@@ -188,9 +188,7 @@ async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     return to_dicts(grouped)
 
 
-async def ask(
-    question: str, top_k: int = 0, options: dict[str, Any] | None = None
-) -> AskResponse:
+async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
     from lilbee.services import get_services
 
