@@ -46,13 +46,14 @@ class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("slash", "focus_commands", "/ commands", show=True),
         Binding("tab", "complete", "Tab Complete", show=False, priority=True),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),
         Binding("ctrl+d", "half_page_down", "^d ½ PgDn", show=False),
         Binding("ctrl+u", "half_page_up", "^u ½ PgUp", show=False),
         Binding("escape", "cancel_stream", "Esc Cancel", show=False),
-        Binding("ctrl+r", "toggle_markdown", "^r Markdown", show=True),
+        Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -184,16 +185,45 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
+        task_bar = self.query_one("#task-bar", TaskBar)
+        task_id = task_bar.add_task(f"Add {path.name}", "add")
+        task_bar.queue.advance()
+        self._run_add_background(path, task_id)
+
+    @work(thread=True)
+    def _run_add_background(self, path: Path, task_id: str) -> None:
+        """Copy files and sync in a background thread."""
+        task_bar = self.query_one("#task-bar", TaskBar)
+        self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.app import console
             from lilbee.cli.helpers import copy_paths
 
             copied = copy_paths([path], console)
-            self.notify(msg.CMD_ADD_SUCCESS.format(count=len(copied)))
-            self._run_sync()
+            self.app.call_from_thread(
+                task_bar.update_task, task_id, 50, f"Copied {len(copied)} file(s), syncing..."
+            )
+
+            from lilbee.ingest import sync
+
+            def on_progress(event_type: EventType, data: dict[str, object]) -> None:
+                if event_type == EventType.FILE_START:
+                    current = data.get("current_file", 0)
+                    total = data.get("total_files", 0)
+                    pct = 50 + int(int(current) * 50 / int(total)) if total else 75
+                    self.app.call_from_thread(
+                        task_bar.update_task, task_id, pct, f"Syncing {data.get('file', '')}..."
+                    )
+
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            self.app.call_from_thread(task_bar.complete_task, task_id)
+            self.app.call_from_thread(self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
         except Exception as exc:
             log.warning("Failed to add %s", path, exc_info=True)
-            self.notify(msg.CMD_ADD_ERROR.format(error=exc), severity="error")
+            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
+            self.app.call_from_thread(
+                self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
+            )
 
     def _cmd_cancel(self, _args: str) -> None:
         for worker in self.workers:
@@ -306,7 +336,10 @@ class ChatScreen(Screen[None]):
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
         if not token:
-            self.notify("Usage: /login <HF_TOKEN>", severity="warning")
+            import webbrowser
+
+            webbrowser.open("https://huggingface.co/settings/tokens")
+            self.notify("Paste your token with /login <token>")
             return
         self._run_hf_login(token)
 
@@ -357,9 +390,7 @@ class ChatScreen(Screen[None]):
         try:
             removed = mgr.remove(name)
             if removed:
-                self.app.call_from_thread(
-                    self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name)
-                )
+                self.app.call_from_thread(self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
             else:
                 self.app.call_from_thread(
                     self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
@@ -569,7 +600,7 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     current = data.get("current_file", 0)
                     total = data.get("total_files", 0)
-                    pct = int(current * 100 / total) if total else 0
+                    pct = int(int(current) * 100 / int(total)) if total else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=current,
                         total=total,
@@ -577,11 +608,19 @@ class ChatScreen(Screen[None]):
                     )
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, status)
 
-            asyncio.run(sync(on_progress=on_progress))
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
             self.app.call_from_thread(task_bar.complete_task, task_id)
         except Exception:
             log.warning("Background sync failed", exc_info=True)
             self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+
+    def action_focus_commands(self) -> None:
+        """Focus chat input and pre-fill with '/' for command entry."""
+        inp = self.query_one("#chat-input", Input)
+        inp.focus()
+        if not inp.value.startswith("/"):
+            inp.value = "/"
+            inp.action_end()
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

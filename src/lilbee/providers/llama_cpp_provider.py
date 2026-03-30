@@ -237,24 +237,29 @@ class _LockedStreamIterator:
         self._release()
 
 
+_STDERR_LOCK = threading.Lock()
+
+
 def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
 
     llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
     that bypass Python logging. This redirects fd 2 to /dev/null for the
-    duration of the call.
+    duration of the call. A lock serializes access to fd 2 so concurrent
+    threads don't corrupt each other's file descriptors.
     """
     import os
 
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    old_stderr = os.dup(2)
-    os.dup2(devnull, 2)
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        os.dup2(old_stderr, 2)
-        os.close(devnull)
-        os.close(old_stderr)
+    with _STDERR_LOCK:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        os.dup2(devnull, 2)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+            os.close(old_stderr)
 
 
 def _embed_one(llm: Any, text: str) -> list[float]:
