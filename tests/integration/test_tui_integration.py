@@ -627,8 +627,8 @@ class TestStatusKeybindings:
                 screen = StatusScreen()
                 app.push_screen(screen)
                 await pilot.pause()
-                screen.key_j()
-                screen.key_k()
+                screen.action_cursor_down()
+                screen.action_cursor_up()
 
 
 class TestSettingsKeybindings:
@@ -652,8 +652,8 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 class TestHelpModal:

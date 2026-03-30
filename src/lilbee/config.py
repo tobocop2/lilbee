@@ -209,6 +209,10 @@ class Config(BaseSettings):
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
+    # Use Markdown widget for chat responses in the TUI. When False, uses
+    # plain Static text (faster rendering, no formatting).
+    markdown_rendering: bool = True
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.

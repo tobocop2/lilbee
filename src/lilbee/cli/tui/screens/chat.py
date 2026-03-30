@@ -46,12 +46,13 @@ class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("tab", "complete", "Complete", show=False, priority=True),
-        Binding("pageup", "scroll_up", "Scroll Up", show=False),
-        Binding("pagedown", "scroll_down", "Scroll Down", show=False),
-        Binding("ctrl+d", "half_page_down", "½ Pg Down", show=False),
-        Binding("ctrl+u", "half_page_up", "½ Pg Up", show=False),
-        Binding("escape", "cancel_stream", "Cancel", show=False),
+        Binding("tab", "complete", "Tab Complete", show=False, priority=True),
+        Binding("pageup", "scroll_up", "PgUp", show=False),
+        Binding("pagedown", "scroll_down", "PgDn", show=False),
+        Binding("ctrl+d", "half_page_down", "^d ½ PgDn", show=False),
+        Binding("ctrl+u", "half_page_up", "^u ½ PgUp", show=False),
+        Binding("escape", "cancel_stream", "Esc Cancel", show=False),
+        Binding("ctrl+r", "toggle_markdown", "^r Markdown", show=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -496,6 +497,16 @@ class ChatScreen(Screen[None]):
                 worker.cancel()
             self._streaming = False
 
+    async def action_toggle_markdown(self) -> None:
+        """Toggle between Markdown and plain-text rendering for chat responses."""
+        cfg.markdown_rendering = not cfg.markdown_rendering
+        use_md = cfg.markdown_rendering
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        for widget in chat_log.query(AssistantMessage):
+            await widget.rebuild_content_widget(use_md)
+        label = "Markdown" if use_md else "Plain text"
+        self.notify(f"Rendering: {label}")
+
     def _run_sync(self) -> None:
         """Enqueue a document sync in the task bar."""
         task_bar = self.query_one("#task-bar", TaskBar)
@@ -505,10 +516,13 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_sync_worker(self, task_id: str) -> None:
-        """Run background document sync.
+        """Run background document sync in a Textual worker thread.
 
-        Uses asyncio.run() because Textual workers run in threads, not the
-        async event loop, so we need a fresh loop for the async sync() call.
+        Architecture: @work(thread=True) runs this method in a daemon thread,
+        keeping the Textual event loop free for UI updates. Progress is reported
+        back to the main thread via app.call_from_thread(). The asyncio.run()
+        call creates a fresh event loop because Textual workers are plain threads,
+        not coroutines on the app's async loop.
         """
         import asyncio
 
@@ -520,12 +534,15 @@ class ChatScreen(Screen[None]):
 
             def on_progress(event_type: EventType, data: dict[str, object]) -> None:
                 if event_type == EventType.FILE_START:
+                    current = data.get("current_file", 0)
+                    total = data.get("total_files", 0)
+                    pct = int(current * 100 / total) if total else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
-                        current=data.get("current_file", "?"),
-                        total=data.get("total_files", "?"),
+                        current=current,
+                        total=total,
                         file=data.get("file", ""),
                     )
-                    self.app.call_from_thread(task_bar.update_task, task_id, 50, status)
+                    self.app.call_from_thread(task_bar.update_task, task_id, pct, status)
 
             asyncio.run(sync(on_progress=on_progress))
             self.app.call_from_thread(task_bar.complete_task, task_id)

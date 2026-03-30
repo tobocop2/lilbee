@@ -17,20 +17,20 @@ _COMMANDS_BLOCK = registry_help_text()
 _HELP_TEXT = f"""\
 [bold]Global[/bold]
 
-  ? / F1         Help (this screen)
-  F2             Model catalog
-  F3             Knowledge base status
-  F4             Settings
-  Ctrl+T         Cycle theme
-  Ctrl+C         Quit
+  ? / F1 / ^h    Help (this screen)
+  F2 / ^n        Model catalog
+  F3 / ^s        Knowledge base status
+  F4 / ^e        Settings
+  ^t             Cycle theme
+  ^c             Quit
 
   [bold]Chat[/bold]
   Enter          Send message
   Escape         Cancel stream
   j / k          Scroll line (vim)
   g / G          Scroll to top / bottom
-  Ctrl+D         Half-page down
-  Ctrl+U         Half-page up
+  ^d             Half-page down
+  ^u             Half-page up
   PgUp / PgDn    Full page scroll
   Tab            Accept suggestion
 
@@ -41,7 +41,7 @@ _HELP_TEXT = f"""\
   /              Focus search
   s              Cycle sort order
   Space          Page down
-  Ctrl+D / U     Half-page down / up
+  ^d / ^u        Half-page down / up
   Enter          Install / select model
   q / Escape     Back
 

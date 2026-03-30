@@ -208,6 +208,24 @@ class RemoteModel:
     task: str  # "chat", "embedding", "vision"
     family: str
     parameter_size: str
+    provider: str = "Remote"  # "Ollama", "OpenAI", "Anthropic", or "Remote"
+
+
+_PROVIDER_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("localhost:11434", "Ollama"),
+    ("ollama", "Ollama"),
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic"),
+)
+
+
+def detect_provider(base_url: str) -> str:
+    """Detect the remote provider name from a litellm base URL."""
+    url_lower = base_url.lower()
+    for pattern, provider in _PROVIDER_PATTERNS:
+        if pattern in url_lower:
+            return provider
+    return "Remote"
 
 
 def _classify_remote_task(name: str, family: str) -> str:
@@ -234,6 +252,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
     except Exception:
         return []
 
+    provider = detect_provider(base_url)
     result: list[RemoteModel] = []
     for model in raw_models:
         name = model.get("name", "")
@@ -241,7 +260,11 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
         family = details.get("family", "")
         param_size = details.get("parameter_size", "")
         task = _classify_remote_task(name, family)
-        result.append(RemoteModel(name=name, task=task, family=family, parameter_size=param_size))
+        result.append(
+            RemoteModel(
+                name=name, task=task, family=family, parameter_size=param_size, provider=provider
+            )
+        )
     return result
 
 

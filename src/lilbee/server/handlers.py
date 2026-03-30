@@ -26,18 +26,23 @@ from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
+    AskResponse,
     CatalogEntryResponse,
+    CleanedChunk,
     ConfigResponse,
     ConfigUpdateResponse,
     DocumentInfo,
     DocumentListResponse,
     DocumentRemoveResponse,
     ExternalModelsResponse,
+    HealthResponse,
     InstalledModelEntry,
     ModelsCatalogResponse,
     ModelsDeleteResponse,
     ModelsInstalledResponse,
     ModelsShowResponse,
+    SetModelResponse,
+    StatusResponse,
 )
 
 if TYPE_CHECKING:
@@ -163,14 +168,15 @@ async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[byte
         yield item.encode()
 
 
-async def health() -> dict[str, str]:
+async def health() -> HealthResponse:
     """Return service health and version."""
-    return {"status": "ok", "version": get_version()}
+    return HealthResponse(status="ok", version=get_version())
 
 
-async def status() -> dict[str, Any]:
+async def status() -> StatusResponse:
     """Return config, sources, and chunk counts."""
-    return gather_status().model_dump(exclude_none=True)
+    raw = gather_status()
+    return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
 async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -184,16 +190,16 @@ async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
 
 async def ask(
     question: str, top_k: int = 0, options: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """One-shot RAG answer. Returns {answer, sources[]}."""
+) -> AskResponse:
+    """One-shot RAG answer. Returns answer and sources."""
     from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
     result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
-    return {
-        "answer": result.answer,
-        "sources": [clean_result(s) for s in result.sources],
-    }
+    return AskResponse(
+        answer=result.answer,
+        sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
+    )
 
 
 def _run_llm_stream(
@@ -297,16 +303,16 @@ async def chat(
     history: list[ChatMessage],
     top_k: int = 0,
     options: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Chat with history. Returns {answer, sources[]}."""
+) -> AskResponse:
+    """Chat with history. Returns answer and sources."""
     from lilbee.services import get_services
 
     opts = _resolve_generation_options(options)
     result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
-    return {
-        "answer": result.answer,
-        "sources": [clean_result(s) for s in result.sources],
-    }
+    return AskResponse(
+        answer=result.answer,
+        sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
+    )
 
 
 def chat_stream(
@@ -451,29 +457,29 @@ async def _set_model(
     model: str,
     *,
     normalize: bool = False,
-) -> dict[str, str]:
-    """Shared helper for switching a model field. Returns {model}."""
+) -> SetModelResponse:
+    """Shared helper for switching a model field."""
     if normalize:
         from lilbee.models import ensure_tag
 
         model = ensure_tag(model)
     setattr(cfg, field, model)
     settings.set_value(cfg.data_root, field, model)
-    return {"model": model}
+    return SetModelResponse(model=model)
 
 
-async def set_chat_model(model: str) -> dict[str, str]:
-    """Switch active chat model. Returns {model}."""
+async def set_chat_model(model: str) -> SetModelResponse:
+    """Switch active chat model."""
     return await _set_model("chat_model", model, normalize=True)
 
 
-async def set_vision_model(model: str) -> dict[str, str]:
-    """Switch active vision model. Pass empty string to disable. Returns {model}."""
+async def set_vision_model(model: str) -> SetModelResponse:
+    """Switch active vision model. Pass empty string to disable."""
     return await _set_model("vision_model", model)
 
 
-async def set_embedding_model(model: str) -> dict[str, str]:
-    """Switch embedding model. Returns {model}."""
+async def set_embedding_model(model: str) -> SetModelResponse:
+    """Switch embedding model."""
     return await _set_model("embedding_model", model)
 
 
