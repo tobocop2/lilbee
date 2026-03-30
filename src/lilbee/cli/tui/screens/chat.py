@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from textual import work
 from textual.app import ComposeResult
@@ -32,7 +32,7 @@ from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.progress import EventType
+from lilbee.progress import EventType, ProgressEvent
 from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -206,13 +206,17 @@ class ChatScreen(Screen[None]):
 
             from lilbee.ingest import sync
 
-            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.FILE_START:
-                    current = data.get("current_file", 0)
-                    total = data.get("total_files", 0)
-                    pct = 50 + int(current * 50 / total) if total else 75
+                    from lilbee.progress import FileStartEvent
+
+                    assert isinstance(data, FileStartEvent)
+                    if data.total_files:
+                        pct = 50 + int(data.current_file * 50 / data.total_files)
+                    else:
+                        pct = 75
                     self.app.call_from_thread(
-                        task_bar.update_task, task_id, pct, f"Syncing {data.get('file', '')}..."
+                        task_bar.update_task, task_id, pct, f"Syncing {data.file}..."
                     )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
@@ -276,13 +280,13 @@ class ChatScreen(Screen[None]):
 
         try:
 
-            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.CRAWL_PAGE:
-                    current = data.get("current", 0)
-                    total = data.get("total", 0)
-                    page_url = data.get("url", "")
-                    pct = int(current * 100 / total) if total > 0 else 50
-                    detail = f"[{current}/{total}]: {page_url}"
+                    from lilbee.progress import CrawlPageEvent
+
+                    assert isinstance(data, CrawlPageEvent)
+                    pct = int(data.current * 100 / data.total) if data.total > 0 else 50
+                    detail = f"[{data.current}/{data.total}]: {data.url}"
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(
@@ -596,15 +600,16 @@ class ChatScreen(Screen[None]):
 
             self.app.call_from_thread(task_bar.update_task, task_id, 0, "Syncing...")
 
-            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.FILE_START:
-                    current = data.get("current_file", 0)
-                    total = data.get("total_files", 0)
-                    pct = int(current * 100 / total) if total else 0
+                    from lilbee.progress import FileStartEvent
+
+                    assert isinstance(data, FileStartEvent)
+                    pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
-                        current=current,
-                        total=total,
-                        file=data.get("file", ""),
+                        current=data.current_file,
+                        total=data.total_files,
+                        file=data.file,
                     )
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, status)
 

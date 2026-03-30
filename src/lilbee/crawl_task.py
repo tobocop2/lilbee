@@ -6,10 +6,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
 
 from lilbee.crawler import crawl_and_save
-from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
 
 log = logging.getLogger(__name__)
 
@@ -69,10 +68,11 @@ def now_iso() -> str:
 def make_progress_updater(task: CrawlTask) -> DetailedProgressCallback:
     """Return a progress callback that updates task fields from crawl events."""
 
-    def _on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+    def _on_progress(event_type: EventType, data: ProgressEvent) -> None:
         if event_type == EventType.CRAWL_PAGE:
-            task.pages_crawled = data.get("current", task.pages_crawled)
-            task.pages_total = data.get("total", task.pages_total)
+            assert isinstance(data, CrawlPageEvent)
+            task.pages_crawled = data.current
+            task.pages_total = data.total
 
     return _on_progress
 
