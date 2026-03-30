@@ -686,7 +686,7 @@ class TestHfCacheEviction:
         mock_resp.json.return_value = []
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
-        catalog._fetch_hf_models(pipeline_tag="text-generation", tags="gguf")
+        catalog._fetch_hf_models(pipeline_tag="text-generation")
         assert "old:key:sort:50" not in _hf_cache
 
     def test_cache_size_capped_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -710,7 +710,7 @@ class TestHfCacheEviction:
         mock_resp.json.return_value = []
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
-        catalog._fetch_hf_models(pipeline_tag="unique", tags="gguf")
+        catalog._fetch_hf_models(pipeline_tag="unique")
         assert len(_hf_cache) == 50
         assert "key:0" not in _hf_cache
 
@@ -975,41 +975,18 @@ class TestResolveMmprojFilename:
         assert result is None
 
 
-class TestHfModelsWithoutGgufExcluded:
-    """Models tagged 'gguf' but without actual .gguf files are filtered out."""
+class TestHfModelsSearchFilter:
+    """HF API uses search=GGUF to find GGUF repos."""
 
-    def test_no_gguf_siblings_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_all_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [
-            {
-                "id": "user/gpt2",
-                "downloads": 50000,
-                "siblings": [
-                    {"rfilename": "pytorch_model.bin"},
-                    {"rfilename": "config.json"},
-                ],
-            },
-            {
-                "id": "user/real-gguf-model",
-                "downloads": 1000,
-                "siblings": [
-                    {"rfilename": "model-Q4_K_M.gguf", "size": 4_000_000_000},
-                ],
-            },
+            {"id": "user/model-GGUF", "downloads": 1000, "siblings": []},
+            {"id": "user/another-GGUF", "downloads": 500, "siblings": []},
         ]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
-        assert len(models) == 1
-        assert models[0].hf_repo == "user/real-gguf-model"
-
-    def test_empty_siblings_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = [
-            {"id": "user/no-files", "downloads": 100, "siblings": []},
-        ]
-        mock_resp = httpx.Response(200, json=data)
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
-        assert len(models) == 0
+        assert len(models) == 2
 
 
 class TestGatedRepoShowsLoginMessage:

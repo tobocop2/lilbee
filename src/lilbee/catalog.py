@@ -273,13 +273,12 @@ _hf_cache: dict[str, tuple[float, list["CatalogModel"]]] = {}
 
 def _fetch_hf_models(
     pipeline_tag: str = "text-generation",
-    tags: str = "gguf",
     sort: str = "downloads",
     limit: int = 50,
     offset: int = 0,
 ) -> list[CatalogModel]:
-    """Fetch models from HuggingFace API with 5-minute cache. Returns empty list on error."""
-    cache_key = f"{pipeline_tag}:{tags}:{sort}:{limit}:{offset}"
+    """Fetch GGUF models from HuggingFace API with 5-minute cache. Returns empty list on error."""
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}"
     now = time.monotonic()
     # Evict expired entries
     expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -292,7 +291,7 @@ def _fetch_hf_models(
 
     params: dict[str, str | int] = {
         "pipeline_tag": pipeline_tag,
-        "tags": tags,
+        "search": "GGUF",
         "sort": sort,
         "limit": limit,
         "skip": offset,
@@ -312,14 +311,11 @@ def _fetch_hf_models(
         repo_id = item.get("id", "")
         if not repo_id:
             continue
-        siblings = item.get("siblings", [])
-        if not _has_gguf_siblings(siblings):
-            continue
         downloads = item.get("downloads", 0)
         card_data = item.get("cardData", {}) or {}
         model_desc = item.get("description") or card_data.get("description") or ""
-        # Estimate size from siblings — find largest GGUF file
-        size_gb = _estimate_size_from_siblings(siblings)
+        # Estimate size from siblings (empty on list API, populated on detail)
+        size_gb = _estimate_size_from_siblings(item.get("siblings", []))
         task = _pipeline_to_task(item.get("pipeline_tag", ""))
         models.append(
             CatalogModel(
