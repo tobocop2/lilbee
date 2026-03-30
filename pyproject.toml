@@ -56,7 +56,7 @@ Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
-lilbee = "lilbee.cli:app"
+lilbee = "lilbee._launcher:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -86,7 +86,7 @@ markers = ["slow: integration tests that download models or take >10s"]
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py"]
+omit = ["src/lilbee/__main__.py", "src/lilbee/_launcher.py"]
 concurrency = ["thread"]
 
 [tool.coverage.report]
@@ -101,6 +101,7 @@ exclude_lines = [
 omit = [
     "src/lilbee/providers/litellm_provider.py",
     "src/lilbee/__main__.py",
+    "src/lilbee/_launcher.py",
     "src/lilbee/platform.py",
 ]
 

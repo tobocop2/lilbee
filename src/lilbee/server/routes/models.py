@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from litestar import delete, get, post, put
 from litestar.params import Parameter
 from litestar.response import Stream
@@ -11,7 +9,16 @@ from pydantic import BaseModel
 
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
-from lilbee.server.models import SetModelRequest, SetModelResponse
+from lilbee.server.handlers import ModelsResponse
+from lilbee.server.models import (
+    ExternalModelsResponse,
+    ModelsCatalogResponse,
+    ModelsDeleteResponse,
+    ModelsInstalledResponse,
+    ModelsShowResponse,
+    SetModelRequest,
+    SetModelResponse,
+)
 
 
 class PullRequest(BaseModel):
@@ -23,14 +30,14 @@ class PullRequest(BaseModel):
 
 @get("/api/models")
 @read_only
-async def models_list_route() -> dict[str, Any]:
+async def models_list_route() -> ModelsResponse:
     """Available chat and vision models."""
     return await handlers.list_models()
 
 
 @get("/api/models/external")
 @read_only
-async def models_external_route() -> dict[str, Any]:
+async def models_external_route() -> ExternalModelsResponse:
     """Discover models available from the configured external provider."""
     return await handlers.list_external_models()
 
@@ -66,7 +73,7 @@ async def models_catalog_route(
     sort: str = Parameter(query="sort", default="featured"),
     limit: int = Parameter(query="limit", default=20, le=1000),
     offset: int = Parameter(query="offset", default=0, ge=0),
-) -> dict[str, Any]:
+) -> ModelsCatalogResponse:
     """Browse the model catalog with optional filters."""
     return await handlers.models_catalog(
         task=task,
@@ -81,7 +88,7 @@ async def models_catalog_route(
 
 @get("/api/models/installed")
 @read_only
-async def models_installed_route() -> dict[str, Any]:
+async def models_installed_route() -> ModelsInstalledResponse:
     """List installed models with their source (native or litellm)."""
     return await handlers.models_installed()
 
@@ -96,12 +103,12 @@ async def models_pull_route(data: PullRequest) -> Stream:
 
 
 @post("/api/models/show")
-async def models_show_route(data: SetModelRequest) -> dict[str, Any]:
+async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
     """Get model metadata and parameter defaults."""
     return await handlers.models_show(model=data.model)
 
 
 @delete("/api/models/{model:str}", status_code=200)
-async def models_delete_route(model: str, source: str = "native") -> dict[str, Any]:
+async def models_delete_route(model: str, source: str = "native") -> ModelsDeleteResponse:
     """Delete a model from the specified source."""
     return await handlers.models_delete(model, source=source)

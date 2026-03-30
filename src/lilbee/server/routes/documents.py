@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from litestar import get, post
 from litestar.exceptions import ValidationException
@@ -14,7 +13,12 @@ from pydantic import BaseModel, Field
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.handlers import sse_generator
-from lilbee.server.models import AddRequest, SyncRequest
+from lilbee.server.models import (
+    AddRequest,
+    DocumentListResponse,
+    DocumentRemoveResponse,
+    SyncRequest,
+)
 
 
 class RemoveRequest(BaseModel):
@@ -56,12 +60,12 @@ async def documents_list_route(
     search: str = Parameter(query="search", default=""),
     limit: int = Parameter(query="limit", default=50, le=1000),
     offset: int = Parameter(query="offset", default=0, ge=0),
-) -> dict[str, Any]:
+) -> DocumentListResponse:
     """List indexed documents with metadata, paginated and searchable."""
     return await handlers.list_documents(search=search, limit=limit, offset=offset)
 
 
 @post("/api/documents/remove")
-async def documents_remove_route(data: RemoveRequest) -> dict[str, Any]:
+async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
     return await handlers.delete_documents(data.names, delete_files=data.delete_files)

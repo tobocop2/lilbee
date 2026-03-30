@@ -427,25 +427,25 @@ class TestListModels:
         mock_list.return_value = ["qwen3:8b", "mistral:7b"]
         result = await handlers.list_models()
 
-        assert result["chat"]["active"] == cfg.chat_model
-        assert isinstance(result["chat"]["catalog"], list)
-        assert len(result["chat"]["catalog"]) > 0
-        assert "qwen3:8b" in result["chat"]["installed"]
+        assert result.chat.active == cfg.chat_model
+        assert isinstance(result.chat.catalog, list)
+        assert len(result.chat.catalog) > 0
+        assert "qwen3:8b" in result.chat.installed
 
-        assert isinstance(result["vision"]["catalog"], list)
-        assert isinstance(result["vision"]["installed"], list)
+        assert isinstance(result.vision.catalog, list)
+        assert isinstance(result.vision.installed, list)
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:8b"]
         result = await handlers.list_models()
 
-        catalog = result["chat"]["catalog"]
-        qwen_entry = next(m for m in catalog if m["name"] == "qwen3:8b")
-        assert qwen_entry["installed"] is True
+        catalog = result.chat.catalog
+        qwen_entry = next(m for m in catalog if m.name == "qwen3:8b")
+        assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if m["name"] == "mistral:7b")
-        assert mistral_entry["installed"] is False
+        mistral_entry = next(m for m in catalog if m.name == "mistral:7b")
+        assert mistral_entry.installed is False
 
 
 class TestSetChatModel:
@@ -499,12 +499,12 @@ class TestModelsCatalog:
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
 
-        assert result["total"] == 1
-        assert len(result["models"]) == 1
-        m = result["models"][0]
-        assert m["name"] == "Qwen3 8B"
-        assert m["installed"] is False
-        assert m["source"] == "native"
+        assert result.total == 1
+        assert len(result.models) == 1
+        m = result.models[0]
+        assert m.name == "Qwen3 8B"
+        assert m.installed is False
+        assert m.source == "native"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
@@ -557,7 +557,7 @@ class TestModelsCatalog:
         )
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
-        assert result["models"][0]["installed"] is True
+        assert result.models[0].installed is True
 
 
 class TestModelsInstalled:
@@ -569,8 +569,8 @@ class TestModelsInstalled:
         mock_manager.get_source.return_value = ModelSource.LITELLM
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert len(result["models"]) == 2
-        assert result["models"][0]["source"] == "litellm"
+        assert len(result.models) == 2
+        assert result.models[0].source == "litellm"
 
     async def test_unknown_source_defaults_to_litellm(self):
         mock_manager = MagicMock()
@@ -578,7 +578,7 @@ class TestModelsInstalled:
         mock_manager.get_source.return_value = None
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert result["models"][0]["source"] == "litellm"
+        assert result.models[0].source == "litellm"
 
 
 class TestModelsPull:
@@ -613,28 +613,28 @@ class TestModelsDelete:
         mock_manager.remove.return_value = True
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("test", source="litellm")
-        assert result["deleted"] is True
-        assert result["model"] == "test"
+        assert result.deleted is True
+        assert result.model == "test"
 
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
         with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("missing", source="native")
-        assert result["deleted"] is False
-        assert result["freed_gb"] == 0.0
+        assert result.deleted is False
+        assert result.freed_gb == 0.0
 
 
 class TestModelsShow:
     async def test_returns_params(self, mock_svc):
         mock_svc.provider.show_model.return_value = {"parameters": "temp 0.7"}
         result = await handlers.models_show("qwen3:8b")
-        assert result == {"parameters": "temp 0.7"}
+        assert result.model_dump() == {"parameters": "temp 0.7"}
 
     async def test_returns_empty_when_none(self, mock_svc):
         mock_svc.provider.show_model.return_value = None
         result = await handlers.models_show("unknown")
-        assert result == {}
+        assert result.model_dump() == {}
 
 
 class TestDeleteDocuments:
@@ -643,8 +643,8 @@ class TestDeleteDocuments:
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await handlers.delete_documents(["a.md"])
-        assert result["removed"] == ["a.md"]
-        assert result["not_found"] == []
+        assert result.removed == ["a.md"]
+        assert result.not_found == []
 
     async def test_not_found(self, mock_svc):
         from lilbee.store import RemoveResult
@@ -653,8 +653,8 @@ class TestDeleteDocuments:
             removed=[], not_found=["missing.md"]
         )
         result = await handlers.delete_documents(["missing.md"])
-        assert result["removed"] == []
-        assert result["not_found"] == ["missing.md"]
+        assert result.removed == []
+        assert result.not_found == ["missing.md"]
 
     async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
         from lilbee.store import RemoveResult
@@ -670,7 +670,7 @@ class TestDeleteDocuments:
 
         mock_svc.store.remove_documents.side_effect = fake_remove
         result = await handlers.delete_documents(["a.md"], delete_files=True)
-        assert result["removed"] == ["a.md"]
+        assert result.removed == ["a.md"]
         assert not f.exists()
 
 
@@ -774,22 +774,23 @@ class TestSetEmbeddingModel:
 class TestGetConfig:
     async def test_returns_all_config_keys(self):
         result = await handlers.get_config()
-        assert "chat_model" in result
-        assert "system_prompt" in result
-        assert "litellm_base_url" in result
-        assert "diversity_max_per_source" in result
-        assert "mmr_lambda" in result
-        assert "query_expansion_count" in result
-        assert "adaptive_threshold_step" in result
-        assert "temperature" in result
-        assert "max_context_sources" in result
-        assert "hyde" in result
-        assert "hyde_weight" in result
-        assert "temporal_filtering" in result
-        assert "concept_graph" in result
-        assert "concept_boost_weight" in result
-        assert "concept_max_per_chunk" in result
-        assert "llm_api_key" not in result
+        dumped = result.model_dump()
+        assert "chat_model" in dumped
+        assert "system_prompt" in dumped
+        assert "litellm_base_url" in dumped
+        assert "diversity_max_per_source" in dumped
+        assert "mmr_lambda" in dumped
+        assert "query_expansion_count" in dumped
+        assert "adaptive_threshold_step" in dumped
+        assert "temperature" in dumped
+        assert "max_context_sources" in dumped
+        assert "hyde" in dumped
+        assert "hyde_weight" in dumped
+        assert "temporal_filtering" in dumped
+        assert "concept_graph" in dumped
+        assert "concept_boost_weight" in dumped
+        assert "concept_max_per_chunk" in dumped
+        assert "llm_api_key" not in dumped
 
 
 class TestListDocuments:
@@ -798,26 +799,26 @@ class TestListDocuments:
             {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
         ]
         result = await handlers.list_documents()
-        assert result["total"] == 1
-        assert result["documents"][0]["filename"] == "a.md"
-        assert result["documents"][0]["chunk_count"] == 5
+        assert result.total == 1
+        assert result.documents[0].filename == "a.md"
+        assert result.documents[0].chunk_count == 5
 
     async def test_empty(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
         result = await handlers.list_documents()
-        assert result["total"] == 0
-        assert result["documents"] == []
+        assert result.total == 0
+        assert result.documents == []
 
     async def test_pagination(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
             {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
         ]
         result = await handlers.list_documents(limit=3, offset=2)
-        assert result["total"] == 10
-        assert len(result["documents"]) == 3
-        assert result["documents"][0]["filename"] == "doc2.md"
-        assert result["limit"] == 3
-        assert result["offset"] == 2
+        assert result.total == 10
+        assert len(result.documents) == 3
+        assert result.documents[0].filename == "doc2.md"
+        assert result.limit == 3
+        assert result.offset == 2
 
     async def test_search_filter(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
@@ -826,21 +827,22 @@ class TestListDocuments:
             {"filename": "readme_dev.md", "chunk_count": 2},
         ]
         result = await handlers.list_documents(search="readme")
-        assert result["total"] == 2
-        assert all("readme" in d["filename"] for d in result["documents"])
+        assert result.total == 2
+        assert all("readme" in d.filename for d in result.documents)
 
 
 class TestGetConfigReranker:
     @patch("lilbee.reranker.reranker_available", return_value=False)
     async def test_hides_reranker_when_not_installed(self, mock_avail):
         result = await handlers.get_config()
-        assert "reranker_model" not in result
+        assert "reranker_model" not in result.model_dump()
 
     @patch("lilbee.reranker.reranker_available", return_value=True)
     async def test_shows_reranker_when_installed(self, mock_avail):
         result = await handlers.get_config()
-        assert "reranker_model" in result
-        assert "rerank_candidates" in result
+        dumped = result.model_dump()
+        assert "reranker_model" in dumped
+        assert "rerank_candidates" in dumped
 
 
 class TestCrawlStream:
@@ -910,29 +912,31 @@ class TestListExternalModels:
         """Reset the external models cache before each test."""
         import lilbee.server.handlers as h
 
-        h._external_cache = (0.0, "", {})
+        h._external_cache = (0.0, "", None)
         yield
-        h._external_cache = (0.0, "", {})
+        h._external_cache = (0.0, "", None)
 
     @patch("lilbee.services.get_services")
     async def test_returns_provider_models(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a", "model-b"]
         result = await handlers.list_external_models()
-        assert result == {"models": ["model-a", "model-b"]}
+        assert result.models == ["model-a", "model-b"]
+        assert result.error is None
 
     @patch("lilbee.services.get_services")
     async def test_error_returns_empty_with_message(self, mock_svc):
         mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
-        assert result["models"] == []
-        assert "error" in result
+        assert result.models == []
+        assert result.error is not None
 
     @patch("lilbee.services.get_services")
     async def test_cache_reuses_result(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         result1 = await handlers.list_external_models()
         result2 = await handlers.list_external_models()
-        assert result1 == result2 == {"models": ["model-a"]}
+        assert result1 == result2
+        assert result1.models == ["model-a"]
         mock_svc.return_value.provider.list_models.assert_called_once()
 
     @patch("lilbee.server.handlers.time")

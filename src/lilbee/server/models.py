@@ -102,3 +102,89 @@ class CrawlRequest(BaseModel):
     url: str
     depth: int = Field(default=0, le=10)
     max_pages: int = Field(default=50, le=1000)
+
+
+class DocumentInfo(BaseModel):
+    """A single indexed document in a list response."""
+
+    filename: str
+    chunk_count: int = 0
+    ingested_at: str = ""
+
+
+class DocumentListResponse(BaseModel):
+    """Response for GET /api/documents."""
+
+    documents: list[DocumentInfo]
+    total: int
+    limit: int
+    offset: int
+
+
+class DocumentRemoveResponse(BaseModel):
+    """Response for POST /api/documents/remove."""
+
+    removed: list[str]
+    not_found: list[str]
+
+
+class ConfigResponse(BaseModel):
+    """Response for GET /api/config."""
+
+    model_config = {"extra": "allow"}
+
+
+class ModelsShowResponse(BaseModel):
+    """Response for POST /api/models/show."""
+
+    model_config = {"extra": "allow"}
+
+
+class CatalogEntryResponse(BaseModel):
+    """A single model in the catalog browser."""
+
+    name: str
+    display_name: str
+    size_gb: float
+    min_ram_gb: float
+    description: str
+    quality_tier: str
+    installed: bool
+    source: str
+
+
+class ModelsCatalogResponse(BaseModel):
+    """Response for GET /api/models/catalog."""
+
+    total: int
+    limit: int
+    offset: int
+    models: list[CatalogEntryResponse]
+
+
+class InstalledModelEntry(BaseModel):
+    """A single installed model."""
+
+    name: str
+    source: str
+
+
+class ModelsInstalledResponse(BaseModel):
+    """Response for GET /api/models/installed."""
+
+    models: list[InstalledModelEntry]
+
+
+class ModelsDeleteResponse(BaseModel):
+    """Response for DELETE /api/models/{model}."""
+
+    deleted: bool
+    model: str
+    freed_gb: float
+
+
+class ExternalModelsResponse(BaseModel):
+    """Response for GET /api/models/external."""
+
+    models: list[str]
+    error: str | None = None

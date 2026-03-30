@@ -2693,3 +2693,173 @@ async def test_chat_run_crawl_background_error():
             mock_crawl.side_effect = RuntimeError("network error")
             app.screen._run_crawl_background("https://example.com", 0, 50)
             await pilot.pause(delay=0.5)
+
+
+async def test_chat_key_g_scrolls_home():
+    """g scrolls to top of chat log when input not focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        log_widget = app.screen.query_one("#chat-log", VerticalScroll)
+        log_widget.focus()
+        app.screen.key_g()
+        app.screen.key_G()
+
+
+async def test_chat_key_g_noop_in_input():
+    """g/G do nothing when Input is focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        app.screen.query_one("#chat-input", Input).focus()
+        # Should not raise
+        app.screen.key_g()
+        app.screen.key_G()
+
+
+async def test_chat_half_page_actions():
+    """Ctrl-D/U half-page scroll actions execute without error."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen.action_half_page_down()
+        app.screen.action_half_page_up()
+
+
+async def test_settings_key_g_G(mock_svc):
+    """g/G jump to first/last row in settings table."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        app.screen.key_G()
+        assert table.cursor_row == table.row_count - 1
+        app.screen.key_g()
+        assert table.cursor_row == 0
+
+
+async def test_status_key_g_G(mock_svc):
+    """g/G jump to first/last row in status table."""
+    mock_svc.store.get_sources.return_value = [
+        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
+        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
+        {"source": "c.md", "chunk_count": 3, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#docs-table", DataTable)
+        table.focus()
+        app.screen.key_G()
+        assert table.cursor_row == table.row_count - 1
+        app.screen.key_g()
+        assert table.cursor_row == 0
+
+
+async def test_catalog_key_g_G():
+    """g/G jump to top/bottom of catalog list."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            screen.key_g()
+            screen.key_G()
+
+
+async def test_catalog_key_g_G_noop_in_input():
+    """g/G do nothing when catalog search Input is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.key_g()
+            screen.key_G()
+
+
+async def test_catalog_number_keys_switch_tabs():
+    """Number keys 1-4 switch catalog tabs."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import ListView, TabbedContent
+
+            # Focus the list so Input is not focused (number keys are no-ops in Input)
+            screen.query_one("#catlist-all", ListView).focus()
+            await _pilot.pause()
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            screen.key_2()
+            await _pilot.pause()
+            assert tabs.active == "cat-chat"
+            screen.key_3()
+            await _pilot.pause()
+            assert tabs.active == "cat-embedding"
+            screen.key_4()
+            await _pilot.pause()
+            assert tabs.active == "cat-vision"
+            screen.key_1()
+            await _pilot.pause()
+            assert tabs.active == "cat-all"
+
+
+async def test_catalog_number_keys_noop_in_input():
+    """Number keys do nothing when catalog search Input is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.key_1()
+            screen.key_2()
+            screen.key_3()
+            screen.key_4()
+
+
+async def test_app_question_mark_opens_help():
+    """? key binding is registered on LilbeeApp."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    bindings = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, B)}
+    assert "question_mark" in bindings
+
+
+async def test_chat_bindings_include_half_page():
+    """Verify Ctrl-D/U bindings are registered on ChatScreen."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
+    assert "ctrl+d" in keys
+    assert "ctrl+u" in keys

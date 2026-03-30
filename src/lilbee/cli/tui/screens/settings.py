@@ -81,3 +81,13 @@ class SettingsScreen(Screen[None]):
 
     def key_k(self) -> None:
         self.query_one("#settings-table", DataTable).action_cursor_up()
+
+    def key_g(self) -> None:
+        """Jump to first row (vim g)."""
+        table = self.query_one("#settings-table", DataTable)
+        table.move_cursor(row=0)
+
+    def key_G(self) -> None:
+        """Jump to last row (vim G)."""
+        table = self.query_one("#settings-table", DataTable)
+        table.move_cursor(row=table.row_count - 1)

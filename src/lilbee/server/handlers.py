@@ -25,7 +25,20 @@ from lilbee.config import Config, cfg
 from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
-from lilbee.server.models import ConfigUpdateResponse
+from lilbee.server.models import (
+    CatalogEntryResponse,
+    ConfigResponse,
+    ConfigUpdateResponse,
+    DocumentInfo,
+    DocumentListResponse,
+    DocumentRemoveResponse,
+    ExternalModelsResponse,
+    InstalledModelEntry,
+    ModelsCatalogResponse,
+    ModelsDeleteResponse,
+    ModelsInstalledResponse,
+    ModelsShowResponse,
+)
 
 if TYPE_CHECKING:
     from lilbee.model_manager import ModelSource
@@ -392,7 +405,7 @@ async def add_files(data: dict[str, Any]) -> AddResult:
     return paths, queue, task
 
 
-async def list_models() -> dict[str, Any]:
+async def list_models() -> ModelsResponse:
     """Return chat and vision model catalogs with installed status."""
     from lilbee.models import MODEL_CATALOG, VISION_CATALOG, list_installed_models
 
@@ -430,7 +443,7 @@ async def list_models() -> dict[str, Any]:
             installed=sorted(m for m in installed if m in vision_names),
         ),
     )
-    return response.model_dump()
+    return response
 
 
 async def _set_model(
@@ -525,19 +538,21 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
 
 
-async def delete_documents(names: list[str], *, delete_files: bool = False) -> dict[str, Any]:
+async def delete_documents(
+    names: list[str], *, delete_files: bool = False
+) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
     from lilbee.services import get_services
 
     result = get_services().store.remove_documents(names, delete_files=delete_files)
-    return {"removed": result.removed, "not_found": result.not_found}
+    return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
 
 async def list_documents(
     search: str = "",
     limit: int = 50,
     offset: int = 0,
-) -> dict[str, Any]:
+) -> DocumentListResponse:
     """Return indexed documents with metadata, paginated and filterable."""
     from lilbee.services import get_services
 
@@ -547,22 +562,22 @@ async def list_documents(
         sources = [s for s in sources if search_lower in s["filename"].lower()]
     total = len(sources)
     page = sources[offset : offset + limit]
-    return {
-        "documents": [
-            {
-                "filename": s["filename"],
-                "chunk_count": s.get("chunk_count", 0),
-                "ingested_at": s.get("ingested_at", ""),
-            }
+    return DocumentListResponse(
+        documents=[
+            DocumentInfo(
+                filename=s["filename"],
+                chunk_count=s.get("chunk_count", 0),
+                ingested_at=s.get("ingested_at", ""),
+            )
             for s in page
         ],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
-async def get_config() -> dict[str, Any]:
+async def get_config() -> ConfigResponse:
     """Return all user-facing configuration values."""
     from lilbee.reranker import reranker_available
 
@@ -571,16 +586,16 @@ async def get_config() -> dict[str, Any]:
     if reranker_available():
         result["reranker_model"] = dumped["reranker_model"]
         result["rerank_candidates"] = dumped["rerank_candidates"]
-    return result
+    return ConfigResponse(**result)
 
 
-async def models_show(model: str) -> dict[str, Any]:
-    """Return model metadata/parameters. Returns empty dict if unavailable."""
+async def models_show(model: str) -> ModelsShowResponse:
+    """Return model metadata/parameters. Returns empty model if unavailable."""
     from lilbee.services import get_services
 
     provider = get_services().provider
     result = provider.show_model(model)
-    return result if result is not None else {}
+    return ModelsShowResponse(**(result or {}))
 
 
 def _parse_source(source: str) -> ModelSource:
@@ -599,7 +614,7 @@ async def models_catalog(
     sort: str = "featured",
     limit: int = 20,
     offset: int = 0,
-) -> dict[str, Any]:
+) -> ModelsCatalogResponse:
     """Return paginated model catalog with installed status."""
     from lilbee.catalog import enrich_catalog, get_catalog
 
@@ -619,29 +634,27 @@ async def models_catalog(
     installed_names = set(provider.list_models())
     enriched = enrich_catalog(result, installed_names)
 
-    models = [
-        {
-            "name": e.name,
-            "display_name": e.display_name,
-            "size_gb": e.size_gb,
-            "min_ram_gb": e.min_ram_gb,
-            "description": e.description,
-            "quality_tier": e.quality_tier,
-            "installed": e.installed,
-            "source": e.source,
-        }
-        for e in enriched
-    ]
-
-    return {
-        "total": result.total,
-        "limit": result.limit,
-        "offset": result.offset,
-        "models": models,
-    }
+    return ModelsCatalogResponse(
+        total=result.total,
+        limit=result.limit,
+        offset=result.offset,
+        models=[
+            CatalogEntryResponse(
+                name=e.name,
+                display_name=e.display_name,
+                size_gb=e.size_gb,
+                min_ram_gb=e.min_ram_gb,
+                description=e.description,
+                quality_tier=e.quality_tier,
+                installed=e.installed,
+                source=e.source,
+            )
+            for e in enriched
+        ],
+    )
 
 
-async def models_installed() -> dict[str, Any]:
+async def models_installed() -> ModelsInstalledResponse:
     """Return list of installed models with their source."""
     from lilbee.model_manager import ModelSource, get_model_manager
 
@@ -651,8 +664,8 @@ async def models_installed() -> dict[str, Any]:
     for name in names:
         src = manager.get_source(name)
         source_str = src.value if src is not None else ModelSource.LITELLM.value
-        models.append({"name": name, "source": source_str})
-    return {"models": models}
+        models.append(InstalledModelEntry(name=name, source=source_str))
+    return ModelsInstalledResponse(models=models)
 
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
@@ -687,14 +700,14 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
         yield item
 
 
-async def models_delete(model: str, *, source: str = "litellm") -> dict[str, Any]:
-    """Delete a model. Returns {deleted, model, freed_gb}."""
+async def models_delete(model: str, *, source: str = "litellm") -> ModelsDeleteResponse:
+    """Delete a model. Returns deletion status, model name, and freed space."""
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
     src = _parse_source(source)
     deleted = manager.remove(model, src)
-    return {"deleted": deleted, "model": model, "freed_gb": 0.0}
+    return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)
 
 
 async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGenerator[str, None]:
@@ -734,10 +747,10 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
 
 _EXTERNAL_MODELS_TTL = 60
-_external_cache: tuple[float, str, dict[str, Any]] = (0.0, "", {})
+_external_cache: tuple[float, str, ExternalModelsResponse | None] = (0.0, "", None)
 
 
-async def list_external_models() -> dict[str, Any]:
+async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
     global _external_cache
     import asyncio
@@ -752,9 +765,9 @@ async def list_external_models() -> dict[str, Any]:
         from lilbee.services import get_services
 
         models = await asyncio.to_thread(get_services().provider.list_models)
-        result: dict[str, Any] = {"models": models}
+        result = ExternalModelsResponse(models=models)
         _external_cache = (now, key, result)
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)
-        return {"models": [], "error": str(exc)}
+        return ExternalModelsResponse(models=[], error=str(exc))

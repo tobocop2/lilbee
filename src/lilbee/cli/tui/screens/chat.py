@@ -49,6 +49,8 @@ class ChatScreen(Screen[None]):
         Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding("pageup", "scroll_up", "Scroll Up", show=False),
         Binding("pagedown", "scroll_down", "Scroll Down", show=False),
+        Binding("ctrl+d", "half_page_down", "½ Pg Down", show=False),
+        Binding("ctrl+u", "half_page_up", "½ Pg Up", show=False),
         Binding("escape", "cancel_stream", "Cancel", show=False),
     ]
 
@@ -568,3 +570,29 @@ class ChatScreen(Screen[None]):
         if focused and isinstance(focused, Input):
             return
         self.query_one("#chat-log", VerticalScroll).scroll_up()
+
+    def key_g(self) -> None:
+        """Vim: scroll to top."""
+        focused = self.focused
+        if focused and isinstance(focused, Input):
+            return
+        self.query_one("#chat-log", VerticalScroll).scroll_home()
+
+    def key_G(self) -> None:
+        """Vim: scroll to bottom."""
+        focused = self.focused
+        if focused and isinstance(focused, Input):
+            return
+        self.query_one("#chat-log", VerticalScroll).scroll_end()
+
+    def action_half_page_down(self) -> None:
+        """Ctrl-D: half-page down (vim style)."""
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        half = max(1, log_widget.size.height // 2)
+        log_widget.scroll_relative(y=half)
+
+    def action_half_page_up(self) -> None:
+        """Ctrl-U: half-page up (vim style)."""
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        half = max(1, log_widget.size.height // 2)
+        log_widget.scroll_relative(y=-half)

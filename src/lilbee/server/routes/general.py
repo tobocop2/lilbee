@@ -8,7 +8,7 @@ from litestar import get, patch
 from pydantic import ValidationError
 
 from lilbee.server.auth import read_only
-from lilbee.server.models import ConfigUpdateResponse, HealthResponse
+from lilbee.server.models import ConfigResponse, ConfigUpdateResponse, HealthResponse
 
 
 @get("/api/health")
@@ -32,7 +32,7 @@ async def status_route() -> dict[str, Any]:
 
 @get("/api/config")
 @read_only
-async def config_route() -> dict[str, Any]:
+async def config_route() -> ConfigResponse:
     """Return all user-facing configuration values."""
     from lilbee.server import handlers
 

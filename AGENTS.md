@@ -57,6 +57,7 @@ All settings override via environment variables:
 - `LILBEE_QUERY_EXPANSION_COUNT` — LLM-generated query variants, 0=disabled (default: `3`)
 - `LILBEE_ADAPTIVE_THRESHOLD_STEP` — distance threshold widening step (default: `0.2`)
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
+- `LILBEE_NO_SPLASH` — set to any non-empty value to suppress the startup bee animation
 
 CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision-timeout`, and `--log-level`.
 

@@ -176,11 +176,11 @@ class CatalogScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
-        Binding("slash", "focus_search", "Search", show=True),
-        Binding("s", "cycle_sort", "Sort", show=True),
+        Binding("slash", "focus_search", "/ Search", show=True),
+        Binding("s", "cycle_sort", "s Sort", show=True),
         Binding("space", "page_down", "Page Down", show=False),
-        Binding("ctrl+d", "page_down", "½ Page Down", show=False),
-        Binding("ctrl+u", "page_up", "½ Page Up", show=False),
+        Binding("ctrl+d", "page_down", "Ctrl+D ½ Pg Dn", show=False),
+        Binding("ctrl+u", "page_up", "Ctrl+U ½ Pg Up", show=False),
     ]
 
     def __init__(self) -> None:
@@ -519,6 +519,54 @@ class CatalogScreen(Screen[None]):
             if lv.has_focus:
                 lv.action_cursor_up()
                 return
+
+    def key_g(self) -> None:
+        """Jump to top of list (vim g)."""
+        if isinstance(self.focused, Input):
+            return
+        for tab_label in TASK_TABS:
+            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
+            if lv.has_focus:
+                lv.index = 0
+                return
+
+    def key_G(self) -> None:
+        """Jump to bottom of list (vim G)."""
+        if isinstance(self.focused, Input):
+            return
+        for tab_label in TASK_TABS:
+            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
+            if lv.has_focus:
+                count = len(lv.children)
+                if count > 0:
+                    lv.index = count - 1
+                return
+
+    def _activate_tab(self, index: int) -> None:
+        """Switch to tab by zero-based index."""
+        tabs = self.query_one("#catalog-tabs", TabbedContent)
+        tab_id = f"cat-{TASK_TABS[index].lower()}"
+        tabs.active = tab_id
+
+    def key_1(self) -> None:
+        """Switch to All tab."""
+        if not isinstance(self.focused, Input):
+            self._activate_tab(0)
+
+    def key_2(self) -> None:
+        """Switch to Chat tab."""
+        if not isinstance(self.focused, Input):
+            self._activate_tab(1)
+
+    def key_3(self) -> None:
+        """Switch to Embedding tab."""
+        if not isinstance(self.focused, Input):
+            self._activate_tab(2)
+
+    def key_4(self) -> None:
+        """Switch to Vision tab."""
+        if not isinstance(self.focused, Input):
+            self._activate_tab(3)
 
 
 def _filter_catalog(
