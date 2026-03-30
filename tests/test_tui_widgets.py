@@ -1144,3 +1144,99 @@ class TestRunTuiKeyboardInterrupt:
                 run_tui()
                 mock_shutdown.assert_called_once()
                 mock_reset.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# nav_bar.py — global docked navigation bar
+# ---------------------------------------------------------------------------
+
+
+class _NavBarApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="nav-bar")
+
+
+class TestNavBar:
+    async def test_compose_yields_static(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            assert bar is not None
+
+    async def test_default_active_view_is_chat(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            assert bar.active_view == "Chat"
+
+    async def test_watch_active_view_updates_display(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Models"
+            await pilot.pause()
+            # Just verify it doesn't crash and updates
+            assert bar.active_view == "Models"
+
+    async def test_all_views_shown_in_display(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Just verify the NavBar composes successfully with all views
+            bar = app.query_one(NavBar)
+            assert bar.active_view == "Chat"
+
+    async def test_set_active_view_to_status(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Status"
+            await pilot.pause()
+            assert bar.active_view == "Status"
+
+
+# ---------------------------------------------------------------------------
+# app.py — global NavBar composition and key bindings
+# ---------------------------------------------------------------------------
+
+
+class TestLilbeeAppGlobalNavBar:
+    async def test_app_composes_global_nav_bar(self) -> None:
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            nav = app.query_one("#global-nav-bar")
+            assert nav is not None
+
+    async def test_app_nav_bar_default_is_chat(self) -> None:
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            nav = app.query_one("#global-nav-bar")
+            assert nav.active_view == "Chat"

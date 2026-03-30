@@ -15,7 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Input, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
@@ -79,12 +79,11 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
-        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self.query_one("#chat-only-banner", Static).display = False
-        # Store TaskBar on app so other screens (CatalogScreen) can find it
+        # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard

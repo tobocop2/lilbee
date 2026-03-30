@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 _READY_FILE = "lilbee-splash-ready"
@@ -38,7 +39,7 @@ class LilbeeApp(App[None]):
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=True),
+        Binding("question_mark", "push_help", "Help", show=False),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("f2", "push_catalog", "Models", show=False),
@@ -48,13 +49,20 @@ class LilbeeApp(App[None]):
         Binding("f4", "push_settings", "Settings", show=False),
         Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("ctrl+c", "quit", "Cancel/Quit", show=True, priority=True),
+        Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
+        Binding("ctrl+1", "switch_chat", "Chat", show=False, priority=True),
+        Binding("ctrl+2", "switch_models", "Models", show=False, priority=True),
+        Binding("ctrl+3", "switch_status", "Status", show=False, priority=True),
+        Binding("ctrl+4", "switch_settings", "Settings", show=False, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
         self._theme_index = 0
+
+    def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
@@ -90,10 +98,35 @@ class LilbeeApp(App[None]):
             return
         self.exit()
 
-    def action_push_catalog(self) -> None:
+    def _switch_view(self, view_name: str) -> None:
+        """Switch to a named view, popping any overlay screens first."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+        from lilbee.cli.tui.screens.status import StatusScreen
 
-        self.push_screen(CatalogScreen())
+        # Pop non-chat screens until we're back at chat
+        while len(self.screen_stack) > 1 and not isinstance(self.screen, ChatScreen):
+            self.pop_screen()
+
+        if view_name == "Chat":
+            pass  # Already there
+        elif view_name == "Models":
+            self.push_screen(CatalogScreen())
+        elif view_name == "Status":
+            self.push_screen(StatusScreen())
+        elif view_name == "Settings":
+            self.push_screen(SettingsScreen())
+
+        # Update NavBar
+        try:
+            nav = self.query_one("#global-nav-bar", NavBar)
+            nav.active_view = view_name
+        except Exception:
+            pass
+
+    def action_push_catalog(self) -> None:
+        self._switch_view("Models")
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal
@@ -101,11 +134,19 @@ class LilbeeApp(App[None]):
         self.push_screen(HelpModal())
 
     def action_push_status(self) -> None:
-        from lilbee.cli.tui.screens.status import StatusScreen
-
-        self.push_screen(StatusScreen())
+        self._switch_view("Status")
 
     def action_push_settings(self) -> None:
-        from lilbee.cli.tui.screens.settings import SettingsScreen
+        self._switch_view("Settings")
 
-        self.push_screen(SettingsScreen())
+    def action_switch_chat(self) -> None:
+        self._switch_view("Chat")
+
+    def action_switch_models(self) -> None:
+        self._switch_view("Models")
+
+    def action_switch_status(self) -> None:
+        self._switch_view("Status")
+
+    def action_switch_settings(self) -> None:
+        self._switch_view("Settings")

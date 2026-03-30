@@ -189,6 +189,10 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False),
         Binding("ctrl+d", "page_down", "PgDn", show=False),
         Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("ctrl+1", "activate_tab_0", "All", show=False, priority=True),
+        Binding("ctrl+2", "activate_tab_1", "Chat", show=False, priority=True),
+        Binding("ctrl+3", "activate_tab_2", "Embed", show=False, priority=True),
+        Binding("ctrl+4", "activate_tab_3", "Vision", show=False, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -603,25 +607,17 @@ class CatalogScreen(Screen[None]):
         tab_id = f"cat-{TASK_TABS[index].lower()}"
         tabs.active = tab_id
 
-    def key_1(self) -> None:
-        """Switch to All tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(0)
+    def action_activate_tab_0(self) -> None:
+        self._activate_tab(0)
 
-    def key_2(self) -> None:
-        """Switch to Chat tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(1)
+    def action_activate_tab_1(self) -> None:
+        self._activate_tab(1)
 
-    def key_3(self) -> None:
-        """Switch to Embedding tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(2)
+    def action_activate_tab_2(self) -> None:
+        self._activate_tab(2)
 
-    def key_4(self) -> None:
-        """Switch to Vision tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(3)
+    def action_activate_tab_3(self) -> None:
+        self._activate_tab(3)
 
 
 def _filter_catalog(

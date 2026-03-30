@@ -1,5 +1,11 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
+#global-nav-bar {
+    dock: bottom;
+    height: 1;
+    width: 100%;
+}
+
 #chat-log {
     height: 1fr;
 }

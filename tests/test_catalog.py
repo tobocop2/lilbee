@@ -557,19 +557,20 @@ class TestResolveFilename:
 
 class TestTaskToPipeline:
     def test_chat(self) -> None:
-        assert catalog._task_to_pipeline("chat") == "text-generation"
+        assert catalog._task_to_pipeline("chat") == ("text-generation", None)
 
     def test_embedding(self) -> None:
-        assert catalog._task_to_pipeline("embedding") == "feature-extraction"
+        expected = ("feature-extraction", "sentence-transformers")
+        assert catalog._task_to_pipeline("embedding") == expected
 
     def test_vision(self) -> None:
-        assert catalog._task_to_pipeline("vision") == "image-text-to-text"
+        assert catalog._task_to_pipeline("vision") == ("image-text-to-text", None)
 
     def test_unknown(self) -> None:
-        assert catalog._task_to_pipeline("unknown") == "text-generation"
+        assert catalog._task_to_pipeline("unknown") == ("text-generation", None)
 
     def test_none(self) -> None:
-        assert catalog._task_to_pipeline(None) == "text-generation"
+        assert catalog._task_to_pipeline(None) == ("text-generation", None)
 
 
 class TestPipelineToTask:

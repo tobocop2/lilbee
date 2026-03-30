@@ -93,7 +93,8 @@ class Config(BaseSettings):
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=10, ge=1, writable=True)
-    max_distance: float = ConfigField(default=0.7, ge=0.0, writable=True)
+    max_distance: float = ConfigField(default=0.9, ge=0.0, writable=True)
+    adaptive_threshold: bool = Field(default=False)
     system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     vision_model: str = ""

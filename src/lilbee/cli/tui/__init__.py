@@ -8,10 +8,10 @@ from lilbee.services import reset_services
 
 def run_tui(*, auto_sync: bool = False) -> None:
     """Launch the full-screen Textual TUI."""
-    from lilbee.cli.tui.app import LilbeeApp
-
     import os
     import signal
+
+    from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp(auto_sync=auto_sync)
     try:
