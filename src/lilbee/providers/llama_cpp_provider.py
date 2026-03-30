@@ -41,8 +41,14 @@ class LlamaCppProvider(LLMProvider):
     """
 
     def __init__(self) -> None:
-        self._chat_llm: Any | None = None
-        self._embed_llm: Any | None = None
+        from lilbee.config import cfg
+        from lilbee.providers.model_cache import MemoryAwareModelCache
+
+        self._cache = MemoryAwareModelCache(
+            max_memory_fraction=cfg.gpu_memory_fraction,
+            keep_alive_seconds=cfg.model_keep_alive,
+            loader=_load_llama,
+        )
         self._vision_llm: Any | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
@@ -93,7 +99,7 @@ class LlamaCppProvider(LLMProvider):
                     req.future.set_exception(exc)
 
     def _get_chat_llm(self, model: str | None = None) -> Any:
-        """Lazy-load a Llama instance for chat (or vision if model is a vision model)."""
+        """Load or return a cached Llama instance for chat."""
         from lilbee.config import cfg
 
         resolved_model = model or cfg.chat_model
@@ -102,12 +108,7 @@ class LlamaCppProvider(LLMProvider):
             return self._get_vision_llm(resolved_model)
 
         model_path = _resolve_model_path(resolved_model)
-
-        cached = getattr(self._chat_llm, "_model_path", None)
-        if self._chat_llm is None or cached != str(model_path):
-            self._chat_llm = _load_llama(model_path, embedding=False)
-            self._chat_llm._model_path = str(model_path)
-        return self._chat_llm
+        return self._cache.load_model(model_path, embedding=False)
 
     def _get_vision_llm(self, model: str) -> Any:
         """Lazy-load a Llama instance with a vision chat handler."""
@@ -120,17 +121,11 @@ class LlamaCppProvider(LLMProvider):
         return self._vision_llm
 
     def _get_embed_llm(self) -> Any:
-        """Lazy-load a Llama instance for embeddings."""
+        """Load or return a cached Llama instance for embeddings."""
         from lilbee.config import cfg
 
         model_path = _resolve_model_path(cfg.embedding_model)
-
-        if self._embed_llm is None or getattr(self._embed_llm, "_model_path", None) != str(
-            model_path
-        ):
-            self._embed_llm = _load_llama(model_path, embedding=True)
-            self._embed_llm._model_path = str(model_path)
-        return self._embed_llm
+        return self._cache.load_model(model_path, embedding=True)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Submit embedding request to the batch queue. Thread-safe."""
@@ -190,9 +185,10 @@ class LlamaCppProvider(LLMProvider):
         return _read_gguf_metadata(path)
 
     def shutdown(self) -> None:
-        """Stop the embed worker thread."""
+        """Stop the embed worker thread and unload all cached models."""
         self._embed_queue.put(None)
         self._worker.join(timeout=2)
+        self._cache.unload_all()
 
 
 class _LockedStreamIterator:

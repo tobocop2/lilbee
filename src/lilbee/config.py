@@ -202,6 +202,13 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl (0 = sync only at end).
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
+    # Fraction of GPU/unified memory available for loaded models.
+    # 0.75 leaves headroom for the OS and other processes.
+    gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
+
+    # Seconds a model stays loaded after last use. 0 = unload immediately.
+    model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.

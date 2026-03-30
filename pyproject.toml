@@ -40,6 +40,7 @@ dependencies = [
     "httpx",
     "llama-cpp-python",
     "huggingface_hub",
+    "psutil>=5.9",
     "pydantic-settings>=2.13.1",
 ]
 
