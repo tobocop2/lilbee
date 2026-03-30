@@ -176,11 +176,14 @@ _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 def _extract_family_name(model_name: str) -> str:
     """Extract the family name by stripping the trailing parameter count.
 
+    Applies clean_display_name first to strip -GGUF, -Instruct, etc.
+
     "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
     "Nomic Embed Text v1.5" -> "Nomic Embed Text v1.5" (no trailing number pattern).
     """
-    m = _FAMILY_NAME_RE.match(model_name)
-    return m.group(1) if m else model_name
+    cleaned = clean_display_name(model_name)
+    m = _FAMILY_NAME_RE.match(cleaned)
+    return m.group(1) if m else cleaned
 
 
 def _extract_quant(filename: str) -> str:
@@ -769,7 +772,9 @@ QUANT_TIERS: dict[str, str] = {
 
 def quant_tier(quant: str) -> str:
     """Map a quantization label to a human-readable quality tier."""
-    return QUANT_TIERS.get(quant, "unknown")
+    if not quant:
+        return "—"
+    return QUANT_TIERS.get(quant, "—")
 
 
 @dataclass(frozen=True)

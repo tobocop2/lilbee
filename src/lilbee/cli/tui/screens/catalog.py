@@ -103,6 +103,8 @@ def _format_row(m: CatalogModel, cached_size: float | None = None) -> str:
 
 def _format_size_mb(size_mb: int) -> str:
     """Format size in MB to a human-readable string."""
+    if size_mb == 0:
+        return "—"
     if size_mb >= 1024:
         return f"{size_mb / 1024:.1f} GB"
     return f"{size_mb} MB"
@@ -111,9 +113,9 @@ def _format_size_mb(size_mb: int) -> str:
 def _format_variant_row(v: ModelVariant) -> str:
     """Format a variant row for display inside a family group."""
     star = "★ " if v.recommended else "  "
-    quant_label = v.quant or "default"
+    quant_label = v.quant or "—"
     tier = quant_tier(v.quant)
-    tier_tag = f" [{tier}]" if tier != "unknown" else ""
+    tier_tag = f" [{tier}]" if tier != "—" else ""
     size = _format_size_mb(v.size_mb)
     suffix = " — recommended" if v.recommended else ""
     return f"  {star}{v.param_count} {quant_label} ({size}){tier_tag}{suffix}"
@@ -174,19 +176,19 @@ class CatalogScreen(Screen[None]):
     """Model catalog with tabs, search, and inline install."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "q Back", show=True),
+        Binding("q", "pop_screen", "q back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
-        Binding("slash", "focus_search", "/ Search", show=True),
-        Binding("s", "cycle_sort", "s Sort", show=True),
-        Binding("d", "delete_model", "d Delete", show=True),
+        Binding("slash", "focus_search", "/ search", show=True),
+        Binding("d", "delete_model", "d delete", show=True),
+        Binding("s", "cycle_sort", "Sort", show=False),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("j", "cursor_down", "j/k Nav", show=True),
+        Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "g/G Top/End", show=True),
+        Binding("g", "jump_top", "Top", show=False),
         Binding("G", "jump_bottom", "End", show=False),
-        Binding("space", "page_down", "Spc PgDn", show=False),
-        Binding("ctrl+d", "page_down", "^d PgDn", show=False),
-        Binding("ctrl+u", "page_up", "^u PgUp", show=False),
+        Binding("space", "page_down", "PgDn", show=False),
+        Binding("ctrl+d", "page_down", "PgDn", show=False),
+        Binding("ctrl+u", "page_up", "PgUp", show=False),
     ]
 
     def __init__(self) -> None:
@@ -300,9 +302,7 @@ class CatalogScreen(Screen[None]):
 
             if remote:
                 provider = remote[0].provider
-                lv.append(
-                    ListItem(Label(f"INSTALLED ({provider})", classes="section-header"))
-                )
+                lv.append(ListItem(Label(f"INSTALLED ({provider})", classes="section-header")))
                 for rm in remote:
                     lv.append(RemoteRow(rm))
 
@@ -546,9 +546,7 @@ class CatalogScreen(Screen[None]):
                 )
         except Exception as exc:
             log.warning("Delete failed for %s", model_name, exc_info=True)
-            self.app.call_from_thread(
-                self.notify, f"Delete failed: {exc}", severity="error"
-            )
+            self.app.call_from_thread(self.notify, f"Delete failed: {exc}", severity="error")
 
     def _refresh_after_delete(self) -> None:
         """Re-fetch remote models and refresh lists after deletion."""
