@@ -69,6 +69,34 @@ class CleanedChunk(BaseModel):
     chunk_index: int = 0
 
 
+class StatusSourceInfo(BaseModel):
+    """A single indexed source in a status response."""
+
+    filename: str
+    file_hash: str
+    chunk_count: int
+    ingested_at: str
+
+
+class StatusConfigInfo(BaseModel):
+    """Configuration section of a status response."""
+
+    documents_dir: str
+    data_dir: str
+    chat_model: str
+    embedding_model: str
+    vision_model: str | None = None
+
+
+class StatusResponse(BaseModel):
+    """Response for GET /api/status."""
+
+    command: str = "status"
+    config: StatusConfigInfo
+    sources: list[StatusSourceInfo]
+    total_chunks: int
+
+
 class HealthResponse(BaseModel):
     """Response for /api/health."""
 

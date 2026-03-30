@@ -127,6 +127,54 @@ class TestAssistantMessageAsync:
             assert am._citation_widget is not None
             assert am._citation_widget.display is False
 
+    async def test_markdown_rendering_true_uses_markdown_widget(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = True
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am.use_markdown is True
+            assert isinstance(am._content_widget, Markdown)
+
+    async def test_markdown_rendering_false_uses_static_widget(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = False
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am.use_markdown is False
+            assert not isinstance(am._content_widget, Markdown)
+            assert isinstance(am._content_widget, Static)
+
+    async def test_rebuild_content_widget_toggles_type(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = True
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            am.append_content("hello")
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            assert not isinstance(am._content_widget, Markdown)
+            assert am.use_markdown is False
+
+    async def test_rebuild_content_widget_noop_when_no_widget(self) -> None:
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        app = _MsgApp()
+        async with app.run_test():
+            am = AssistantMessage()
+            am._content_widget = None
+            await am.rebuild_content_widget(use_markdown=False)
+            assert am._content_widget is None
+
 
 # ---------------------------------------------------------------------------
 # help_modal.py

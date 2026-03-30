@@ -80,7 +80,8 @@ class TestHealth:
     async def test_returns_status_and_version(self):
         with patch("lilbee.server.handlers.get_version", return_value="1.2.3"):
             result = await handlers.health()
-        assert result == {"status": "ok", "version": "1.2.3"}
+        assert result.status == "ok"
+        assert result.version == "1.2.3"
 
 
 class TestStatus:
@@ -99,8 +100,8 @@ class TestStatus:
         )
         with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
             result = await handlers.status()
-        assert result["sources"] == []
-        assert result["total_chunks"] == 0
+        assert result.sources == []
+        assert result.total_chunks == 0
 
 
 class TestSearch:
@@ -151,18 +152,17 @@ class TestAsk:
             ],
         )
         result = await handlers.ask("what?")
-        assert result["answer"] == "42"
-        assert len(result["sources"]) == 1
-        assert "vector" not in result["sources"][0]
-        assert result["sources"][0]["distance"] == 0.1
+        assert result.answer == "42"
+        assert len(result.sources) == 1
+        assert result.sources[0].distance == 0.1
 
     async def test_no_sources(self, mock_svc):
         from lilbee.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="No docs found.", sources=[])
         result = await handlers.ask("what?")
-        assert result["answer"] == "No docs found."
-        assert result["sources"] == []
+        assert result.answer == "No docs found."
+        assert result.sources == []
 
 
 class TestAskStream:
@@ -263,7 +263,7 @@ class TestChat:
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
-        assert result["answer"] == "ok"
+        assert result.answer == "ok"
         mock_svc.searcher.ask_raw.assert_called_once_with(
             "follow up", top_k=0, history=history, options=None
         )
@@ -451,25 +451,25 @@ class TestListModels:
 class TestSetChatModel:
     async def test_updates_config_and_persists(self, tmp_path):
         result = await handlers.set_chat_model("llama3")
-        assert result["model"] == "llama3:latest"
+        assert result.model == "llama3:latest"
         assert cfg.chat_model == "llama3:latest"
 
     async def test_preserves_existing_tag(self, tmp_path):
         result = await handlers.set_chat_model("llama3:7b")
-        assert result["model"] == "llama3:7b"
+        assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
 
 
 class TestSetVisionModel:
     async def test_updates_config_and_persists(self, tmp_path):
         result = await handlers.set_vision_model("minicpm-v:latest")
-        assert result["model"] == "minicpm-v:latest"
+        assert result.model == "minicpm-v:latest"
         assert cfg.vision_model == "minicpm-v:latest"
 
     async def test_empty_string_disables(self, tmp_path):
         cfg.vision_model = "some-model:latest"
         result = await handlers.set_vision_model("")
-        assert result["model"] == ""
+        assert result.model == ""
         assert cfg.vision_model == ""
 
 
@@ -723,7 +723,7 @@ class TestUpdateConfig:
         assert cfg.llm_api_key == "sk-test123"
         # Verify it's excluded from GET /api/config
         config = await handlers.get_config()
-        assert "llm_api_key" not in config
+        assert "llm_api_key" not in config.model_dump()
 
     async def test_multi_field_bad_second_no_partial_apply(self):
         """If second field is invalid, first field should NOT be applied."""
@@ -751,7 +751,7 @@ class TestUpdateConfig:
 class TestSetEmbeddingModel:
     async def test_updates_config_and_persists(self, tmp_path):
         result = await handlers.set_embedding_model("nomic-embed-text:latest")
-        assert result["model"] == "nomic-embed-text:latest"
+        assert result.model == "nomic-embed-text:latest"
         assert cfg.embedding_model == "nomic-embed-text:latest"
         from lilbee import settings as s
 
@@ -767,7 +767,7 @@ class TestSetEmbeddingModel:
     async def test_embedding_model_without_tag(self, tmp_path):
         """Setting embedding model without a tag stores it as-is (no :latest append)."""
         result = await handlers.set_embedding_model("nomic-embed-text")
-        assert result["model"] == "nomic-embed-text"
+        assert result.model == "nomic-embed-text"
         assert cfg.embedding_model == "nomic-embed-text"
 
 

@@ -1500,8 +1500,8 @@ async def test_catalog_vim_keys():
 
             lv = screen.query_one("#catlist-all", ListView)
             lv.focus()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_vim_keys_in_input():
@@ -1516,8 +1516,8 @@ async def test_catalog_vim_keys_in_input():
             from textual.widgets import Input
 
             screen.query_one("#catalog-search", Input).focus()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_page_down_up():
@@ -2137,6 +2137,42 @@ async def test_chat_run_sync_worker():
                 await _pilot.pause()
 
 
+async def test_chat_sync_progress_percentage():
+    """Verify sync progress reports actual percentage, not hardcoded 50%."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EventType
+
+        update_calls: list[tuple] = []
+        task_bar = app.screen.query_one("#task-bar")
+        original_update = task_bar.update_task
+
+        def tracking_update(task_id, pct, status):
+            update_calls.append((task_id, pct, status))
+            return original_update(task_id, pct, status)
+
+        async def fake_sync(on_progress=None):
+            if on_progress:
+                on_progress(
+                    EventType.FILE_START,
+                    {"current_file": 3, "total_files": 4, "file": "doc.md"},
+                )
+            return {"added": 1}
+
+        with (
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch.object(task_bar, "update_task", tracking_update),
+        ):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        # The FILE_START with 3/4 should produce 75%, not 50%
+        pct_values = [pct for _, pct, _ in update_calls if pct > 0]
+        assert 75 in pct_values
+
+
 async def test_chat_run_sync_error_worker():
     """Cover the sync error branch."""
 
@@ -2416,8 +2452,8 @@ async def test_catalog_page_down_with_focused_list():
             screen.action_page_up()
 
 
-async def test_catalog_key_j_with_focused_list():
-    """Cover the lv.action_cursor_down() in key_j (lines 372-373)."""
+async def test_catalog_action_cursor_with_focused_list():
+    """Cover the lv.action_cursor_down() in action_cursor_down."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -2437,8 +2473,8 @@ async def test_catalog_key_j_with_focused_list():
             lv = screen.query_one("#catlist-all", ListView)
             lv.focus()
             await _pilot.pause()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_highlight_none_with_highlighted_child():
@@ -2698,7 +2734,7 @@ async def test_chat_run_crawl_background_error():
 async def test_chat_key_g_scrolls_home():
     """g scrolls to top of chat log when input not focused."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as _pilot:
         from textual.containers import VerticalScroll
 
         log_widget = app.screen.query_one("#chat-log", VerticalScroll)
@@ -2735,9 +2771,9 @@ async def test_settings_key_g_G(mock_svc):
 
         table = app.screen.query_one("#settings-table", DataTable)
         table.focus()
-        app.screen.key_G()
+        app.screen.action_jump_bottom()
         assert table.cursor_row == table.row_count - 1
-        app.screen.key_g()
+        app.screen.action_jump_top()
         assert table.cursor_row == 0
 
 
@@ -2754,9 +2790,9 @@ async def test_status_key_g_G(mock_svc):
 
         table = app.screen.query_one("#docs-table", DataTable)
         table.focus()
-        app.screen.key_G()
+        app.screen.action_jump_bottom()
         assert table.cursor_row == table.row_count - 1
-        app.screen.key_g()
+        app.screen.action_jump_top()
         assert table.cursor_row == 0
 
 
@@ -2774,8 +2810,8 @@ async def test_catalog_key_g_G():
 
             lv = screen.query_one("#catlist-all", ListView)
             lv.focus()
-            screen.key_g()
-            screen.key_G()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
 
 
 async def test_catalog_key_g_G_noop_in_input():
@@ -2791,8 +2827,8 @@ async def test_catalog_key_g_G_noop_in_input():
             from textual.widgets import Input
 
             screen.query_one("#catalog-search", Input).focus()
-            screen.key_g()
-            screen.key_G()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
 
 
 async def test_catalog_number_keys_switch_tabs():

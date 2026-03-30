@@ -161,8 +161,11 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
 # Maps vision catalog entries to their mmproj (CLIP projection) filenames.
 # Vision models need both the main GGUF and the mmproj file to work.
 # Keys are hf_repo identifiers; values are glob patterns resolved at download time.
+# Every FEATURED_VISION entry MUST have a corresponding key here.
+_DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
+
 VISION_MMPROJ_FILES: dict[str, str] = {
-    "LightOnIO/LightOnOCR-2-0.5B-GGUF": "*mmproj*.gguf",
+    "LightOnIO/LightOnOCR-2-0.5B-GGUF": _DEFAULT_MMPROJ_PATTERN,
 }
 
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
@@ -564,10 +567,7 @@ def _download_mmproj(entry: CatalogModel) -> Path | None:
 
     Returns the path to the downloaded file, or None if no mmproj is configured.
     """
-    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, "")
-    if not mmproj_pattern:
-        log.debug("No mmproj pattern for %s, skipping", entry.hf_repo)
-        return None
+    mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
 
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, mmproj_pattern)
     if not mmproj_filename:

@@ -906,6 +906,49 @@ class TestVisionMmprojFiles:
         assert len(download_calls) == 1
 
 
+class TestVisionMmprojFallback:
+    def test_unmapped_vision_model_uses_default_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        # Create a vision entry not in the explicit mapping
+        custom_entry = CatalogModel(
+            "CustomVision 1B",
+            "user/CustomVision-1B-GGUF",
+            "*Q4_K_M.gguf",
+            1.0,
+            4,
+            "Custom vision model",
+            True,
+            0,
+            "vision",
+        )
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "custom-Q4_K_M.gguf")
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "custom-mmproj-f16.gguf"
+        )
+
+        download_model(custom_entry)
+
+        # Should have two downloads: main model + mmproj (via default pattern)
+        assert len(download_calls) == 2
+        filenames = [c["filename"] for c in download_calls]
+        assert "custom-Q4_K_M.gguf" in filenames
+        assert "custom-mmproj-f16.gguf" in filenames
+
+
 class TestFindMmprojFile:
     def test_finds_mmproj_in_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)

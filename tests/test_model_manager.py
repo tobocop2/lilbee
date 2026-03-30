@@ -9,6 +9,8 @@ import pytest
 from lilbee.model_manager import (
     ModelManager,
     ModelSource,
+    RemoteModel,
+    detect_provider,
     get_model_manager,
     reset_model_manager,
 )
@@ -583,3 +585,63 @@ class TestRemoveNativeRegistry:
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr._remove_native("removable") is True
         assert not registry.is_installed("removable")
+
+
+class TestDetectProvider:
+    def test_localhost_ollama(self) -> None:
+        assert detect_provider("http://localhost:11434") == "Ollama"
+
+    def test_ollama_in_url(self) -> None:
+        assert detect_provider("http://ollama.local:11434") == "Ollama"
+
+    def test_openai_url(self) -> None:
+        assert detect_provider("https://api.openai.com/v1") == "OpenAI"
+
+    def test_anthropic_url(self) -> None:
+        assert detect_provider("https://api.anthropic.com") == "Anthropic"
+
+    def test_unknown_url(self) -> None:
+        assert detect_provider("http://192.168.1.100:8080") == "Remote"
+
+    def test_case_insensitive(self) -> None:
+        assert detect_provider("http://LOCALHOST:11434") == "Ollama"
+
+
+class TestRemoteModelProvider:
+    def test_classify_remote_models_sets_provider(self) -> None:
+        from lilbee.model_manager import classify_remote_models
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {
+            "models": [
+                {"name": "llama3:latest", "details": {"family": "llama", "parameter_size": "8B"}}
+            ]
+        }
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            result = classify_remote_models("http://localhost:11434")
+
+        assert len(result) == 1
+        assert result[0].provider == "Ollama"
+
+    def test_classify_remote_models_openai_provider(self) -> None:
+        from lilbee.model_manager import classify_remote_models
+
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {
+            "models": [
+                {"name": "gpt-4", "details": {"family": "gpt", "parameter_size": ""}}
+            ]
+        }
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.get", return_value=mock_response):
+            result = classify_remote_models("https://api.openai.com/v1")
+
+        assert len(result) == 1
+        assert result[0].provider == "OpenAI"
+
+    def test_remote_model_default_provider(self) -> None:
+        model = RemoteModel(name="test", task="chat", family="llama", parameter_size="8B")
+        assert model.provider == "Remote"

@@ -158,7 +158,7 @@ class RemoteRow(ListItem):
         m = self.remote_model
         size = m.parameter_size or "?"
         yield Static(
-            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           (remote)",
+            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           ({m.provider})",
             classes="model-row-text",
         )
 
@@ -174,13 +174,17 @@ class CatalogScreen(Screen[None]):
     """Model catalog with tabs, search, and inline install."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
+        Binding("q", "pop_screen", "q Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("slash", "focus_search", "/ Search", show=True),
         Binding("s", "cycle_sort", "s Sort", show=True),
-        Binding("space", "page_down", "Page Down", show=False),
-        Binding("ctrl+d", "page_down", "Ctrl+D ½ Pg Dn", show=False),
-        Binding("ctrl+u", "page_up", "Ctrl+U ½ Pg Up", show=False),
+        Binding("j", "cursor_down", "j/k Nav", show=True),
+        Binding("k", "cursor_up", "Nav", show=False),
+        Binding("g", "jump_top", "g/G Top/End", show=True),
+        Binding("G", "jump_bottom", "End", show=False),
+        Binding("space", "page_down", "Spc PgDn", show=False),
+        Binding("ctrl+d", "page_down", "^d PgDn", show=False),
+        Binding("ctrl+u", "page_up", "^u PgUp", show=False),
     ]
 
     def __init__(self) -> None:
@@ -292,7 +296,10 @@ class CatalogScreen(Screen[None]):
                 lv.append(ListItem(Label(_HF_BROWSE_CHAT_ONLY)))
 
             if remote:
-                lv.append(ListItem(Label("INSTALLED (Remote)", classes="section-header")))
+                provider = remote[0].provider
+                lv.append(
+                    ListItem(Label(f"INSTALLED ({provider})", classes="section-header"))
+                )
                 for rm in remote:
                     lv.append(RemoteRow(rm))
 
@@ -487,60 +494,48 @@ class CatalogScreen(Screen[None]):
         self._refresh_lists()
 
     def action_page_down(self) -> None:
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                for _ in range(10):
-                    lv.action_cursor_down()
-                return
+        lv = self._focused_list()
+        if lv:
+            for _ in range(10):
+                lv.action_cursor_down()
 
     def action_page_up(self) -> None:
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                for _ in range(10):
-                    lv.action_cursor_up()
-                return
-
-    def key_j(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                lv.action_cursor_down()
-                return
-
-    def key_k(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
+        lv = self._focused_list()
+        if lv:
+            for _ in range(10):
                 lv.action_cursor_up()
-                return
 
-    def key_g(self) -> None:
-        """Jump to top of list (vim g)."""
+    def _focused_list(self) -> ListView | None:
+        """Return the focused ListView, or None."""
         if isinstance(self.focused, Input):
-            return
+            return None
         for tab_label in TASK_TABS:
             lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
             if lv.has_focus:
-                lv.index = 0
-                return
+                return lv
+        return None
 
-    def key_G(self) -> None:
-        """Jump to bottom of list (vim G)."""
-        if isinstance(self.focused, Input):
-            return
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                count = len(lv.children)
-                if count > 0:
-                    lv.index = count - 1
-                return
+    def action_cursor_down(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.action_cursor_up()
+
+    def action_jump_top(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.index = 0
+
+    def action_jump_bottom(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            count = len(lv.children)
+            if count > 0:
+                lv.index = count - 1
 
     def _activate_tab(self, index: int) -> None:
         """Switch to tab by zero-based index."""

@@ -19,8 +19,12 @@ class StatusScreen(Screen[None]):
     """Knowledge base status view."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
+        Binding("q", "pop_screen", "q Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
+        Binding("j", "cursor_down", "j/k Nav", show=True),
+        Binding("k", "cursor_up", "Nav", show=False),
+        Binding("g", "jump_top", "g/G Top/End", show=True),
+        Binding("G", "jump_bottom", "End", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -61,18 +65,15 @@ class StatusScreen(Screen[None]):
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
 
-    def key_j(self) -> None:
+    def action_cursor_down(self) -> None:
         self.query_one("#docs-table", DataTable).action_cursor_down()
 
-    def key_k(self) -> None:
+    def action_cursor_up(self) -> None:
         self.query_one("#docs-table", DataTable).action_cursor_up()
 
-    def key_g(self) -> None:
-        """Jump to first row (vim g)."""
-        table = self.query_one("#docs-table", DataTable)
-        table.move_cursor(row=0)
+    def action_jump_top(self) -> None:
+        self.query_one("#docs-table", DataTable).move_cursor(row=0)
 
-    def key_G(self) -> None:
-        """Jump to last row (vim G)."""
+    def action_jump_bottom(self) -> None:
         table = self.query_one("#docs-table", DataTable)
         table.move_cursor(row=table.row_count - 1)
