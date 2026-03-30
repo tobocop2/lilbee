@@ -35,7 +35,7 @@ from lilbee.catalog import (
     quant_tier,
 )
 from lilbee.config import cfg
-from lilbee.model_manager import RemoteModel
+from lilbee.model_manager import RemoteModel, get_model_manager
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,8 @@ def _format_row(m: CatalogModel, cached_size: float | None = None) -> str:
 
 def _format_size_mb(size_mb: int) -> str:
     """Format size in MB to a human-readable string."""
+    if size_mb == 0:
+        return "—"
     if size_mb >= 1024:
         return f"{size_mb / 1024:.1f} GB"
     return f"{size_mb} MB"
@@ -111,9 +113,9 @@ def _format_size_mb(size_mb: int) -> str:
 def _format_variant_row(v: ModelVariant) -> str:
     """Format a variant row for display inside a family group."""
     star = "★ " if v.recommended else "  "
-    quant_label = v.quant or "default"
+    quant_label = v.quant or "—"
     tier = quant_tier(v.quant)
-    tier_tag = f" [{tier}]" if tier != "unknown" else ""
+    tier_tag = f" [{tier}]" if tier != "—" else ""
     size = _format_size_mb(v.size_mb)
     suffix = " — recommended" if v.recommended else ""
     return f"  {star}{v.param_count} {quant_label} ({size}){tier_tag}{suffix}"
@@ -174,17 +176,23 @@ class CatalogScreen(Screen[None]):
     """Model catalog with tabs, search, and inline install."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "q Back", show=True),
+        Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
-        Binding("slash", "focus_search", "/ Search", show=True),
-        Binding("s", "cycle_sort", "s Sort", show=True),
-        Binding("j", "cursor_down", "j/k Nav", show=True),
+        Binding("slash", "focus_search", "Search", show=True),
+        Binding("d", "delete_model", "Delete", show=True),
+        Binding("s", "cycle_sort", "Sort", show=False),
+        Binding("x", "delete_model", "Delete", show=False),
+        Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "g/G Top/End", show=True),
+        Binding("g", "jump_top", "Top", show=False),
         Binding("G", "jump_bottom", "End", show=False),
-        Binding("space", "page_down", "Spc PgDn", show=False),
-        Binding("ctrl+d", "page_down", "^d PgDn", show=False),
-        Binding("ctrl+u", "page_up", "^u PgUp", show=False),
+        Binding("space", "page_down", "PgDn", show=False),
+        Binding("ctrl+d", "page_down", "PgDn", show=False),
+        Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("ctrl+1", "activate_tab_0", "All", show=False, priority=True),
+        Binding("ctrl+2", "activate_tab_1", "Chat", show=False, priority=True),
+        Binding("ctrl+3", "activate_tab_2", "Embed", show=False, priority=True),
+        Binding("ctrl+4", "activate_tab_3", "Vision", show=False, priority=True),
     ]
 
     def __init__(self) -> None:
@@ -197,6 +205,7 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = True
         self._current_sort = "downloads"
         self._size_cache: dict[str, float] = {}
+        self._pending_delete: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -297,9 +306,7 @@ class CatalogScreen(Screen[None]):
 
             if remote:
                 provider = remote[0].provider
-                lv.append(
-                    ListItem(Label(f"INSTALLED ({provider})", classes="section-header"))
-                )
+                lv.append(ListItem(Label(f"INSTALLED ({provider})", classes="section-header")))
                 for rm in remote:
                     lv.append(RemoteRow(rm))
 
@@ -493,6 +500,63 @@ class CatalogScreen(Screen[None]):
         self._current_sort = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._refresh_lists()
 
+    def action_delete_model(self) -> None:
+        """Delete an installed model. First press asks for confirmation, second confirms."""
+        if isinstance(self.focused, Input):
+            return
+        model_name = self._get_highlighted_model_name()
+        if model_name is None:
+            self.notify("Select a model to delete", severity="warning")
+            return
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(model_name):
+            self.notify(f"{model_name} is not installed", severity="warning")
+            return
+
+        if self._pending_delete == model_name:
+            self._pending_delete = None
+            self._run_delete(model_name)
+        else:
+            self._pending_delete = model_name
+            self.notify(f"Delete {model_name}? Press d again to confirm")
+
+    def _get_highlighted_model_name(self) -> str | None:
+        """Return the model name of the currently highlighted row, or None."""
+        for tab_label in TASK_TABS:
+            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
+            item = lv.highlighted_child
+            if item is None:
+                continue
+            if isinstance(item, VariantRow):
+                return f"{item.family.name}:{item.variant.param_count}"
+            if isinstance(item, RemoteRow):
+                return item.remote_model.name
+            if isinstance(item, ModelRow):
+                return item.model.name
+        return None
+
+    @work(thread=True)
+    def _run_delete(self, model_name: str) -> None:
+        """Remove a model in a background thread."""
+        try:
+            removed = get_model_manager().remove(model_name)
+            if removed:
+                self.app.call_from_thread(self.notify, f"Deleted {model_name}")
+                self.app.call_from_thread(self._refresh_after_delete)
+            else:
+                self.app.call_from_thread(
+                    self.notify, f"Failed to delete {model_name}", severity="error"
+                )
+        except Exception as exc:
+            log.warning("Delete failed for %s", model_name, exc_info=True)
+            self.app.call_from_thread(self.notify, f"Delete failed: {exc}", severity="error")
+
+    def _refresh_after_delete(self) -> None:
+        """Re-fetch remote models and refresh lists after deletion."""
+        self._refresh_lists()
+        self._fetch_remote_models()
+
     def action_page_down(self) -> None:
         lv = self._focused_list()
         if lv:
@@ -543,25 +607,17 @@ class CatalogScreen(Screen[None]):
         tab_id = f"cat-{TASK_TABS[index].lower()}"
         tabs.active = tab_id
 
-    def key_1(self) -> None:
-        """Switch to All tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(0)
+    def action_activate_tab_0(self) -> None:
+        self._activate_tab(0)
 
-    def key_2(self) -> None:
-        """Switch to Chat tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(1)
+    def action_activate_tab_1(self) -> None:
+        self._activate_tab(1)
 
-    def key_3(self) -> None:
-        """Switch to Embedding tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(2)
+    def action_activate_tab_2(self) -> None:
+        self._activate_tab(2)
 
-    def key_4(self) -> None:
-        """Switch to Vision tab."""
-        if not isinstance(self.focused, Input):
-            self._activate_tab(3)
+    def action_activate_tab_3(self) -> None:
+        self._activate_tab(3)
 
 
 def _filter_catalog(

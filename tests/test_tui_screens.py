@@ -2121,7 +2121,7 @@ async def test_chat_run_sync_worker():
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.progress import EventType
 
-        async def fake_sync(on_progress=None):
+        async def fake_sync(quiet=False, on_progress=None):
             # Call progress callback to cover lines 367-370
             if on_progress:
                 on_progress(
@@ -2151,7 +2151,7 @@ async def test_chat_sync_progress_percentage():
             update_calls.append((task_id, pct, status))
             return original_update(task_id, pct, status)
 
-        async def fake_sync(on_progress=None):
+        async def fake_sync(quiet=False, on_progress=None):
             if on_progress:
                 on_progress(
                     EventType.FILE_START,
@@ -2179,7 +2179,7 @@ async def test_chat_run_sync_error_worker():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
 
-        async def failing_sync(on_progress=None):
+        async def failing_sync(quiet=False, on_progress=None):
             raise Exception("sync failed")
 
         with patch("lilbee.ingest.sync", side_effect=failing_sync):
@@ -2899,3 +2899,256 @@ async def test_chat_bindings_include_half_page():
     keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
     assert "ctrl+d" in keys
     assert "ctrl+u" in keys
+
+
+# ---------------------------------------------------------------------------
+# Catalog: delete model (d key)
+# ---------------------------------------------------------------------------
+
+
+async def test_catalog_delete_installed_model_confirmation():
+    """First press of d shows confirmation notification."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = True
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Wait for background workers to complete before modifying list
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete == "test-model:latest"
+
+
+async def test_catalog_delete_second_press_confirms():
+    """Second press of d calls remove and clears pending state."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = True
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            # First press sets pending
+            screen.action_delete_model()
+            assert screen._pending_delete == "test-model:latest"
+            # Second press confirms
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_not_installed():
+    """Pressing d on a model that is not installed shows warning."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = False
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_no_highlighted_row():
+    """Pressing d with no highlighted row shows warning."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            screen._families = []
+            screen._hf_models = []
+            screen._remote_models = []
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_in_input_ignored():
+    """Pressing d while focused on search input does nothing."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+# ---------------------------------------------------------------------------
+# Chat: /remove slash command
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_slash_remove_no_args():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._handle_slash("/remove")
+
+
+async def test_chat_slash_remove_not_installed():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = False
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_chat_slash_remove_success():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = True
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_chat_slash_remove_failed():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = False
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_cmd_add_creates_task_bar_entry(tmp_path):
+    """B1: /add creates a TaskBar entry and runs copy_paths in a background worker."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        async def fake_sync(quiet=False, on_progress=None):
+            return {"added": 1}
+
+        with (
+            patch("lilbee.cli.helpers.copy_paths", return_value=["doc.txt"]) as mock_copy,
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+        ):
+            from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+            task_bar = app.screen.query_one("#task-bar", TaskBar)
+            add_task_spy = MagicMock(wraps=task_bar.add_task)
+            with patch.object(task_bar, "add_task", add_task_spy):
+                app.screen._handle_slash(f"/add {test_file}")
+                await _pilot.pause()
+
+                # TaskBar.add_task was called with the file name
+                add_task_spy.assert_called_once()
+                label_arg = add_task_spy.call_args[0][0]
+                assert "Add" in label_arg
+
+            while app.screen.workers:
+                await _pilot.pause()
+
+            mock_copy.assert_called_once()
+
+
+async def test_cmd_add_error_in_background(tmp_path):
+    """B1: /add error branch reports failure through TaskBar."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        with patch("lilbee.cli.helpers.copy_paths", side_effect=RuntimeError("copy failed")):
+            app.screen._handle_slash(f"/add {test_file}")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_sync_called_with_quiet_true():
+    """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        sync_kwargs: list[dict] = []
+
+        async def capturing_sync(**kwargs):
+            sync_kwargs.append(kwargs)
+            return {"added": 0}
+
+        with patch("lilbee.ingest.sync", side_effect=capturing_sync):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        assert len(sync_kwargs) >= 1
+        assert sync_kwargs[0].get("quiet") is True

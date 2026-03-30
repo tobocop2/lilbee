@@ -176,11 +176,14 @@ _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
 def _extract_family_name(model_name: str) -> str:
     """Extract the family name by stripping the trailing parameter count.
 
+    Applies clean_display_name first to strip -GGUF, -Instruct, etc.
+
     "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
     "Nomic Embed Text v1.5" -> "Nomic Embed Text v1.5" (no trailing number pattern).
     """
-    m = _FAMILY_NAME_RE.match(model_name)
-    return m.group(1) if m else model_name
+    cleaned = clean_display_name(model_name)
+    m = _FAMILY_NAME_RE.match(cleaned)
+    return m.group(1) if m else cleaned
 
 
 def _extract_quant(filename: str) -> str:
@@ -279,9 +282,10 @@ def _fetch_hf_models(
     sort: str = "downloads",
     limit: int = 50,
     offset: int = 0,
+    library: str | None = None,
 ) -> list[CatalogModel]:
     """Fetch GGUF models from HuggingFace API with 5-minute cache. Returns empty list on error."""
-    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}"
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
     now = time.monotonic()
     # Evict expired entries
     expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -299,6 +303,8 @@ def _fetch_hf_models(
         "limit": limit,
         "skip": offset,
     }
+    if library:
+        params["library"] = library
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
         if resp.status_code >= 400:
@@ -378,8 +384,13 @@ def get_catalog(
 
     # Optionally fetch from HF API
     if not featured:
-        hf_task = _task_to_pipeline(task)
-        hf_models = _fetch_hf_models(pipeline_tag=hf_task, limit=limit, offset=offset)
+        hf_task, hf_library = _task_to_pipeline(task)
+        hf_models = _fetch_hf_models(
+            pipeline_tag=hf_task,
+            limit=limit,
+            offset=offset,
+            library=hf_library,
+        )
         # Deduplicate: skip HF models whose repo matches a featured model
         featured_repos = {m.hf_repo for m in FEATURED_ALL}
         hf_models = [m for m in hf_models if m.hf_repo not in featured_repos]
@@ -429,14 +440,14 @@ def get_catalog(
     return CatalogResult(total=total, limit=limit, offset=offset, models=paginated)
 
 
-def _task_to_pipeline(task: str | None) -> str:
-    """Map task name to HuggingFace pipeline tag."""
+def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
+    """Map task name to HuggingFace pipeline tag and library filter."""
     mapping = {
-        "chat": "text-generation",
-        "embedding": "feature-extraction",
-        "vision": "image-text-to-text",
+        "chat": ("text-generation", None),
+        "embedding": ("feature-extraction", "sentence-transformers"),
+        "vision": ("image-text-to-text", None),
     }
-    return mapping.get(task or "chat", "text-generation")
+    return mapping.get(task or "chat", ("text-generation", None))
 
 
 _PIPELINE_TO_TASK: dict[str, str] = {
@@ -769,7 +780,9 @@ QUANT_TIERS: dict[str, str] = {
 
 def quant_tier(quant: str) -> str:
     """Map a quantization label to a human-readable quality tier."""
-    return QUANT_TIERS.get(quant, "unknown")
+    if not quant:
+        return "—"
+    return QUANT_TIERS.get(quant, "—")
 
 
 @dataclass(frozen=True)

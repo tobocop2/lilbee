@@ -49,6 +49,8 @@ All settings override via environment variables:
 - `LILBEE_CHUNK_SIZE` — tokens per chunk (default: `512`)
 - `LILBEE_CHUNK_OVERLAP` — overlap tokens (default: `100`)
 - `LILBEE_TOP_K` — retrieval result count (default: `5`)
+- `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
+- `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_VISION_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
 - `LILBEE_LLM_PROVIDER` — backend: `auto` (default), `llama-cpp`, `litellm` (requires `pip install lilbee[litellm]`)
@@ -57,7 +59,7 @@ All settings override via environment variables:
 - `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
 - `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)
 - `LILBEE_QUERY_EXPANSION_COUNT` — LLM-generated query variants, 0=disabled (default: `3`)
-- `LILBEE_ADAPTIVE_THRESHOLD_STEP` — distance threshold widening step (default: `0.2`)
+- `LILBEE_ADAPTIVE_THRESHOLD_STEP` — distance threshold widening step (default: `0.2`). Only used when adaptive_threshold is true.
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 - `LILBEE_NO_SPLASH` — set to any non-empty value to suppress the startup bee animation
 

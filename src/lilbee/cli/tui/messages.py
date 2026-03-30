@@ -34,6 +34,10 @@ CMD_VISION_STATUS = (
     "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
     "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
 )
+CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
+CMD_REMOVE_NOT_FOUND = "{name} is not installed"
+CMD_REMOVE_SUCCESS = "Removed {name}"
+CMD_REMOVE_FAILED = "Failed to remove {name}"
 CMD_CANCEL = "Cancelled active operations"
 CMD_THEME_LIST = "Themes: {names}"
 STREAM_ERROR = "\n\n*Error: {error}*"

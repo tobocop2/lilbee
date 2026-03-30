@@ -558,3 +558,124 @@ class TestSlashSuggester:
         s = SlashSuggester(use_cache=False)
         result = await s.get_suggestion("/help")
         assert result is None
+
+
+class TestContextAwareQuit:
+    """Test that action_quit cancels tasks/stream before quitting."""
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_quit_cancels_active_task(self, mock_catalog: mock.MagicMock) -> None:
+        """Ctrl+C cancels active TaskBar task when one exists."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            task_bar = app._task_bar  # type: ignore[attr-defined]
+            task_bar.add_task("Test download", "download")
+            task_bar.queue.advance()
+            await app.action_quit()
+            await pilot.pause()
+            # Task should have been cancelled, app still running
+            assert app.is_running
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_quit_cancels_streaming(self, mock_catalog: mock.MagicMock) -> None:
+        """Ctrl+C cancels streaming when active."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._streaming = True  # type: ignore[attr-defined]
+            await app.action_quit()
+            await pilot.pause()
+            assert not screen._streaming  # type: ignore[attr-defined]
+            assert app.is_running
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_quit_exits_when_idle(self, mock_catalog: mock.MagicMock) -> None:
+        """Ctrl+C quits when nothing is active."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.action_quit()
+            await pilot.pause()
+            # App should have exited
+            assert not app.is_running
+
+
+class TestMinimalFooter:
+    """Test that each screen shows only minimal footer keys."""
+
+    def _visible_bindings(self, bindings: list) -> list[str]:
+        """Extract descriptions of bindings where show=True."""
+        return [b.description for b in bindings if b.show]
+
+    def test_app_bindings_minimal(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        visible = self._visible_bindings(LilbeeApp.BINDINGS)
+        assert "? help" in visible
+        assert "^c cancel/quit" in visible
+        # F-key and ctrl-alternative bindings should be hidden
+        assert not any("Models" in d for d in visible)
+        assert not any("Status" in d for d in visible)
+        assert not any("Settings" in d for d in visible)
+        assert not any("Theme" in d for d in visible)
+
+    def test_chat_bindings_minimal(self) -> None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        visible = self._visible_bindings(ChatScreen.BINDINGS)
+        assert "/ commands" in visible
+        assert len(visible) <= 3
+
+    def test_catalog_bindings_minimal(self) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        visible = self._visible_bindings(CatalogScreen.BINDINGS)
+        assert "q back" in visible
+        assert "/ search" in visible
+        assert "d delete" in visible
+        assert len(visible) <= 5
+
+    def test_status_bindings_minimal(self) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        visible = self._visible_bindings(StatusScreen.BINDINGS)
+        assert "q back" in visible
+        assert len(visible) <= 3
+
+    def test_settings_bindings_minimal(self) -> None:
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        visible = self._visible_bindings(SettingsScreen.BINDINGS)
+        assert "q back" in visible
+        assert len(visible) <= 3
+
+
+class TestLoginCommand:
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    @mock.patch("webbrowser.open")
+    async def test_login_no_token_opens_browser(
+        self, mock_wb: mock.MagicMock, mock_catalog: mock.MagicMock
+    ) -> None:
+        """'/login' with no token opens HF tokens page in browser."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.screen.query_one("#chat-input")
+            inp.value = "/login"
+            await pilot.press("enter")
+            await pilot.pause()
+            mock_wb.assert_called_once_with("https://huggingface.co/settings/tokens")

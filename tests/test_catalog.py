@@ -557,19 +557,20 @@ class TestResolveFilename:
 
 class TestTaskToPipeline:
     def test_chat(self) -> None:
-        assert catalog._task_to_pipeline("chat") == "text-generation"
+        assert catalog._task_to_pipeline("chat") == ("text-generation", None)
 
     def test_embedding(self) -> None:
-        assert catalog._task_to_pipeline("embedding") == "feature-extraction"
+        expected = ("feature-extraction", "sentence-transformers")
+        assert catalog._task_to_pipeline("embedding") == expected
 
     def test_vision(self) -> None:
-        assert catalog._task_to_pipeline("vision") == "image-text-to-text"
+        assert catalog._task_to_pipeline("vision") == ("image-text-to-text", None)
 
     def test_unknown(self) -> None:
-        assert catalog._task_to_pipeline("unknown") == "text-generation"
+        assert catalog._task_to_pipeline("unknown") == ("text-generation", None)
 
     def test_none(self) -> None:
-        assert catalog._task_to_pipeline(None) == "text-generation"
+        assert catalog._task_to_pipeline(None) == ("text-generation", None)
 
 
 class TestPipelineToTask:
@@ -748,7 +749,7 @@ class TestExtractFamilyName:
         assert catalog._extract_family_name("Qwen3 0.6B") == "Qwen3"
 
     def test_qwen3_coder(self) -> None:
-        assert catalog._extract_family_name("Qwen3-Coder 30B A3B") == "Qwen3-Coder"
+        assert catalog._extract_family_name("Qwen3-Coder 30B A3B") == "Qwen3 Coder"
 
     def test_mistral(self) -> None:
         assert catalog._extract_family_name("Mistral 7B Instruct") == "Mistral"
@@ -758,8 +759,21 @@ class TestExtractFamilyName:
         assert catalog._extract_family_name("Nomic Embed Text v1.5") == "Nomic Embed Text v1.5"
 
     def test_hyphenated_version(self) -> None:
-        """Names with hyphenated versions return the full name."""
-        assert catalog._extract_family_name("LightOnOCR-2") == "LightOnOCR-2"
+        """Names with hyphenated versions get hyphens replaced by spaces."""
+        assert catalog._extract_family_name("LightOnOCR-2") == "LightOnOCR"
+
+    def test_gguf_suffix_stripped(self) -> None:
+        """GGUF suffix is stripped via clean_display_name before extraction."""
+        assert catalog._extract_family_name("Qwen3-8B-GGUF") == "Qwen3"
+
+    def test_instruct_gguf_suffix_stripped(self) -> None:
+        """Instruct and GGUF suffixes are stripped before extraction."""
+        assert catalog._extract_family_name("Mistral-7B-Instruct-GGUF") == "Mistral"
+
+    def test_clean_display_name_applied_to_hf_names(self) -> None:
+        """HF model names with repo-style suffixes produce clean family names."""
+        # Simulates what _build_families sees for HF models
+        assert catalog._extract_family_name("Meta-Llama-3-8B-Instruct-GGUF") == "Llama"
 
 
 class TestExtractQuant:
@@ -1088,9 +1102,11 @@ class TestQuantTier:
         for quant_name, expected_tier in QUANT_TIERS.items():
             assert quant_tier(quant_name) == expected_tier
 
-    def test_unknown_returns_unknown(self) -> None:
-        assert quant_tier("") == "unknown"
-        assert quant_tier("WEIRD_QUANT") == "unknown"
+    def test_empty_returns_dash(self) -> None:
+        assert quant_tier("") == "—"
+
+    def test_unknown_returns_dash(self) -> None:
+        assert quant_tier("WEIRD_QUANT") == "—"
 
     def test_compact_tiers(self) -> None:
         for q in ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L"):
@@ -1177,3 +1193,20 @@ class TestEnrichCatalog:
         assert e.featured == original.featured
         assert e.downloads == original.downloads
         assert e.task == original.task
+
+
+class TestFormatSizeMb:
+    def test_zero_returns_dash(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(0) == "\u2014"
+
+    def test_mb_value(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(512) == "512 MB"
+
+    def test_gb_value(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(2048) == "2.0 GB"

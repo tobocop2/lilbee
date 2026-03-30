@@ -366,8 +366,10 @@ class TestSyncStream:
             force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
         ):
             if on_progress:
-                on_progress("file_done", {"file": "a.txt", "status": "ok", "chunks": 3})
-                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
+                from lilbee.progress import FileDoneEvent, SyncDoneEvent
+
+                on_progress("file_done", FileDoneEvent(file="a.txt", status="ok", chunks=3))
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
@@ -388,9 +390,14 @@ class TestSyncStream:
             force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
         ):
             if on_progress:
-                on_progress("file_start", {"file": "b.txt", "total_files": 1, "current_file": 1})
-                on_progress("file_done", {"file": "b.txt", "status": "ok", "chunks": 2})
-                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
+                from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
+
+                on_progress(
+                    "file_start",
+                    FileStartEvent(file="b.txt", total_files=1, current_file=1),
+                )
+                on_progress("file_done", FileDoneEvent(file="b.txt", status="ok", chunks=2))
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
@@ -862,9 +869,11 @@ class TestCrawlStream:
         from pathlib import Path
 
         async def fake_crawl(url, *, depth, max_pages, on_progress):
-            on_progress("crawl_start", {"url": url, "depth": depth})
-            on_progress("crawl_page", {"url": url, "current": 1, "total": 1})
-            on_progress("crawl_done", {"pages_crawled": 1, "files_written": 1})
+            from lilbee.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
+
+            on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
+            on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
+            on_progress("crawl_done", CrawlDoneEvent(pages_crawled=1, files_written=1))
             return [Path("/tmp/test.md")]
 
         mock_crawl.side_effect = fake_crawl

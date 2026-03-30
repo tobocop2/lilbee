@@ -624,7 +624,7 @@ async def sync(
             updated=len(result.updated),
             removed=len(result.removed),
             failed=len(result.failed),
-        ).model_dump(),
+        ),
     )
     return result
 
@@ -653,9 +653,7 @@ async def ingest_batch(
         async with semaphore:
             on_progress(
                 EventType.FILE_START,
-                FileStartEvent(
-                    file=name, total_files=total_files, current_file=file_index
-                ).model_dump(),
+                FileStartEvent(file=name, total_files=total_files, current_file=file_index),
             )
             try:
                 chunk_count = await _ingest_file(
@@ -668,7 +666,7 @@ async def ingest_batch(
                 )
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="ok", chunks=chunk_count).model_dump(),
+                    FileDoneEvent(file=name, status="ok", chunks=chunk_count),
                 )
                 return _IngestResult(name, path, chunk_count, error=None, file_hash=fhash)
             except asyncio.CancelledError:
@@ -680,7 +678,7 @@ async def ingest_batch(
                     raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,
-                    FileDoneEvent(file=name, status="error", chunks=0).model_dump(),
+                    FileDoneEvent(file=name, status="error", chunks=0),
                 )
                 return _IngestResult(name, path, 0, error=exc)
 
@@ -745,7 +743,7 @@ async def _collect_results(
                 status=progress_status,
                 current=completed_count,
                 total=len(tasks),
-            ).model_dump(),
+            ),
         )
 
 

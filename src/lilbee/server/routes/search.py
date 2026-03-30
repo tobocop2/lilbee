@@ -15,13 +15,7 @@ from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
-    CleanedChunk,
 )
-
-
-def _clean_to_model(raw: dict) -> CleanedChunk:
-    """Convert a raw cleaned dict to a CleanedChunk model."""
-    return CleanedChunk(**raw)
 
 
 @get("/api/search")
@@ -37,14 +31,10 @@ async def search_route(
 @post("/api/ask")
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
-    raw = await handlers.ask(
+    return await handlers.ask(
         question=data.question,
         top_k=data.top_k,
         options=data.options,
-    )
-    return AskResponse(
-        answer=raw["answer"],
-        sources=[_clean_to_model(s) for s in raw["sources"]],
     )
 
 
@@ -67,15 +57,11 @@ async def chat_route(data: ChatRequest) -> AskResponse:
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
-    raw = await handlers.chat(
+    return await handlers.chat(
         question=data.question,
         history=history,
         top_k=data.top_k,
         options=data.options,
-    )
-    return AskResponse(
-        answer=raw["answer"],
-        sources=[_clean_to_model(s) for s in raw["sources"]],
     )
 
 

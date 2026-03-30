@@ -8,7 +8,12 @@ from litestar import get, patch
 from pydantic import ValidationError
 
 from lilbee.server.auth import read_only
-from lilbee.server.models import ConfigResponse, ConfigUpdateResponse, HealthResponse
+from lilbee.server.models import (
+    ConfigResponse,
+    ConfigUpdateResponse,
+    HealthResponse,
+    StatusResponse,
+)
 
 
 @get("/api/health")
@@ -17,13 +22,12 @@ async def health_route() -> HealthResponse:
     """Service health check returning server version and uptime status."""
     from lilbee.server import handlers
 
-    raw = await handlers.health()
-    return HealthResponse(**raw)
+    return await handlers.health()
 
 
 @get("/api/status")
 @read_only
-async def status_route() -> dict[str, Any]:
+async def status_route() -> StatusResponse:
     """Current configuration, indexed document sources, and chunk counts."""
     from lilbee.server import handlers
 

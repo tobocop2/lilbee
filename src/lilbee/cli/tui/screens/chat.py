@@ -8,14 +8,14 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Input, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
@@ -32,7 +32,7 @@ from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.progress import EventType
+from lilbee.progress import EventType, ProgressEvent
 from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -46,13 +46,14 @@ class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Tab Complete", show=False, priority=True),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),
         Binding("ctrl+d", "half_page_down", "^d ½ PgDn", show=False),
         Binding("ctrl+u", "half_page_up", "^u ½ PgUp", show=False),
         Binding("escape", "cancel_stream", "Esc Cancel", show=False),
-        Binding("ctrl+r", "toggle_markdown", "^r Markdown", show=True),
+        Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -78,12 +79,11 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
-        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self.query_one("#chat-only-banner", Static).display = False
-        # Store TaskBar on app so other screens (CatalogScreen) can find it
+        # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
@@ -184,16 +184,49 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
+        task_bar = self.query_one("#task-bar", TaskBar)
+        task_id = task_bar.add_task(f"Add {path.name}", "add")
+        task_bar.queue.advance()
+        self._run_add_background(path, task_id)
+
+    @work(thread=True)
+    def _run_add_background(self, path: Path, task_id: str) -> None:
+        """Copy files and sync in a background thread."""
+        task_bar = self.query_one("#task-bar", TaskBar)
+        self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.app import console
             from lilbee.cli.helpers import copy_paths
 
             copied = copy_paths([path], console)
-            self.notify(msg.CMD_ADD_SUCCESS.format(count=len(copied)))
-            self._run_sync()
+            self.app.call_from_thread(
+                task_bar.update_task, task_id, 50, f"Copied {len(copied)} file(s), syncing..."
+            )
+
+            from lilbee.ingest import sync
+
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+                if event_type == EventType.FILE_START:
+                    from lilbee.progress import FileStartEvent
+
+                    assert isinstance(data, FileStartEvent)
+                    if data.total_files:
+                        pct = 50 + int(data.current_file * 50 / data.total_files)
+                    else:
+                        pct = 75
+                    self.app.call_from_thread(
+                        task_bar.update_task, task_id, pct, f"Syncing {data.file}..."
+                    )
+
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            self.app.call_from_thread(task_bar.complete_task, task_id)
+            self.app.call_from_thread(self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
         except Exception as exc:
             log.warning("Failed to add %s", path, exc_info=True)
-            self.notify(msg.CMD_ADD_ERROR.format(error=exc), severity="error")
+            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
+            self.app.call_from_thread(
+                self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
+            )
 
     def _cmd_cancel(self, _args: str) -> None:
         for worker in self.workers:
@@ -246,13 +279,13 @@ class ChatScreen(Screen[None]):
 
         try:
 
-            def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.CRAWL_PAGE:
-                    current = data.get("current", 0)
-                    total = data.get("total", 0)
-                    page_url = data.get("url", "")
-                    pct = int(current * 100 / total) if total > 0 else 50
-                    detail = f"[{current}/{total}]: {page_url}"
+                    from lilbee.progress import CrawlPageEvent
+
+                    assert isinstance(data, CrawlPageEvent)
+                    pct = int(data.current * 100 / data.total) if data.total > 0 else 50
+                    detail = f"[{data.current}/{data.total}]: {data.url}"
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(
@@ -306,7 +339,10 @@ class ChatScreen(Screen[None]):
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
         if not token:
-            self.notify("Usage: /login <HF_TOKEN>", severity="warning")
+            import webbrowser
+
+            webbrowser.open("https://huggingface.co/settings/tokens")
+            self.notify("Paste your token with /login <token>")
             return
         self._run_hf_login(token)
 
@@ -336,6 +372,37 @@ class ChatScreen(Screen[None]):
 
     def _cmd_quit(self, _args: str) -> None:
         self.app.exit()
+
+    def _cmd_remove(self, args: str) -> None:
+        name = args.strip()
+        if not name:
+            self.notify(msg.CMD_REMOVE_USAGE, severity="warning")
+            return
+        self._run_remove_model(name)
+
+    @work(thread=True)
+    def _run_remove_model(self, name: str) -> None:
+        from lilbee.model_manager import get_model_manager
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(name):
+            self.app.call_from_thread(
+                self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
+            )
+            return
+        try:
+            removed = mgr.remove(name)
+            if removed:
+                self.app.call_from_thread(self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
+            else:
+                self.app.call_from_thread(
+                    self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+                )
+        except Exception:
+            log.warning("Remove failed for %s", name, exc_info=True)
+            self.app.call_from_thread(
+                self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+            )
 
     def _cmd_reset(self, args: str) -> None:
         if args == "confirm":
@@ -532,23 +599,32 @@ class ChatScreen(Screen[None]):
 
             self.app.call_from_thread(task_bar.update_task, task_id, 0, "Syncing...")
 
-            def on_progress(event_type: EventType, data: dict[str, object]) -> None:
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.FILE_START:
-                    current = data.get("current_file", 0)
-                    total = data.get("total_files", 0)
-                    pct = int(current * 100 / total) if total else 0
+                    from lilbee.progress import FileStartEvent
+
+                    assert isinstance(data, FileStartEvent)
+                    pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
-                        current=current,
-                        total=total,
-                        file=data.get("file", ""),
+                        current=data.current_file,
+                        total=data.total_files,
+                        file=data.file,
                     )
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, status)
 
-            asyncio.run(sync(on_progress=on_progress))
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
             self.app.call_from_thread(task_bar.complete_task, task_id)
         except Exception:
             log.warning("Background sync failed", exc_info=True)
             self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+
+    def action_focus_commands(self) -> None:
+        """Focus chat input and pre-fill with '/' for command entry."""
+        inp = self.query_one("#chat-input", Input)
+        inp.focus()
+        if not inp.value.startswith("/"):
+            inp.value = "/"
+            inp.action_end()
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

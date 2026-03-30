@@ -22,7 +22,7 @@ from pydantic.fields import FieldInfo
 from lilbee import settings
 from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_version
 from lilbee.config import Config, cfg
-from lilbee.progress import DetailedProgressCallback, EventType, SseEvent
+from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
 from lilbee.results import group, to_dicts
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
@@ -145,8 +145,9 @@ def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCall
     """
     loop = asyncio.get_running_loop()
 
-    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
-        payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
+        serialized = data.model_dump() if isinstance(data, BaseModel) else data
+        payload = f"event: {event_type}\ndata: {json.dumps(serialized)}\n\n"
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -188,9 +189,7 @@ async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
     return to_dicts(grouped)
 
 
-async def ask(
-    question: str, top_k: int = 0, options: dict[str, Any] | None = None
-) -> AskResponse:
+async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
     from lilbee.services import get_services
 

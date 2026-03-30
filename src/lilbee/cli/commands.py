@@ -299,12 +299,10 @@ def _crawl_urls_blocking(
     urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written."""
-    from typing import Any
-
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
-    from lilbee.progress import DetailedProgressCallback, EventType
+    from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
 
     effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
     effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
@@ -315,12 +313,12 @@ def _crawl_urls_blocking(
             ptask = progress.add_task(f"Crawling {url}...", total=None)
 
             def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
-                def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+                def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
-                        current = data.get("current", 0)
-                        total = data.get("total", 0)
-                        page_url = data.get("url", "")
-                        progress.update(_t, description=f"Crawled {current}/{total}: {page_url}")
+                        assert isinstance(data, CrawlPageEvent)
+                        progress.update(
+                            _t, description=f"Crawled {data.current}/{data.total}: {data.url}"
+                        )
 
                 return on_progress
 

@@ -4,7 +4,7 @@ import logging
 import math
 
 from lilbee.config import Config
-from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
+from lilbee.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 from lilbee.providers.base import LLMProvider
 
 log = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ class Embedder:
                 vectors.extend(self._provider.embed(batch))
                 on_progress(
                     EventType.EMBED,
-                    {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+                    EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
                 )
                 batch = []
                 batch_chars = 0
@@ -99,7 +99,7 @@ class Embedder:
             vectors.extend(self._provider.embed(batch))
             on_progress(
                 EventType.EMBED,
-                {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+                EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
             )
         for vec in vectors:
             self.validate_vector(vec)

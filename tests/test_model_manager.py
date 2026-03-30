@@ -630,9 +630,7 @@ class TestRemoteModelProvider:
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {
-            "models": [
-                {"name": "gpt-4", "details": {"family": "gpt", "parameter_size": ""}}
-            ]
+            "models": [{"name": "gpt-4", "details": {"family": "gpt", "parameter_size": ""}}]
         }
         mock_response.raise_for_status = mock.Mock()
 

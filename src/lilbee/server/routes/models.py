@@ -45,22 +45,19 @@ async def models_external_route() -> ExternalModelsResponse:
 @put("/api/models/chat")
 async def models_set_chat_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active chat model used for RAG answers."""
-    raw = await handlers.set_chat_model(model=data.model)
-    return SetModelResponse(**raw)
+    return await handlers.set_chat_model(model=data.model)
 
 
 @put("/api/models/vision")
 async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active vision model used for image and PDF OCR."""
-    raw = await handlers.set_vision_model(model=data.model)
-    return SetModelResponse(**raw)
+    return await handlers.set_vision_model(model=data.model)
 
 
 @put("/api/models/embedding")
 async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active embedding model."""
-    raw = await handlers.set_embedding_model(model=data.model)
-    return SetModelResponse(**raw)
+    return await handlers.set_embedding_model(model=data.model)
 
 
 @get("/api/models/catalog")
