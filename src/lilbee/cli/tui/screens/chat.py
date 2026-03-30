@@ -46,7 +46,7 @@ class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("slash", "focus_commands", "/ commands", show=True),
+        Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Tab Complete", show=False, priority=True),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),

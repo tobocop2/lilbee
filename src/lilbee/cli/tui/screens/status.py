@@ -19,7 +19,7 @@ class StatusScreen(Screen[None]):
     """Knowledge base status view."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "q back", show=True),
+        Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),

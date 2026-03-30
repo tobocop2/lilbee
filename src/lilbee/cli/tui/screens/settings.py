@@ -36,7 +36,7 @@ class SettingsScreen(Screen[None]):
     """Interactive settings viewer with detail panel for long values."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "q back", show=True),
+        Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),

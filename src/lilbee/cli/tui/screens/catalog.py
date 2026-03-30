@@ -176,10 +176,10 @@ class CatalogScreen(Screen[None]):
     """Model catalog with tabs, search, and inline install."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "q back", show=True),
+        Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
-        Binding("slash", "focus_search", "/ search", show=True),
-        Binding("d", "delete_model", "d delete", show=True),
+        Binding("slash", "focus_search", "Search", show=True),
+        Binding("d", "delete_model", "Delete", show=True),
         Binding("s", "cycle_sort", "Sort", show=False),
         Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "Nav", show=False),

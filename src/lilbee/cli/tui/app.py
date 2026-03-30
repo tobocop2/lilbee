@@ -38,7 +38,7 @@ class LilbeeApp(App[None]):
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "? help", show=True),
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("f2", "push_catalog", "Models", show=False),
@@ -48,7 +48,7 @@ class LilbeeApp(App[None]):
         Binding("f4", "push_settings", "Settings", show=False),
         Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
+        Binding("ctrl+c", "quit", "Cancel/Quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
