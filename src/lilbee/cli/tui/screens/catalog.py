@@ -35,7 +35,7 @@ from lilbee.catalog import (
     quant_tier,
 )
 from lilbee.config import cfg
-from lilbee.model_manager import RemoteModel
+from lilbee.model_manager import RemoteModel, get_model_manager
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +178,8 @@ class CatalogScreen(Screen[None]):
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("slash", "focus_search", "/ Search", show=True),
         Binding("s", "cycle_sort", "s Sort", show=True),
+        Binding("d", "delete_model", "d Delete", show=True),
+        Binding("x", "delete_model", "Delete", show=False),
         Binding("j", "cursor_down", "j/k Nav", show=True),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "g/G Top/End", show=True),
@@ -197,6 +199,7 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = True
         self._current_sort = "downloads"
         self._size_cache: dict[str, float] = {}
+        self._pending_delete: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -492,6 +495,65 @@ class CatalogScreen(Screen[None]):
         idx = _SORT_CYCLE.index(self._current_sort)
         self._current_sort = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._refresh_lists()
+
+    def action_delete_model(self) -> None:
+        """Delete an installed model. First press asks for confirmation, second confirms."""
+        if isinstance(self.focused, Input):
+            return
+        model_name = self._get_highlighted_model_name()
+        if model_name is None:
+            self.notify("Select a model to delete", severity="warning")
+            return
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(model_name):
+            self.notify(f"{model_name} is not installed", severity="warning")
+            return
+
+        if self._pending_delete == model_name:
+            self._pending_delete = None
+            self._run_delete(model_name)
+        else:
+            self._pending_delete = model_name
+            self.notify(f"Delete {model_name}? Press d again to confirm")
+
+    def _get_highlighted_model_name(self) -> str | None:
+        """Return the model name of the currently highlighted row, or None."""
+        for tab_label in TASK_TABS:
+            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
+            item = lv.highlighted_child
+            if item is None:
+                continue
+            if isinstance(item, VariantRow):
+                return f"{item.family.name}:{item.variant.param_count}"
+            if isinstance(item, RemoteRow):
+                return item.remote_model.name
+            if isinstance(item, ModelRow):
+                return item.model.name
+        return None
+
+    @work(thread=True)
+    def _run_delete(self, model_name: str) -> None:
+        """Remove a model in a background thread."""
+        try:
+            removed = get_model_manager().remove(model_name)
+            if removed:
+                self.app.call_from_thread(self.notify, f"Deleted {model_name}")
+                self.app.call_from_thread(self._refresh_after_delete)
+            else:
+                self.app.call_from_thread(
+                    self.notify, f"Failed to delete {model_name}", severity="error"
+                )
+        except Exception as exc:
+            log.warning("Delete failed for %s", model_name, exc_info=True)
+            self.app.call_from_thread(
+                self.notify, f"Delete failed: {exc}", severity="error"
+            )
+
+    def _refresh_after_delete(self) -> None:
+        """Re-fetch remote models and refresh lists after deletion."""
+        self._refresh_lists()
+        self._fetch_remote_models()
 
     def action_page_down(self) -> None:
         lv = self._focused_list()

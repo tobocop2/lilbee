@@ -337,6 +337,39 @@ class ChatScreen(Screen[None]):
     def _cmd_quit(self, _args: str) -> None:
         self.app.exit()
 
+    def _cmd_remove(self, args: str) -> None:
+        name = args.strip()
+        if not name:
+            self.notify(msg.CMD_REMOVE_USAGE, severity="warning")
+            return
+        self._run_remove_model(name)
+
+    @work(thread=True)
+    def _run_remove_model(self, name: str) -> None:
+        from lilbee.model_manager import get_model_manager
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(name):
+            self.app.call_from_thread(
+                self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
+            )
+            return
+        try:
+            removed = mgr.remove(name)
+            if removed:
+                self.app.call_from_thread(
+                    self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name)
+                )
+            else:
+                self.app.call_from_thread(
+                    self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+                )
+        except Exception:
+            log.warning("Remove failed for %s", name, exc_info=True)
+            self.app.call_from_thread(
+                self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+            )
+
     def _cmd_reset(self, args: str) -> None:
         if args == "confirm":
             from lilbee.cli.helpers import perform_reset
