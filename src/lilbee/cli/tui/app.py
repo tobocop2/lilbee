@@ -11,6 +11,8 @@ from textual.binding import Binding, BindingType
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.config import cfg
 
+_READY_FILE = "lilbee-splash-ready"
+
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
 DARK_THEMES = (
     "monokai",
@@ -53,6 +55,7 @@ class LilbeeApp(App[None]):
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
+
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         self.push_screen(ChatScreen(auto_sync=self._auto_sync))

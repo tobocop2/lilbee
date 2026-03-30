@@ -3,6 +3,8 @@
 ## Project
 Local knowledge base. Python 3.11+, pluggable LLM providers (llama-cpp default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
+**Framing:** Lead with "knowledge base" — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
+
 ## Task Tracking (beads)
 ```bash
 bd ready                      # See what's ready to work on
@@ -102,7 +104,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Access config via `cfg.attribute` (late-bound), never `from lilbee.config import SOME_CONSTANT` (early-bound copy)
 
 ### Import Discipline
-- **Lazy imports only when justified**: circular dependency, heavy third-party lib (llama-cpp-python, litellm, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path
+- **Lazy imports only when genuinely needed**: circular dependency, heavy third-party lib (llama-cpp-python, litellm, lancedb, kreuzberg, rich, prompt_toolkit), or CLI startup path. Not a blanket rule.
 - Everything else goes at the top of the module — `from lilbee.config import cfg` is always safe top-level
 - Never use `importlib.reload` — it's a sign of bad design. If you need different config in tests, mutate the singleton
 
@@ -124,6 +126,10 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Never save/restore individual fields manually — snapshot the whole object
 - Never touch internal module state (e.g. `store_mod.LANCEDB_DIR`) — only mutate `cfg`
 
+### Tests Before Deletion
+- When removing code, first make existing tests pass with the new implementation, then delete redundant tests
+- Never delete tests and implementation in the same step
+
 ### YAGNI & Simplicity
 - Don't add features, abstractions, or config that isn't needed yet
 - Three similar lines are better than a premature abstraction
@@ -135,6 +141,18 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Run `make check` before closing any task — it mirrors CI exactly
 - Tests, lint, and type checks must pass before closing a task
 - CI runs on every push and PR
+- **Never git push without explicit user approval** — ask before pushing
+- No Co-Authored-By lines in commits
+
+### Code Review Standards
+- **Low complexity** — max ~3 branches per function, extract helpers when exceeded
+- **DRY** — reusable shared logic, no copy-paste
+- **No private API leaks** — underscore-prefixed functions/attrs stay internal to their module
+- **Pythonic idioms** — comprehensions, context managers, dataclasses, protocols over inheritance
+- **Named types over inline dicts** — any repeated dict shape should be a dataclass or TypedDict
+- **Minimal changes** — make smallest possible edit, don't rewrite large blocks for small fixes
+- **Exhaustive review** — multiple review passes until no new findings emerge
+- **Compile before test** — verify code compiles before running tests
 
 ### Behavior Learning (floop)
 - `floop` captures corrections and learned behaviors across sessions

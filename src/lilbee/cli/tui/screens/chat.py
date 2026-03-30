@@ -91,6 +91,18 @@ class ChatScreen(Screen[None]):
         elif self._auto_sync and self._embedding_ready():
             self._run_sync()
 
+    def on_show(self) -> None:
+        """Called when screen becomes visible - signal splash to stop."""
+        import os
+        import tempfile
+
+        ready_file = os.path.join(tempfile.gettempdir(), "lilbee-splash-ready")
+        try:
+            with open(ready_file, "w") as f:
+                f.write("ready")
+        except OSError:
+            pass
+
     def _needs_setup(self) -> bool:
         """Check if both chat and embedding models are resolvable."""
         try:

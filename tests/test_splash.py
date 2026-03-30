@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lilbee._splash import (
-    _LOADING_DOTS,
+from lilbee.splash import (
     _clear_frame,
     _move_up_and_clear,
     _pick_frames,
@@ -24,19 +23,19 @@ from lilbee._splash import (
 
 class TestShouldSkip:
     def test_not_tty(self) -> None:
-        with patch("lilbee._splash.os.isatty", return_value=False):
+        with patch("lilbee.splash.os.isatty", return_value=False):
             assert _should_skip() is True
 
     def test_env_var_set(self) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {"LILBEE_NO_SPLASH": "1"}),
         ):
             assert _should_skip() is True
 
     def test_env_var_empty(self) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {"LILBEE_NO_SPLASH": ""}, clear=False),
         ):
             assert _should_skip() is False
@@ -44,52 +43,62 @@ class TestShouldSkip:
     @pytest.mark.parametrize("flag", ["--version", "-V", "--help", "-h", "help"])
     def test_skip_flags(self, flag: str) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {}, clear=False),
-            patch("lilbee._splash.sys.argv", ["lilbee", flag]),
+            patch("lilbee.splash.sys.argv", ["lilbee", flag]),
         ):
             assert _should_skip() is True
 
     @pytest.mark.parametrize("flag", ["--install-completion", "--show-completion"])
     def test_skip_completion_flags(self, flag: str) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {}, clear=False),
-            patch("lilbee._splash.sys.argv", ["lilbee", flag]),
+            patch("lilbee.splash.sys.argv", ["lilbee", flag]),
         ):
             assert _should_skip() is True
 
     def test_normal_command_not_skipped(self) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {}, clear=False),
-            patch("lilbee._splash.sys.argv", ["lilbee", "status"]),
+            patch("lilbee.splash.sys.argv", ["lilbee", "status"]),
         ):
             assert _should_skip() is False
 
     def test_no_args_not_skipped(self) -> None:
         with (
-            patch("lilbee._splash.os.isatty", return_value=True),
+            patch("lilbee.splash.os.isatty", return_value=True),
             patch.dict(os.environ, {}, clear=False),
-            patch("lilbee._splash.sys.argv", ["lilbee"]),
+            patch("lilbee.splash.sys.argv", ["lilbee"]),
         ):
             assert _should_skip() is False
 
 
 class TestPickFrames:
-    def test_large_terminal(self) -> None:
-        with patch("lilbee._splash._get_terminal_size", return_value=(120, 50)):
-            frame0, _frame1 = _pick_frames()
-            # Large bee: 7 wing lines + 31 body lines
-            assert len(frame0) == 38
-            assert any("ZZZZ" in line for line in frame0)
+    def test_returns_4_logo_frames(self) -> None:
+        frame0, frame1, frame2, frame3 = _pick_frames()
+        # Logo has 12 lines (poison font style)
+        assert len(frame0) == 12
+        # Should return 4 frames for color pulsing animation
+        assert len(frame1) == 12
+        assert len(frame2) == 12
+        assert len(frame3) == 12
+        # Check it's the lilbee logo
+        assert any("lilbee" in line.lower() or "@@" in line for line in frame0)
 
-    def test_small_terminal(self) -> None:
-        with patch("lilbee._splash._get_terminal_size", return_value=(60, 20)):
-            frame0, _frame1 = _pick_frames()
-            # Small bee: 1 wing line + 4 body lines
-            assert len(frame0) == 5
-            assert "\\)" in frame0[0]
+
+class TestStartWithReadyFile:
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
+    def test_start_with_ready_file(self) -> None:
+        """Verify start() accepts ready_file parameter."""
+        with (
+            patch("lilbee.splash._should_skip", return_value=False),
+            patch("lilbee.splash._STARTUP_DELAY", 0.0),
+        ):
+            pid = start(ready_file="/tmp/test-ready")
+            assert pid > 0
+            stop(pid)
 
 
 class TestRenderFrame:
@@ -124,7 +133,8 @@ class TestAnsiHelpers:
         result = _clear_frame(2)
         text = result.decode()
         assert "\033[?25h" in text  # show cursor
-        assert text.count("\033[A") == 2
+        assert "\033[2J" in text  # clear screen
+        assert "\033[H" in text  # home cursor
 
     def test_move_up_zero(self) -> None:
         result = _move_up_and_clear(0)
@@ -133,7 +143,7 @@ class TestAnsiHelpers:
 
 class TestStartStop:
     def test_start_returns_zero_when_skipped(self) -> None:
-        with patch("lilbee._splash._should_skip", return_value=True):
+        with patch("lilbee.splash._should_skip", return_value=True):
             assert start() == 0
 
     def test_stop_zero_is_noop(self) -> None:
@@ -146,15 +156,24 @@ class TestStartStop:
     def test_stop_nonexistent_pid(self) -> None:
         stop(999999)
 
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
+    def test_stop_with_no_fork_attr(self) -> None:
+        """When os.fork doesn't exist, stop uses threaded fallback."""
+        with (
+            patch("lilbee.splash.hasattr", return_value=False),
+            patch("lilbee.splash._stop_threaded") as mock,
+        ):
+            stop(123)
+            mock.assert_called_once_with(123)
+
 
 class TestForkAnimation:
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="No os.fork on this platform")
     def test_start_stop_fork(self) -> None:
         """Verify the fork-based animation starts and stops cleanly."""
         with (
-            patch("lilbee._splash._should_skip", return_value=False),
-            patch("lilbee._splash._get_terminal_size", return_value=(60, 20)),
-            patch("lilbee._splash._STARTUP_DELAY", 0.0),
+            patch("lilbee.splash._should_skip", return_value=False),
+            patch("lilbee.splash._STARTUP_DELAY", 0.0),
         ):
             pid = start()
             assert pid > 0
@@ -171,35 +190,44 @@ class TestForkAnimation:
             os.dup2(w_fd, 2)
             os.close(r_fd)
             os.close(w_fd)
-            from lilbee._splash import _BEE_SMALL_BODY, _SMALL_WINGS_SPREAD
+            from lilbee.splash import _BEE_LINES, _render_frame
 
-            frame0 = _SMALL_WINGS_SPREAD + _BEE_SMALL_BODY
-            from lilbee._splash import _render_frame
-
-            os.write(2, _render_frame(frame0, "loading..."))
+            os.write(2, _render_frame(_BEE_LINES, "loading..."))
             os._exit(0)
         else:
             os.close(w_fd)
             os.waitpid(pid, 0)
             output = os.read(r_fd, 4096).decode()
             os.close(r_fd)
-            assert "\\)" in output or "o" in output
+            assert "@" in output or "lilbee" in output.lower()
 
 
 class TestThreadedFallback:
     def test_start_stop_threaded(self) -> None:
         """Verify the threaded fallback starts and stops cleanly."""
-        import lilbee._splash as mod
+        import lilbee.splash as mod
 
-        with (
-            patch("lilbee._splash._get_terminal_size", return_value=(60, 20)),
-            patch("lilbee._splash._STARTUP_DELAY", 0.0),
-        ):
-            frame0 = mod._SMALL_WINGS_SPREAD + mod._BEE_SMALL_BODY
-            frame1 = mod._SMALL_WINGS_TUCKED + mod._BEE_SMALL_BODY
-            pid = _start_threaded(frame0, frame1)
+        with patch("lilbee.splash._STARTUP_DELAY", 0.0):
+            frame0 = mod._BEE_LINES
+            frame1 = mod._BEE_LINES
+            pid = _start_threaded(frame0, frame1, frame0, frame1)
             assert pid == -1
             time.sleep(0.05)
+            _stop_threaded(pid)
+
+    def test_start_threaded_with_ready_file(self, tmp_path: pytest.TempPathFactory) -> None:
+        """Verify threaded fallback respects ready file."""
+        import lilbee.splash as mod
+
+        ready_file = tmp_path / "ready"
+        ready_file.touch()
+
+        with patch("lilbee.splash._STARTUP_DELAY", 0.0):
+            frame0 = mod._BEE_LINES
+            frame1 = mod._BEE_LINES
+            pid = _start_threaded(frame0, frame1, frame0, frame1, ready_file=str(ready_file))
+            assert pid == -1
+            time.sleep(0.1)
             _stop_threaded(pid)
 
     def test_start_uses_threading_when_no_fork(self) -> None:
@@ -208,7 +236,7 @@ class TestThreadedFallback:
 
     def test_stop_threaded_without_thread(self) -> None:
         """_stop_threaded with no active thread should not raise."""
-        import lilbee._splash as mod
+        import lilbee.splash as mod
 
         mod._thread_obj = None
         _stop_threaded(-1)
@@ -218,11 +246,10 @@ class TestNoForkFallback:
     def test_start_falls_back_to_threading(self) -> None:
         """When os.fork is absent, start() uses threaded fallback."""
         with (
-            patch("lilbee._splash._should_skip", return_value=False),
-            patch("lilbee._splash._get_terminal_size", return_value=(60, 20)),
-            patch("lilbee._splash._STARTUP_DELAY", 0.0),
-            patch("lilbee._splash.hasattr", return_value=False),
-            patch("lilbee._splash._start_threaded", return_value=-1) as mock_threaded,
+            patch("lilbee.splash._should_skip", return_value=False),
+            patch("lilbee.splash._STARTUP_DELAY", 0.0),
+            patch("lilbee.splash.hasattr", return_value=False),
+            patch("lilbee.splash._start_threaded", return_value=-1) as mock_threaded,
         ):
             pid = start()
             assert pid == -1
@@ -230,38 +257,90 @@ class TestNoForkFallback:
 
     def test_stop_falls_back_to_threading(self) -> None:
         """When pid is -1 (threaded sentinel), stop() uses threaded fallback."""
-        with patch("lilbee._splash._stop_threaded") as mock_stop:
+        with patch("lilbee.splash._stop_threaded") as mock_stop:
             stop(-1)
             mock_stop.assert_called_once_with(-1)
 
 
-class TestGetTerminalSize:
-    def test_returns_tuple(self) -> None:
-        from lilbee._splash import _get_terminal_size
+class TestLogoFrames:
+    def test_four_pulse_frames(self) -> None:
+        from lilbee.splash import _LOGO_FRAMES
 
-        cols, rows = _get_terminal_size()
-        assert isinstance(cols, int)
-        assert isinstance(rows, int)
+        assert len(_LOGO_FRAMES) == 4
 
-    def test_fallback_on_error(self) -> None:
-        from lilbee._splash import _get_terminal_size
+    def test_logo_has_poison_style(self) -> None:
+        frame0 = _pick_frames()[0]
+        assert any("@" in line for line in frame0)
 
-        with patch("lilbee._splash.os.get_terminal_size", side_effect=OSError):
-            cols, rows = _get_terminal_size()
-            assert cols == 80
-            assert rows == 24
+    def test_logo_color_pulsing(self) -> None:
+        from lilbee.splash import _LOGO_FRAMES
 
-    def test_fallback_on_value_error(self) -> None:
-        from lilbee._splash import _get_terminal_size
-
-        with patch("lilbee._splash.os.get_terminal_size", side_effect=ValueError):
-            cols, rows = _get_terminal_size()
-            assert cols == 80
-            assert rows == 24
+        assert "\033[38;5;214m" in _LOGO_FRAMES[0][1]
+        assert "\033[38;5;94m" in _LOGO_FRAMES[2][1]
 
 
-class TestLoadingDots:
-    def test_four_phases(self) -> None:
-        assert len(_LOADING_DOTS) == 4
-        assert _LOADING_DOTS[0] == "loading"
-        assert _LOADING_DOTS[-1] == "loading..."
+class TestKnightRiderFrames:
+    def test_frame_count(self) -> None:
+        from lilbee.splash import _KNIGHT_RIDER_FRAMES
+
+        assert len(_KNIGHT_RIDER_FRAMES) == 22
+
+    def test_frames_contain_ansi(self) -> None:
+        from lilbee.splash import _KNIGHT_RIDER_FRAMES
+
+        for frame in _KNIGHT_RIDER_FRAMES:
+            assert "\033[" in frame
+            assert "▓" in frame or "▒" in frame or "░" in frame
+
+    def test_frames_oscillate(self) -> None:
+        from lilbee.splash import _KNIGHT_RIDER_FRAMES
+
+        head_positions = []
+        for frame in _KNIGHT_RIDER_FRAMES:
+            pos = frame.find("▓")
+            head_positions.append(pos)
+
+        first_half = head_positions[:11]
+        second_half = head_positions[11:]
+        assert max(first_half) >= min(first_half)
+        assert max(second_half) <= max(first_half)
+        assert head_positions[0] == head_positions[-1]
+
+
+class TestIsReady:
+    def test_returns_false_when_none(self) -> None:
+        from lilbee.splash import _is_ready
+
+        assert _is_ready(None) is False
+
+    def test_returns_false_when_file_not_exists(self, tmp_path: pytest.TempPathFactory) -> None:
+        from lilbee.splash import _is_ready
+
+        fake_file = tmp_path / "nonexistent_ready_file"
+        assert _is_ready(str(fake_file)) is False
+
+    def test_returns_true_when_file_exists(self, tmp_path: pytest.TempPathFactory) -> None:
+        from lilbee.splash import _is_ready
+
+        ready_file = tmp_path / "ready_file"
+        ready_file.touch()
+        assert _is_ready(str(ready_file)) is True
+
+    def test_returns_false_on_oserror(self, tmp_path: pytest.TempPathFactory) -> None:
+        """_is_ready should return False on OSError (e.g., permission denied)."""
+        from lilbee.splash import _is_ready
+
+        with patch("lilbee.splash.os.path.exists", side_effect=OSError("permission denied")):
+            assert _is_ready("/some/path") is False
+
+
+class TestReadyFileConstant:
+    def test_ready_file_constant(self) -> None:
+        from lilbee.cli.tui.app import _READY_FILE as APP_READY
+        from lilbee.launcher import _READY_FILE as LAUNCHER_READY
+        from lilbee.splash import _READY_FILE
+
+        assert _READY_FILE == "lilbee-splash-ready"
+        assert LAUNCHER_READY == "lilbee-splash-ready"
+        assert APP_READY == "lilbee-splash-ready"
+        assert _READY_FILE == LAUNCHER_READY == APP_READY
