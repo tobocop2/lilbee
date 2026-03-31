@@ -1,10 +1,5 @@
 name: Publish to PyPI
 
-# Platform-specific wheel publishing has moved to build-wheels.yml.
-# This workflow runs CI checks on release and is kept for backwards
-# compatibility. The actual PyPI upload (platform wheels + sdist)
-# is handled entirely by build-wheels.yml.
-
 on:
   release:
     types: [published]
