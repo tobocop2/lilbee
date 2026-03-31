@@ -1,7 +1,7 @@
 # lilbee TUI — Remaining Work
 
 Branch: `feature/tui-fixes-and-models`
-Last commit: `e4b24eb` — Escape blurs input for vim-style navigation
+Last commit: `28ae73c` — fix catalog _current_tab crash, remove Rich Console from /add
 
 ## What's working now
 - NavBar at bottom: `1:Chat 2:Models 3:Status 4:Settings ? Help ^c Quit`
@@ -37,9 +37,16 @@ When chat log focused (via Escape): j/k scroll, Tab goes to next widget
 "Load more" at bottom needs better UX — infinite scroll or explicit button.
 
 ## Known bugs still present
-- `theme.tcss` has leftover `.insert-mode`/`.normal-mode` CSS classes (lines 91-98) — can remove
 - Vision models partially working (mmproj download works but end-to-end vision OCR untested)
+- No task center view (user wants 5:Tasks in NavBar for monitoring background operations)
 - Stale stash at `stash@{0}` contains broken features agent work — can drop
+
+## DONE (recent fixes)
+- Catalog `_current_tab` crash fixed (uses TabbedContent.active now)
+- Rich Console removed from `/add` (uses copy_files() directly)
+- NavBar persistence fixed (app-level, not per-screen)
+- Tab key limited to completions only
+- Catalog filter less intrusive (hidden by default, shows with `/`)
 
 ## Architecture rules
 - NO Rich Console in `src/lilbee/cli/tui/` — use Textual widgets only
