@@ -108,11 +108,11 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
     ),
     CatalogModel(
         "Mistral 7B Instruct",
-        "mistralai/Mistral-7B-Instruct-v0.3-GGUF",
+        "MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
         "*Q4_K_M.gguf",
         4.4,
         8,
-        "Fast 7B, 32K context (requires login)",
+        "Fast 7B, 32K context",
         True,
         0,
         "chat",
