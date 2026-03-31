@@ -48,8 +48,6 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "cycle_focus_forward", "Tab", show=False, priority=True),
-        Binding("shift+tab", "cycle_focus_backward", "Shift+Tab", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
@@ -60,8 +58,6 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
-    FOCUS_ORDER: ClassVar[list[str]] = ["model-bar", "chat-input", "chat-log", "global-nav-bar"]
-
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
@@ -69,7 +65,6 @@ class ChatScreen(Screen[None]):
         self._history_lock = threading.Lock()
         self._streaming = False
         self._insert_mode: bool = True
-        self._focus_index: int = 1
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -173,27 +168,6 @@ class ChatScreen(Screen[None]):
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
-
-    def _cycle_focus(self, forward: bool) -> None:
-        """Cycle focus through sections: ModelBar -> ChatInput -> ChatLog -> NavBar."""
-        if forward:
-            self._focus_index = (self._focus_index + 1) % len(self.FOCUS_ORDER)
-        else:
-            self._focus_index = (self._focus_index - 1) % len(self.FOCUS_ORDER)
-        widget_id = self.FOCUS_ORDER[self._focus_index]
-        if widget_id == "global-nav-bar":
-            widget = self.app.query_one(f"#{widget_id}")
-        else:
-            widget = self.query_one(f"#{widget_id}")
-        widget.focus()
-
-    def action_cycle_focus_forward(self) -> None:
-        """Tab: cycle focus forward through sections."""
-        self._cycle_focus(True)
-
-    def action_cycle_focus_backward(self) -> None:
-        """Shift+Tab: cycle focus backward through sections."""
-        self._cycle_focus(False)
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""

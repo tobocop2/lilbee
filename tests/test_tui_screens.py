@@ -3277,54 +3277,6 @@ async def test_chat_normal_mode_dims_input():
         assert "insert-mode" not in inp.classes
 
 
-async def test_chat_tab_cycles_focus_forward():
-    """Tab cycles focus forward through sections."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import Input
-
-        inp = app.screen.query_one("#chat-input", Input)
-        inp.focus()
-        assert app.screen._focus_index == 1
-
-        app.screen.action_cycle_focus_forward()
-        await pilot.pause()
-        assert app.screen._focus_index == 2
-
-        app.screen.action_cycle_focus_forward()
-        await pilot.pause()
-        assert app.screen._focus_index == 3
-
-        app.screen.action_cycle_focus_forward()
-        await pilot.pause()
-        assert app.screen._focus_index == 0
-
-
-async def test_chat_shift_tab_cycles_focus_backward():
-    """Shift+Tab cycles focus backward through sections."""
-    cfg.chat_model = "test-model"
-    cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.screen._focus_index = 2
-
-        app.screen.action_cycle_focus_backward()
-        await pilot.pause()
-        assert app.screen._focus_index == 1
-
-        app.screen.action_cycle_focus_backward()
-        await pilot.pause()
-        assert app.screen._focus_index == 0
-
-        app.screen.action_cycle_focus_backward()
-        await pilot.pause()
-        assert app.screen._focus_index == 3
-
-
 async def test_chat_escape_key_enters_normal_mode():
     """Escape key enters normal mode and focuses chat log."""
     cfg.chat_model = "test-model"
