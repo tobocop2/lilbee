@@ -21,19 +21,11 @@ Select widgets for chat/embed/vision. Populated via `@work(thread=True)` after m
 
 **Files:** `src/lilbee/cli/tui/widgets/model_bar.py`
 
-### 2. Editable settings screen
-Currently `src/lilbee/cli/tui/screens/settings.py` is read-only DataTable.
+### 2. Editable settings screen — DONE (commit 271b502)
+Enter on a row opens inline Input, Enter saves via `set_value()`, Escape cancels. Read-only fields guarded. Still needs `/set key value` slash command in chat.
 
-**Design:**
-- Press Enter on a row → mount small Input widget below table
-- Type new value, Enter → save via `settings.set_value(cfg.data_root, key, value)`
-- Escape → cancel edit
-- Read-only fields (data_dir, lancedb_dir): show "read-only" notice
-- Also wire `/set key value` slash command in chat.py
-
-**Check:** `src/lilbee/cli/settings_map.py` for SETTINGS_MAP, `src/lilbee/settings.py` for `set_value()`
-
-**Files:** `src/lilbee/cli/tui/screens/settings.py`, `src/lilbee/cli/tui/screens/chat.py`, `src/lilbee/cli/tui/command_registry.py`
+**Files:** `src/lilbee/cli/tui/screens/settings.py`
+**TODO:** Wire `/set` slash command in `chat.py` + `command_registry.py`
 
 ### 3. Tab/arrow navigation between widgets
 Tab should cycle: ModelBar dropdowns → Chat input → (back to top)
