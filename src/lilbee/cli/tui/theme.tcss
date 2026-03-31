@@ -82,6 +82,15 @@ HelpModal {
     align: center middle;
 }
 
+#chat-input:focus {
+    border: tall $accent;
+}
+
+#chat-input:blur {
+    border: tall $surface-lighten-1;
+    opacity: 0.7;
+}
+
 #chat-only-banner {
     dock: top;
     height: 1;

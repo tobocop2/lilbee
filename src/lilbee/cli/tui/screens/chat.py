@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
@@ -566,10 +566,25 @@ class ChatScreen(Screen[None]):
         self.query_one("#chat-log", VerticalScroll).scroll_page_down()
 
     def action_cancel_stream(self) -> None:
+        """Context-aware Escape: cancel stream → blur input → no-op."""
         if self._streaming:
             for worker in self.workers:
                 worker.cancel()
             self._streaming = False
+            return
+        # If input is focused, blur it so 1-4/j/k/? work
+        inp = self.query_one("#chat-input", Input)
+        if inp.has_focus:
+            self.query_one("#chat-log", VerticalScroll).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        """When chat log is focused, any printable key refocuses input."""
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus and event.is_printable and event.character:
+            inp.focus()
+            inp.insert_text_at_cursor(event.character)
+            event.prevent_default()
+            event.stop()
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""
