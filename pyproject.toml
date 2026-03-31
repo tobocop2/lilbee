@@ -103,6 +103,7 @@ omit = [
     "src/lilbee/__main__.py",
     "src/lilbee/launcher.py",
     "src/lilbee/platform.py",
+    "src/lilbee/_vendor/*",
 ]
 
 [tool.ruff]

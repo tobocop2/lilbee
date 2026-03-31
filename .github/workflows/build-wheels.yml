@@ -1,0 +1,177 @@
+name: Build Platform Wheels
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      llama_cpp_version:
+        description: "llama-cpp-python version to vendor"
+        default: "0.3.18"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version || '0.3.18' }}
+
+jobs:
+  ci:
+    if: github.event_name == 'release'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+  build-wheels:
+    needs: [ci]
+    if: always() && (needs.ci.result == 'success' || github.event_name == 'workflow_dispatch')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            python-version: "3.11"
+            llama-plat: manylinux2014_x86_64
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+          - os: ubuntu-latest
+            python-version: "3.12"
+            llama-plat: manylinux2014_x86_64
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+          - os: ubuntu-latest
+            python-version: "3.13"
+            llama-plat: manylinux2014_x86_64
+            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
+
+          # macOS x86_64 (Intel)
+          - os: macos-13
+            python-version: "3.11"
+            llama-plat: macosx_10_15_x86_64
+            wheel-plat: macosx_10_15_x86_64
+          - os: macos-13
+            python-version: "3.12"
+            llama-plat: macosx_10_15_x86_64
+            wheel-plat: macosx_10_15_x86_64
+          - os: macos-13
+            python-version: "3.13"
+            llama-plat: macosx_10_15_x86_64
+            wheel-plat: macosx_10_15_x86_64
+
+          # macOS arm64 (Apple Silicon)
+          - os: macos-latest
+            python-version: "3.11"
+            llama-plat: macosx_11_0_arm64
+            wheel-plat: macosx_11_0_arm64
+          - os: macos-latest
+            python-version: "3.12"
+            llama-plat: macosx_11_0_arm64
+            wheel-plat: macosx_11_0_arm64
+          - os: macos-latest
+            python-version: "3.13"
+            llama-plat: macosx_11_0_arm64
+            wheel-plat: macosx_11_0_arm64
+
+          # Windows x86_64
+          - os: windows-latest
+            python-version: "3.11"
+            llama-plat: win_amd64
+            wheel-plat: win_amd64
+          - os: windows-latest
+            python-version: "3.12"
+            llama-plat: win_amd64
+            wheel-plat: win_amd64
+          - os: windows-latest
+            python-version: "3.13"
+            llama-plat: win_amd64
+            wheel-plat: win_amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build pure wheel
+        run: python -m build --wheel
+
+      - name: Vendor llama-cpp-python and retag wheel
+        run: >
+          python scripts/vendor_llama_cpp.py dist/*.whl
+          --version ${{ env.LLAMA_CPP_VERSION }}
+          --platform ${{ matrix.llama-plat }}
+          --wheel-platform ${{ matrix.wheel-plat }}
+
+      - name: List output
+        shell: bash
+        run: ls -lh dist/
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          lilbee --version
+          python -c "
+          from lilbee._vendor import ensure_vendor_importable
+          ensure_vendor_importable()
+          import llama_cpp
+          print('llama_cpp loaded from:', llama_cpp.__file__)
+          "
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+
+  # Pure sdist for pip install from source (users provide llama-cpp-python).
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

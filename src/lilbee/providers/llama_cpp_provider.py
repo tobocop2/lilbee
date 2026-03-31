@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lilbee._vendor import ensure_vendor_importable
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+
+# Ensure vendored llama_cpp (bundled in platform wheels) is importable.
+ensure_vendor_importable()
 
 log = logging.getLogger(__name__)
 
