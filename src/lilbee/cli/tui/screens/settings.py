@@ -7,15 +7,25 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
+from lilbee import settings
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.config import cfg
 
 _MAX_VALUE_LEN = 60
 _HF_TOKEN_KEY = "hf_token"
-_READ_ONLY = {"data_dir", "lancedb_dir", "data_root", "documents_dir", "models_dir"}
+_READONLY_FIELDS = frozenset(
+    {
+        "data_dir",
+        "lancedb_dir",
+        "data_root",
+        "documents_dir",
+        "models_dir",
+    }
+)
 
 
 def _get_hf_token_display() -> str:
@@ -34,12 +44,12 @@ def _get_hf_token_display() -> str:
 
 
 class SettingsScreen(Screen[None]):
-    """Interactive settings editor. Press Enter to edit a value."""
+    """Interactive settings viewer with inline editing."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "cancel_or_back", "Back", show=False),
-        Binding("enter", "edit_setting", "Edit", show=True),
+        Binding("escape", "dismiss_or_back", "Back", show=False),
+        Binding("enter", "edit_row", "Edit", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),
@@ -53,20 +63,24 @@ class SettingsScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield DataTable(id="settings-table")
-        yield Input(placeholder="New value...", id="edit-input")
+        yield Horizontal(id="edit-bar")
         yield Static("", id="setting-detail")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#edit-input", Input).display = False
         table = self.query_one("#settings-table", DataTable)
-        table.add_columns("Setting", "Value", "Type")
+        table.add_columns(
+            ("Setting", "setting"),
+            ("Value", "value"),
+            ("Type", "type"),
+        )
         table.cursor_type = "row"
         for key, defn in SETTINGS_MAP.items():
             value = str(getattr(cfg, defn.cfg_attr, "?"))
-            display = value[:_MAX_VALUE_LEN] + "..." if len(value) > _MAX_VALUE_LEN else value
-            table.add_row(key, display, defn.type.__name__, key=key)
+            truncated = value[:_MAX_VALUE_LEN] + "..." if len(value) > _MAX_VALUE_LEN else value
+            table.add_row(key, truncated, defn.type.__name__, key=key)
         table.add_row(_HF_TOKEN_KEY, _get_hf_token_display(), "str", key=_HF_TOKEN_KEY)
+        self.query_one("#edit-bar", Horizontal).display = False
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._editing_key:
@@ -80,91 +94,94 @@ class SettingsScreen(Screen[None]):
             defn = SETTINGS_MAP.get(key)
             if defn:
                 value = str(getattr(cfg, defn.cfg_attr, "?"))
-                ro = " (read-only)" if key in _READ_ONLY else ""
+                ro = " (read-only)" if key in _READONLY_FIELDS else ""
                 detail.update(f"{key} ({defn.type.__name__}){ro}\n{value}")
                 return
         detail.update("")
 
-    def action_edit_setting(self) -> None:
-        """Open inline editor for the highlighted setting."""
-        table = self.query_one("#settings-table", DataTable)
-        row_key = table.cursor_row
-        if row_key is None:
-            return
-        # Get the key from the row
-        try:
-            cells = table.get_row_at(row_key)
-            key = str(cells[0])
-        except Exception:
-            return
-
-        if key == _HF_TOKEN_KEY:
-            self.notify("Use /login to set HuggingFace token")
-            return
-        if key in _READ_ONLY:
-            self.notify(f"{key} is read-only", severity="warning")
-            return
-
-        defn = SETTINGS_MAP.get(key)
-        if not defn:
-            return
-
-        self._editing_key = key
-        current = str(getattr(cfg, defn.cfg_attr, ""))
-        edit_input = self.query_one("#edit-input", Input)
-        edit_input.value = current
-        edit_input.display = True
-        edit_input.focus()
-        self.query_one("#setting-detail", Static).update(f"Editing: {key} ({defn.type.__name__})")
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Save the edited value."""
-        if event.input.id != "edit-input" or not self._editing_key:
-            return
-        key = self._editing_key
-        value = event.value.strip()
-
-        from lilbee import settings
-
-        try:
-            settings.set_value(cfg.data_root, key, value)
-            defn = SETTINGS_MAP[key]
-            setattr(cfg, defn.cfg_attr, defn.type(value))
-            self.notify(f"{key} = {value}")
-        except Exception as exc:
-            self.notify(f"Error: {exc}", severity="error")
-
-        self._finish_edit()
-        self._refresh_table()
-
-    def _finish_edit(self) -> None:
-        """Close the edit input and return focus to table."""
-        self._editing_key = None
-        edit_input = self.query_one("#edit-input", Input)
-        edit_input.display = False
-        edit_input.value = ""
-        self.query_one("#settings-table", DataTable).focus()
-
-    def _refresh_table(self) -> None:
-        """Rebuild table with current values."""
-        table = self.query_one("#settings-table", DataTable)
-        table.clear()
-        for key, defn in SETTINGS_MAP.items():
-            value = str(getattr(cfg, defn.cfg_attr, "?"))
-            display = value[:_MAX_VALUE_LEN] + "..." if len(value) > _MAX_VALUE_LEN else value
-            table.add_row(key, display, defn.type.__name__, key=key)
-        table.add_row(_HF_TOKEN_KEY, _get_hf_token_display(), "str", key=_HF_TOKEN_KEY)
-
-    def action_cancel_or_back(self) -> None:
-        """Escape: cancel edit if editing, otherwise go back."""
-        if self._editing_key:
-            self._finish_edit()
+    def action_dismiss_or_back(self) -> None:
+        """Escape: cancel edit if editing, otherwise pop screen."""
+        if self._editing_key is not None:
+            self._close_editor()
         else:
             self.app.pop_screen()
 
+    def action_edit_row(self) -> None:
+        """Enter: open inline editor for the highlighted row."""
+        if self._editing_key is not None:
+            return
+        table = self.query_one("#settings-table", DataTable)
+        row_idx = table.cursor_row
+        if row_idx is None:
+            return
+        key_cell = table.get_row_at(row_idx)
+        key = str(key_cell[0])
+
+        if key in _READONLY_FIELDS or key == _HF_TOKEN_KEY:
+            self.notify("read-only", severity="warning")
+            return
+
+        if key not in SETTINGS_MAP:
+            self.notify("read-only", severity="warning")
+            return
+
+        defn = SETTINGS_MAP[key]
+        current_value = str(getattr(cfg, defn.cfg_attr, ""))
+        self._editing_key = key
+
+        bar = self.query_one("#edit-bar", Horizontal)
+        bar.display = True
+        editor = Input(
+            value=current_value,
+            placeholder=f"Enter value for {key}",
+            id="settings-editor",
+        )
+        bar.mount(Static(f"  {key}: ", id="edit-label"))
+        bar.mount(editor)
+        editor.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Save edited value on Enter."""
+        if event.input.id != "settings-editor" or self._editing_key is None:
+            return
+        key = self._editing_key
+        new_value = event.value.strip()
+        defn = SETTINGS_MAP[key]
+
+        try:
+            if defn.type is bool:
+                parsed = new_value.lower() in ("true", "1", "yes", "on")
+            elif defn.nullable and new_value.lower() in ("none", "null", ""):
+                parsed = None
+            else:
+                parsed = defn.type(new_value)
+            setattr(cfg, defn.cfg_attr, parsed)
+            persisted = str(parsed) if parsed is not None else ""
+            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
+
+            table = self.query_one("#settings-table", DataTable)
+            if len(persisted) > _MAX_VALUE_LEN:
+                display = persisted[:_MAX_VALUE_LEN] + "..."
+            else:
+                display = persisted
+            table.update_cell(key, "value", display)
+            self.notify(f"{key} = {parsed}")
+        except (ValueError, TypeError) as exc:
+            self.notify(f"Invalid value: {exc}", severity="error")
+
+        self._close_editor()
+
+    def _close_editor(self) -> None:
+        """Remove the inline editor and restore table focus."""
+        self._editing_key = None
+        bar = self.query_one("#edit-bar", Horizontal)
+        bar.remove_children()
+        bar.display = False
+        self.query_one("#settings-table", DataTable).focus()
+
     def action_pop_screen(self) -> None:
         if self._editing_key:
-            self._finish_edit()
+            self._close_editor()
         else:
             self.app.pop_screen()
 

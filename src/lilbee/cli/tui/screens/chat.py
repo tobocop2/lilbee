@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
-from textual import events, work
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
@@ -48,14 +48,19 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "complete", "Tab Complete", show=False, priority=True),
+        Binding("tab", "cycle_focus_forward", "Tab", show=False, priority=True),
+        Binding("shift+tab", "cycle_focus_backward", "Shift+Tab", show=False, priority=True),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),
-        Binding("ctrl+d", "half_page_down", "^d ½ PgDn", show=False),
-        Binding("ctrl+u", "half_page_up", "^u ½ PgUp", show=False),
-        Binding("escape", "cancel_stream", "Esc Cancel", show=False),
+        Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False),
+        Binding("ctrl+u", "half_page_up", "^u half PgUp", show=False),
+        Binding("escape", "enter_normal_mode", "Normal", show=False, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
+
+    FOCUS_ORDER: ClassVar[list[str]] = ["model-bar", "chat-input", "chat-log", "nav-bar"]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
@@ -63,6 +68,8 @@ class ChatScreen(Screen[None]):
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._streaming = False
+        self._insert_mode: bool = True
+        self._focus_index: int = 1
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -84,6 +91,7 @@ class ChatScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
+        self._update_input_style()
         self.query_one("#chat-only-banner", Static).display = False
         # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
@@ -150,6 +158,65 @@ class ChatScreen(Screen[None]):
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
+    def _enter_insert_mode(self) -> None:
+        """Switch to insert mode: focus input, update border style."""
+        self._insert_mode = True
+        self.query_one("#chat-input", Input).focus()
+        self._update_input_style()
+
+    def _update_input_style(self) -> None:
+        """Toggle input border based on current mode."""
+        inp = self.query_one("#chat-input", Input)
+        if self._insert_mode:
+            inp.remove_class("normal-mode")
+            inp.add_class("insert-mode")
+        else:
+            inp.remove_class("insert-mode")
+            inp.add_class("normal-mode")
+
+    def _cycle_focus(self, forward: bool) -> None:
+        """Cycle focus through sections: ModelBar -> ChatInput -> ChatLog -> NavBar."""
+        if forward:
+            self._focus_index = (self._focus_index + 1) % len(self.FOCUS_ORDER)
+        else:
+            self._focus_index = (self._focus_index - 1) % len(self.FOCUS_ORDER)
+        widget_id = self.FOCUS_ORDER[self._focus_index]
+        widget = self.query_one(f"#{widget_id}")
+        widget.focus()
+
+    def action_cycle_focus_forward(self) -> None:
+        """Tab: cycle focus forward through sections."""
+        self._cycle_focus(True)
+
+    def action_cycle_focus_backward(self) -> None:
+        """Shift+Tab: cycle focus backward through sections."""
+        self._cycle_focus(False)
+
+    def on_key(self, event: object) -> None:
+        """Handle key events: vim mode and typing from chat log."""
+        from textual.events import Key
+
+        if not isinstance(event, Key):
+            return
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus and event.is_printable and event.character:
+            inp.focus()
+            inp.insert_text_at_cursor(event.character)
+            event.prevent_default()
+            event.stop()
+            return
+        if self._insert_mode:
+            return
+        if event.key == "enter":
+            self._enter_insert_mode()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.character and event.character.isprintable() and len(event.key) == 1:
+            if event.character in "jkgG":
+                return
+            self._enter_insert_mode()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":
             return
@@ -198,14 +265,10 @@ class ChatScreen(Screen[None]):
         task_bar = self.query_one("#task-bar", TaskBar)
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
-            from lilbee.cli.helpers import copy_files
+            from lilbee.cli.app import console
+            from lilbee.cli.helpers import copy_paths
 
-            result = copy_files([path])
-            copied = result.copied
-            for name in result.skipped:
-                self.app.call_from_thread(
-                    self.notify, f"{name} already exists (use --force)"
-                )
+            copied = copy_paths([path], console)
             self.app.call_from_thread(
                 task_bar.update_task, task_id, 50, f"Copied {len(copied)} file(s), syncing..."
             )
@@ -371,7 +434,7 @@ class ChatScreen(Screen[None]):
             tagged = ensure_tag(args)
             cfg.chat_model = tagged
             settings.set_value(cfg.data_root, "chat_model", tagged)
-            self.app.title = f"lilbee — {cfg.chat_model}"
+            self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
@@ -532,7 +595,7 @@ class ChatScreen(Screen[None]):
                         self.app.call_from_thread(self._scroll_to_bottom)
                         last_scroll = now
                 except Exception:
-                    break  # App shutting down (Ctrl-C) — stop streaming
+                    break  # App shutting down (Ctrl-C) -- stop streaming
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
             with contextlib.suppress(Exception):
@@ -565,26 +628,37 @@ class ChatScreen(Screen[None]):
     def action_scroll_down(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_down()
 
-    def action_cancel_stream(self) -> None:
-        """Context-aware Escape: cancel stream → blur input → no-op."""
+    def action_cursor_up(self) -> None:
+        """Move cursor up in normal mode - scroll chat log up."""
+        if not self._insert_mode:
+            self.query_one("#chat-log", VerticalScroll).scroll_up()
+
+    def action_cursor_down(self) -> None:
+        """Move cursor down in normal mode - scroll chat log down."""
+        if not self._insert_mode:
+            self.query_one("#chat-log", VerticalScroll).scroll_down()
+
+    def action_enter_normal_mode(self) -> None:
+        """Escape: cancel stream if active, otherwise enter normal mode."""
         if self._streaming:
             for worker in self.workers:
                 worker.cancel()
             self._streaming = False
             return
-        # If input is focused, blur it so 1-4/j/k/? work
+        self._insert_mode = False
+        self.query_one("#chat-log", VerticalScroll).focus()
+        self._update_input_style()
+
+    def action_cancel_stream(self) -> None:
+        """Context-aware Escape: cancel stream -> blur input -> no-op."""
+        if self._streaming:
+            for worker in self.workers:
+                worker.cancel()
+            self._streaming = False
+            return
         inp = self.query_one("#chat-input", Input)
         if inp.has_focus:
             self.query_one("#chat-log", VerticalScroll).focus()
-
-    def on_key(self, event: events.Key) -> None:
-        """When chat log is focused, any printable key refocuses input."""
-        inp = self.query_one("#chat-input", Input)
-        if not inp.has_focus and event.is_printable and event.character:
-            inp.focus()
-            inp.insert_text_at_cursor(event.character)
-            event.prevent_default()
-            event.stop()
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""

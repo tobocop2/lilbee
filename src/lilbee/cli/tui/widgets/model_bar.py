@@ -15,7 +15,7 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
-_DISABLED = Select.BLANK
+_DISABLED = Select.NULL
 
 
 class ModelBar(Widget):
@@ -37,32 +37,46 @@ class ModelBar(Widget):
     }
     """
 
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
         self._populating = True  # Guard against change events during init
 
     def compose(self) -> ComposeResult:
+        chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
+        embed_opts = [(cfg.embedding_model, cfg.embedding_model)] if cfg.embedding_model else []
+        vision_opts = [(cfg.vision_model, cfg.vision_model)] if cfg.vision_model else []
         with Horizontal():
             yield Select[str](
-                options=[],
+                options=chat_opts,
                 prompt="Chat model",
                 id="chat-model-select",
                 allow_blank=False,
             )
             yield Select[str](
-                options=[],
+                options=embed_opts,
                 prompt="Embed model",
                 id="embed-model-select",
                 allow_blank=False,
             )
             yield Select[str](
-                options=[],
+                options=vision_opts,
                 prompt="Vision (optional)",
                 id="vision-model-select",
                 allow_blank=True,
             )
 
     def on_mount(self) -> None:
+        chat_sel = self.query_one("#chat-model-select", Select)
+        embed_sel = self.query_one("#embed-model-select", Select)
+        vision_sel = self.query_one("#vision-model-select", Select)
+
+        if cfg.chat_model:
+            chat_sel.value = cfg.chat_model
+        if cfg.embedding_model:
+            embed_sel.value = cfg.embedding_model
+        if cfg.vision_model:
+            vision_sel.value = cfg.vision_model
+
         self._scan_models()
 
     @work(thread=True)
@@ -77,13 +91,10 @@ class ModelBar(Widget):
             log.debug("Could not list models for dropdowns", exc_info=True)
             all_models = []
 
-        # Split by type heuristic: "embed" in name = embedding, rest = chat
         embed_models = [m for m in all_models if "embed" in m.lower()]
         chat_models = [m for m in all_models if "embed" not in m.lower()]
 
-        self.app.call_from_thread(
-            self._populate, chat_models, embed_models, all_models
-        )
+        self.app.call_from_thread(self._populate, chat_models, embed_models, all_models)
 
     def _populate(
         self,
@@ -106,18 +117,43 @@ class ModelBar(Widget):
         embed_sel.set_options(embed_opts)
         vision_sel.set_options(vision_opts)
 
-        # Set current values
-        if cfg.chat_model and any(v == cfg.chat_model for _, v in chat_opts):
-            chat_sel.value = cfg.chat_model
+        current_chat = str(chat_sel.value) if chat_sel.value != Select.NULL else ""
+        current_embed = str(embed_sel.value) if embed_sel.value != Select.NULL else ""
+        current_vision = str(vision_sel.value) if vision_sel.value != Select.NULL else ""
+
+        has_chat_model = bool(current_chat)
+        has_embed_model = bool(current_embed)
+        has_vision_model = bool(current_vision)
+
+        if has_chat_model:
+            if not any(v == current_chat for _, v in chat_opts):
+                chat_opts.insert(0, (current_chat, current_chat))
+            chat_sel.set_options(chat_opts)
+            chat_sel.value = current_chat
         elif chat_models:
             chat_sel.value = chat_models[0]
+        elif chat_opts:
+            chat_sel.value = chat_opts[0][1]
 
-        if cfg.embedding_model and any(v == cfg.embedding_model for _, v in embed_opts):
-            embed_sel.value = cfg.embedding_model
+        if has_embed_model:
+            if not any(v == current_embed for _, v in embed_opts):
+                embed_opts.insert(0, (current_embed, current_embed))
+            embed_sel.set_options(embed_opts)
+            embed_sel.value = current_embed
         elif embed_models:
             embed_sel.value = embed_models[0]
+        elif embed_opts:
+            embed_sel.value = embed_opts[0][1]
 
-        if cfg.vision_model and any(v == cfg.vision_model for _, v in vision_opts):
+        if has_vision_model:
+            if not any(v == current_vision for _, v in vision_opts):
+                vision_opts.insert(0, (current_vision, current_vision))
+            vision_sel.set_options(vision_opts)
+            vision_sel.value = current_vision
+        elif cfg.vision_model:
+            if not any(v == cfg.vision_model for _, v in vision_opts):
+                vision_opts.insert(0, (cfg.vision_model, cfg.vision_model))
+            vision_sel.set_options(vision_opts)
             vision_sel.value = cfg.vision_model
         else:
             vision_sel.value = _DISABLED
@@ -128,7 +164,7 @@ class ModelBar(Widget):
         """Handle model selection changes."""
         if self._populating:
             return
-        if event.value is _DISABLED or event.value is None:
+        if event.value is _DISABLED or event.value is None or str(event.value) == "":
             if event.select.id == "vision-model-select":
                 cfg.vision_model = ""
                 settings.set_value(cfg.data_root, "vision_model", "")
@@ -145,7 +181,6 @@ class ModelBar(Widget):
             cfg.vision_model = value
             settings.set_value(cfg.data_root, "vision_model", value)
 
-        # Reset services to pick up new model
         from lilbee.services import reset_services
 
         reset_services()

@@ -481,6 +481,10 @@ class Searcher:
         messages.append({"role": "user", "content": question})
         return messages
 
+    def _messages_for_provider(self, messages: list[ChatMessage]) -> list[dict[str, str]]:
+        """Convert ChatMessage list to provider-expected format."""
+        return [{"role": m["role"], "content": m["content"]} for m in messages]
+
     def ask_raw(
         self,
         question: str,
@@ -491,8 +495,9 @@ class Searcher:
         """Ask a question and get a structured result."""
         if not self._embedder.embedding_available():
             messages = self._direct_messages(question, history)
+            provider_messages = self._messages_for_provider(messages)
             opts = options if options is not None else self._config.generation_options()
-            answer = self._provider.chat(messages, options=opts or None)
+            answer = self._provider.chat(provider_messages, options=opts or None)
             return AskResult(answer=self._NO_EMBED_WARNING + str(answer or ""), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
@@ -501,8 +506,9 @@ class Searcher:
                 sources=[],
             )
         results, messages = rag
+        provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        answer = self._provider.chat(messages, options=opts or None)
+        answer = self._provider.chat(provider_messages, options=opts or None)
         return AskResult(answer=str(answer) or "", sources=results)
 
     def ask(
@@ -532,8 +538,9 @@ class Searcher:
         if not self._embedder.embedding_available():
             yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)
             messages = self._direct_messages(question, history)
+            provider_messages = self._messages_for_provider(messages)
             opts = options if options is not None else self._config.generation_options()
-            raw = self._provider.chat(messages, stream=True, options=opts or None)
+            raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
             try:
                 for st in filter_reasoning(
                     cast(Iterator[str], raw), show=self._config.show_reasoning
@@ -552,8 +559,9 @@ class Searcher:
             )
             return
         results, messages = rag
+        provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw_stream = self._provider.chat(messages, stream=True, options=opts or None)
+        raw_stream = self._provider.chat(provider_messages, stream=True, options=opts or None)
         try:
             for st in filter_reasoning(
                 cast(Iterator[str], raw_stream), show=self._config.show_reasoning

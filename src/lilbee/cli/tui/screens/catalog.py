@@ -189,6 +189,10 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False),
         Binding("ctrl+d", "page_down", "PgDn", show=False),
         Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("1", "activate_tab_0", "1", show=False),
+        Binding("2", "activate_tab_1", "2", show=False),
+        Binding("3", "activate_tab_2", "3", show=False),
+        Binding("4", "activate_tab_3", "4", show=False),
     ]
 
     def __init__(self) -> None:

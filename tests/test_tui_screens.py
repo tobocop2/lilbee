@@ -183,9 +183,9 @@ class TestFormatRow:
         assert "\u2605" not in row
 
     def test_contains_name(self):
-        m = _make_catalog_model(name="my-model-8B")
+        m = _make_catalog_model(name="my-model-8B", hf_repo="my-org/my-model-8B")
         row = _format_row(m)
-        assert "my-model-8B" in row
+        assert "my model 8B" in row
 
     def test_zero_size_shows_dash(self):
         m = _make_catalog_model(size_gb=0.0)
@@ -305,7 +305,7 @@ class TestGroupBySize:
     def test_unknown_category(self):
         models = [_make_catalog_model(name="nomic-embed-text")]
         groups = _group_by_size(models)
-        assert groups[0][0] == "unknown"
+        assert groups[0][0] == "Other"
 
     def test_empty(self):
         assert _group_by_size([]) == []
@@ -404,6 +404,77 @@ async def test_settings_screen_row_highlighted_unknown_key():
         event.row_key.value = "nonexistent_key_xyz"
         event.row_key.__bool__ = lambda self: True
         app.screen.on_data_table_row_highlighted(event)
+
+
+async def test_settings_enter_opens_editor():
+    """F1: pressing Enter on a row opens an inline editor."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable, Input
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move to first row (chat_model) and press enter to edit
+        app.screen.action_edit_row()
+        await pilot.pause()
+        editor = app.screen.query_one("#settings-editor", Input)
+        assert editor is not None
+        assert app.screen._editing_key is not None
+
+
+async def test_settings_enter_saves_value():
+    """F1: submitting editor saves the value."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable, Input
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move to top_k row (row 3, index-based)
+        table.move_cursor(row=3)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        editor = app.screen.query_one("#settings-editor", Input)
+        editor.value = "20"
+        editor.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert cfg.top_k == 20
+        assert app.screen._editing_key is None
+
+
+async def test_settings_escape_cancels_edit():
+    """F1: pressing Escape cancels the edit."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        assert app.screen._editing_key is not None
+        app.screen.action_dismiss_or_back()
+        await pilot.pause()
+        assert app.screen._editing_key is None
+
+
+async def test_settings_readonly_shows_warning():
+    """F1: Enter on hf_token row shows read-only warning."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move cursor to last row (hf_token)
+        table.move_cursor(row=table.row_count - 1)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        # Should not have opened an editor
+        assert app.screen._editing_key is None
 
 
 # ---------------------------------------------------------------------------
@@ -1955,14 +2026,14 @@ class ModelRowTestApp(App[None]):
     CSS = ""
 
     def compose(self) -> ComposeResult:
-        yield ModelRow(_make_catalog_model(name="compose-test-7B"))
+        yield ModelRow(_make_catalog_model(name="compose-test-7B", hf_repo="compose-test-7B"))
 
 
 async def test_model_row_compose():
     app = ModelRowTestApp()
     async with app.run_test(size=(120, 10)) as _pilot:
         text = app.query_one(Static)
-        assert "compose-test-7B" in str(text.render())
+        assert "compose test 7B" in str(text.render())
 
 
 class RemoteRowTestApp(App[None]):
@@ -2144,7 +2215,7 @@ async def test_chat_sync_progress_percentage():
     """Verify sync progress reports actual percentage, not hardcoded 50%."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType
+        from lilbee.progress import EventType, FileStartEvent
 
         update_calls: list[tuple] = []
         task_bar = app.screen.query_one("#task-bar")
@@ -2156,10 +2227,8 @@ async def test_chat_sync_progress_percentage():
 
         async def fake_sync(quiet=False, on_progress=None):
             if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    {"current_file": 3, "total_files": 4, "file": "doc.md"},
-                )
+                event = FileStartEvent(current_file=3, total_files=4, file="doc.md")
+                on_progress(EventType.FILE_START, event)
             return {"added": 1}
 
         with (
@@ -2171,7 +2240,6 @@ async def test_chat_sync_progress_percentage():
             while app.screen.workers:
                 await _pilot.pause()
 
-        # The FILE_START with 3/4 should produce 75%, not 50%
         pct_values = [pct for _, pct, _ in update_calls if pct > 0]
         assert 75 in pct_values
 
@@ -2654,7 +2722,12 @@ async def test_chat_slash_crawl_with_flags():
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
-            mock_crawl.assert_called_once_with("https://example.com", 3, 20)
+            mock_crawl.assert_called_once()
+            call_args = mock_crawl.call_args[0]
+            assert call_args[0] == "https://example.com"
+            assert call_args[1] == 3
+            assert call_args[2] == 20
+            assert len(call_args) == 4
 
 
 async def test_chat_slash_add_url_routes_to_crawl():
@@ -2720,7 +2793,7 @@ async def test_chat_run_crawl_background_success():
             patch.object(app.screen, "_run_sync"),
         ):
             mock_crawl.side_effect = _fake_crawl
-            app.screen._run_crawl_background("https://example.com", 0, 50)
+            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
 
 
@@ -2730,7 +2803,7 @@ async def test_chat_run_crawl_background_error():
     async with app.run_test(size=(120, 40)) as pilot:
         with patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl:
             mock_crawl.side_effect = RuntimeError("network error")
-            app.screen._run_crawl_background("https://example.com", 0, 50)
+            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
 
 
@@ -2846,20 +2919,19 @@ async def test_catalog_number_keys_switch_tabs():
             await _pilot.pause()
             from textual.widgets import ListView, TabbedContent
 
-            # Focus the list so Input is not focused (number keys are no-ops in Input)
             screen.query_one("#catlist-all", ListView).focus()
             await _pilot.pause()
             tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            screen.key_2()
+            screen.action_activate_tab_1()
             await _pilot.pause()
             assert tabs.active == "cat-chat"
-            screen.key_3()
+            screen.action_activate_tab_2()
             await _pilot.pause()
             assert tabs.active == "cat-embedding"
-            screen.key_4()
+            screen.action_activate_tab_3()
             await _pilot.pause()
             assert tabs.active == "cat-vision"
-            screen.key_1()
+            screen.action_activate_tab_0()
             await _pilot.pause()
             assert tabs.active == "cat-all"
 
@@ -2877,10 +2949,10 @@ async def test_catalog_number_keys_noop_in_input():
             from textual.widgets import Input
 
             screen.query_one("#catalog-search", Input).focus()
-            screen.key_1()
-            screen.key_2()
-            screen.key_3()
-            screen.key_4()
+            screen.action_activate_tab_0()
+            screen.action_activate_tab_1()
+            screen.action_activate_tab_2()
+            screen.action_activate_tab_3()
 
 
 async def test_app_question_mark_opens_help():
@@ -3158,3 +3230,241 @@ async def test_sync_called_with_quiet_true():
 
         assert len(sync_kwargs) >= 1
         assert sync_kwargs[0].get("quiet") is True
+
+
+async def test_chat_escape_enters_normal_mode():
+    """F3: Escape leaves insert mode and enters normal mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert app.screen._insert_mode is True
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+
+
+async def test_chat_enter_returns_to_insert_mode():
+    """F3: Enter in normal mode switches back to insert mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Enter normal mode first
+        app.screen._insert_mode = False
+        app.screen._update_input_style()
+        await pilot.pause()
+        # Trigger enter via the on_key handler
+        app.screen._enter_insert_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+
+
+async def test_chat_normal_mode_dims_input():
+    """F3: Input widget gets normal-mode class when in normal mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        assert "insert-mode" in inp.classes
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert "normal-mode" in inp.classes
+        assert "insert-mode" not in inp.classes
+
+
+async def test_chat_tab_cycles_focus_forward():
+    """Tab cycles focus forward through sections."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        assert app.screen._focus_index == 1
+
+        app.screen.action_cycle_focus_forward()
+        await pilot.pause()
+        assert app.screen._focus_index == 2
+
+        app.screen.action_cycle_focus_forward()
+        await pilot.pause()
+        assert app.screen._focus_index == 3
+
+        app.screen.action_cycle_focus_forward()
+        await pilot.pause()
+        assert app.screen._focus_index == 0
+
+
+async def test_chat_shift_tab_cycles_focus_backward():
+    """Shift+Tab cycles focus backward through sections."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen._focus_index = 2
+
+        app.screen.action_cycle_focus_backward()
+        await pilot.pause()
+        assert app.screen._focus_index == 1
+
+        app.screen.action_cycle_focus_backward()
+        await pilot.pause()
+        assert app.screen._focus_index == 0
+
+        app.screen.action_cycle_focus_backward()
+        await pilot.pause()
+        assert app.screen._focus_index == 3
+
+
+async def test_chat_escape_key_enters_normal_mode():
+    """Escape key enters normal mode and focuses chat log."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        assert app.screen._insert_mode is True
+        assert inp.has_focus
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+
+
+async def test_chat_cursor_down_action_scrolls():
+    """action_cursor_down scrolls in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        log.focus()
+        await pilot.pause()
+
+        app.screen.action_cursor_down()
+        await pilot.pause()
+
+
+async def test_chat_cursor_up_action_scrolls():
+    """action_cursor_up scrolls in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        log.focus()
+        await pilot.pause()
+
+        app.screen.action_cursor_up()
+        await pilot.pause()
+
+
+async def test_chat_enter_key_returns_to_insert_mode():
+    """Enter key returns to insert mode from normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+
+
+async def test_app_nav_prev_cycles_views():
+    """App-level h/left binding cycles to previous view."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        nav = app.query_one("#global-nav-bar")
+        assert nav.active_view == "Chat"
+
+        app.action_nav_prev()
+        await pilot.pause()
+        assert nav.active_view == "Settings"
+
+        app.action_nav_prev()
+        await pilot.pause()
+        assert nav.active_view == "Status"
+
+
+async def test_app_nav_next_cycles_views():
+    """App-level l/right binding cycles to next view."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        nav = app.query_one("#global-nav-bar")
+        assert nav.active_view == "Chat"
+
+        app.action_nav_next()
+        await pilot.pause()
+        assert nav.active_view == "Models"
+
+        app.action_nav_next()
+        await pilot.pause()
+        assert nav.active_view == "Status"
+
+
+async def test_app_number_keys_switch_views():
+    """Number keys 1-4 switch between views."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        nav = app.query_one("#global-nav-bar")
+
+        app.action_switch_chat()
+        await pilot.pause()
+        assert nav.active_view == "Chat"
+
+        app.action_switch_models()
+        await pilot.pause()
+        assert nav.active_view == "Models"
+
+        app.action_switch_status()
+        await pilot.pause()
+        assert nav.active_view == "Status"
+
+        app.action_switch_settings()
+        await pilot.pause()
+        assert nav.active_view == "Settings"

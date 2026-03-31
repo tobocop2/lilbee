@@ -56,6 +56,10 @@ class LilbeeApp(App[None]):
         Binding("2", "switch_models", "Models", show=False),
         Binding("3", "switch_status", "Status", show=False),
         Binding("4", "switch_settings", "Settings", show=False),
+        Binding("h", "nav_prev", "Prev", show=False),
+        Binding("left", "nav_prev", "Prev", show=False),
+        Binding("l", "nav_next", "Next", show=False),
+        Binding("right", "nav_next", "Next", show=False),
         Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
     ]
 
@@ -155,3 +159,19 @@ class LilbeeApp(App[None]):
 
     def action_switch_settings(self) -> None:
         self._switch_view("Settings")
+
+    def action_nav_prev(self) -> None:
+        """Navigate to previous view (h or left arrow)."""
+        nav = self.query_one("#global-nav-bar", NavBar)
+        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
+        prev_idx = (current_idx - 1) % 4
+        view_names = ["Chat", "Models", "Status", "Settings"]
+        self._switch_view(view_names[prev_idx])
+
+    def action_nav_next(self) -> None:
+        """Navigate to next view (l or right arrow)."""
+        nav = self.query_one("#global-nav-bar", NavBar)
+        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
+        next_idx = (current_idx + 1) % 4
+        view_names = ["Chat", "Models", "Status", "Settings"]
+        self._switch_view(view_names[next_idx])

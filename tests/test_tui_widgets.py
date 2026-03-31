@@ -362,8 +362,15 @@ class _ModelBarApp(App):
 
 
 class TestModelBar:
-    async def test_refresh_shows_config(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+    @pytest.fixture(autouse=True)
+    def mock_provider(self):
+        mock_svc = mock.MagicMock()
+        mock_svc.provider.list_models.return_value = []
+        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+            yield mock_svc
+
+    async def test_renders_select_widgets(self) -> None:
+        from textual.widgets import Select
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic"
@@ -371,20 +378,34 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar.refresh_models()
-            await pilot.pause()
+            selects = list(app.query(Select))
+            assert len(selects) == 3
 
-    async def test_refresh_shows_vision_when_set(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+    async def test_widget_exists_with_3_selects(self) -> None:
+        from textual.widgets import Select
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_sel = app.query_one("#chat-model-select", Select)
+            embed_sel = app.query_one("#embed-model-select", Select)
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert chat_sel is not None
+            assert embed_sel is not None
+            assert vision_sel is not None
+
+    async def test_vision_set_when_configured(self) -> None:
+        from textual.widgets import Select
 
         cfg.vision_model = "llava"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar.refresh_models()
-            await pilot.pause()
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava"
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1230,38 @@ class TestNavBar:
             bar.active_view = "Status"
             await pilot.pause()
             assert bar.active_view == "Status"
+
+    async def test_change_view_updates_active_view(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar._change_view("Status")
+            await pilot.pause()
+            assert bar.active_view == "Status"
+
+    async def test_change_view_ignores_invalid(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar._change_view("InvalidView")
+            await pilot.pause()
+            assert bar.active_view == "Chat"
+
+    async def test_view_index_0_is_chat(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[0] == "Chat"
+
+    async def test_view_index_3_is_settings(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[3] == "Settings"
 
 
 # ---------------------------------------------------------------------------
