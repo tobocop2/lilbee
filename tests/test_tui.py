@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest import mock
 
 import pytest
+from textual.binding import Binding
 
 from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, RemoteRow
@@ -659,6 +660,42 @@ class TestMinimalFooter:
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert "q back" in visible
         assert len(visible) <= 3
+
+
+class TestNumberKeyBindings:
+    """B4: Verify 1-4 key bindings exist in app BINDINGS."""
+
+    def test_bindings_1_through_4_exist(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
+        assert "1" in keys
+        assert "2" in keys
+        assert "3" in keys
+        assert "4" in keys
+
+    def test_bindings_map_to_switch_actions(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        key_action = {b.key: b.action for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
+        assert key_action["1"] == "switch_chat"
+        assert key_action["2"] == "switch_models"
+        assert key_action["3"] == "switch_status"
+        assert key_action["4"] == "switch_settings"
+
+
+class TestNoRichConsoleInTui:
+    """B2: Verify _run_add_background does not import Rich Console."""
+
+    def test_chat_add_uses_copy_files_not_copy_paths(self) -> None:
+        import inspect
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        source = inspect.getsource(ChatScreen._run_add_background)
+        assert "from lilbee.cli.app import console" not in source
+        assert "copy_paths" not in source
+        assert "copy_files" in source
 
 
 class TestLoginCommand:

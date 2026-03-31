@@ -52,6 +52,10 @@ class LilbeeApp(App[None]):
         Binding("f4", "push_settings", "Settings", show=False),
         Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("1", "switch_chat", "Chat", show=False),
+        Binding("2", "switch_models", "Models", show=False),
+        Binding("3", "switch_status", "Status", show=False),
+        Binding("4", "switch_settings", "Settings", show=False),
         Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
     ]
 

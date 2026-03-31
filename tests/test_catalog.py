@@ -19,6 +19,7 @@ from lilbee.catalog import (
     EnrichedModel,
     ModelFamily,
     ModelVariant,
+    _hf_token,
     clean_display_name,
     download_model,
     enrich_catalog,
@@ -61,6 +62,33 @@ class TestCatalogResultDataclass:
         r = CatalogResult(total=0, limit=20, offset=0, models=[])
         with pytest.raises(AttributeError):
             r.total = 1  # type: ignore[misc]
+
+
+class TestHfToken:
+    def test_env_var_takes_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LILBEE_HF_TOKEN", "env-token")
+        assert _hf_token() == "env-token"
+
+    def test_hf_token_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.setenv("HF_TOKEN", "hf-env-token")
+        assert _hf_token() == "hf-env-token"
+
+    def test_falls_back_to_huggingface_hub_get_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        fake_hf_hub = MagicMock()
+        fake_hf_hub.get_token.return_value = "cached-token"
+        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
+        assert _hf_token() == "cached-token"
+
+    def test_returns_none_when_all_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        fake_hf_hub = MagicMock()
+        fake_hf_hub.get_token.side_effect = Exception("no token")
+        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
+        assert _hf_token() is None
 
 
 class TestFeaturedModels:

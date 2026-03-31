@@ -823,7 +823,10 @@ async def test_chat_slash_add_existing(tmp_path):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.helpers.copy_paths", return_value=["test.txt"]),
+            patch(
+                "lilbee.cli.helpers.copy_files",
+                return_value=MagicMock(copied=["test.txt"], skipped=[]),
+            ),
             patch.object(app.screen, "_run_sync"),
         ):
             app.screen._cmd_add(str(test_file))
@@ -834,7 +837,7 @@ async def test_chat_slash_add_error(tmp_path):
     test_file.write_text("hello")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.copy_paths", side_effect=Exception("copy failed")):
+        with patch("lilbee.cli.helpers.copy_files", side_effect=Exception("copy failed")):
             app.screen._cmd_add(str(test_file))
 
 
@@ -3098,7 +3101,10 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
             return {"added": 1}
 
         with (
-            patch("lilbee.cli.helpers.copy_paths", return_value=["doc.txt"]) as mock_copy,
+            patch(
+                "lilbee.cli.helpers.copy_files",
+                return_value=MagicMock(copied=["doc.txt"], skipped=[]),
+            ) as mock_copy,
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
             from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -3127,7 +3133,7 @@ async def test_cmd_add_error_in_background(tmp_path):
         test_file = tmp_path / "doc.txt"
         test_file.write_text("hello")
 
-        with patch("lilbee.cli.helpers.copy_paths", side_effect=RuntimeError("copy failed")):
+        with patch("lilbee.cli.helpers.copy_files", side_effect=RuntimeError("copy failed")):
             app.screen._handle_slash(f"/add {test_file}")
             await _pilot.pause()
             while app.screen.workers:

@@ -18,10 +18,10 @@ _HELP_TEXT = f"""\
 [bold]Global[/bold]
 
   ? / F1 / ^h    Help (this screen)
-  1 / Ctrl+1     Chat view
-  2 / Ctrl+2     Model catalog
-  3 / Ctrl+3     Knowledge base status
-  4 / Ctrl+4     Settings
+  1              Chat view
+  2              Model catalog
+  3              Knowledge base status
+  4              Settings
   F2 / ^n        Model catalog
   F3 / ^s        Knowledge base status
   F4 / ^e        Settings

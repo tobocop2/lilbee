@@ -260,8 +260,16 @@ _SIZE_RANGES: dict[str, tuple[float, float]] = {
 
 
 def _hf_token() -> str | None:
-    """Read HuggingFace token from LILBEE_HF_TOKEN or HF_TOKEN env vars."""
-    return os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
+    """Read HuggingFace token from env vars or huggingface_hub login cache."""
+    token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
+    if token:
+        return token
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:
+        return None
 
 
 def _hf_headers() -> dict[str, str]:
