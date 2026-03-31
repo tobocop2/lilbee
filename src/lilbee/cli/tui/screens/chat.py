@@ -48,6 +48,7 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
+        Binding("tab", "noop", "Tab", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
@@ -598,6 +599,10 @@ class ChatScreen(Screen[None]):
         # If they scrolled up to read, don't yank them back.
         if log_widget.max_scroll_y - log_widget.scroll_y < 5:
             log_widget.scroll_end(animate=False)
+
+    def action_noop(self) -> None:
+        """Do nothing - prevents default Tab behavior."""
+        pass
 
     def action_scroll_up(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_up()
