@@ -123,6 +123,7 @@ class TaskBar(Static):
         """Update widget contents based on queue state."""
         active = self._queue.active_task
         queued = self._queue.queued_tasks
+        total_tasks = len(queued) + (1 if active else 0)
 
         if not active and not queued:
             self.display = False
@@ -136,7 +137,9 @@ class TaskBar(Static):
 
         if active:
             if active.status == TaskStatus.ACTIVE:
-                icon = _SPINNER_FRAMES[self._spinner_index]
+                spinner = _SPINNER_FRAMES[self._spinner_index]
+                type_icon = self._task_type_icon(active.task_type)
+                icon = f"{spinner} {type_icon}"
             else:
                 icon = self._status_icon(active.status)
             detail = f"  {active.detail}" if active.detail else ""
@@ -149,12 +152,28 @@ class TaskBar(Static):
             progress_bar.display = False
 
         if queued:
-            names = ", ".join(f"{t.name} ({t.task_type})" for t in queued[:3])
+            parts = []
+            for t in queued[:3]:
+                type_icon = self._task_type_icon(t.task_type)
+                parts.append(f"{type_icon} {t.name}")
+            names = ", ".join(parts)
             suffix = f" +{len(queued) - 3} more" if len(queued) > 3 else ""
-            queued_label.update(f"   Queued: {names}{suffix}")
+            badge = f" [{total_tasks} tasks]" if total_tasks > 1 else ""
+            queued_label.update(f"   Queued{badge}: {names}{suffix}")
             queued_label.display = True
         else:
             queued_label.display = False
+
+    @staticmethod
+    def _task_type_icon(task_type: str) -> str:
+        """Get icon for task type."""
+        icons = {
+            "download": "\u2b73",
+            "sync": "\u21bb",
+            "crawl": "\u1f310",
+            "add": "\u2795",
+        }
+        return icons.get(task_type, "\u25b6")
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:

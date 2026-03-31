@@ -427,7 +427,9 @@ class CatalogScreen(Screen[None]):
             filename = _resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
-                self.notify(f"{model.name} is already installed")
+                cfg.chat_model = model.name
+                self.app.title = f"lilbee — {model.name}"
+                self.notify(f"Using {model.name}")
                 return
         except Exception:
             pass  # Can't resolve filename -- proceed with download
@@ -475,7 +477,9 @@ class CatalogScreen(Screen[None]):
 
             download_model(model, on_progress=on_progress)
             self.app.call_from_thread(bar.complete_task, task_id)
-            self.app.call_from_thread(self.notify, f"{model.name} installed")
+            self.app.call_from_thread(setattr, cfg, "chat_model", model.name)
+            self.app.call_from_thread(setattr, self.app, "title", f"lilbee — {model.name}")
+            self.app.call_from_thread(self.notify, f"Now using {model.name}")
         except PermissionError:
             msg = f"{model.name} requires login \u2014 run /login or lilbee login"
             log.warning("Gated repo: %s", model.hf_repo)

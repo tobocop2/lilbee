@@ -336,6 +336,12 @@ class ChatScreen(Screen[None]):
     def _cmd_help(self, _args: str) -> None:
         self.app.push_screen(HelpModal())
 
+    def _cmd_tasks(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.task_center import TaskCenter
+
+        task_bar = getattr(self.app, "_task_bar", None)
+        self.app.push_screen(TaskCenter(task_bar))
+
     def _cmd_login(self, args: str) -> None:
         token = args.strip()
         if not token:
@@ -579,17 +585,15 @@ class ChatScreen(Screen[None]):
         task_bar = self.query_one("#task-bar", TaskBar)
         task_id = task_bar.add_task("Sync documents", "sync")
         task_bar.queue.advance()
-        self._run_sync_worker(task_id)
+        thread = threading.Thread(target=self._run_sync_worker, args=(task_id,), daemon=True)
+        thread.start()
 
-    @work(thread=True)
     def _run_sync_worker(self, task_id: str) -> None:
-        """Run background document sync in a Textual worker thread.
+        """Run background document sync in a daemon thread.
 
-        Architecture: @work(thread=True) runs this method in a daemon thread,
-        keeping the Textual event loop free for UI updates. Progress is reported
-        back to the main thread via app.call_from_thread(). The asyncio.run()
-        call creates a fresh event loop because Textual workers are plain threads,
-        not coroutines on the app's async loop.
+        Uses a plain threading.Thread instead of @work to ensure reliable
+        background execution. Progress is reported back to the main thread
+        via app.call_from_thread().
         """
         import asyncio
 
