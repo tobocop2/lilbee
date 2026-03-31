@@ -95,14 +95,14 @@ class AssistantMessage(Vertical):
         if self._content_widget is not None and now - self._last_md_update >= _MD_UPDATE_INTERVAL:
             self._last_md_update = now
             self._content_widget.update("".join(self._content_parts))
-            self.refresh(layout=True)
+            self.refresh()
 
     def finish(self, sources: list[str] | None = None) -> None:
         """Mark response as complete and show citations."""
         self._finished = True
         if self._content_widget is not None and self._content_parts:
             self._content_widget.update("".join(self._content_parts))
-            self.refresh(layout=True)
+            self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
             self._reasoning_widget.title = "Reasoning"
         elif self._reasoning_widget is not None:

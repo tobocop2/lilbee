@@ -29,6 +29,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -79,12 +80,14 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
+        yield NavBar(id="nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self.query_one("#chat-only-banner", Static).display = False
         # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
+        self.app._nav_bar = self.query_one("#nav-bar", NavBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 

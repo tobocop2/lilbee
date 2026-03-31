@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -63,7 +64,7 @@ class TaskBar(Static):
         """Expose the queue for external use."""
         return self._queue
 
-    def add_task(self, name: str, task_type: str, fn: object = None) -> str:
+    def add_task(self, name: str, task_type: str, fn: Callable[[], None] | None = None) -> str:
         """Add a task to the queue. Returns task_id.
 
         The *fn* is stored but not started here -- the caller is responsible

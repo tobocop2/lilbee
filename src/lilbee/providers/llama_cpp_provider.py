@@ -265,10 +265,11 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
 def _embed_one(llm: Any, text: str) -> list[float]:
     """Embed a single text with llama.cpp stderr noise suppressed."""
     response = _suppress_stderr(llm.create_embedding, input=[text])
-    return response["data"][0]["embedding"]
+    result: list[float] = response["data"][0]["embedding"]
+    return result
 
 
-def _read_gguf_metadata(model_path: Path) -> dict[str, str]:
+def _read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
 
     Returns a dict with keys like 'architecture', 'context_length',

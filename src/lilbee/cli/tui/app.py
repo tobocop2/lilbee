@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import ClassVar
 
@@ -11,6 +12,8 @@ from textual.binding import Binding, BindingType
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
+
+log = logging.getLogger(__name__)
 
 _READY_FILE = "lilbee-splash-ready"
 
@@ -50,10 +53,6 @@ class LilbeeApp(App[None]):
         Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
         Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
-        Binding("ctrl+1", "switch_chat", "Chat", show=False, priority=True),
-        Binding("ctrl+2", "switch_models", "Models", show=False, priority=True),
-        Binding("ctrl+3", "switch_status", "Status", show=False, priority=True),
-        Binding("ctrl+4", "switch_settings", "Settings", show=False, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -110,7 +109,9 @@ class LilbeeApp(App[None]):
             self.pop_screen()
 
         if view_name == "Chat":
-            pass  # Already there
+            from textual.widgets import Input
+
+            self.call_later(lambda: self.screen.query_one("#chat-input", Input).focus())
         elif view_name == "Models":
             self.push_screen(CatalogScreen())
         elif view_name == "Status":
@@ -123,7 +124,7 @@ class LilbeeApp(App[None]):
             nav = self.query_one("#global-nav-bar", NavBar)
             nav.active_view = view_name
         except Exception:
-            pass
+            log.debug("NavBar update failed", exc_info=True)
 
     def action_push_catalog(self) -> None:
         self._switch_view("Models")
