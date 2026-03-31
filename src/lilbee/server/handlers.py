@@ -137,6 +137,32 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
     return cfg.generation_options(**options) if options else None
 
 
+async def _drain_sse_queue(
+    queue: asyncio.Queue[str | None],
+    task: asyncio.Task[Any],
+) -> AsyncGenerator[str, None]:
+    """Drain SSE events from *queue* until *task* completes or sentinel received."""
+    while not task.done() or not queue.empty():
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except TimeoutError:
+            continue
+        if item is None:
+            break
+        yield item
+
+
+def _on_stream_cancel(
+    cancel: threading.Event,
+    task: asyncio.Task[Any],
+    label: str,
+) -> None:
+    """Signal cancellation and log when a client disconnects mid-stream."""
+    log.info("%s cancelled by client", label)
+    cancel.set()
+    task.cancel()
+
+
 def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCallback:
     """Return a progress callback that serializes events into an asyncio queue.
 
@@ -325,36 +351,24 @@ def chat_stream(
 
 
 async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event.
-
-    Sets a cancel event on client disconnect so the sync stops between files.
-    """
-    from lilbee.ingest import SyncResult, sync
+    """Trigger sync, yield SSE progress events, then done event."""
+    from lilbee.ingest import sync
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
-    callback = _make_sse_callback(queue)
     cancel = threading.Event()
+    callback = _make_sse_callback(queue)
 
-    async def run_sync() -> SyncResult:
-        return await sync(
-            quiet=True, on_progress=callback, force_vision=force_vision, cancel=cancel
-        )
-
-    task = asyncio.create_task(run_sync())
+    task = asyncio.create_task(
+        sync(quiet=True, on_progress=callback, force_vision=force_vision, cancel=cancel)
+    )
     try:
-        while not task.done() or not queue.empty():
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except TimeoutError:
-                continue
-            if item is not None:
-                yield item
+        async for event in _drain_sse_queue(queue, task):
+            yield event
     except (asyncio.CancelledError, GeneratorExit):
-        log.info("Sync stream cancelled by client")
-        cancel.set()
-        task.cancel()
+        _on_stream_cancel(cancel, task, "Sync stream")
         return
-    yield sse_done(task.result().model_dump())
+    if not cancel.is_set() and task.done() and not task.cancelled():
+        yield sse_done(task.result().model_dump())
 
 
 async def _run_add(
@@ -723,17 +737,10 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
     try:
-        while not task.done() or not queue.empty():
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except TimeoutError:  # pragma: no cover -- async polling race
-                continue
-            if item is None:
-                break
-            yield item
+        async for event in _drain_sse_queue(queue, task):
+            yield event
     except (asyncio.CancelledError, GeneratorExit):
-        log.info("Model pull stream cancelled by client")
-        cancel.set()
+        _on_stream_cancel(cancel, task, "Model pull stream")
         return
 
 
@@ -771,17 +778,10 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
     task = asyncio.create_task(_run_crawl())
     try:
-        while not task.done() or not queue.empty():
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except TimeoutError:
-                continue
-            if item is not None:
-                yield item
+        async for event in _drain_sse_queue(queue, task):
+            yield event
     except (asyncio.CancelledError, GeneratorExit):
-        log.info("Crawl stream cancelled by client")
-        cancel.set()
-        task.cancel()
+        _on_stream_cancel(cancel, task, "Crawl stream")
         return
 
     exc = task.exception()

@@ -459,7 +459,7 @@ class TestSyncStream:
                     break
 
         assert captured_cancel and captured_cancel[0].is_set()
-        assert any("Sync stream cancelled" in r.message for r in caplog.records)
+        assert any("Sync stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestAddFiles:
@@ -693,7 +693,7 @@ class TestModelsPull:
                     barrier.set()
                     break
 
-        assert any("Model pull stream cancelled" in r.message for r in caplog.records)
+        assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestModelsDelete:
@@ -998,7 +998,7 @@ class TestCrawlStream:
                     barrier.set()
                     break
 
-        assert any("Crawl stream cancelled" in r.message for r in caplog.records)
+        assert any("Crawl stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestSseHelpers:
