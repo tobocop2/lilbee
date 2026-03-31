@@ -122,6 +122,14 @@ select = [
     "RUF",   # ruff-specific
 ]
 
+[tool.uv.sources]
+llama-cpp-python = { index = "llama-cpp-prebuilt" }
+
+[[tool.uv.index]]
+name = "llama-cpp-prebuilt"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
+explicit = true
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

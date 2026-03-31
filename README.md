@@ -148,7 +148,15 @@ No external services needed. lilbee downloads and runs GGUF models locally via l
 ### Install
 
 ```bash
-pip install lilbee        # or: uv tool install lilbee
+pip install lilbee --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/
+```
+
+The `--extra-index-url` flag fetches prebuilt `llama-cpp-python` wheels so no C compiler (CMake, MSVC) is needed. This works on **Windows, macOS, and Linux**. If you already have cmake installed, plain `pip install lilbee` also works.
+
+With [uv](https://docs.astral.sh/uv/), prebuilt wheels resolve automatically:
+
+```bash
+uv tool install lilbee
 ```
 
 ### Optional extras

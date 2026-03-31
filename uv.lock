@@ -1645,7 +1645,7 @@ requires-dist = [
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "llama-cpp-python" },
+    { name = "llama-cpp-python", index = "https://abetlen.github.io/llama-cpp-python/whl/cpu/" },
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "psutil", specifier = ">=5.9" },
@@ -1743,15 +1743,34 @@ wheels = [
 
 [[package]]
 name = "llama-cpp-python"
-version = "0.3.16"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.18"
+source = { registry = "https://abetlen.github.io/llama-cpp-python/whl/cpu/" }
 dependencies = [
     { name = "diskcache" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/b4/c8cd17629ced0b9644a71d399a91145aedef109c0333443bef015e45b704/llama_cpp_python-0.3.16.tar.gz", hash = "sha256:34ed0f9bd9431af045bb63d9324ae620ad0536653740e9bb163a2e1fcb973be6", size = 50688636 }
+wheels = [
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-linux_aarch64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-linux_riscv64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-linux_x86_64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-macosx_11_0_arm64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-win32.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp311-cp311-win_amd64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-linux_aarch64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-linux_riscv64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-linux_x86_64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-macosx_11_0_arm64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-win32.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp312-cp312-win_amd64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp313-cp313-linux_riscv64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp313-cp313-linux_x86_64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp313-cp313-macosx_11_0_arm64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp313-cp313-win32.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp313-cp313-win_amd64.whl" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.18/llama_cpp_python-0.3.18-cp314-cp314-linux_riscv64.whl" },
+]
 
 [[package]]
 name = "lxml"
