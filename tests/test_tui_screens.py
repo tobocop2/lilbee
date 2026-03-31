@@ -662,6 +662,9 @@ class ChatTestApp(App[None]):
     CSS = ""
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="global-nav-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1508,6 +1511,7 @@ async def test_catalog_focus_search():
             app.push_screen(screen)
             await _pilot.pause()
             screen.action_focus_search()
+            await _pilot.pause()
             from textual.widgets import Input
 
             assert app.screen.query_one("#catalog-search", Input).has_focus
@@ -1543,7 +1547,10 @@ async def test_catalog_cycle_sort_in_input_ignored():
             await _pilot.pause()
             from textual.widgets import Input
 
-            screen.query_one("#catalog-search", Input).focus()
+            filter_input = screen.query_one("#catalog-search", Input)
+            filter_input.display = True
+            filter_input.focus()
+            await _pilot.pause()
             screen.action_cycle_sort()
             assert screen._current_sort == "downloads"
 

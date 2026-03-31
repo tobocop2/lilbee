@@ -60,7 +60,7 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
-    FOCUS_ORDER: ClassVar[list[str]] = ["model-bar", "chat-input", "chat-log", "nav-bar"]
+    FOCUS_ORDER: ClassVar[list[str]] = ["model-bar", "chat-input", "chat-log", "global-nav-bar"]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
@@ -87,7 +87,6 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
-        yield NavBar(id="nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
@@ -95,7 +94,8 @@ class ChatScreen(Screen[None]):
         self.query_one("#chat-only-banner", Static).display = False
         # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
-        self.app._nav_bar = self.query_one("#nav-bar", NavBar)  # type: ignore[attr-defined]
+        with contextlib.suppress(Exception):
+            self.app._nav_bar = self.app.query_one("#global-nav-bar", NavBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -181,7 +181,10 @@ class ChatScreen(Screen[None]):
         else:
             self._focus_index = (self._focus_index - 1) % len(self.FOCUS_ORDER)
         widget_id = self.FOCUS_ORDER[self._focus_index]
-        widget = self.query_one(f"#{widget_id}")
+        if widget_id == "global-nav-bar":
+            widget = self.app.query_one(f"#{widget_id}")
+        else:
+            widget = self.query_one(f"#{widget_id}")
         widget.focus()
 
     def action_cycle_focus_forward(self) -> None:

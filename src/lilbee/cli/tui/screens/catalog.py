@@ -209,19 +209,38 @@ class CatalogScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="Filter models...", id="catalog-search")
-        yield Static(f"Sort: {_SORT_LABELS[self._current_sort]}", id="sort-label")
+        yield Static(f"Sort: {_SORT_LABELS[self._current_sort]}", id="sort-label", shrink=True)
         with TabbedContent(*TASK_TABS, id="catalog-tabs"):
             for tab_label in TASK_TABS:
                 with TabPane(tab_label, id=f"cat-{tab_label.lower()}"):
                     yield ListView(id=f"catlist-{tab_label.lower()}")
+        yield Input(placeholder="Filter models... ( Esc to close)", id="catalog-search")
         yield Static("", id="model-detail")
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#catalog-search", Input).display = False
         self._refresh_lists()
         self._fetch_hf_models()
         self._fetch_remote_models()
+
+    def action_focus_search(self) -> None:
+        """Focus the filter input - bound to / key."""
+        filter_input = self.query_one("#catalog-search", Input)
+        filter_input.display = True
+        filter_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter models when input changes."""
+        if event.input.id == "catalog-search":
+            self._filter_text = event.value
+            self._refresh_lists()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Close filter on Enter."""
+        if event.input.id == "catalog-search":
+            event.input.display = False
+            self.query_one(f"#catlist-{self._current_tab.lower()}", ListView).focus()
 
     @work(thread=True)
     def _fetch_hf_models(self) -> list[CatalogModel]:
@@ -257,9 +276,7 @@ class CatalogScreen(Screen[None]):
                 self._size_cache[repo] = size_gb
                 self._update_highlighted_detail()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "catalog-search":
-            self._refresh_lists()
+
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self._hf_offset = 0
@@ -486,9 +503,6 @@ class CatalogScreen(Screen[None]):
             msg = f"{model.name}: download failed"
             self.app.call_from_thread(bar.fail_task, task_id, msg)
             self.app.call_from_thread(self.notify, msg, severity="error")
-
-    def action_focus_search(self) -> None:
-        self.query_one("#catalog-search", Input).focus()
 
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
