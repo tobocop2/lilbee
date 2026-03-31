@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import ClassVar
@@ -233,14 +234,17 @@ class CatalogScreen(Screen[None]):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models when input changes."""
         if event.input.id == "catalog-search":
-            self._filter_text = event.value
             self._refresh_lists()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Close filter on Enter."""
         if event.input.id == "catalog-search":
             event.input.display = False
-            self.query_one(f"#catlist-{self._current_tab.lower()}", ListView).focus()
+            tabs = self.query_one("#catalog-tabs", TabbedContent)
+            active_tab = tabs.active or "cat-all"
+            tab_name = active_tab.replace("cat-", "")
+            with contextlib.suppress(Exception):
+                self.query_one(f"#catlist-{tab_name}", ListView).focus()
 
     @work(thread=True)
     def _fetch_hf_models(self) -> list[CatalogModel]:

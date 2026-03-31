@@ -243,10 +243,14 @@ class ChatScreen(Screen[None]):
         task_bar = self.query_one("#task-bar", TaskBar)
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
-            from lilbee.cli.app import console
-            from lilbee.cli.helpers import copy_paths
+            from lilbee.cli.helpers import copy_files
 
-            copied = copy_paths([path], console)
+            result = copy_files([path])
+            copied = result.copied
+            for name in result.skipped:
+                self.app.call_from_thread(
+                    self.notify, f"{name} already exists (use --force to overwrite)"
+                )
             self.app.call_from_thread(
                 task_bar.update_task, task_id, 50, f"Copied {len(copied)} file(s), syncing..."
             )
