@@ -280,8 +280,6 @@ class CatalogScreen(Screen[None]):
                 self._size_cache[repo] = size_gb
                 self._update_highlighted_detail()
 
-
-
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self._hf_offset = 0
         self._hf_models = []

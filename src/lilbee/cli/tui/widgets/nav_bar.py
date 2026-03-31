@@ -10,7 +10,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-_VIEWS = ["Chat", "Models", "Status", "Settings"]
+_VIEWS = ["Chat", "Models", "Status", "Settings", "Tasks"]
 
 
 class NavBar(Widget):
@@ -36,6 +36,7 @@ class NavBar(Widget):
         Binding("2", "go_to_view_1", "2", show=False),
         Binding("3", "go_to_view_2", "3", show=False),
         Binding("4", "go_to_view_3", "4", show=False),
+        Binding("5", "go_to_view_4", "5", show=False),
     ]
 
     active_view: reactive[str] = reactive("Chat")
@@ -71,6 +72,7 @@ class NavBar(Widget):
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.screens.settings import SettingsScreen
         from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.cli.tui.screens.task_center import TaskCenter
 
         if view_name == "Models":
             self.app.push_screen(CatalogScreen())
@@ -78,6 +80,8 @@ class NavBar(Widget):
             self.app.push_screen(StatusScreen())
         elif view_name == "Settings":
             self.app.push_screen(SettingsScreen())
+        elif view_name == "Tasks":
+            self.app.push_screen(TaskCenter())
 
     def action_view_left(self) -> None:
         """Navigate to the previous view (h or left arrow)."""
@@ -102,3 +106,6 @@ class NavBar(Widget):
 
     def action_go_to_view_3(self) -> None:
         self._change_view(_VIEWS[3])
+
+    def action_go_to_view_4(self) -> None:
+        self._change_view(_VIEWS[4])

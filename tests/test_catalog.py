@@ -1091,10 +1091,6 @@ class TestGatedRepoShowsLoginMessage:
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
 
-    def test_featured_vision_description_mentions_login(self) -> None:
-        for entry in FEATURED_VISION:
-            if "LightOnOCR" in entry.name:
-                assert "requires login" in entry.description
 
 
 class TestCleanDisplayName:

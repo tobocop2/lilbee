@@ -147,11 +147,11 @@ FEATURED_EMBEDDING: tuple[CatalogModel, ...] = (
 FEATURED_VISION: tuple[CatalogModel, ...] = (
     CatalogModel(
         "LightOnOCR-2",
-        "LightOnIO/LightOnOCR-2-0.5B-GGUF",
+        "noctrex/LightOnOCR-2-1B-GGUF",
         "*Q4_K_M.gguf",
         1.5,
         4,
-        "Fast OCR — clean markdown output, tiny footprint (requires login)",
+        "Fast OCR — clean markdown output, small footprint",
         True,
         0,
         "vision",
@@ -165,7 +165,7 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
 _DEFAULT_MMPROJ_PATTERN = "*mmproj*.gguf"
 
 VISION_MMPROJ_FILES: dict[str, str] = {
-    "LightOnIO/LightOnOCR-2-0.5B-GGUF": _DEFAULT_MMPROJ_PATTERN,
+    "noctrex/LightOnOCR-2-1B-GGUF": _DEFAULT_MMPROJ_PATTERN,
 }
 
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
