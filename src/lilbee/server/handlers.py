@@ -325,23 +325,35 @@ def chat_stream(
 
 
 async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event."""
+    """Trigger sync, yield SSE progress events, then done event.
+
+    Sets a cancel event on client disconnect so the sync stops between files.
+    """
     from lilbee.ingest import SyncResult, sync
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     callback = _make_sse_callback(queue)
+    cancel = threading.Event()
 
     async def run_sync() -> SyncResult:
-        return await sync(quiet=True, on_progress=callback, force_vision=force_vision)
+        return await sync(
+            quiet=True, on_progress=callback, force_vision=force_vision, cancel=cancel
+        )
 
     task = asyncio.create_task(run_sync())
-    while not task.done() or not queue.empty():
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            continue
-        if item is not None:
-            yield item
+    try:
+        while not task.done() or not queue.empty():
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except TimeoutError:
+                continue
+            if item is not None:
+                yield item
+    except (asyncio.CancelledError, GeneratorExit):
+        log.info("Sync stream cancelled by client")
+        cancel.set()
+        task.cancel()
+        return
     yield sse_done(task.result().model_dump())
 
 
@@ -350,6 +362,7 @@ async def _run_add(
     force: bool,
     vision_model: str,
     queue: asyncio.Queue[str | None],
+    cancel: threading.Event,
 ) -> None:
     """Copy files and sync, pushing SSE events to the queue."""
     from lilbee.ingest import sync
@@ -367,10 +380,16 @@ async def _run_add(
 
     copy_result = copy_files(valid, force=force)
 
+    if cancel.is_set():
+        queue.put_nowait(None)
+        return
+
     from lilbee.cli.helpers import temporary_vision_model
 
     with temporary_vision_model(vision_model):
-        sync_result = await sync(quiet=True, force_vision=bool(vision_model), on_progress=callback)
+        sync_result = await sync(
+            quiet=True, force_vision=bool(vision_model), on_progress=callback, cancel=cancel
+        )
 
     summary = {
         "copied": copy_result.copied,
@@ -383,13 +402,14 @@ async def _run_add(
     queue.put_nowait(None)  # sentinel
 
 
-AddResult = tuple[list[str], asyncio.Queue[str | None], asyncio.Task[None]]
+AddResult = tuple[list[str], asyncio.Queue[str | None], asyncio.Task[None], threading.Event]
 
 
 async def add_files(data: dict[str, Any]) -> AddResult:
     """Validate and start the add-files operation.
 
-    Returns (paths, queue, task) for the Litestar adapter to stream.
+    Returns (paths, queue, task, cancel) for the Litestar adapter to stream.
+    The cancel event should be set on client disconnect to stop the sync.
     Raises ValueError on validation failure.
     """
     paths = data.get("paths")
@@ -404,10 +424,11 @@ async def add_files(data: dict[str, Any]) -> AddResult:
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")
+    cancel = threading.Event()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
-    task = asyncio.create_task(_run_add(paths, force, vision_model, queue))
-    return paths, queue, task
+    task = asyncio.create_task(_run_add(paths, force, vision_model, queue, cancel))
+    return paths, queue, task, cancel
 
 
 async def list_models() -> ModelsResponse:
@@ -674,16 +695,22 @@ async def models_installed() -> ModelsInstalledResponse:
 
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
-    """Yield SSE progress events while pulling a model in real time."""
+    """Yield SSE progress events while pulling a model in real time.
+
+    Sets a cancel event on client disconnect so the pull stops.
+    """
     from lilbee.model_manager import get_model_manager
 
     manager = get_model_manager()
     src = _parse_source(source)
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    cancel = threading.Event()
 
     def _pull_blocking() -> None:
         def _on_progress(data: dict[str, Any]) -> None:
+            if cancel.is_set():
+                return
             payload = sse_event(SseEvent.PROGRESS, data)
             loop.call_soon_threadsafe(queue.put_nowait, payload)
 
@@ -695,14 +722,19 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
-    while not task.done() or not queue.empty():
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:  # pragma: no cover — async polling race
-            continue
-        if item is None:
-            break
-        yield item
+    try:
+        while not task.done() or not queue.empty():
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except TimeoutError:  # pragma: no cover -- async polling race
+                continue
+            if item is None:
+                break
+            yield item
+    except (asyncio.CancelledError, GeneratorExit):
+        log.info("Model pull stream cancelled by client")
+        cancel.set()
+        return
 
 
 async def models_delete(model: str, *, source: str = "litellm") -> ModelsDeleteResponse:
@@ -720,6 +752,7 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
     with the list of files written. On error emits crawl_error.
+    Sets a cancel event on client disconnect so the crawl stops between pages.
     """
     from lilbee.crawler import require_valid_crawl_url
 
@@ -727,20 +760,29 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     callback = _make_sse_callback(queue)
+    cancel = threading.Event()
 
     async def _run_crawl() -> list[Path]:
         from lilbee.crawler import crawl_and_save
 
-        return await crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=callback)
+        return await crawl_and_save(
+            url, depth=depth, max_pages=max_pages, on_progress=callback, cancel=cancel
+        )
 
     task = asyncio.create_task(_run_crawl())
-    while not task.done() or not queue.empty():
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            continue
-        if item is not None:
-            yield item
+    try:
+        while not task.done() or not queue.empty():
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except TimeoutError:
+                continue
+            if item is not None:
+                yield item
+    except (asyncio.CancelledError, GeneratorExit):
+        log.info("Crawl stream cancelled by client")
+        cancel.set()
+        task.cancel()
+        return
 
     exc = task.exception()
     if exc is not None:

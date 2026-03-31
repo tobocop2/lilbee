@@ -416,11 +416,13 @@ async def crawl_and_save(
     depth: int = 0,
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
     Uses hash-based change detection: always fetches, but only saves files
     whose content has changed (or is new).
+    When *cancel* is set, returns early with an empty list.
     """
     max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
@@ -440,6 +442,9 @@ async def crawl_and_save(
             results = [result]
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+
+        if cancel and cancel.is_set():
+            return []
 
         changed = _filter_changed(results)
         paths = save_crawl_results(changed)
