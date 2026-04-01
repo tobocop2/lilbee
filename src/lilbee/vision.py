@@ -10,7 +10,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from lilbee.progress import (
     DetailedProgressCallback,
@@ -21,6 +21,14 @@ from lilbee.progress import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class PageText(NamedTuple):
+    """Extracted text for a single PDF page."""
+
+    page: int
+    text: str
+
 
 _OCR_PROMPT = (
     "Extract ALL text from this page as clean markdown. "
@@ -163,7 +171,7 @@ def extract_pdf_vision(
     quiet: bool = False,
     timeout: float | None = None,
     on_progress: DetailedProgressCallback = noop_callback,
-) -> list[tuple[int, str]]:
+) -> list[PageText]:
     """Extract text from a PDF using vision model OCR.
 
     Returns a list of (1-based page number, text) tuples for pages that
@@ -173,7 +181,7 @@ def extract_pdf_vision(
     if total == 0:
         return []
 
-    result: list[tuple[int, str]] = []
+    result: list[PageText] = []
     failed = 0
     progress_ctx, progress_task = _make_progress(path.name, total, quiet)
 
@@ -188,7 +196,7 @@ def extract_pdf_vision(
             if text is None:
                 failed += 1
             elif text.strip():
-                result.append((i + 1, text))
+                result.append(PageText(i + 1, text))
             if progress_task is not None:
                 progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
 
