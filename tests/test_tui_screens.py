@@ -347,14 +347,16 @@ async def test_settings_screen_row_highlighted_unknown_key():
 
 
 async def test_settings_enter_opens_editor():
-    """F1: pressing Enter on a row opens an inline editor."""
+    """F1: pressing Enter on a writable row opens an inline editor."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import DataTable, Input
 
         table = app.screen.query_one("#settings-table", DataTable)
         table.focus()
-        # Move to first row (chat_model) and press enter to edit
+        # Move to top_k row (first writable row, index 3)
+        table.move_cursor(row=3)
+        await pilot.pause()
         app.screen.action_edit_row()
         await pilot.pause()
         editor = app.screen.query_one("#settings-editor", Input)
@@ -392,6 +394,9 @@ async def test_settings_escape_cancels_edit():
 
         table = app.screen.query_one("#settings-table", DataTable)
         table.focus()
+        # Move to top_k (first writable row, index 3)
+        table.move_cursor(row=3)
+        await pilot.pause()
         app.screen.action_edit_row()
         await pilot.pause()
         assert app.screen._editing_key is not None
@@ -415,6 +420,209 @@ async def test_settings_readonly_shows_warning():
         await pilot.pause()
         # Should not have opened an editor
         assert app.screen._editing_key is None
+
+
+async def test_settings_readonly_fields_show_locked_tag():
+    """Read-only settings show [locked] in the type column."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        # chat_model is row 0 and non-writable
+        row = table.get_row_at(0)
+        assert "[locked]" in str(row[2])
+        # top_k is row 3 and writable — no locked tag
+        writable_row = table.get_row_at(3)
+        assert "[locked]" not in str(writable_row[2])
+
+
+async def test_settings_readonly_field_blocks_editing():
+    """Pressing Enter on a non-writable settings field shows warning."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # chat_model is row 0 — read-only
+        table.move_cursor(row=0)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        assert app.screen._editing_key is None
+
+
+async def test_settings_model_info_rows_present():
+    """Model architecture info rows are shown in the settings table."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        keys = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+        assert "chat_model_arch" in keys
+        assert "embed_model_arch" in keys
+        assert "vision_projector" in keys
+        assert "active_chat_handler" in keys
+
+
+async def test_settings_model_info_rows_not_editable():
+    """Model info rows are read-only."""
+    from lilbee.cli.tui.screens.settings import _is_writable
+
+    assert not _is_writable("chat_model_arch")
+    assert not _is_writable("embed_model_arch")
+    assert not _is_writable("vision_projector")
+    assert not _is_writable("active_chat_handler")
+
+
+async def test_settings_model_info_row_detail():
+    """Highlighting a model info row shows detail text."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        event = MagicMock()
+        event.row_key = MagicMock()
+        event.row_key.value = "chat_model_arch"
+        event.row_key.__bool__ = lambda self: True
+        app.screen.on_data_table_row_highlighted(event)
+        detail = app.screen.query_one("#setting-detail", Static)
+        rendered = str(detail.render())
+        assert "read-only" in rendered
+
+
+async def test_settings_effective_value_shows_model_default():
+    """When user hasn't set a value, model default is shown with suffix."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = 4096
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        cfg.temperature = None
+        result = _effective_value("temperature")
+        assert "0.7" in result
+        assert "(model default)" in result
+        # num_ctx also has a default
+        cfg.num_ctx = None
+        result = _effective_value("num_ctx")
+        assert "4096" in result
+        assert "(model default)" in result
+        # top_p has no default set
+        cfg.top_p = None
+        result = _effective_value("top_p")
+        assert result == "None"
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_effective_value_user_overrides_default():
+    """When user has set a value, it takes precedence over model default."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        cfg.temperature = 0.9
+        result = _effective_value("temperature")
+        assert result == "0.9"
+        assert "(model default)" not in result
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_effective_value_no_defaults():
+    """When no model defaults are loaded, None values show as 'None'."""
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.clear_model_defaults()
+        cfg.temperature = None
+        result = _effective_value("temperature")
+        assert result == "None"
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_is_writable():
+    """_is_writable correctly identifies writable vs read-only fields."""
+    from lilbee.cli.tui.screens.settings import _is_writable
+
+    assert _is_writable("top_k")
+    assert _is_writable("temperature")
+    assert not _is_writable("chat_model")
+    assert not _is_writable("embedding_model")
+    assert not _is_writable("hf_token")
+    assert not _is_writable("data_root")
+    assert not _is_writable("nonexistent_key_xyz")
+
+
+async def test_settings_model_info_values():
+    """Model info rows show 'unknown' or 'not loaded' when no model loaded."""
+    from lilbee.cli.tui.screens.settings import _get_model_info
+
+    old_defaults = cfg._model_defaults
+    try:
+        cfg.clear_model_defaults()
+        info = _get_model_info()
+        assert info["chat_model_arch"] == "unknown"
+        assert info["embed_model_arch"] == "unknown"
+        assert info["vision_projector"] == "unknown"
+        assert info["active_chat_handler"] == "not loaded"
+    finally:
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_model_info_loaded():
+    """Model info shows 'loaded' when model defaults are available."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _get_model_info
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        info = _get_model_info()
+        assert info["active_chat_handler"] == "loaded"
+    finally:
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
 
 
 # ---------------------------------------------------------------------------
