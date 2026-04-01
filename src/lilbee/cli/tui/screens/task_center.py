@@ -9,7 +9,7 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from lilbee.cli.tui.task_queue import TaskStatus
+from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 
 
@@ -87,6 +87,48 @@ class TaskCenter(Screen[None]):
                 task.detail or task.status.value,
                 key=task.task_id,
             )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Show task details when a row is clicked."""
+        self._show_task_detail(event.row_key)
+
+    def _show_task_detail(self, row_key: object) -> None:
+        """Update the detail panel for the given row key."""
+        detail = self.query_one("#task-detail", Static)
+        if row_key is None or not hasattr(row_key, "value") or row_key.value is None:
+            detail.update("")
+            return
+        task_id = str(row_key.value)
+        task = self._find_task(task_id)
+        if task is None:
+            detail.update("")
+            return
+        lines = [
+            f"Task: {task.name}",
+            f"Type: {task.task_type}",
+            f"Status: {task.status.value}",
+            f"Progress: {task.progress}%",
+        ]
+        if task.detail:
+            lines.append(f"Detail: {task.detail}")
+        detail.update("\n".join(lines))
+
+    def _find_task(self, task_id: str) -> Task | None:
+        """Look up a task by ID across all queue sections."""
+        task_bar = getattr(self.app, "_task_bar", None)
+        if task_bar is None:
+            return None
+        queue = task_bar.queue
+        for task in queue.active_tasks:
+            if task.task_id == task_id:
+                return task
+        for task in queue.queued_tasks:
+            if task.task_id == task_id:
+                return task
+        for task in queue.history:
+            if task.task_id == task_id:
+                return task
+        return None
 
     def action_cancel_task(self) -> None:
         """Cancel the first active task if one exists."""

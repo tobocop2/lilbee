@@ -3785,3 +3785,94 @@ def test_navbar_mode_text_reactive_declared():
 
     reactives = {name for name, val in vars(NavBar).items() if isinstance(val, Reactive)}
     assert "mode_text" in reactives
+
+
+async def test_task_center_row_click_shows_detail():
+    """Clicking a row in TaskCenter updates the detail panel."""
+    from unittest import mock
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app._task_bar
+        tid = task_bar.add_task("Download X", "download")
+        task_bar.queue.advance()
+        task_bar.queue.update_task(tid, 42, "10/24 MB")
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        detail = screen.query_one("#task-detail", Static)
+
+        # Simulate row selection with a mock event carrying the task_id as row_key
+        row_key = mock.Mock()
+        row_key.value = tid
+        event = mock.Mock()
+        event.row_key = row_key
+        screen.on_data_table_row_selected(event)
+        await pilot.pause()
+        text = detail.content
+        assert "Download X" in text
+        assert "download" in text
+        assert "42%" in text
+
+
+async def test_task_center_row_click_no_task_bar():
+    """TaskCenter row click handles missing task_bar gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+
+        # Remove task_bar and verify _find_task returns None
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        result = screen._find_task("nonexistent")
+        assert result is None
+
+
+async def test_task_center_show_detail_no_key():
+    """TaskCenter _show_task_detail handles None key gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        screen._show_task_detail(None)
+        await pilot.pause()
+        detail = screen.query_one("#task-detail", Static)
+        assert detail.content == ""
+
+
+async def test_settings_row_click_opens_editor():
+    """Clicking a writable row in Settings opens the inline editor."""
+    from unittest import mock
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(SettingsScreen())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        # Verify on_data_table_row_selected calls action_edit_row
+        with mock.patch.object(screen, "action_edit_row") as mocked:
+            event = mock.Mock()
+            screen.on_data_table_row_selected(event)
+            mocked.assert_called_once()

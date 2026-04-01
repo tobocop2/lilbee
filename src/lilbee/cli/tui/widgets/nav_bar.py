@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.events import Click
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
@@ -63,3 +64,32 @@ class NavBar(Widget):
         parts.append(msg.NAV_HELP_QUIT)
         content = self.query_one("#nav-bar-content", Static)
         content.update("".join(parts))
+
+    def on_click(self, event: Click) -> None:
+        """Switch view when a view name in the bar is clicked."""
+        view = _view_at_x(event.x)
+        if view is not None and hasattr(self.app, "_switch_view"):
+            self.app._switch_view(view)  # type: ignore[attr-defined]
+
+
+def _view_regions() -> list[tuple[int, int, str]]:
+    """Return (start_x, end_x, view_name) for each view label.
+
+    Each label is rendered as `` {name} `` (space-padded), so the
+    width of each segment is ``len(name) + 2``.
+    """
+    regions: list[tuple[int, int, str]] = []
+    offset = 0
+    for name in _VIEWS:
+        width = len(name) + 2  # leading + trailing space
+        regions.append((offset, offset + width, name))
+        offset += width
+    return regions
+
+
+def _view_at_x(x: int) -> str | None:
+    """Return the view name at column *x*, or None if outside view labels."""
+    for start, end, name in _view_regions():
+        if start <= x < end:
+            return name
+    return None

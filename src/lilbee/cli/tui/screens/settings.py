@@ -183,6 +183,10 @@ class SettingsScreen(Screen[None]):
             value = info.get(key, "unknown")
             table.add_row(key, value, "str " + _LOCKED_TAG, key=key)
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Open editor when a row is clicked."""
+        self.action_edit_row()
+
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if self._editing_key:
             return

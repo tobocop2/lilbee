@@ -1644,6 +1644,93 @@ class TestNavBar:
         assert _VIEWS[4] == "Tasks"
 
 
+class TestNavBarClickSupport:
+    def test_view_regions_covers_all_views(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS, _view_regions
+
+        regions = _view_regions()
+        assert len(regions) == len(_VIEWS)
+        for (start, end, name), expected in zip(regions, _VIEWS, strict=True):
+            assert name == expected
+            assert end - start == len(name) + 2
+
+    def test_view_regions_are_contiguous(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_regions
+
+        regions = _view_regions()
+        assert regions[0][0] == 0
+        for i in range(1, len(regions)):
+            assert regions[i][0] == regions[i - 1][1]
+
+    def test_view_at_x_returns_chat_at_zero(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
+
+        assert _view_at_x(0) == "Chat"
+
+    def test_view_at_x_returns_models(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        models_start = regions[1][0]
+        assert _view_at_x(models_start) == "Models"
+
+    def test_view_at_x_returns_last_view(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        last_start = regions[-1][0]
+        assert _view_at_x(last_start) == "Tasks"
+
+    def test_view_at_x_returns_none_past_end(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        past_end = regions[-1][1]
+        assert _view_at_x(past_end) is None
+
+    def test_view_at_x_returns_none_for_negative(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
+
+        assert _view_at_x(-1) is None
+
+    async def test_click_calls_switch_view(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
+
+        app = _NavBarApp()
+        app._switch_view = mock.Mock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            regions = _view_regions()
+            models_x = regions[1][0] + 1
+            bar.on_click(mock.Mock(x=models_x, y=0))
+            app._switch_view.assert_called_once_with("Models")
+
+    async def test_click_outside_views_does_nothing(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
+
+        app = _NavBarApp()
+        app._switch_view = mock.Mock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            regions = _view_regions()
+            past_end = regions[-1][1] + 10
+            bar.on_click(mock.Mock(x=past_end, y=0))
+            app._switch_view.assert_not_called()
+
+    async def test_click_without_switch_view_is_safe(self) -> None:
+        """Clicking on app without _switch_view does not crash."""
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            # App has no _switch_view -- should not raise
+            bar.on_click(mock.Mock(x=0, y=0))
+
+
 # ---------------------------------------------------------------------------
 # app.py — global NavBar composition and key bindings
 # ---------------------------------------------------------------------------
