@@ -48,11 +48,11 @@ async def add_route(data: AddRequest) -> Stream:
 
     async def _stream() -> AsyncGenerator[bytes, None]:
         try:
-            async for chunk in sse_generator(result.queue):
+            async for chunk in sse_generator(result.sse.queue):
                 yield chunk
             await result.task
         except (GeneratorExit, Exception):
-            result.cancel.set()
+            result.sse.cancel.set()
 
     return Stream(_stream(), media_type="text/event-stream", status_code=201)
 

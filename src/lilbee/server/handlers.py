@@ -123,9 +123,8 @@ class AddFilesResult:
     """Result of starting an add-files operation."""
 
     paths: list[str]
-    queue: asyncio.Queue[str | None]
+    sse: "SseStream"
     task: asyncio.Task[None]
-    cancel: threading.Event
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -148,54 +147,63 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
     return cfg.generation_options(**options) if options else None
 
 
-async def _stream_with_cancellation(
-    queue: asyncio.Queue[str | None],
-    task: asyncio.Task[Any],
-    cancel: threading.Event,
-    label: str,
-) -> AsyncGenerator[str, None]:
-    """Drain SSE events from a queue, cancelling on client disconnect.
+class SseStream:
+    """Context object for SSE streaming with cancellation support.
 
-    Wraps the drain-and-cancel pattern: yields SSE strings from *queue* until
-    *task* completes or a sentinel is received.  On ``GeneratorExit`` /
-    ``CancelledError`` (client disconnect), sets *cancel* and cancels *task*.
+    Bundles the queue, cancel event, and progress callback that every SSE
+    endpoint needs.  Call :meth:`drain` to yield events until the task
+    completes or the client disconnects.
     """
-    try:
-        while not task.done() or not queue.empty():
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self.cancel = threading.Event()
+        self._loop = asyncio.get_running_loop()
+        self.callback: DetailedProgressCallback = self._build_callback()
+
+    def _build_callback(self) -> DetailedProgressCallback:
+        """Create a progress callback that serializes events into the queue.
+
+        Safe to call from both the event-loop thread and worker threads.
+        """
+        loop = self._loop
+        queue = self.queue
+
+        def _callback(event_type: EventType, data: ProgressEvent) -> None:
+            serialized = data.model_dump() if isinstance(data, BaseModel) else data
+            payload = f"event: {event_type}\ndata: {json.dumps(serialized)}\n\n"
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except TimeoutError:
-                continue
-            if item is None:
-                break
-            yield item
-    except (asyncio.CancelledError, GeneratorExit):
-        log.info("%s cancelled by client", label)
-        cancel.set()
-        task.cancel()
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is loop:
+                queue.put_nowait(payload)
+            else:
+                loop.call_soon_threadsafe(queue.put_nowait, payload)
 
+        return _callback
 
-def _make_sse_callback(queue: asyncio.Queue[str | None]) -> DetailedProgressCallback:
-    """Return a progress callback that serializes events into an asyncio queue.
+    async def drain(
+        self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
+    ) -> AsyncGenerator[str, None]:
+        """Yield SSE strings from the queue until *task* completes.
 
-    Safe to call from both the event loop thread (async code) and worker
-    threads (``asyncio.to_thread`` / ``run_in_executor``).
-    """
-    loop = asyncio.get_running_loop()
-
-    def _callback(event_type: EventType, data: ProgressEvent) -> None:
-        serialized = data.model_dump() if isinstance(data, BaseModel) else data
-        payload = f"event: {event_type}\ndata: {json.dumps(serialized)}\n\n"
+        On ``CancelledError`` / ``GeneratorExit`` (client disconnect),
+        sets :attr:`cancel` and cancels *task*.
+        """
         try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is loop:
-            queue.put_nowait(payload)
-        else:
-            loop.call_soon_threadsafe(queue.put_nowait, payload)
-
-    return _callback
+            while not task.done() or not self.queue.empty():
+                try:
+                    item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
+                except TimeoutError:
+                    continue
+                if item is None:
+                    break
+                yield item
+        except (asyncio.CancelledError, GeneratorExit):
+            log.info("%s cancelled by client", label)
+            self.cancel.set()
+            task.cancel()
 
 
 async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
@@ -290,22 +298,20 @@ async def _stream_rag_response(
     results, messages = rag
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cancel = threading.Event()
+    sse = SseStream()
     error_holder: list[str] = []
 
-    loop = asyncio.get_running_loop()
-    executor_fut = loop.run_in_executor(
-        None, _run_llm_stream, messages, opts, queue, cancel, error_holder
+    executor_fut = sse._loop.run_in_executor(
+        None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
     )
     task = asyncio.ensure_future(executor_fut)
-    async for event in _stream_with_cancellation(queue, task, cancel, "RAG stream"):
+    async for event in sse.drain(task, "RAG stream"):
         yield event
 
     if error_holder:
         log.warning("Stream error: %s", error_holder[0])
         yield sse_error("Internal error")
-        cancel.set()
+        sse.cancel.set()
         return
 
     # Ensure executor thread has finished before yielding final events
@@ -353,16 +359,13 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
     """Trigger sync, yield SSE progress events, then done event."""
     from lilbee.ingest import sync
 
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cancel = threading.Event()
-    callback = _make_sse_callback(queue)
-
+    sse = SseStream()
     task = asyncio.create_task(
-        sync(quiet=True, on_progress=callback, force_vision=force_vision, cancel=cancel)
+        sync(quiet=True, on_progress=sse.callback, force_vision=force_vision, cancel=sse.cancel)
     )
-    async for event in _stream_with_cancellation(queue, task, cancel, "Sync stream"):
+    async for event in sse.drain(task, "Sync stream"):
         yield event
-    if not cancel.is_set() and task.done() and not task.cancelled():
+    if not sse.cancel.is_set() and task.done() and not task.cancelled():
         yield sse_done(task.result().model_dump())
 
 
@@ -370,13 +373,10 @@ async def _run_add(
     paths: list[str],
     force: bool,
     vision_model: str,
-    queue: asyncio.Queue[str | None],
-    cancel: threading.Event,
+    sse: SseStream,
 ) -> None:
     """Copy files and sync, pushing SSE events to the queue."""
     from lilbee.ingest import sync
-
-    callback = _make_sse_callback(queue)
 
     errors: list[str] = []
     valid: list[Path] = []
@@ -389,15 +389,15 @@ async def _run_add(
 
     copy_result = copy_files(valid, force=force)
 
-    if cancel.is_set():
-        queue.put_nowait(None)
+    if sse.cancel.is_set():
+        sse.queue.put_nowait(None)
         return
 
     from lilbee.cli.helpers import temporary_vision_model
 
     with temporary_vision_model(vision_model):
         sync_result = await sync(
-            quiet=True, force_vision=bool(vision_model), on_progress=callback, cancel=cancel
+            quiet=True, force_vision=bool(vision_model), on_progress=sse.callback, cancel=sse.cancel
         )
 
     summary = {
@@ -407,8 +407,8 @@ async def _run_add(
         "sync": sync_result.model_dump(),
     }
     payload = f"event: summary\ndata: {json.dumps(summary)}\n\n"
-    queue.put_nowait(payload)
-    queue.put_nowait(None)  # sentinel
+    sse.queue.put_nowait(payload)
+    sse.queue.put_nowait(None)  # sentinel
 
 
 async def add_files(data: dict[str, Any]) -> AddFilesResult:
@@ -430,11 +430,9 @@ async def add_files(data: dict[str, Any]) -> AddFilesResult:
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")
-    cancel = threading.Event()
-
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    task = asyncio.create_task(_run_add(paths, force, vision_model, queue, cancel))
-    return AddFilesResult(paths=paths, queue=queue, task=task, cancel=cancel)
+    sse = SseStream()
+    task = asyncio.create_task(_run_add(paths, force, vision_model, sse))
+    return AddFilesResult(paths=paths, sse=sse, task=task)
 
 
 async def list_models() -> ModelsResponse:
@@ -703,26 +701,24 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
     """
     manager = get_model_manager()
     src = _parse_source(source)
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-    cancel = threading.Event()
+    sse = SseStream()
 
     def _pull_blocking() -> None:
         def _on_progress(data: dict[str, Any]) -> None:
-            if cancel.is_set():
+            if sse.cancel.is_set():
                 return
             payload = sse_event(SseEvent.PROGRESS, data)
-            loop.call_soon_threadsafe(queue.put_nowait, payload)
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
         try:
             manager.pull(model, src, on_progress=_on_progress)
         except Exception as exc:
-            loop.call_soon_threadsafe(queue.put_nowait, sse_error(str(exc)))
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
-    async for event in _stream_with_cancellation(queue, task, cancel, "Model pull stream"):
+    async for event in sse.drain(task, "Model pull stream"):
         yield event
 
 
@@ -745,21 +741,19 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
     require_valid_crawl_url(url)
 
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    callback = _make_sse_callback(queue)
-    cancel = threading.Event()
+    sse = SseStream()
 
     async def _run_crawl() -> list[Path]:
         from lilbee.crawler import crawl_and_save
 
         return await crawl_and_save(
-            url, depth=depth, max_pages=max_pages, on_progress=callback, cancel=cancel
+            url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
         )
 
     task = asyncio.create_task(_run_crawl())
-    async for event in _stream_with_cancellation(queue, task, cancel, "Crawl stream"):
+    async for event in sse.drain(task, "Crawl stream"):
         yield event
-    if not cancel.is_set() and task.done() and not task.cancelled():
+    if not sse.cancel.is_set() and task.done() and not task.cancelled():
         exc = task.exception()
         if exc is not None:
             yield sse_error(str(exc))

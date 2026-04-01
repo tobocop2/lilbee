@@ -235,15 +235,14 @@ class TestAddValidation:
         assert resp.status_code == 201
 
 
-class TestMakeSseCallback:
+class TestSseStreamCallback:
     async def test_callback_enqueues_formatted_sse(self):
         """The SSE callback formats events correctly."""
-        from lilbee.server.handlers import _make_sse_callback
+        from lilbee.server.handlers import SseStream
 
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-        callback = _make_sse_callback(queue)
-        callback("file_start", {"file": "test.txt", "total_files": 1, "current_file": 1})
-        item = queue.get_nowait()
+        sse = SseStream()
+        sse.callback("file_start", {"file": "test.txt", "total_files": 1, "current_file": 1})
+        item = sse.queue.get_nowait()
         assert item is not None
         assert item.startswith("event: file_start\n")
         assert '"file": "test.txt"' in item
@@ -252,19 +251,18 @@ class TestMakeSseCallback:
         """When called from a worker thread, uses call_soon_threadsafe."""
         import concurrent.futures
 
-        from lilbee.server.handlers import _make_sse_callback
+        from lilbee.server.handlers import SseStream
 
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-        callback = _make_sse_callback(queue)
+        sse = SseStream()
 
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = loop.run_in_executor(pool, callback, "embed", {"chunk": 1})
+            future = loop.run_in_executor(pool, sse.callback, "embed", {"chunk": 1})
             await future
 
         # Give the event loop a tick to process the call_soon_threadsafe
         await asyncio.sleep(0)
-        item = queue.get_nowait()
+        item = sse.queue.get_nowait()
         assert item is not None
         assert "embed" in item
 
