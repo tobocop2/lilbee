@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import ClassVar
 
 from textual import work
@@ -22,24 +21,33 @@ _STEP_CHAT = 1
 _STEP_EMBED = 2
 
 
-def _scan_installed_models(models_dir: Path) -> tuple[list[Path], list[Path]]:
-    """Scan for installed GGUF models, split into chat vs embedding."""
-    if not models_dir.exists():
+def _scan_installed_models() -> tuple[list[str], list[str]]:
+    """List installed models from the registry, split into chat vs embedding."""
+    try:
+        from lilbee.registry import ModelRegistry
+
+        registry = ModelRegistry(cfg.models_dir)
+        chat: list[str] = []
+        embed: list[str] = []
+        for m in registry.list_installed():
+            name = f"{m.name}:{m.tag}"
+            if m.task == "embedding":
+                embed.append(name)
+            elif m.task == "chat":
+                chat.append(name)
+            # Skip vision and other types — not relevant for setup wizard
+        return sorted(chat), sorted(embed)
+    except Exception:
         return [], []
-    all_gguf = sorted(models_dir.glob("*.gguf"))
-    embed = [p for p in all_gguf if "embed" in p.name.lower()]
-    chat = [p for p in all_gguf if "embed" not in p.name.lower()]
-    return chat, embed
 
 
 class _InstalledRow(ListItem):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, name: str) -> None:
         super().__init__()
-        self.model_path = path
+        self.model_name = name
 
     def compose(self) -> ComposeResult:
-        size_mb = self.model_path.stat().st_size / (1024 * 1024)
-        yield Static(f"  {self.model_path.stem}  ({size_mb:.0f} MB)  [installed]")
+        yield Static(f"  {self.model_name}  [installed]")
 
 
 class _CatalogRow(ListItem):
@@ -64,7 +72,7 @@ class SetupWizard(Screen[str | None]):
         self._step = _STEP_CHAT
         self._selected_chat: str | None = None
         self._selected_embed: str | None = None
-        self._chat_installed, self._embed_installed = _scan_installed_models(cfg.models_dir)
+        self._chat_installed, self._embed_installed = _scan_installed_models()
 
     def compose(self) -> ComposeResult:
         yield Static(msg.SETUP_TITLE, id="setup-title")
@@ -89,8 +97,8 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_CHAT)
             if self._chat_installed:
                 lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
-                for p in self._chat_installed:
-                    lv.append(_InstalledRow(p))
+                for name in self._chat_installed:
+                    lv.append(_InstalledRow(name))
             lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_CHAT:
                 lv.append(_CatalogRow(m))
@@ -98,8 +106,8 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_EMBED)
             if self._embed_installed:
                 lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
-                for p in self._embed_installed:
-                    lv.append(_InstalledRow(p))
+                for name in self._embed_installed:
+                    lv.append(_InstalledRow(name))
             lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_EMBEDDING:
                 lv.append(_CatalogRow(m))
@@ -107,7 +115,7 @@ class SetupWizard(Screen[str | None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _InstalledRow):
-            self._on_model_chosen(item.model_path.stem)
+            self._on_model_chosen(item.model_name)
         elif isinstance(item, _CatalogRow):
             self._download_model(item.model)
 
