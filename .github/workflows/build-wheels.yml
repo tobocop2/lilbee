@@ -65,7 +65,7 @@ jobs:
 
       - name: Vendor llama-cpp-python and retag wheel
         run: >
-          python scripts/vendor_llama_cpp.py dist/*.whl
+          python -m tools.vendor.llama_cpp dist/*.whl
           --version ${{ env.LLAMA_CPP_VERSION }}
           --platform ${{ matrix.llama-plat }}
           --wheel-platform ${{ matrix.wheel-plat }}

@@ -2,7 +2,7 @@
 """Download a prebuilt llama-cpp-python wheel and vendor it into a lilbee wheel.
 
 Usage:
-    python scripts/vendor_llama_cpp.py <lilbee-wheel> \\
+    python -m tools.vendor.llama_cpp <lilbee-wheel> \\
         [--version VERSION] [--platform PLATFORM] [--wheel-platform WHEEL_PLAT]
 
 This script:
