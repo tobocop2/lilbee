@@ -50,6 +50,8 @@ class NavBar(Widget):
 
     def _refresh_display(self) -> None:
         parts: list[str] = []
+        if self.mode_text:
+            parts.append(f"[bold]{self.mode_text}[/] ")
         for name in _VIEWS:
             if name == self.active_view:
                 parts.append(f"[bold reverse] {name} [/]")
@@ -59,8 +61,6 @@ class NavBar(Widget):
                 parts.append(f" {name} ")
         if self.active_task_text:
             parts.append(f"  [bold]{self.active_task_text}[/]")
-        if self.mode_text:
-            parts.append(f"  [bold]{self.mode_text}[/]")
         parts.append(msg.NAV_HELP_QUIT)
         content = self.query_one("#nav-bar-content", Static)
         content.update("".join(parts))

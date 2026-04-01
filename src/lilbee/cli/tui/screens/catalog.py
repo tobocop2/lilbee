@@ -222,13 +222,13 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("", id="sort-label", shrink=True)
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         yield Footer()
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False

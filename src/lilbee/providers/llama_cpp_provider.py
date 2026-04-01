@@ -143,9 +143,13 @@ class LlamaCppProvider(LLMProvider):
         return self._subprocess_worker
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts. Delegates to subprocess worker if enabled."""
+        """Embed texts. Delegates to subprocess worker if enabled, with fallback."""
         if self._subprocess_enabled:
-            return self._get_subprocess_worker().embed(texts)
+            try:
+                return self._get_subprocess_worker().embed(texts)
+            except (OSError, RuntimeError) as exc:
+                log.warning("Subprocess embed failed, falling back to in-process: %s", exc)
+                self._subprocess_enabled = False
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
         return fut.result()

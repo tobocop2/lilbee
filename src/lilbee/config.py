@@ -212,7 +212,7 @@ class Config(BaseSettings):
 
     # Run embedding and vision inference in a subprocess to avoid GIL blocking.
     # Applies only to the llama-cpp provider.
-    subprocess_embed: bool = ConfigField(default=True, writable=True)
+    subprocess_embed: bool = ConfigField(default=False, writable=True)
 
     # Use Markdown widget for chat responses in the TUI. When False, uses
     # plain Static text (faster rendering, no formatting).
