@@ -39,7 +39,7 @@ dependencies = [
     "uvicorn>=0.30",
     "httpx",
     "llama-cpp-python",
-    "huggingface_hub",
+    "huggingface_hub @ git+https://github.com/tobocop2/huggingface_hub.git@fix/tqdm-disable-terminal-output",
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
 ]
@@ -61,6 +61,9 @@ lilbee = "lilbee.launcher:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lilbee"]

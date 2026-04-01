@@ -140,11 +140,14 @@ class SetupWizard(Screen[str | None]):
                     pct = int(downloaded * 100 / total)
                     mb_done = downloaded / (1024 * 1024)
                     mb_total = total / (1024 * 1024)
-                    self.app.call_from_thread(self._update_progress, pct)
-                    self.app.call_from_thread(
-                        self._set_status,
-                        f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
-                    )
+                    try:
+                        self.app.call_from_thread(self._update_progress, pct)
+                        self.app.call_from_thread(
+                            self._set_status,
+                            f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
+                        )
+                    except Exception:
+                        log.debug("Progress callback failed", exc_info=True)
 
             dest = download_model(model, on_progress=_on_progress)
             self.app.call_from_thread(self._on_download_complete, dest.stem)
