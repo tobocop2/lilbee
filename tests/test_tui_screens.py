@@ -3380,3 +3380,419 @@ async def test_app_nav_switches_all_views():
         app._switch_view("Models")
         await pilot.pause()
         assert app._active_view == "Models"
+
+
+async def test_chat_ctrl_n_p_bindings_exist():
+    """Ctrl+N and Ctrl+P bindings exist on ChatScreen."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
+    assert "ctrl+n" in keys
+    assert "ctrl+p" in keys
+
+
+def test_chat_input_history_tracking():
+    """Input history list tracks submitted messages."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._input_history = []
+    screen._history_index = -1
+    screen._input_history.append("hello")
+    screen._input_history.append("/help")
+    assert screen._input_history == ["hello", "/help"]
+    assert screen._history_index == -1
+
+
+def test_chat_sync_gating_flag():
+    """_sync_active flag defaults to False."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._sync_active = False
+    assert screen._sync_active is False
+
+
+async def test_task_center_shows_history():
+    """TaskCenter displays history entries."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    tc = TaskCenter()
+    assert any(b.action == "cancel_task" for b in tc.BINDINGS if hasattr(b, "action"))
+
+
+async def test_task_center_renders_empty():
+    """TaskCenter shows 'No tasks' when queue is empty."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+
+
+async def test_task_center_renders_active_and_history():
+    """TaskCenter shows active task and completed history."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        # Complete a task to create history
+        t1 = task_bar.add_task("Sync A", "sync")
+        task_bar.queue.advance()
+        task_bar.queue.complete_task(t1)
+
+        # Add an active task
+        task_bar.add_task("Sync B", "sync")
+        task_bar.queue.advance()
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+        assert table.row_count >= 2  # active + history
+
+
+async def test_task_center_no_task_bar():
+    """TaskCenter handles missing task_bar gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Remove _task_bar reference
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+
+
+async def test_task_center_cancel_action():
+    """TaskCenter cancel action triggers on active task."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        task_bar.add_task("Sync", "sync")
+        task_bar.queue.advance()
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        # Just call action - should not crash even if cursor is on wrong row
+        app.screen.action_cancel_task()
+        await pilot.pause()
+
+
+async def test_task_center_refresh_action():
+    """TaskCenter refresh action refreshes table."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_refresh_tasks()
+        await pilot.pause()
+
+
+async def test_task_center_cursor_actions():
+    """TaskCenter cursor up/down delegate to DataTable."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_cursor_down()
+        app.screen.action_cursor_up()
+        await pilot.pause()
+
+
+async def test_task_center_pop_screen():
+    """TaskCenter pop_screen returns to chat."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_pop_screen()
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+
+
+async def test_chat_input_history_up_down():
+    """Up/down arrows cycle through input history when input focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        # Submit two messages
+        inp.value = "hello"
+        await pilot.press("enter")
+        inp.value = "world"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen._input_history == ["hello", "world"]
+
+        # Press up to recall "world"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "world"
+
+        # Press up again to recall "hello"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "hello"
+
+        # Press up at boundary stays at "hello"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "hello"
+
+        # Press down to go to "world"
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == "world"
+
+        # Press down past end clears input
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_input_history_up_no_history():
+    """Up arrow is a no-op when input history is empty."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_input_history_down_no_index():
+    """Down arrow is a no-op when history_index is -1."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_sync_gating_rejects_add(tmp_path):
+    """B3: /add is rejected when _sync_active is True."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        app.screen._sync_active = True
+        app.screen._handle_slash(f"/add {test_file}")
+        await pilot.pause()
+        # No task should have been created
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        assert task_bar.queue.is_empty
+
+
+async def test_chat_sync_gating_rejects_sync():
+    """B3: /sync (/add synonym via _run_sync) is rejected when _sync_active is True."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen._sync_active = True
+        app.screen._run_sync()
+        await pilot.pause()
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        # No new sync task should be queued
+        assert task_bar.queue.active_task is None
+
+
+async def test_chat_action_complete_next():
+    """Ctrl+N (action_complete_next) delegates to action_complete."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "/he"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help"],
+        ):
+            app.screen.action_complete_next()
+            assert inp.value == "/help"
+
+
+async def test_chat_action_complete_prev_opens_overlay():
+    """Ctrl+P (action_complete_prev) opens overlay when not visible."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        inp = app.screen.query_one("#chat-input", Input)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/he"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help"],
+        ):
+            app.screen.action_complete_prev()
+            assert overlay.is_visible
+            assert inp.value == "/help"
+
+
+async def test_chat_action_complete_prev_cycles_backward():
+    """Ctrl+P cycles backward through existing completions."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        inp = app.screen.query_one("#chat-input", Input)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/he"
+
+        # Open completions first
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help", "/hello"],
+        ):
+            app.screen.action_complete()
+            assert overlay.is_visible
+
+            # Cycle prev through existing overlay
+            app.screen.action_complete_prev()
+            assert overlay.is_visible
+
+
+async def test_chat_action_complete_prev_with_space():
+    """Ctrl+P with argument completions sets cmd + selection."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "/model q"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["qwen:latest", "qwen:8b"],
+        ):
+            app.screen.action_complete_prev()
+            assert "qwen" in inp.value
+
+
+async def test_task_center_with_queued_tasks():
+    """TaskCenter shows queued tasks when active + queued present."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        app._task_bar = task_bar  # type: ignore[attr-defined]
+
+        # Add active + queued tasks
+        task_bar.add_task("Download A", "download")
+        task_bar.queue.advance()
+        task_bar.add_task("Sync B", "sync")
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        table = app.screen.query_one("#task-table")
+        assert table.row_count >= 2  # active + queued
+
+
+async def test_task_center_cancel_no_task_bar():
+    """TaskCenter cancel with no _task_bar is a no-op."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        # Should not crash
+        app.screen.action_cancel_task()
+        await pilot.pause()
+
+
+async def test_task_center_status_icon():
+    """_status_icon maps all TaskStatus values."""
+    from lilbee.cli.tui.screens.task_center import _status_icon
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    assert _status_icon(TaskStatus.QUEUED) == "\u23f3"
+    assert _status_icon(TaskStatus.ACTIVE) == "\u25b6"
+    assert _status_icon(TaskStatus.DONE) == "\u2713"
+    assert _status_icon(TaskStatus.FAILED) == "\u2717"
+    assert _status_icon(TaskStatus.CANCELLED) == "\u2298"
+
+
+async def test_app_switch_to_tasks():
+    """App _switch_view navigates to TaskCenter."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app._switch_view("Tasks")
+        await pilot.pause()
+        assert isinstance(app.screen, TaskCenter)

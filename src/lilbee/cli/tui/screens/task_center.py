@@ -89,19 +89,12 @@ class TaskCenter(Screen[None]):
             )
 
     def action_cancel_task(self) -> None:
-        """Cancel the currently highlighted active task."""
+        """Cancel the active task if one exists."""
         task_bar = getattr(self.app, "_task_bar", None)
         if task_bar is None:
             return
-        table = self.query_one("#task-table", DataTable)
-        if table.cursor_row is None:
-            return
-        row_key = table.get_row_at(table.cursor_row)
-        if not row_key:
-            return
-        # The key is set on active/queued rows; try to cancel
         active = task_bar.queue.active_task
-        if active and active.task_id == str(table.get_cell_at((table.cursor_row, 1))):
+        if active:
             task_bar.cancel_task(active.task_id)
             self._refresh_table()
 

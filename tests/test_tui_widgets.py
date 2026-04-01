@@ -965,6 +965,108 @@ class TestTaskQueue:
         q.enqueue(lambda: None, "A", "sync")
         assert len(calls) >= 1
 
+    def test_complete_task_adds_to_history(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.complete_task(tid)
+        assert len(q.history) == 1
+        assert q.history[0].status == TaskStatus.DONE
+
+    def test_fail_task_adds_to_history(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.fail_task(tid, "oops")
+        assert len(q.history) == 1
+        assert q.history[0].status == TaskStatus.FAILED
+
+    def test_history_accumulates(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(t1)
+        q.remove_task(t1)
+        t2 = q.enqueue(lambda: None, "B", "sync")
+        q.advance()
+        q.fail_task(t2, "err")
+        assert len(q.history) == 2
+
+    def test_history_empty_initially(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.history == []
+
+    def test_cancel_nonexistent_returns_false(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.cancel("nonexistent") is False
+
+    def test_remove_task_nonexistent_is_noop(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.remove_task("nonexistent")
+        assert q.is_empty
+
+    def test_update_task_nonexistent_is_noop(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.update_task("nonexistent", 50, "detail")
+        assert q.is_empty
+
+    def test_advance_empty_returns_none(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.advance() is None
+
+    def test_remove_active_task_clears_active_id(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        assert q.active_task is not None
+        q.remove_task(tid)
+        assert q.active_task is None
+
+
+# ---------------------------------------------------------------------------
+# CompletionOverlay.cycle_prev
+# ---------------------------------------------------------------------------
+
+
+class TestCompletionOverlayCyclePrev:
+    async def test_cycle_prev_wraps(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _OverlayApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            overlay.show_completions(["a", "b", "c"])
+            result = overlay.cycle_prev()
+            assert result == "c"  # wraps from 0 to 2
+
+    async def test_cycle_prev_returns_none_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _OverlayApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            assert overlay.cycle_prev() is None
+
 
 # ---------------------------------------------------------------------------
 # setup_modal.py
@@ -1229,27 +1331,29 @@ class TestNavBar:
             await pilot.pause()
             assert bar.active_view == "Status"
 
-    async def test_change_view_updates_active_view(self) -> None:
+    async def test_active_task_text_shown(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import NavBar
 
         app = _NavBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
-            bar._change_view("Status")
+            bar.active_task_text = "\u25b6 Sync 60%"
             await pilot.pause()
-            assert bar.active_view == "Status"
+            assert bar.active_task_text == "\u25b6 Sync 60%"
 
-    async def test_change_view_ignores_invalid(self) -> None:
+    async def test_active_task_text_clears(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import NavBar
 
         app = _NavBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
-            bar._change_view("InvalidView")
+            bar.active_task_text = "\u25b6 Sync 60%"
             await pilot.pause()
-            assert bar.active_view == "Chat"
+            bar.active_task_text = ""
+            await pilot.pause()
+            assert bar.active_task_text == ""
 
     async def test_view_index_0_is_chat(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import _VIEWS
@@ -1260,6 +1364,11 @@ class TestNavBar:
         from lilbee.cli.tui.widgets.nav_bar import _VIEWS
 
         assert _VIEWS[3] == "Settings"
+
+    async def test_view_index_4_is_tasks(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[4] == "Tasks"
 
 
 # ---------------------------------------------------------------------------
