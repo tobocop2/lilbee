@@ -9,6 +9,7 @@ from typing import ClassVar
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
@@ -83,7 +84,7 @@ class LilbeeApp(App[None]):
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
         name = DARK_THEMES[self._theme_index]
         self.theme = name
-        self.notify(f"Theme: {name}")
+        self.notify(msg.THEME_SET.format(name=name))
 
     def set_theme(self, name: str) -> None:
         """Set theme by name (used by /theme command)."""
@@ -97,7 +98,7 @@ class LilbeeApp(App[None]):
             active = task_bar.queue.active_task
             if active:
                 task_bar.cancel_task(active.task_id)
-                self.notify("Cancelled")
+                self.notify(msg.APP_CANCELLED)
                 return
         screen = self.screen
         if hasattr(screen, "_streaming") and screen._streaming:

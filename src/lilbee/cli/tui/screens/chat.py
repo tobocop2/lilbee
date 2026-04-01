@@ -69,17 +69,14 @@ class ChatScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
-        yield Static(
-            "Chat only -- no document search. Press F5 to set up embedding model.",
-            id="chat-only-banner",
-        )
+        yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield TaskBar(id="task-bar")
         yield CompletionOverlay(id="completion-overlay")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         yield Input(
-            placeholder="Ask a question or type / for commands",
+            placeholder=msg.CHAT_INPUT_PLACEHOLDER,
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
@@ -290,7 +287,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
             return
         if not args:
-            self.notify("Usage: /crawl <url> [--depth N] [--max-pages N]", severity="warning")
+            self.notify(msg.CMD_CRAWL_USAGE, severity="warning")
             return
         parts = args.split()
         url = parts[0]
@@ -344,10 +341,14 @@ class ChatScreen(Screen[None]):
                 crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
             )
             self.app.call_from_thread(task_bar.complete_task, task_id)
-            self.app.call_from_thread(self.notify, f"Crawled {len(paths)} page(s) from {url}")
+            self.app.call_from_thread(
+                self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
+            )
         except Exception as exc:
             self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
-            self.app.call_from_thread(self.notify, f"Crawl failed: {exc}", severity="error")
+            self.app.call_from_thread(
+                self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
+            )
             return
 
         # Trigger sync to ingest the crawled markdown files
@@ -394,7 +395,7 @@ class ChatScreen(Screen[None]):
             import webbrowser
 
             webbrowser.open("https://huggingface.co/settings/tokens")
-            self.notify("Paste your token with /login <token>")
+            self.notify(msg.CHAT_LOGIN_PROMPT)
             return
         self._run_hf_login(token)
 
@@ -404,10 +405,12 @@ class ChatScreen(Screen[None]):
             from huggingface_hub import login
 
             login(token=token, add_to_git_credential=False)
-            self.app.call_from_thread(self.notify, "Logged in to HuggingFace")
+            self.app.call_from_thread(self.notify, msg.CHAT_LOGGED_IN)
         except Exception as exc:
             log.warning("HuggingFace login failed", exc_info=True)
-            self.app.call_from_thread(self.notify, f"Login failed: {exc}", severity="error")
+            self.app.call_from_thread(
+                self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
+            )
 
     def _cmd_model(self, args: str) -> None:
         if args:
@@ -510,13 +513,13 @@ class ChatScreen(Screen[None]):
 
         if args and isinstance(self.app, LilbeeApp):
             self.app.set_theme(args)
-            self.notify(f"Theme: {args}")
+            self.notify(msg.THEME_SET.format(name=args))
         else:
             theme_list = msg.CMD_THEME_LIST.format(names=", ".join(DARK_THEMES))
             self.notify(theme_list, severity="information")
 
     def _cmd_version(self, _args: str) -> None:
-        self.notify(f"lilbee {get_version()}")
+        self.notify(msg.CHAT_VERSION.format(version=get_version()))
 
     def _cmd_vision(self, args: str) -> None:
         if args == "off":
@@ -654,7 +657,7 @@ class ChatScreen(Screen[None]):
         for widget in chat_log.query(AssistantMessage):
             await widget.rebuild_content_widget(use_md)
         label = "Markdown" if use_md else "Plain text"
-        self.notify(f"Rendering: {label}")
+        self.notify(msg.CHAT_RENDERING.format(label=label))
 
     def _run_sync(self) -> None:
         """Enqueue a document sync in the task bar."""
