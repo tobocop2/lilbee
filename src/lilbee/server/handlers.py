@@ -119,8 +119,6 @@ class ModelsResponse(BaseModel):
     vision: ModelCatalogSection
 
 
-
-
 def sse_event(event: str, data: Any) -> str:
     """Format a single Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"

@@ -2,6 +2,8 @@
 
 Includes a thread-safe batching queue for embeddings so that concurrent
 ingest threads don't hit the non-thread-safe Llama object simultaneously.
+When subprocess_embed is enabled, embedding and vision calls are delegated
+to a persistent child process to avoid GIL contention.
 """
 
 from __future__ import annotations
@@ -14,9 +16,12 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+
+if TYPE_CHECKING:
+    from lilbee.providers.worker_process import WorkerProcess
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +57,10 @@ class LlamaCppProvider(LLMProvider):
         self._vision_llm: Any | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
-        self._worker = threading.Thread(target=self._embed_worker, daemon=True)
-        self._worker.start()
+        self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
+        self._embed_thread.start()
+        self._subprocess_worker: WorkerProcess | None = None
+        self._subprocess_enabled = cfg.subprocess_embed
 
     def _embed_worker(self) -> None:
         """Background thread: drain queue, batch, inference, dispatch results."""
@@ -127,11 +134,25 @@ class LlamaCppProvider(LLMProvider):
         model_path = _resolve_model_path(cfg.embedding_model)
         return self._cache.load_model(model_path, embedding=True)
 
+    def _get_subprocess_worker(self) -> WorkerProcess:
+        """Lazy-create and return the subprocess worker."""
+        if self._subprocess_worker is None:
+            from lilbee.providers.worker_process import WorkerProcess as WP
+
+            self._subprocess_worker = WP()
+        return self._subprocess_worker
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Submit embedding request to the batch queue. Thread-safe."""
+        """Embed texts. Delegates to subprocess worker if enabled."""
+        if self._subprocess_enabled:
+            return self._get_subprocess_worker().embed(texts)
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
         return fut.result()
+
+    def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
+        """Run vision OCR via the subprocess worker."""
+        return self._get_subprocess_worker().vision_ocr(png_bytes, model, prompt)
 
     def chat(
         self,
@@ -185,9 +206,12 @@ class LlamaCppProvider(LLMProvider):
         return _read_gguf_metadata(path)
 
     def shutdown(self) -> None:
-        """Stop the embed worker thread and unload all cached models."""
+        """Stop workers and unload all cached models."""
         self._embed_queue.put(None)
-        self._worker.join(timeout=2)
+        self._embed_thread.join(timeout=2)
+        if self._subprocess_worker is not None:
+            self._subprocess_worker.stop()
+            self._subprocess_worker = None
         self._cache.unload_all()
 
 
