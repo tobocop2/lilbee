@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -504,6 +505,39 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
     return None
 
 
+def _start_progress_poller(
+    repo_id: str, callback: Any, expected_bytes: float
+) -> Callable[[], None]:
+    """Poll the HF cache for .incomplete files and report download progress.
+
+    Returns a stop function. hf_xet sends update(0) during downloads, so we
+    watch the actual file size on disk instead.
+    """
+    import threading
+
+    stop = threading.Event()
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}" / "blobs"
+
+    def _poll() -> None:
+        while not stop.is_set():
+            try:
+                if repo_dir.exists():
+                    for p in repo_dir.iterdir():
+                        if p.name.endswith(".incomplete"):
+                            size = p.stat().st_size
+                            if size > 0 and expected_bytes > 0:
+                                callback(size, int(expected_bytes))
+                            break
+            except (OSError, ValueError):
+                pass
+            stop.wait(0.5)
+
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    return stop.set
+
+
 def _make_progress_tqdm(callback: Any) -> type:
     """Create a minimal tqdm-compatible class that routes progress to a callback.
 
@@ -570,15 +604,18 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
 
-
         kwargs: dict[str, Any] = {
             "repo_id": entry.hf_repo,
             "filename": filename,
             "token": token,
-            "force_download": True,  # bypass cache for real-time progress
+            "force_download": True,
         }
-        if on_progress is not None:
-            kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
+
+        # Poll file size for progress since hf_xet reports update(0) during download.
+        # Start a background thread that watches the .incomplete file in the HF cache.
+        stop_polling = _start_progress_poller(
+            entry.hf_repo, on_progress, entry.size_gb * 1024 * 1024 * 1024
+        ) if on_progress else None
 
         try:
             cached = Path(hf_hub_download(**kwargs))
@@ -589,7 +626,12 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             ) from None
         except RepositoryNotFoundError:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
-        # Register moves the cached file into the registry blob store
+        finally:
+            if stop_polling:
+                stop_polling()
+
+        if on_progress:
+            on_progress(int(entry.size_gb * 1024 * 1024 * 1024), int(entry.size_gb * 1024 * 1024 * 1024))
         dest = cached
 
     # Register in manifest so the model is visible to the registry
