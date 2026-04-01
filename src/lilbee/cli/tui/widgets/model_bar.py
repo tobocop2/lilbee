@@ -71,14 +71,33 @@ def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
         log.debug("Could not classify remote models", exc_info=True)
 
 
+def _has_paired_mmproj(name: str) -> bool:
+    """Check if a GGUF model has a paired mmproj file (indicates vision model)."""
+    try:
+        if not cfg.models_dir.is_dir():
+            return False
+        stem = name.rsplit(".", 1)[0].lower()
+        for p in cfg.models_dir.iterdir():
+            if _is_mmproj(p.name) and stem.split("-")[0] in p.name.lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _collect_legacy_gguf(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add legacy .gguf files not in the registry as chat models."""
+    """Add legacy .gguf files not in the registry, classified by type."""
     try:
         if cfg.models_dir.is_dir():
             for p in cfg.models_dir.iterdir():
                 if p.suffix == ".gguf" and p.name not in seen and not _is_mmproj(p.name):
                     seen.add(p.name)
-                    buckets["chat"].append(p.name)
+                    if _has_paired_mmproj(p.name):
+                        buckets["vision"].append(p.name)
+                    elif "embed" in p.name.lower() or "nomic" in p.name.lower():
+                        buckets["embedding"].append(p.name)
+                    else:
+                        buckets["chat"].append(p.name)
     except Exception:
         log.debug("Could not scan models_dir for legacy .gguf files", exc_info=True)
 

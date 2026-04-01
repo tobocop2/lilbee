@@ -51,7 +51,10 @@ class NavBar(Widget):
     def _refresh_display(self) -> None:
         parts: list[str] = []
         if self.mode_text:
-            parts.append(f"[bold]{self.mode_text}[/] ")
+            if "NORMAL" in self.mode_text:
+                parts.append(f"[bold white on dark_blue] {self.mode_text} [/] ")
+            else:
+                parts.append(f"[bold white on dark_green] {self.mode_text} [/] ")
         for name in _VIEWS:
             if name == self.active_view:
                 parts.append(f"[bold reverse] {name} [/]")

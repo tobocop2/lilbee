@@ -101,7 +101,9 @@ class ChatScreen(Screen[None]):
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif self._auto_sync and self._embedding_ready():
+        elif not self._embedding_ready():
+            self._show_chat_only_banner()
+        elif self._auto_sync:
             self._run_sync()
 
     def on_show(self) -> None:
