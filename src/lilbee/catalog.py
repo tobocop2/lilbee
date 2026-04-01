@@ -119,7 +119,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
     ),
     CatalogModel(
         "Qwen3-Coder 30B A3B",
-        "Qwen/Qwen3-Coder-30B-A3B-GGUF",
+        "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
         "*Q4_K_M.gguf",
         18.0,
         32,

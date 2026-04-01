@@ -96,23 +96,51 @@ def _defaults_field_map() -> dict[str, str]:
 
 
 def _get_model_info() -> dict[str, str]:
-    """Collect model architecture info from loaded providers."""
-    info: dict[str, str] = {}
-    defaults = cfg._model_defaults
-    if defaults is not None:
-        for f in dc_fields(defaults):
-            if f.name == "num_ctx" and getattr(defaults, "num_ctx", None):
-                info["active_chat_handler"] = "loaded"
-                break
-        else:
-            info["active_chat_handler"] = "loaded"
-    else:
-        info["active_chat_handler"] = "not loaded"
+    """Collect model architecture info by reading GGUF metadata from registry."""
+    info: dict[str, str] = {
+        "chat_model_arch": "unknown",
+        "embed_model_arch": "unknown",
+        "vision_projector": "unknown",
+        "active_chat_handler": "not loaded",
+    }
+    try:
+        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata, _resolve_model_path
 
-    info.setdefault("chat_model_arch", "unknown")
-    info.setdefault("embed_model_arch", "unknown")
-    info.setdefault("vision_projector", "unknown")
-    info.setdefault("active_chat_handler", "not loaded")
+        # Chat model
+        try:
+            path = _resolve_model_path(cfg.chat_model)
+            meta = _read_gguf_metadata(path)
+            if meta:
+                info["chat_model_arch"] = meta.get("architecture", "unknown")
+                info["active_chat_handler"] = "llama-cpp"
+        except Exception:
+            pass
+
+        # Embedding model
+        try:
+            path = _resolve_model_path(cfg.embedding_model)
+            meta = _read_gguf_metadata(path)
+            if meta:
+                info["embed_model_arch"] = meta.get("architecture", "unknown")
+        except Exception:
+            pass
+
+        # Vision projector
+        if cfg.vision_model:
+            try:
+                from lilbee.providers.llama_cpp_provider import (
+                    _find_mmproj_for_model,
+                    _read_mmproj_projector_type,
+                )
+
+                path = _resolve_model_path(cfg.vision_model)
+                mmproj = _find_mmproj_for_model(path)
+                proj_type = _read_mmproj_projector_type(mmproj)
+                info["vision_projector"] = proj_type or "unknown"
+            except Exception:
+                pass
+    except ImportError:
+        pass  # llama-cpp not available (litellm-only mode)
     return info
 
 

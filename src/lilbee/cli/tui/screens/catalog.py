@@ -561,18 +561,23 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _get_highlighted_model_name(self) -> str | None:
-        """Return the model name of the currently highlighted row, or None."""
+        """Return the registry-compatible model name for the highlighted row.
+
+        For registry models, returns 'Name:latest' to match manifest format.
+        For remote models, returns the remote model name.
+        """
         table = self.query_one("#catalog-table", DataTable)
         row_idx = table.cursor_row
         if row_idx < 0 or row_idx >= len(self._rows):
             return None
         row = self._rows[row_idx]
         if row.variant and row.family:
-            return f"{row.family.name}:{row.variant.param_count}"
+            # Registry name matches the catalog entry name used in _register_model
+            return f"{row.family.name} {row.variant.param_count}:latest"
         if row.remote_model:
             return row.remote_model.name
         if row.catalog_model:
-            return row.catalog_model.name
+            return f"{row.catalog_model.name}:latest"
         return None
 
     @work(thread=True)
