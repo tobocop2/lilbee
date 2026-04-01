@@ -1148,52 +1148,29 @@ class TestSetupWizard:
 # ---------------------------------------------------------------------------
 
 
-class TestGroupBySize:
-    def test_unknown_becomes_other(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_by_size
+class TestAllTasksFetched:
+    def test_all_tasks_constant(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _ALL_TASKS
 
-        model = _make_model("NoSizeModel", task="chat")
-        groups = _group_by_size([model])
-        labels = [label for label, _ in groups]
-        assert "Other" in labels
-        assert "unknown" not in labels
-
-    def test_known_sizes_grouped(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_by_size
-
-        small = _make_model("Tiny 1B", task="chat")
-        medium = _make_model("Mid 7B", task="chat")
-        large = _make_model("Big 14B", task="chat")
-        groups = _group_by_size([small, medium, large])
-        labels = [label for label, _ in groups]
-        assert "Small (≤3B)" in labels
-        assert "Medium (3-8B)" in labels
-        assert "Large (8-30B)" in labels
+        assert "chat" in _ALL_TASKS
+        assert "embedding" in _ALL_TASKS
+        assert "vision" in _ALL_TASKS
 
 
-class TestGroupHfByFamily:
-    def test_groups_by_family_name(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _group_hf_by_family
+class TestMatchesSearchWidget:
+    def test_matches_name(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
 
-        m1 = _make_model("Qwen3 8B", task="chat")
-        m2 = _make_model("Qwen3 4B", task="chat")
-        m3 = _make_model("Llama 7B", task="chat")
-        families = _group_hf_by_family([m1, m2, m3])
-        names = [f.name for f in families]
-        assert "Qwen3" in names
-        assert "Llama" in names
-        qwen_fam = next(f for f in families if f.name == "Qwen3")
-        assert len(qwen_fam.variants) == 2
+        m = _make_model("Qwen3 8B", task="chat")
+        row = _catalog_to_row(m, installed=False)
+        assert _matches_search(row, "qwen") is True
 
+    def test_no_match(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
 
-class TestHfBrowseChatOnly:
-    def test_constant_defined(self) -> None:
-        from lilbee.cli.tui import messages as tui_msg
-        from lilbee.cli.tui.screens.catalog import _HF_BROWSE_TASKS
-
-        assert "Featured models only" in tui_msg.CATALOG_HF_CHAT_ONLY
-        assert "Embedding" not in _HF_BROWSE_TASKS
-        assert "Vision" not in _HF_BROWSE_TASKS
+        m = _make_model("Qwen3 8B", task="chat")
+        row = _catalog_to_row(m, installed=False)
+        assert _matches_search(row, "llama") is False
 
 
 # ---------------------------------------------------------------------------

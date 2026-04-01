@@ -74,13 +74,8 @@ CATALOG_NOT_INSTALLED = "{name} is not installed"
 CATALOG_CONFIRM_DELETE = "Delete {name}? Press d again to confirm"
 CATALOG_DELETED = "Deleted {name}"
 CATALOG_DELETE_FAILED = "Delete failed: {error}"
-CATALOG_FEATURED_HEADER = "\u2605 FEATURED"
-CATALOG_HF_HEADER = "HUGGINGFACE \u2014 {name}"
 CATALOG_NO_MATCH = "No models match your filters."
 CATALOG_FILTER_PLACEHOLDER = "Filter models... ( Esc to close)"
-CATALOG_LOAD_MORE = "   \u2193 Load more models..."
-CATALOG_INSTALLED_HEADER = "INSTALLED ({provider})"
-CATALOG_HF_CHAT_ONLY = "Featured models only \u2014 HuggingFace browsing available for chat models"
 
 # -- Chat screen ---------------------------------------------------------------
 

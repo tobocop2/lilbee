@@ -8,7 +8,7 @@ import pytest
 from textual.binding import Binding
 
 from lilbee.catalog import CatalogModel, CatalogResult
-from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, RemoteRow
+from lilbee.cli.tui.screens.catalog import _catalog_to_row, _remote_to_row
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
@@ -147,31 +147,21 @@ class TestRemoteClassification:
         assert by_task["vision"] == "llava:latest"
 
 
-class TestTabToTask:
-    def test_all_maps_to_none(self) -> None:
-        assert _TAB_TO_TASK["All"] is None
-
-    def test_chat_maps_to_chat(self) -> None:
-        assert _TAB_TO_TASK["Chat"] == "chat"
-
-    def test_embedding_maps_to_embedding(self) -> None:
-        assert _TAB_TO_TASK["Embedding"] == "embedding"
-
-    def test_vision_maps_to_vision(self) -> None:
-        assert _TAB_TO_TASK["Vision"] == "vision"
-
-
-class TestModelRow:
-    def test_stores_model(self) -> None:
+class TestCatalogToRow:
+    def test_stores_catalog_model(self) -> None:
         m = _make_model("Qwen3 8B", featured=True)
-        row = ModelRow(m)
-        assert row.model is m
+        row = _catalog_to_row(m, installed=False)
+        assert row.catalog_model is m
 
-    def test_compose_yields_static(self) -> None:
+    def test_featured_flag_set(self) -> None:
+        m = _make_model("TestModel", task="chat", size_gb=5.0, featured=True)
+        row = _catalog_to_row(m, installed=False)
+        assert row.featured is True
+
+    def test_installed_flag_set(self) -> None:
         m = _make_model("TestModel", task="chat", size_gb=5.0)
-        row = ModelRow(m)
-        children = list(row.compose())
-        assert len(children) == 1
+        row = _catalog_to_row(m, installed=True)
+        assert row.installed is True
 
 
 class TestChatScreenAsync:
@@ -506,13 +496,14 @@ class TestCanonicalModelsDir:
         assert "lilbee" in str(result)
 
 
-class TestRemoteRow:
+class TestRemoteToRow:
     def test_creates(self) -> None:
         from lilbee.model_manager import RemoteModel
 
         rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
-        row = RemoteRow(rm)
+        row = _remote_to_row(rm)
         assert row.remote_model.name == "mistral:latest"
+        assert row.installed is True
 
 
 class TestSlashSuggester:
