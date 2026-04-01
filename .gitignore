@@ -32,5 +32,3 @@ plugins/
 node_modules/
 *.mov
 *.mp4
-# Vendored llama_cpp (only present during platform wheel builds)
-src/lilbee/_vendor/llama_cpp/

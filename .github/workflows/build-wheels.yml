@@ -80,8 +80,6 @@ jobs:
           pip install dist/*.whl
           lilbee --version
           python -c "
-          from lilbee._vendor import ensure_vendor_importable
-          ensure_vendor_importable()
           import llama_cpp
           print('llama_cpp loaded from:', llama_cpp.__file__)
           "

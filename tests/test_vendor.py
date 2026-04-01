@@ -195,7 +195,7 @@ class TestRepackWheel:
     """Verify wheel repacking: vendoring, metadata patching, RECORD, filenames."""
 
     def test_injects_vendor(self, tmp_path: Path) -> None:
-        """After repack, the output wheel contains lilbee/_vendor/llama_cpp/ files."""
+        """After repack, the output wheel contains top-level llama_cpp/ files."""
         lilbee_whl = _make_lilbee_wheel(tmp_path)
         llama_whl = _make_llama_wheel(tmp_path / "llama_dl")
 
@@ -203,9 +203,9 @@ class TestRepackWheel:
 
         with zipfile.ZipFile(out) as zf:
             names = zf.namelist()
-        assert "lilbee/_vendor/llama_cpp/__init__.py" in names
-        assert "lilbee/_vendor/llama_cpp/llama.py" in names
-        assert "lilbee/_vendor/llama_cpp/libllama.dylib" in names
+        assert "llama_cpp/__init__.py" in names
+        assert "llama_cpp/llama.py" in names
+        assert "llama_cpp/libllama.dylib" in names
 
     def test_strips_dependency(self, tmp_path: Path) -> None:
         """METADATA must not contain llama-cpp-python Requires-Dist."""
@@ -232,9 +232,9 @@ class TestRepackWheel:
             record_text = zf.read("lilbee-0.6.0.dist-info/RECORD").decode()
 
         for vendored in (
-            "lilbee/_vendor/llama_cpp/__init__.py",
-            "lilbee/_vendor/llama_cpp/llama.py",
-            "lilbee/_vendor/llama_cpp/libllama.dylib",
+            "llama_cpp/__init__.py",
+            "llama_cpp/llama.py",
+            "llama_cpp/libllama.dylib",
         ):
             matching = [line for line in record_text.splitlines() if line.startswith(vendored)]
             assert len(matching) == 1, f"Missing RECORD entry for {vendored}"
@@ -360,7 +360,7 @@ class TestMainIntegration:
 
         with zipfile.ZipFile(out) as zf:
             names = zf.namelist()
-        assert "lilbee/_vendor/llama_cpp/__init__.py" in names
+        assert "llama_cpp/__init__.py" in names
 
     def test_main_missing_wheel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """main() exits with error when wheel path doesn't exist."""

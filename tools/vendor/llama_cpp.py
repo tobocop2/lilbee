@@ -8,7 +8,7 @@ Usage:
 This script:
 1. Downloads the correct prebuilt llama-cpp-python wheel
 2. Extracts llama_cpp/ (Python code + compiled shared libraries)
-3. Injects it into the lilbee wheel as lilbee/_vendor/llama_cpp/
+3. Injects it into the lilbee wheel as a top-level llama_cpp/ package
 4. Removes the llama-cpp-python Requires-Dist from METADATA
 5. Updates the WHEEL file with platform-specific tags
 6. Renames the output wheel to match the new tags
@@ -131,9 +131,9 @@ def repack_wheel(
     with zipfile.ZipFile(llama_wheel) as zf:
         zf.extractall(llama_dir)
 
-    # Copy llama_cpp/ into lilbee/_vendor/llama_cpp/
+    # Copy llama_cpp/ to wheel root so it installs as a top-level package
     src_llama = llama_dir / "llama_cpp"
-    dst_vendor = lilbee_dir / "lilbee" / "_vendor" / "llama_cpp"
+    dst_vendor = lilbee_dir / "llama_cpp"
     if dst_vendor.exists():
         shutil.rmtree(dst_vendor)
     shutil.copytree(src_llama, dst_vendor)
