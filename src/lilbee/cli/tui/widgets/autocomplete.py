@@ -131,6 +131,7 @@ _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/vision": _vision_options,
     "/set": _setting_options,
     "/delete": _document_options,
+    "/remove": _model_options,
     "/theme": _theme_options,
     "/add": _path_options,
 }

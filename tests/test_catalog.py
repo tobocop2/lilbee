@@ -1,7 +1,8 @@
 """Tests for catalog.py — model catalog, HF API fetching, filtering, downloading."""
 
 from pathlib import Path
-from typing import ClassVar
+from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -12,11 +13,20 @@ from lilbee.catalog import (
     FEATURED_CHAT,
     FEATURED_EMBEDDING,
     FEATURED_VISION,
+    QUANT_TIERS,
     CatalogModel,
     CatalogResult,
+    EnrichedModel,
+    ModelFamily,
+    ModelVariant,
+    _hf_token,
+    clean_display_name,
     download_model,
+    enrich_catalog,
     find_catalog_entry,
     get_catalog,
+    get_families,
+    quant_tier,
 )
 
 
@@ -52,6 +62,33 @@ class TestCatalogResultDataclass:
         r = CatalogResult(total=0, limit=20, offset=0, models=[])
         with pytest.raises(AttributeError):
             r.total = 1  # type: ignore[misc]
+
+
+class TestHfToken:
+    def test_env_var_takes_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LILBEE_HF_TOKEN", "env-token")
+        assert _hf_token() == "env-token"
+
+    def test_hf_token_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.setenv("HF_TOKEN", "hf-env-token")
+        assert _hf_token() == "hf-env-token"
+
+    def test_falls_back_to_huggingface_hub_get_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        fake_hf_hub = MagicMock()
+        fake_hf_hub.get_token.return_value = "cached-token"
+        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
+        assert _hf_token() == "cached-token"
+
+    def test_returns_none_when_all_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        fake_hf_hub = MagicMock()
+        fake_hf_hub.get_token.side_effect = Exception("no token")
+        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
+        assert _hf_token() is None
 
 
 class TestFeaturedModels:
@@ -113,7 +150,9 @@ class TestFetchHfModels:
                 "id": "user/model-13b-gguf",
                 "downloads": 1000,
                 "description": "",
-                "siblings": [],
+                "siblings": [
+                    {"rfilename": "model-13b-Q4_K_M.gguf", "size": 0},
+                ],
             },
         ]
 
@@ -139,11 +178,11 @@ class TestFetchHfModels:
         # Largest GGUF file is 7GB -> ~6.5 GB estimate
         assert 6.0 < models[0].size_gb < 7.5
 
-    def test_no_gguf_files_fallback_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_gguf_size_info_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
-        # Second model has no siblings -> fallback 0.0 (unknown)
+        # Second model has gguf sibling with size=0 -> fallback 0.0 (unknown)
         assert models[1].size_gb == 0.0
 
     def test_skips_entries_without_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,7 +220,7 @@ class TestFetchHfModels:
                 "id": "user/test",
                 "downloads": 0,
                 "description": "A" * 200,
-                "siblings": [],
+                "siblings": [{"rfilename": "model.gguf"}],
             }
         ]
         mock_resp = httpx.Response(200, json=data)
@@ -195,13 +234,13 @@ class TestFetchHfModels:
                 "id": "user/embed-model",
                 "downloads": 100,
                 "pipeline_tag": "feature-extraction",
-                "siblings": [],
+                "siblings": [{"rfilename": "embed.gguf"}],
             },
             {
                 "id": "user/vision-model",
                 "downloads": 50,
                 "pipeline_tag": "image-text-to-text",
-                "siblings": [],
+                "siblings": [{"rfilename": "vision.gguf"}],
             },
         ]
         mock_resp = httpx.Response(200, json=data)
@@ -211,7 +250,7 @@ class TestFetchHfModels:
         assert models[1].task == "vision"
 
     def test_missing_pipeline_tag_defaults_to_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        data = [{"id": "user/model", "downloads": 100, "siblings": [{"rfilename": "m.gguf"}]}]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         models = catalog._fetch_hf_models()
@@ -409,25 +448,10 @@ class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
-
-        registry = ModelRegistry(tmp_path)
-        source = tmp_path / entry.gguf_filename
-        source.write_bytes(b"fake model")
-        ref = ModelRef.parse(entry.name)
-        manifest = ModelManifest(
-            name=ref.name,
-            tag=ref.tag,
-            blob="",
-            size_bytes=10,
-            task=entry.task,
-            source_repo=entry.hf_repo,
-            source_filename=entry.gguf_filename,
-            downloaded_at="2026-01-01T00:00:00+00:00",
-        )
-        blob_path = registry.install(ref, source, manifest)
+        existing = tmp_path / entry.gguf_filename
+        existing.write_bytes(b"fake model")
         result = download_model(entry)
-        assert result == blob_path
+        assert result == existing
 
     def test_creates_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         models_dir = tmp_path / "models"
@@ -435,28 +459,16 @@ class TestDownloadModel:
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+        def fake_download(**kwargs: Any) -> str:
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
-
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                return [b"x" * 100]
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         result = download_model(entry)
         assert result.exists()
-        assert result.parent == models_dir / "blobs"
+        assert result.parent == models_dir
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
@@ -465,25 +477,18 @@ class TestDownloadModel:
 
         progress_calls: list[tuple[int, int]] = []
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+        def fake_download(**kwargs: Any) -> str:
+            tqdm_cls = kwargs.get("tqdm_class")
+            if tqdm_cls:
+                bar = tqdm_cls(total=100)
+                bar.update(50)
+                bar.update(50)
+                bar.close()
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
-
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                return [b"x" * 50, b"x" * 50]
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
 
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
@@ -492,39 +497,37 @@ class TestDownloadModel:
         assert len(progress_calls) == 2
         assert progress_calls[-1] == (100, 100)
 
-    def test_http_error_cleans_up_partial(
+    def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        class FakeStream:
-            headers: ClassVar[dict[str, str]] = {"content-length": "100"}
+        from huggingface_hub.utils import GatedRepoError
 
-            def __init__(self, *a: object, **kw: object) -> None:
-                pass
+        def fake_download(**kwargs: Any) -> str:
+            raise GatedRepoError("Gated repo", response=MagicMock())
 
-            def __enter__(self) -> "FakeStream":
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                pass
-
-            def raise_for_status(self) -> None:
-                pass
-
-            def iter_bytes(self, chunk_size: int = 8192) -> list[bytes]:
-                raise httpx.HTTPStatusError(
-                    "500",
-                    request=httpx.Request("GET", "http://x"),
-                    response=httpx.Response(500),
-                )
-
-        monkeypatch.setattr(httpx, "stream", lambda *a, **kw: FakeStream())
-        with pytest.raises(httpx.HTTPStatusError):
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             download_model(entry)
-        assert not (tmp_path / entry.gguf_filename).exists()
+
+    def test_repo_not_found_raises_runtime_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        def fake_download(**kwargs: Any) -> str:
+            raise RepositoryNotFoundError("Not found", response=MagicMock())
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(RuntimeError, match="not found on HuggingFace"):
+            download_model(entry)
 
 
 class TestResolveFilename:
@@ -582,19 +585,20 @@ class TestResolveFilename:
 
 class TestTaskToPipeline:
     def test_chat(self) -> None:
-        assert catalog._task_to_pipeline("chat") == "text-generation"
+        assert catalog._task_to_pipeline("chat") == ("text-generation", None)
 
     def test_embedding(self) -> None:
-        assert catalog._task_to_pipeline("embedding") == "feature-extraction"
+        expected = ("feature-extraction", "sentence-transformers")
+        assert catalog._task_to_pipeline("embedding") == expected
 
     def test_vision(self) -> None:
-        assert catalog._task_to_pipeline("vision") == "image-text-to-text"
+        assert catalog._task_to_pipeline("vision") == ("image-text-to-text", None)
 
     def test_unknown(self) -> None:
-        assert catalog._task_to_pipeline("unknown") == "text-generation"
+        assert catalog._task_to_pipeline("unknown") == ("text-generation", None)
 
     def test_none(self) -> None:
-        assert catalog._task_to_pipeline(None) == "text-generation"
+        assert catalog._task_to_pipeline(None) == ("text-generation", None)
 
 
 class TestPipelineToTask:
@@ -711,7 +715,7 @@ class TestHfCacheEviction:
         mock_resp.json.return_value = []
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
-        catalog._fetch_hf_models(pipeline_tag="text-generation", tags="gguf")
+        catalog._fetch_hf_models(pipeline_tag="text-generation")
         assert "old:key:sort:50" not in _hf_cache
 
     def test_cache_size_capped_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -735,6 +739,498 @@ class TestHfCacheEviction:
         mock_resp.json.return_value = []
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
-        catalog._fetch_hf_models(pipeline_tag="unique", tags="gguf")
+        catalog._fetch_hf_models(pipeline_tag="unique")
         assert len(_hf_cache) == 50
         assert "key:0" not in _hf_cache
+
+
+class TestModelVariantDataclass:
+    def test_frozen(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        with pytest.raises(AttributeError):
+            v.hf_repo = "nope"  # type: ignore[misc]
+
+    def test_default_mmproj(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
+        assert v.mmproj_filename == ""
+
+
+class TestModelFamilyDataclass:
+    def test_frozen(self) -> None:
+        f = ModelFamily("Qwen3", "chat", "desc", ())
+        with pytest.raises(AttributeError):
+            f.name = "nope"  # type: ignore[misc]
+
+    def test_fields(self) -> None:
+        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        f = ModelFamily("Qwen3", "chat", "Fast", (v,))
+        assert f.name == "Qwen3"
+        assert f.task == "chat"
+        assert len(f.variants) == 1
+
+
+class TestExtractFamilyName:
+    def test_qwen3_8b(self) -> None:
+        assert catalog._extract_family_name("Qwen3 8B") == "Qwen3"
+
+    def test_qwen3_06b(self) -> None:
+        assert catalog._extract_family_name("Qwen3 0.6B") == "Qwen3"
+
+    def test_qwen3_coder(self) -> None:
+        assert catalog._extract_family_name("Qwen3-Coder 30B A3B") == "Qwen3 Coder"
+
+    def test_mistral(self) -> None:
+        assert catalog._extract_family_name("Mistral 7B Instruct") == "Mistral"
+
+    def test_no_space_before_version(self) -> None:
+        """Names without 'space + digit' pattern return the full name."""
+        assert catalog._extract_family_name("Nomic Embed Text v1.5") == "Nomic Embed Text v1.5"
+
+    def test_hyphenated_version(self) -> None:
+        """Names with hyphenated versions get hyphens replaced by spaces."""
+        assert catalog._extract_family_name("LightOnOCR-2") == "LightOnOCR"
+
+    def test_gguf_suffix_stripped(self) -> None:
+        """GGUF suffix is stripped via clean_display_name before extraction."""
+        assert catalog._extract_family_name("Qwen3-8B-GGUF") == "Qwen3"
+
+    def test_instruct_gguf_suffix_stripped(self) -> None:
+        """Instruct and GGUF suffixes are stripped before extraction."""
+        assert catalog._extract_family_name("Mistral-7B-Instruct-GGUF") == "Mistral"
+
+    def test_clean_display_name_applied_to_hf_names(self) -> None:
+        """HF model names with repo-style suffixes produce clean family names."""
+        # Simulates what _build_families sees for HF models
+        assert catalog._extract_family_name("Meta-Llama-3-8B-Instruct-GGUF") == "Llama"
+
+
+class TestExtractQuant:
+    def test_wildcard_pattern(self) -> None:
+        assert catalog._extract_quant("*Q4_K_M.gguf") == "Q4_K_M"
+
+    def test_full_filename(self) -> None:
+        assert catalog._extract_quant("nomic-embed-text-v1.5.Q4_K_M.gguf") == "Q4_K_M"
+
+    def test_q8_0(self) -> None:
+        assert catalog._extract_quant("model-Q8_0.gguf") == "Q8_0"
+
+    def test_no_quant(self) -> None:
+        assert catalog._extract_quant("model.gguf") == ""
+
+
+class TestGetFamilies:
+    def test_returns_list(self) -> None:
+        families = get_families()
+        assert isinstance(families, list)
+        assert all(isinstance(f, ModelFamily) for f in families)
+
+    def test_has_chat_families(self) -> None:
+        families = get_families()
+        chat_families = [f for f in families if f.task == "chat"]
+        assert len(chat_families) > 0
+
+    def test_has_embedding_families(self) -> None:
+        families = get_families()
+        embed_families = [f for f in families if f.task == "embedding"]
+        assert len(embed_families) > 0
+
+    def test_has_vision_families(self) -> None:
+        families = get_families()
+        vision_families = [f for f in families if f.task == "vision"]
+        assert len(vision_families) > 0
+
+    def test_qwen3_grouped(self) -> None:
+        families = get_families()
+        qwen3 = [f for f in families if f.name == "Qwen3"]
+        assert len(qwen3) == 1
+        assert len(qwen3[0].variants) == 3  # 0.6B, 4B, 8B
+
+    def test_qwen3_largest_recommended(self) -> None:
+        families = get_families()
+        qwen3 = next(f for f in families if f.name == "Qwen3")
+        assert qwen3.variants[-1].recommended is True
+        assert qwen3.variants[0].recommended is False
+
+    def test_single_variant_not_recommended(self) -> None:
+        """A family with only one variant should not mark it as recommended."""
+        families = get_families()
+        singles = [f for f in families if len(f.variants) == 1]
+        for fam in singles:
+            assert fam.variants[0].recommended is False
+
+    def test_total_variants_matches_featured(self) -> None:
+        families = get_families()
+        total_variants = sum(len(f.variants) for f in families)
+        assert total_variants == len(FEATURED_ALL)
+
+    def test_variant_has_correct_fields(self) -> None:
+        families = get_families()
+        qwen3 = next(f for f in families if f.name == "Qwen3")
+        v = qwen3.variants[0]  # 0.6B
+        assert v.param_count == "0.6B"
+        assert v.quant == "Q4_K_M"
+        assert v.size_mb > 0
+        assert v.hf_repo == "Qwen/Qwen3-0.6B-GGUF"
+
+    def test_order_chat_then_embedding_then_vision(self) -> None:
+        families = get_families()
+        tasks = [f.task for f in families]
+        # All chat tasks should come before embedding, embedding before vision
+        chat_last = max(i for i, t in enumerate(tasks) if t == "chat")
+        embed_first = min(i for i, t in enumerate(tasks) if t == "embedding")
+        vision_first = min(i for i, t in enumerate(tasks) if t == "vision")
+        assert chat_last < embed_first
+        assert embed_first < vision_first
+
+
+class TestVisionMmprojFiles:
+    def test_all_vision_entries_have_mmproj(self) -> None:
+        """Every featured vision model has an mmproj entry in VISION_MMPROJ_FILES."""
+        from lilbee.catalog import VISION_MMPROJ_FILES
+
+        for entry in FEATURED_VISION:
+            assert entry.hf_repo in VISION_MMPROJ_FILES, (
+                f"Vision model {entry.name} ({entry.hf_repo}) missing from VISION_MMPROJ_FILES"
+            )
+            assert VISION_MMPROJ_FILES[entry.hf_repo], (
+                f"Vision model {entry.name} has empty mmproj pattern"
+            )
+
+    def test_download_model_calls_mmproj_for_vision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """download_model downloads mmproj file for vision entries."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+        )
+
+        download_model(entry)
+
+        # Should have two downloads: main model + mmproj
+        assert len(download_calls) == 2
+        filenames = [c["filename"] for c in download_calls]
+        assert "model-Q4_K_M.gguf" in filenames
+        assert "model-mmproj-f16.gguf" in filenames
+
+    def test_download_model_skips_mmproj_for_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """download_model does NOT download mmproj for chat entries."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.write_bytes(b"x")
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        download_model(entry)
+
+        assert len(download_calls) == 1
+
+
+class TestVisionMmprojFallback:
+    def test_unmapped_vision_model_uses_default_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        # Create a vision entry not in the explicit mapping
+        custom_entry = CatalogModel(
+            "CustomVision 1B",
+            "user/CustomVision-1B-GGUF",
+            "*Q4_K_M.gguf",
+            1.0,
+            4,
+            "Custom vision model",
+            True,
+            0,
+            "vision",
+        )
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "custom-Q4_K_M.gguf")
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"x" * 100)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "custom-mmproj-f16.gguf"
+        )
+
+        download_model(custom_entry)
+
+        # Should have two downloads: main model + mmproj (via default pattern)
+        assert len(download_calls) == 2
+        filenames = [c["filename"] for c in download_calls]
+        assert "custom-Q4_K_M.gguf" in filenames
+        assert "custom-mmproj-f16.gguf" in filenames
+
+
+class TestFindMmprojFile:
+    def test_finds_mmproj_in_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        mmproj = tmp_path / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result == mmproj
+
+    def test_returns_none_when_no_mmproj(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result is None
+
+    def test_returns_none_when_dir_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path / "nonexistent")
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("anything")
+        assert result is None
+
+
+class TestResolveMmprojFilename:
+    def test_exact_filename_passthrough(self) -> None:
+        result = catalog._resolve_mmproj_filename("repo", "exact-mmproj.gguf")
+        assert result == "exact-mmproj.gguf"
+
+    def test_wildcard_resolves_via_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = {
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"rfilename": "model-mmproj-f16.gguf"},
+                {"rfilename": "model-mmproj-f32.gguf"},
+            ]
+        }
+        mock_resp = httpx.Response(
+            200, json=data, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        # Prefers f16 over f32
+        assert result == "model-mmproj-f16.gguf"
+
+    def test_returns_none_on_api_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def raise_error(*a, **kw):
+            raise RuntimeError("network error")
+
+        monkeypatch.setattr(httpx, "get", raise_error)
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert result is None
+
+    def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = {"siblings": [{"rfilename": "model-Q4_K_M.gguf"}]}
+        mock_resp = httpx.Response(
+            200, json=data, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert result is None
+
+
+class TestHfModelsSearchFilter:
+    """HF API uses search=GGUF to find GGUF repos."""
+
+    def test_returns_all_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        data = [
+            {"id": "user/model-GGUF", "downloads": 1000, "siblings": []},
+            {"id": "user/another-GGUF", "downloads": 500, "siblings": []},
+        ]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        models = catalog._fetch_hf_models()
+        assert len(models) == 2
+
+
+class TestGatedRepoShowsLoginMessage:
+    def test_permission_error_mentions_login(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        from huggingface_hub.utils import GatedRepoError
+
+        def fake_download(**kwargs: Any) -> str:
+            raise GatedRepoError("Gated repo", response=MagicMock())
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            download_model(entry)
+
+
+
+class TestCleanDisplayName:
+    def test_strips_org_and_gguf(self) -> None:
+        assert clean_display_name("Qwen/Qwen2.5-7B-Instruct-GGUF") == "Qwen2.5 7B"
+
+    def test_strips_meta_prefix(self) -> None:
+        assert clean_display_name("meta-llama/Meta-Llama-3-8B") == "Llama 3 8B"
+
+    def test_strips_chat_suffix(self) -> None:
+        assert clean_display_name("org/Model-7B-Chat-GGUF") == "Model 7B"
+
+    def test_strips_date_suffix(self) -> None:
+        assert clean_display_name("org/Model-7B-2507") == "Model 7B"
+
+    def test_no_org_prefix(self) -> None:
+        assert clean_display_name("Model-7B-GGUF") == "Model 7B"
+
+    def test_plain_name(self) -> None:
+        assert clean_display_name("org/SimpleModel") == "SimpleModel"
+
+    def test_multiple_suffixes(self) -> None:
+        result = clean_display_name("org/Model-7B-Instruct-GGUF")
+        assert result == "Model 7B"
+
+    def test_mistral_instruct(self) -> None:
+        result = clean_display_name("mistralai/Mistral-7B-Instruct-v0.3-GGUF")
+        assert result == "Mistral 7B v0.3"
+
+
+class TestQuantTier:
+    def test_all_quant_types_mapped(self) -> None:
+        for quant_name, expected_tier in QUANT_TIERS.items():
+            assert quant_tier(quant_name) == expected_tier
+
+    def test_empty_returns_dash(self) -> None:
+        assert quant_tier("") == "—"
+
+    def test_unknown_returns_dash(self) -> None:
+        assert quant_tier("WEIRD_QUANT") == "—"
+
+    def test_compact_tiers(self) -> None:
+        for q in ("Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L"):
+            assert quant_tier(q) == "compact"
+
+    def test_balanced_tiers(self) -> None:
+        for q in ("Q4_K_S", "Q4_K_M", "Q4_0"):
+            assert quant_tier(q) == "balanced"
+
+    def test_high_quality_tiers(self) -> None:
+        for q in ("Q5_K_S", "Q5_K_M", "Q6_K"):
+            assert quant_tier(q) == "high quality"
+
+    def test_full_precision(self) -> None:
+        assert quant_tier("Q8_0") == "full precision"
+
+    def test_unquantized(self) -> None:
+        assert quant_tier("F16") == "unquantized"
+        assert quant_tier("F32") == "unquantized"
+
+
+class TestEnrichCatalog:
+    def _make_result(self) -> CatalogResult:
+        models = [
+            CatalogModel(
+                "Model-7B-GGUF",
+                "user/Model-7B-Instruct-GGUF",
+                "*Q4_K_M.gguf",
+                4.0,
+                8.0,
+                "A test model",
+                False,
+                1000,
+                "chat",
+            ),
+            CatalogModel(
+                "Qwen3 8B",
+                "Qwen/Qwen3-8B-GGUF",
+                "*Q4_K_M.gguf",
+                5.0,
+                8.0,
+                "Strong general purpose",
+                True,
+                0,
+                "chat",
+            ),
+        ]
+        return CatalogResult(total=2, limit=20, offset=0, models=models)
+
+    def test_returns_enriched_models(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert len(enriched) == 2
+        assert all(isinstance(e, EnrichedModel) for e in enriched)
+
+    def test_display_name_populated(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert enriched[0].display_name == "Model 7B"
+        assert enriched[1].display_name == "Qwen3 8B"
+
+    def test_quality_tier_populated(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        assert enriched[0].quality_tier == "balanced"
+
+    def test_installed_status(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, {"Qwen3 8B"})
+        assert enriched[0].installed is False
+        assert enriched[0].source == "native"
+        assert enriched[1].installed is True
+        assert enriched[1].source == "litellm"
+
+    def test_preserves_original_fields(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        original = result.models[0]
+        e = enriched[0]
+        assert e.name == original.name
+        assert e.hf_repo == original.hf_repo
+        assert e.size_gb == original.size_gb
+        assert e.description == original.description
+        assert e.featured == original.featured
+        assert e.downloads == original.downloads
+        assert e.task == original.task
+
+
+class TestFormatSizeMb:
+    def test_zero_returns_dash(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(0) == "\u2014"
+
+    def test_mb_value(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(512) == "512 MB"
+
+    def test_gb_value(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _format_size_mb
+
+        assert _format_size_mb(2048) == "2.0 GB"

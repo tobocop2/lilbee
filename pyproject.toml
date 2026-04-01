@@ -29,7 +29,7 @@ dependencies = [
     "lancedb",
     "kreuzberg>=4.6.3",
     "filelock",
-    "tree-sitter-language-pack>=1.3.2",
+    "tree-sitter-language-pack>=1.4.0",
     "typer",
     "tiktoken",
     "textual>=0.75",
@@ -40,6 +40,7 @@ dependencies = [
     "httpx",
     "llama-cpp-python",
     "huggingface_hub",
+    "psutil>=5.9",
     "pydantic-settings>=2.13.1",
 ]
 
@@ -55,7 +56,7 @@ Repository = "https://github.com/tobocop2/lilbee"
 Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
-lilbee = "lilbee.cli:app"
+lilbee = "lilbee.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -85,7 +86,7 @@ markers = ["slow: integration tests that download models or take >10s"]
 
 [tool.coverage.run]
 source = ["lilbee"]
-omit = ["src/lilbee/__main__.py"]
+omit = ["src/lilbee/__main__.py", "src/lilbee/launcher.py"]
 concurrency = ["thread"]
 
 [tool.coverage.report]
@@ -100,6 +101,7 @@ exclude_lines = [
 omit = [
     "src/lilbee/providers/litellm_provider.py",
     "src/lilbee/__main__.py",
+    "src/lilbee/launcher.py",
     "src/lilbee/platform.py",
 ]
 

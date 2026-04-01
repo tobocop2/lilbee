@@ -79,7 +79,7 @@ class LiteLLMProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
@@ -169,7 +169,7 @@ class LiteLLMProvider(LLMProvider):
         """No resources to release for litellm provider."""
 
 
-def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _format_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Convert messages with images to litellm content format."""
     formatted: list[dict[str, Any]] = []
     for msg in messages:

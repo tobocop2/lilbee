@@ -12,7 +12,13 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, cast
 
-from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
+from lilbee.progress import (
+    DetailedProgressCallback,
+    EventType,
+    ExtractEvent,
+    noop_callback,
+    shared_progress,
+)
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +74,31 @@ def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
         yield from pages
 
 
+def _png_to_data_url(png_bytes: bytes) -> str:
+    """Convert raw PNG bytes to a base64 data URL for OpenAI-compatible messages."""
+    import base64
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
+    """Build OpenAI-compatible messages with image content for vision models.
+
+    Uses the multipart content format expected by llama-cpp-python's
+    vision chat handlers (Llava15ChatHandler, etc.).
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": _png_to_data_url(png_bytes)}},
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
+
+
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
     """Send a page image to a vision model and return extracted text.
 
@@ -78,7 +109,7 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
         from lilbee.services import get_services
 
         provider = get_services().provider
-        messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
+        messages = _build_vision_messages(_OCR_PROMPT, png_bytes)
 
         if timeout and timeout > 0:
             from concurrent.futures import ThreadPoolExecutor
@@ -150,7 +181,7 @@ def extract_pdf_vision(
         for i, png in rasterize_pdf(path):
             on_progress(
                 EventType.EXTRACT,
-                {"file": path.name, "page": i + 1, "total_pages": total},
+                ExtractEvent(file=path.name, page=i + 1, total_pages=total),
             )
             log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
             text = extract_page_text(png, model, timeout=timeout)

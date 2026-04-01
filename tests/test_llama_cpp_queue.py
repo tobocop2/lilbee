@@ -56,14 +56,17 @@ class TestEmbedQueue:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         instance = mock.MagicMock()
-        instance.create_embedding.return_value = _make_embed_response([[0.1, 0.2], [0.3, 0.4]])
+        instance.create_embedding.side_effect = [
+            _make_embed_response([[0.1, 0.2]]),
+            _make_embed_response([[0.3, 0.4]]),
+        ]
         mock_llama_cpp.Llama.return_value = instance
 
         provider = LlamaCppProvider()
         result = provider.embed(["hello", "world"])
 
         assert result == [[0.1, 0.2], [0.3, 0.4]]
-        instance.create_embedding.assert_called_once_with(input=["hello", "world"])
+        assert instance.create_embedding.call_count == 2
         provider.shutdown()
 
     def test_concurrent_embeds_batched(
@@ -361,3 +364,179 @@ class TestLockedStreamIteratorExceptionRelease:
             next(stream)
         assert lock.acquire(blocking=False)
         lock.release()
+
+
+class TestVisionModel:
+    def test_load_vision_llama_creates_handler(
+        self, models_dir: Path, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """_load_vision_llama creates a Llama instance with a chat handler."""
+        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+
+        # Create mmproj file
+        mmproj_path = models_dir / "test-mmproj-f16.gguf"
+        mmproj_path.write_bytes(b"fake-mmproj")
+
+        mock_handler = mock.MagicMock()
+        mock_handler_cls = mock.MagicMock(return_value=mock_handler)
+
+        # The mock_llama_cpp fixture puts a MagicMock in sys.modules["llama_cpp"],
+        # so submodule imports like llama_cpp.llama_chat_format need to work too.
+        mock_chat_format = mock.MagicMock()
+        mock_chat_format.Llava15ChatHandler = mock_handler_cls
+        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
+
+        try:
+            _load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+
+            mock_handler_cls.assert_called_once_with(clip_model_path=str(mmproj_path))
+            # Llama called with chat_handler
+            call_kwargs = mock_llama_cpp.Llama.call_args[1]
+            assert call_kwargs["chat_handler"] is mock_handler
+        finally:
+            sys.modules.pop("llama_cpp.llama_chat_format", None)
+
+    def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
+        """_find_mmproj_for_model raises ProviderError when no mmproj found."""
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+
+        with pytest.raises(ProviderError, match="mmproj"):
+            _find_mmproj_for_model(models_dir / "test-model.gguf")
+
+    def test_find_mmproj_finds_by_name(self, models_dir: Path) -> None:
+        """_find_mmproj_for_model finds mmproj files in the models directory."""
+        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+
+        mmproj = models_dir / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+        result = _find_mmproj_for_model(models_dir / "test-model.gguf")
+        assert result == mmproj
+
+    def test_is_vision_model_matches_config(self, models_dir: Path) -> None:
+        """_is_vision_model returns True for cfg.vision_model."""
+        from lilbee.providers.llama_cpp_provider import _is_vision_model
+
+        cfg.vision_model = "test-vision"
+        assert _is_vision_model("test-vision") is True
+        assert _is_vision_model("test-chat") is False
+        cfg.vision_model = ""
+
+    def test_get_vision_llm_caches(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """_get_vision_llm caches the vision model instance."""
+        from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+
+        mmproj = models_dir / "test-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake-mmproj")
+        cfg.vision_model = "test-model"
+
+        mock_handler = mock.MagicMock()
+        mock_chat_format = mock.MagicMock()
+        mock_chat_format.Llava15ChatHandler = mock.MagicMock(return_value=mock_handler)
+        sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
+
+        instance = mock.MagicMock()
+        instance.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        mock_llama_cpp.Llama.return_value = instance
+
+        try:
+            provider = LlamaCppProvider()
+            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+
+            # Llama should only be called once (cached)
+            assert mock_llama_cpp.Llama.call_count == 1
+            provider.shutdown()
+        finally:
+            sys.modules.pop("llama_cpp.llama_chat_format", None)
+            cfg.vision_model = ""
+
+
+class TestLoadLlamaNCtx:
+    def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """When num_ctx is None, _load_llama passes n_ctx=0 and n_batch from metadata."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = None
+        mock_llama_cpp.Llama.return_value.metadata = {
+            "general.architecture": "nomic-bert",
+            "nomic-bert.context_length": "2048",
+        }
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+
+        # Called twice: once for metadata (vocab_only), once for model
+        assert mock_llama_cpp.Llama.call_count == 2
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 0
+        assert call_kwargs["n_batch"] == 2048
+
+    def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """When num_ctx is set, _load_llama uses it for n_ctx and n_batch."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = 8192
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+
+        # No metadata read needed when n_ctx is explicit
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["n_ctx"] == 8192
+        assert call_kwargs["n_batch"] == 8192
+
+    def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
+        """_load_llama passes embedding flag correctly."""
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        mock_llama_cpp.Llama.return_value.metadata = {}
+        _load_llama(models_dir / "test-model.gguf", embedding=True)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["embedding"] is True
+
+        mock_llama_cpp.Llama.reset_mock()
+        _load_llama(models_dir / "test-model.gguf", embedding=False)
+        call_kwargs = mock_llama_cpp.Llama.call_args[1]
+        assert call_kwargs["embedding"] is False
+
+
+class TestSuppressStderrThreadSafety:
+    def test_concurrent_suppress_stderr_no_corruption(self) -> None:
+        """B3: _suppress_stderr serializes fd 2 manipulation via _STDERR_LOCK."""
+        from lilbee.providers.llama_cpp_provider import _suppress_stderr
+
+        results: list[int] = []
+        errors: list[Exception] = []
+        barrier = threading.Barrier(4)
+
+        def worker(value: int) -> None:
+            barrier.wait()
+            try:
+                result = _suppress_stderr(lambda v: v * 2, value)
+                results.append(result)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Errors during concurrent _suppress_stderr: {errors}"
+        assert sorted(results) == [0, 2, 4, 6]
+
+    def test_suppress_stderr_uses_lock(self) -> None:
+        """B3: Verify _suppress_stderr acquires _STDERR_LOCK."""
+        from lilbee.providers.llama_cpp_provider import _STDERR_LOCK, _suppress_stderr
+
+        lock_was_held = []
+
+        def check_lock():
+            # If the lock is held (by us), acquire(blocking=False) returns False
+            locked = not _STDERR_LOCK.acquire(blocking=False)
+            if not locked:
+                _STDERR_LOCK.release()
+            lock_was_held.append(locked)
+            return 42
+
+        result = _suppress_stderr(check_lock)
+        assert result == 42
+        assert lock_was_held == [True]

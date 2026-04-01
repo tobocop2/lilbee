@@ -21,6 +21,10 @@ class StatusScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
+        Binding("j", "cursor_down", "Nav", show=False),
+        Binding("k", "cursor_up", "Nav", show=False),
+        Binding("g", "jump_top", "Top", show=False),
+        Binding("G", "jump_bottom", "End", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -61,8 +65,15 @@ class StatusScreen(Screen[None]):
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
 
-    def key_j(self) -> None:
+    def action_cursor_down(self) -> None:
         self.query_one("#docs-table", DataTable).action_cursor_down()
 
-    def key_k(self) -> None:
+    def action_cursor_up(self) -> None:
         self.query_one("#docs-table", DataTable).action_cursor_up()
+
+    def action_jump_top(self) -> None:
+        self.query_one("#docs-table", DataTable).move_cursor(row=0)
+
+    def action_jump_bottom(self) -> None:
+        table = self.query_one("#docs-table", DataTable)
+        table.move_cursor(row=table.row_count - 1)
