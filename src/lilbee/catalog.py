@@ -570,17 +570,18 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
 
+
         kwargs: dict[str, Any] = {
             "repo_id": entry.hf_repo,
             "filename": filename,
-            "local_dir": cfg.models_dir,
             "token": token,
+            "force_download": True,  # bypass cache for real-time progress
         }
         if on_progress is not None:
             kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
 
         try:
-            path = hf_hub_download(**kwargs)
+            cached = Path(hf_hub_download(**kwargs))
         except GatedRepoError:
             raise PermissionError(
                 f"{entry.name} requires HuggingFace authentication. "
@@ -588,7 +589,8 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             ) from None
         except RepositoryNotFoundError:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
-        dest = Path(path)
+        # Register moves the cached file into the registry blob store
+        dest = cached
 
     # Register in manifest so the model is visible to the registry
     _register_model(entry, dest)
