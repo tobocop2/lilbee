@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from litestar import get, post
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.query import ChatMessage as ChatMessageDict
+from lilbee.results import DocumentResult
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
@@ -23,7 +22,7 @@ from lilbee.server.models import (
 async def search_route(
     q: str = Parameter(query="q"),
     top_k: int = Parameter(query="top_k", default=5, le=100),
-) -> list[dict[str, Any]]:
+) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     return await handlers.search(q, top_k=top_k)
 

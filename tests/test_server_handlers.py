@@ -122,7 +122,7 @@ class TestSearch:
         mock_svc.searcher.search.return_value = [chunk]
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
-        assert result[0]["source"] == "doc.pdf"
+        assert result[0].source == "doc.pdf"
         mock_svc.searcher.search.assert_called_once_with("test", top_k=3)
 
     async def test_empty_results(self, mock_svc):

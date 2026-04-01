@@ -216,3 +216,22 @@ class ExternalModelsResponse(BaseModel):
 
     models: list[str]
     error: str | None = None
+
+
+class SyncSummary(BaseModel):
+    """Embedded sync result within an add-files response."""
+
+    added: list[str] = []
+    updated: list[str] = []
+    removed: list[str] = []
+    unchanged: int = 0
+    failed: list[str] = []
+
+
+class AddSummary(BaseModel):
+    """Summary returned by the add-files handler."""
+
+    copied: list[str]
+    skipped: list[str]
+    errors: list[str]
+    sync: SyncSummary | None = None

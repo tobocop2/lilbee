@@ -24,9 +24,10 @@ from lilbee.cli.helpers import clean_result, copy_files, gather_status, get_vers
 from lilbee.config import Config, cfg
 from lilbee.model_manager import ModelSource, get_model_manager
 from lilbee.progress import DetailedProgressCallback, EventType, ProgressEvent, SseEvent
-from lilbee.results import group, to_dicts
+from lilbee.results import DocumentResult, group
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
+    AddSummary,
     AskResponse,
     CatalogEntryResponse,
     CleanedChunk,
@@ -44,6 +45,7 @@ from lilbee.server.models import (
     ModelsShowResponse,
     SetModelResponse,
     StatusResponse,
+    SyncSummary,
 )
 
 if TYPE_CHECKING:
@@ -209,13 +211,12 @@ async def status() -> StatusResponse:
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
-async def search(q: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """Search and return grouped DocumentResults as dicts."""
+async def search(q: str, top_k: int = 5) -> list[DocumentResult]:
+    """Search and return grouped DocumentResults."""
     from lilbee.services import get_services
 
     results = get_services().searcher.search(q, top_k=top_k)
-    grouped = group(results)
-    return to_dicts(grouped)
+    return group(results)
 
 
 async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
@@ -357,10 +358,10 @@ async def _run_add(
     force: bool,
     vision_model: str,
     sse: SseStream,
-) -> dict[str, Any]:
+) -> AddSummary:
     """Copy files and sync, pushing SSE events to the queue.
 
-    Returns the summary dict so the caller can emit the final done event.
+    Returns the summary so the caller can emit the final done event.
     """
     from lilbee.ingest import sync
 
@@ -377,7 +378,7 @@ async def _run_add(
 
     if sse.cancel.is_set():
         sse.queue.put_nowait(None)
-        return {"copied": copy_result.copied, "skipped": copy_result.skipped, "errors": errors}
+        return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
 
     from lilbee.cli.helpers import temporary_vision_model
 
@@ -386,12 +387,13 @@ async def _run_add(
             quiet=True, force_vision=bool(vision_model), on_progress=sse.callback, cancel=sse.cancel
         )
 
-    summary = {
-        "copied": copy_result.copied,
-        "skipped": copy_result.skipped,
-        "errors": errors,
-        "sync": sync_result.model_dump(),
-    }
+    sr = sync_result.model_dump()
+    summary = AddSummary(
+        copied=copy_result.copied,
+        skipped=copy_result.skipped,
+        errors=errors,
+        sync=SyncSummary(**sr),
+    )
     sse.queue.put_nowait(None)  # sentinel
     return summary
 
@@ -424,8 +426,9 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
         summary = task.result()
-        yield sse_event("summary", summary)
-        yield sse_done(summary)
+        dumped = summary.model_dump()
+        yield sse_event("summary", dumped)
+        yield sse_done(dumped)
 
 
 async def list_models() -> ModelsResponse:
