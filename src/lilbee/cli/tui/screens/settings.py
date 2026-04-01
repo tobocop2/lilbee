@@ -42,7 +42,7 @@ def _get_hf_token_display() -> str:
             token = ""
     if not token:
         return "not set"
-    return token[:4] + "..." + token[-4:]
+    return "****" if token else "not set"
 
 
 class SettingsScreen(Screen[None]):

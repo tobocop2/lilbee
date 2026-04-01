@@ -6,7 +6,7 @@ import contextlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual import work
 from textual.app import ComposeResult
@@ -499,23 +499,28 @@ class CatalogScreen(Screen[None]):
                     pct = min(int(downloaded * 100 / total), 100)
                     mb_done = downloaded / (1024 * 1024)
                     mb_total = total / (1024 * 1024)
-                    self.app.call_from_thread(
+                    self._safe_call(
                         bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
                     )
 
             download_model(model, on_progress=on_progress)
-            self.app.call_from_thread(bar.complete_task, task_id)
-            self.app.call_from_thread(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
+            self._safe_call(bar.complete_task, task_id)
+            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
         except PermissionError:
             detail = msg.CATALOG_GATED_REPO.format(name=model.name)
             log.warning("Gated repo: %s", model.hf_repo)
-            self.app.call_from_thread(bar.fail_task, task_id, detail)
-            self.app.call_from_thread(self.notify, detail, severity="warning")
+            self._safe_call(bar.fail_task, task_id, detail)
+            self._safe_call(self.notify, detail, severity="warning")
         except Exception:
             log.warning("Download failed for %s", model.name, exc_info=True)
             detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.name)
-            self.app.call_from_thread(bar.fail_task, task_id, detail)
-            self.app.call_from_thread(self.notify, detail, severity="error")
+            self._safe_call(bar.fail_task, task_id, detail)
+            self._safe_call(self.notify, detail, severity="error")
+
+    def _safe_call(self, fn: Any, *args: Any, **kwargs: Any) -> None:
+        """Call fn via call_from_thread, suppressing errors if app context is gone."""
+        with contextlib.suppress(Exception):
+            self.app.call_from_thread(fn, *args, **kwargs)
 
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
@@ -562,17 +567,17 @@ class CatalogScreen(Screen[None]):
         try:
             removed = get_model_manager().remove(model_name)
             if removed:
-                self.app.call_from_thread(self.notify, msg.CATALOG_DELETED.format(name=model_name))
-                self.app.call_from_thread(self._refresh_after_delete)
+                self._safe_call(self.notify, msg.CATALOG_DELETED.format(name=model_name))
+                self._safe_call(self._refresh_after_delete)
             else:
-                self.app.call_from_thread(
+                self._safe_call(
                     self.notify,
                     msg.CATALOG_DELETE_FAILED.format(error=model_name),
                     severity="error",
                 )
         except Exception as exc:
             log.warning("Delete failed for %s", model_name, exc_info=True)
-            self.app.call_from_thread(
+            self._safe_call(
                 self.notify, msg.CATALOG_DELETE_FAILED.format(error=exc), severity="error"
             )
 
