@@ -1,5 +1,6 @@
 """Tests for the framework-agnostic server handlers."""
 
+import asyncio
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -234,15 +235,16 @@ class TestAskStream:
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = blocking_chat
-        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
-            gen = handlers.ask_stream("question")
-            async for event in gen:
-                if event and "first" in event:
-                    await gen.aclose()
-                    barrier.set()
-                    break
-
-        assert any("Stream cancelled by client" in r.message for r in caplog.records)
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.ask_stream("question")
+        async for event in gen:
+            if event and "first" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        # Give async generator cleanup a tick to fire the log
+        await asyncio.sleep(0.05)
+        assert any("cancelled by client" in r.message for r in caplog.records)
 
     async def test_skips_empty_tokens(self, mock_svc):
         """Empty strings from provider are not emitted."""
@@ -336,15 +338,15 @@ class TestChatStream:
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = blocking_chat
-        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
-            gen = handlers.chat_stream("question", [])
-            async for event in gen:
-                if event and "first" in event:
-                    await gen.aclose()
-                    barrier.set()
-                    break
-
-        assert any("Stream cancelled by client" in r.message for r in caplog.records)
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.chat_stream("question", [])
+        async for event in gen:
+            if event and "first" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        await asyncio.sleep(0.05)
+        assert any("cancelled by client" in r.message for r in caplog.records)
 
     async def test_skips_empty_tokens(self, mock_svc):
         """Empty strings from provider are not emitted."""
@@ -447,26 +449,23 @@ class TestSyncStream:
             barrier.wait(timeout=2)
             return SyncResult()
 
-        with (
-            patch("lilbee.ingest.sync", side_effect=blocking_sync),
-            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-        ):
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        with patch("lilbee.ingest.sync", side_effect=blocking_sync):
             gen = handlers.sync_stream()
             async for event in gen:
                 if event and "file_start" in event:
                     await gen.aclose()
                     barrier.set()
                     break
+            await asyncio.sleep(0.05)
 
         assert captured_cancel and captured_cancel[0].is_set()
         assert any("Sync stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestAddFiles:
-    async def test_returns_cancel_event(self, isolated_env):
-        """add_files returns a cancel event as the fourth element."""
-        import threading
-
+    async def test_stream_yields_events(self, isolated_env):
+        """add_files_stream yields SSE events and a done event."""
         test_file = isolated_env / "documents" / "test.txt"
         test_file.write_text("test content")
 
@@ -474,10 +473,10 @@ class TestAddFiles:
             return SyncResult()
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
-            result = await handlers.add_files({"paths": [str(test_file)]})
-            assert isinstance(result.cancel, threading.Event)
-            assert not result.cancel.is_set()
-            result.task.cancel()
+            events = []
+            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+                events.append(event)
+            assert any("done" in e for e in events)
 
 
 class TestListModels:
@@ -680,16 +679,15 @@ class TestModelsPull:
                 on_progress({"status": "done"})
 
         mock_manager.pull.side_effect = blocking_pull
-        with (
-            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
-            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
-        ):
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             gen = handlers.models_pull("test", source="native")
             async for event in gen:
                 if event and "downloading" in event:
                     await gen.aclose()
                     barrier.set()
                     break
+            await asyncio.sleep(0.05)
 
         assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
 
@@ -988,14 +986,14 @@ class TestCrawlStream:
             return []
 
         mock_crawl.side_effect = blocking_crawl
-        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
-            gen = handlers.crawl_stream("https://example.com")
-            async for event in gen:
-                if event and "crawl_start" in event:
-                    await gen.aclose()
-                    barrier.set()
-                    break
-
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.crawl_stream("https://example.com")
+        async for event in gen:
+            if event and "crawl_start" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        await asyncio.sleep(0.05)
         assert any("Crawl stream cancelled by client" in r.message for r in caplog.records)
 
 

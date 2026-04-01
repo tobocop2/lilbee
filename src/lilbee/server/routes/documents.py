@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-
 from litestar import get, post
 from litestar.exceptions import ValidationException
 from litestar.params import Parameter
@@ -12,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
-from lilbee.server.handlers import sse_generator
 from lilbee.server.models import (
     AddRequest,
     DocumentListResponse,
@@ -42,19 +39,14 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
-        result = await handlers.add_files(data.model_dump())
+        handlers.validate_add_paths(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
-
-    async def _stream() -> AsyncGenerator[bytes, None]:
-        try:
-            async for chunk in sse_generator(result.sse.queue):
-                yield chunk
-            await result.task
-        except (GeneratorExit, Exception):
-            result.sse.cancel.set()
-
-    return Stream(_stream(), media_type="text/event-stream", status_code=201)
+    return Stream(
+        handlers.add_files_stream(data.model_dump()),
+        media_type="text/event-stream",
+        status_code=201,
+    )
 
 
 @get("/api/documents")

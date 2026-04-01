@@ -13,7 +13,6 @@ import threading
 import time
 import types
 from collections.abc import AsyncGenerator, Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Union, cast, get_args, get_origin
 
@@ -118,13 +117,6 @@ class ModelsResponse(BaseModel):
     vision: ModelCatalogSection
 
 
-@dataclass
-class AddFilesResult:
-    """Result of starting an add-files operation."""
-
-    paths: list[str]
-    sse: "SseStream"
-    task: asyncio.Task[None]
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -204,15 +196,6 @@ class SseStream:
             log.info("%s cancelled by client", label)
             self.cancel.set()
             task.cancel()
-
-
-async def sse_generator(queue: asyncio.Queue[str | None]) -> AsyncGenerator[bytes, None]:
-    """Yield SSE-formatted bytes from a queue until sentinel (None) is received."""
-    while True:
-        item = await queue.get()
-        if item is None:
-            break
-        yield item.encode()
 
 
 async def health() -> HealthResponse:
@@ -374,8 +357,11 @@ async def _run_add(
     force: bool,
     vision_model: str,
     sse: SseStream,
-) -> None:
-    """Copy files and sync, pushing SSE events to the queue."""
+) -> dict[str, Any]:
+    """Copy files and sync, pushing SSE events to the queue.
+
+    Returns the summary dict so the caller can emit the final done event.
+    """
     from lilbee.ingest import sync
 
     errors: list[str] = []
@@ -391,7 +377,7 @@ async def _run_add(
 
     if sse.cancel.is_set():
         sse.queue.put_nowait(None)
-        return
+        return {"copied": copy_result.copied, "skipped": copy_result.skipped, "errors": errors}
 
     from lilbee.cli.helpers import temporary_vision_model
 
@@ -406,18 +392,12 @@ async def _run_add(
         "errors": errors,
         "sync": sync_result.model_dump(),
     }
-    payload = f"event: summary\ndata: {json.dumps(summary)}\n\n"
-    sse.queue.put_nowait(payload)
     sse.queue.put_nowait(None)  # sentinel
+    return summary
 
 
-async def add_files(data: dict[str, Any]) -> AddFilesResult:
-    """Validate and start the add-files operation.
-
-    Returns an AddFilesResult for the Litestar adapter to stream.
-    The cancel event should be set on client disconnect to stop the sync.
-    Raises ValueError on validation failure.
-    """
+def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
+    """Validate add-files input. Raises ValueError on bad input."""
     paths = data.get("paths")
     if not isinstance(paths, list) or not paths:
         raise ValueError("'paths' must be a non-empty list of strings")
@@ -425,14 +405,27 @@ async def add_files(data: dict[str, Any]) -> AddFilesResult:
         raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
 
     for p_str in paths:
-        # Validate that the resolved target inside documents_dir won't escape
         validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
     vision_model = str(data.get("vision_model", "") or "")
+    return paths, force, vision_model
+
+
+async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
+    """Validate, copy files, sync, and yield SSE progress events.
+
+    Raises ValueError on validation failure (before streaming starts).
+    """
+    paths, force, vision_model = validate_add_paths(data)
     sse = SseStream()
     task = asyncio.create_task(_run_add(paths, force, vision_model, sse))
-    return AddFilesResult(paths=paths, sse=sse, task=task)
+    async for event in sse.drain(task, "Add files stream"):
+        yield event
+    if not sse.cancel.is_set() and task.done() and not task.cancelled():
+        summary = task.result()
+        yield sse_event("summary", summary)
+        yield sse_done(summary)
 
 
 async def list_models() -> ModelsResponse:
