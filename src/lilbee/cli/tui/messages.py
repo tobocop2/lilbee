@@ -113,6 +113,8 @@ SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 
 NAV_VIEWS: list[str] = ["Chat", "Models", "Status", "Settings", "Tasks"]
 NAV_HELP_QUIT = "  [dim]h/l[/] Nav  [dim]?[/] Help  [dim]^c[/] Quit"
+MODE_NORMAL = "-- NORMAL --"
+MODE_INSERT = "-- INSERT --"
 
 # -- Help modal ----------------------------------------------------------------
 

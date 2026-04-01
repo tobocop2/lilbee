@@ -83,7 +83,7 @@ def _collect_legacy_gguf(buckets: dict[str, list[str]], seen: set[str]) -> None:
         log.debug("Could not scan models_dir for legacy .gguf files", exc_info=True)
 
 
-class ModelBar(Widget):
+class ModelBar(Widget, can_focus=True):
     """Compact bar with Select dropdowns for active model assignments."""
 
     DEFAULT_CSS = """

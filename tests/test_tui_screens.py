@@ -940,26 +940,37 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen._streaming is False
 
 
-async def test_chat_vim_j_k_not_in_input():
+async def test_chat_vim_j_k_cycles_focus_in_normal_mode():
+    """j/k cycle focus between widgets in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        log.focus()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#model-bar").focus()
+        await pilot.pause()
         app.screen.key_j()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
         app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
 
 
-async def test_chat_vim_j_k_in_input():
+async def test_chat_vim_j_k_noop_in_insert_mode():
+    """j/k do nothing when in insert mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
         inp = app.screen.query_one("#chat-input", Input)
         inp.focus()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
         app.screen.key_j()
         app.screen.key_k()
+        await pilot.pause()
+        # Focus should remain on input
+        assert inp.has_focus
 
 
 async def test_chat_needs_setup_false_when_models_exist():
@@ -2271,20 +2282,17 @@ async def test_catalog_jump_top_bottom():
 # ---------------------------------------------------------------------------
 
 
-async def test_chat_vim_j_scrolls_down_no_focus():
-    """Cover key_j scroll_down path (line 419) when focused widget is None."""
+async def test_chat_vim_j_cycles_focus_from_chat_log():
+    """key_j cycles focus forward from chat-log to chat-input in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        # Remove focus from input by focusing the chat log
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        log.focus()
-        await _pilot.pause()
-        # Now key_j should scroll down (line 419)
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#chat-log").focus()
+        await pilot.pause()
         app.screen.key_j()
-        # key_k should scroll up (line 426)
-        app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
 
 
 def test_check_embedding_model_installed():
@@ -2945,42 +2953,40 @@ async def test_chat_escape_key_enters_normal_mode():
         assert log.has_focus
 
 
-async def test_chat_cursor_down_action_scrolls():
-    """action_cursor_down scrolls in normal mode."""
+async def test_chat_key_down_cycles_focus_normal_mode():
+    """key_down cycles focus in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        log.focus()
+
+        # Focus model-bar, then cycle down to chat-log
+        app.screen.query_one("#model-bar").focus()
         await pilot.pause()
-
-        app.screen.action_cursor_down()
+        app.screen.key_down()
         await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
 
 
-async def test_chat_cursor_up_action_scrolls():
-    """action_cursor_up scrolls in normal mode."""
+async def test_chat_key_up_cycles_focus_normal_mode():
+    """key_up cycles focus in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        log.focus()
-        await pilot.pause()
 
-        app.screen.action_cursor_up()
+        # Focus chat-log, then cycle up to model-bar
+        app.screen.query_one("#chat-log").focus()
         await pilot.pause()
+        app.screen.key_up()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
 
 
 async def test_chat_enter_key_returns_to_insert_mode():
@@ -3483,3 +3489,111 @@ async def test_app_switch_to_tasks():
         app._switch_view("Tasks")
         await pilot.pause()
         assert isinstance(app.screen, TaskCenter)
+
+
+async def test_chat_mode_indicator_shows_normal():
+    """NavBar shows '-- NORMAL --' when entering normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        assert nav.mode_text == msg.MODE_NORMAL
+
+
+async def test_chat_mode_indicator_shows_insert():
+    """NavBar shows '-- INSERT --' when returning to insert mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen._enter_insert_mode()
+        await pilot.pause()
+        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        assert nav.mode_text == msg.MODE_INSERT
+
+
+async def test_chat_up_down_cycle_focus_in_normal_mode():
+    """Up/down arrow keys cycle focus between widgets in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#model-bar").focus()
+        await pilot.pause()
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
+
+        app.screen.key_up()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
+
+
+async def test_chat_cycle_focus_wraps_around():
+    """Focus cycling wraps from last widget to first and vice versa."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#chat-input").focus()
+        await pilot.pause()
+
+        app.screen.key_j()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
+
+        app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
+
+
+async def test_chat_up_arrow_insert_mode_recalls_history():
+    """Up arrow in insert mode still recalls input history."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        await pilot.pause()
+        app.screen._input_history = ["hello", "world"]
+        app.screen._history_index = -1
+        app.screen.key_up()
+        assert inp.value == "world"
+
+
+def test_navbar_mode_text_reactive_declared():
+    """NavBar declares a mode_text reactive."""
+    from textual.reactive import Reactive
+
+    from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+    reactives = {name for name, val in vars(NavBar).items() if isinstance(val, Reactive)}
+    assert "mode_text" in reactives

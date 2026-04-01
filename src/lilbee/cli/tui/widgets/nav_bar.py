@@ -28,6 +28,7 @@ class NavBar(Widget):
 
     active_view: reactive[str] = reactive("Chat")
     active_task_text: reactive[str] = reactive("")
+    mode_text: reactive[str] = reactive("")
 
     def compose(self) -> ComposeResult:
         yield Static(id="nav-bar-content")
@@ -36,6 +37,9 @@ class NavBar(Widget):
         self._refresh_display()
 
     def watch_active_task_text(self, value: str) -> None:
+        self._refresh_display()
+
+    def watch_mode_text(self, value: str) -> None:
         self._refresh_display()
 
     def on_mount(self) -> None:
@@ -52,6 +56,8 @@ class NavBar(Widget):
                 parts.append(f" {name} ")
         if self.active_task_text:
             parts.append(f"  [bold]{self.active_task_text}[/]")
+        if self.mode_text:
+            parts.append(f"  [bold]{self.mode_text}[/]")
         parts.append(msg.NAV_HELP_QUIT)
         content = self.query_one("#nav-bar-content", Static)
         content.update("".join(parts))

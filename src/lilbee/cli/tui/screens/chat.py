@@ -42,6 +42,8 @@ _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
+_FOCUSABLE_IDS = ("model-bar", "chat-log", "chat-input")
+
 
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
@@ -51,8 +53,6 @@ class ChatScreen(Screen[None]):
         Binding("tab", "complete", "Tab", show=False, priority=True),
         Binding("ctrl+n", "complete_next", "^n next", show=False),
         Binding("ctrl+p", "complete_prev", "^p prev", show=False),
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False),
@@ -163,7 +163,7 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def _update_input_style(self) -> None:
-        """Toggle input border based on current mode."""
+        """Toggle input border and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
         if self._insert_mode:
             inp.remove_class("normal-mode")
@@ -171,6 +171,15 @@ class ChatScreen(Screen[None]):
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
+        self._update_mode_indicator()
+
+    def _update_mode_indicator(self) -> None:
+        """Update the NavBar mode text to reflect the current mode."""
+        try:
+            nav = self.query_one("#global-nav-bar", NavBar)
+            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
+        except Exception:
+            pass
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -179,7 +188,7 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-        if not inp.has_focus and event.is_printable and event.character:
+        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
             inp.focus()
             inp.insert_text_at_cursor(event.character)
             event.prevent_default()
@@ -626,15 +635,15 @@ class ChatScreen(Screen[None]):
     def action_scroll_down(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_down()
 
-    def action_cursor_up(self) -> None:
-        """Move cursor up in normal mode - scroll chat log up."""
-        if not self._insert_mode:
-            self.query_one("#chat-log", VerticalScroll).scroll_up()
-
-    def action_cursor_down(self) -> None:
-        """Move cursor down in normal mode - scroll chat log down."""
-        if not self._insert_mode:
-            self.query_one("#chat-log", VerticalScroll).scroll_down()
+    def _cycle_focus(self, direction: int) -> None:
+        """Cycle focus between focusable widgets in normal mode."""
+        current_id = self.focused.id if self.focused else None
+        try:
+            idx = _FOCUSABLE_IDS.index(current_id)
+        except ValueError:
+            idx = 0
+        next_idx = (idx + direction) % len(_FOCUSABLE_IDS)
+        self.query_one(f"#{_FOCUSABLE_IDS[next_idx]}").focus()
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream if active, otherwise enter normal mode."""
@@ -794,7 +803,10 @@ class ChatScreen(Screen[None]):
             self._completing = False
 
     def key_up(self) -> None:
-        """Up arrow: recall previous input when chat-input is focused."""
+        """Up arrow: cycle focus in normal mode, recall input history in insert mode."""
+        if not self._insert_mode:
+            self._cycle_focus(-1)
+            return
         inp = self.query_one("#chat-input", Input)
         if not inp.has_focus or not self._input_history:
             return
@@ -808,7 +820,10 @@ class ChatScreen(Screen[None]):
         inp.action_end()
 
     def key_down(self) -> None:
-        """Down arrow: recall next input or clear when chat-input is focused."""
+        """Down arrow: cycle focus in normal mode, recall input history in insert mode."""
+        if not self._insert_mode:
+            self._cycle_focus(1)
+            return
         inp = self.query_one("#chat-input", Input)
         if not inp.has_focus or self._history_index == -1:
             return
@@ -834,18 +849,14 @@ class ChatScreen(Screen[None]):
         self.query_one("#model-bar", ModelBar).refresh_models()
 
     def key_j(self) -> None:
-        """Vim: scroll down."""
-        focused = self.focused
-        if focused and isinstance(focused, Input):
-            return
-        self.query_one("#chat-log", VerticalScroll).scroll_down()
+        """Vim j: cycle focus to next widget in normal mode."""
+        if not self._insert_mode:
+            self._cycle_focus(1)
 
     def key_k(self) -> None:
-        """Vim: scroll up."""
-        focused = self.focused
-        if focused and isinstance(focused, Input):
-            return
-        self.query_one("#chat-log", VerticalScroll).scroll_up()
+        """Vim k: cycle focus to previous widget in normal mode."""
+        if not self._insert_mode:
+            self._cycle_focus(-1)
 
     def key_g(self) -> None:
         """Vim: scroll to top."""
