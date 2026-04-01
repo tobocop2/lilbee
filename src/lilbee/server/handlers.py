@@ -271,15 +271,6 @@ def _run_llm_stream(
         queue.put_nowait(None)
 
 
-async def _drain_token_queue(queue: asyncio.Queue[str | None]) -> AsyncGenerator[str, None]:
-    """Yield SSE strings from the token queue until sentinel."""
-    while True:
-        event = await queue.get()
-        if event is None:
-            break
-        yield event
-
-
 async def _stream_rag_response(
     question: str,
     history: list[ChatMessage] | None = None,
@@ -307,13 +298,9 @@ async def _stream_rag_response(
     executor_fut = loop.run_in_executor(
         None, _run_llm_stream, messages, opts, queue, cancel, error_holder
     )
-    try:
-        async for event in _drain_token_queue(queue):
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        log.info("Stream cancelled by client")
-        cancel.set()
-        return
+    task = asyncio.ensure_future(executor_fut)
+    async for event in _stream_with_cancellation(queue, task, cancel, "RAG stream"):
+        yield event
 
     if error_holder:
         log.warning("Stream error: %s", error_holder[0])
@@ -373,13 +360,8 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
     task = asyncio.create_task(
         sync(quiet=True, on_progress=callback, force_vision=force_vision, cancel=cancel)
     )
-    stream = _stream_with_cancellation(queue, task, cancel, "Sync stream")
-    try:
-        async for event in stream:
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        await stream.aclose()
-        return
+    async for event in _stream_with_cancellation(queue, task, cancel, "Sync stream"):
+        yield event
     if not cancel.is_set() and task.done() and not task.cancelled():
         yield sse_done(task.result().model_dump())
 
@@ -740,13 +722,8 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
-    stream = _stream_with_cancellation(queue, task, cancel, "Model pull stream")
-    try:
-        async for event in stream:
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        await stream.aclose()
-        return
+    async for event in _stream_with_cancellation(queue, task, cancel, "Model pull stream"):
+        yield event
 
 
 async def models_delete(model: str, *, source: str = "litellm") -> ModelsDeleteResponse:
@@ -780,14 +757,8 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
         )
 
     task = asyncio.create_task(_run_crawl())
-    stream = _stream_with_cancellation(queue, task, cancel, "Crawl stream")
-    try:
-        async for event in stream:
-            yield event
-    except (asyncio.CancelledError, GeneratorExit):
-        await stream.aclose()
-        return
-
+    async for event in _stream_with_cancellation(queue, task, cancel, "Crawl stream"):
+        yield event
     if not cancel.is_set() and task.done() and not task.cancelled():
         exc = task.exception()
         if exc is not None:
