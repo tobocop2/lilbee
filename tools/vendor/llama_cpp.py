@@ -25,16 +25,58 @@ import argparse
 import base64
 import hashlib
 import platform
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+from collections.abc import Callable
+from enum import StrEnum
 from pathlib import Path
 
 PREBUILT_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
 DEFAULT_VERSION = "0.3.18"
+
+BYTES_PER_MB = 1024 * 1024
+
+# PEP 427: wheel filenames are {name}-{ver}-{python}-{abi}-{platform}.whl
+# rsplit("-", 3) splits from the right into exactly 4 parts, so [0] is
+# always "{name}-{ver}" regardless of hyphens in the project name/version.
+PEP_427_TAG_FIELD_COUNT = 3
+
+
+class System(StrEnum):
+    """Supported operating systems for prebuilt wheels."""
+
+    LINUX = "Linux"
+    MACOS = "Darwin"
+    WINDOWS = "Windows"
+
+
+def _linux_tags(machine: str) -> tuple[str, str]:
+    """Return (download_tag, wheel_tag) for Linux."""
+    download = f"manylinux2014_{machine}"
+    wheel = f"manylinux_2_17_{machine}.manylinux2014_{machine}"
+    return download, wheel
+
+
+def _macos_tags(machine: str) -> tuple[str, str]:
+    """Return (download_tag, wheel_tag) for macOS."""
+    tag = "macosx_11_0_arm64" if machine == "arm64" else "macosx_10_15_x86_64"
+    return tag, tag
+
+
+def _windows_tags(machine: str) -> tuple[str, str]:
+    """Return (download_tag, wheel_tag) for Windows."""
+    tag = "win_amd64" if machine in ("amd64", "x86_64") else "win32"
+    return tag, tag
+
+
+_TAG_DISPATCH: dict[System, Callable[[str], tuple[str, str]]] = {
+    System.LINUX: _linux_tags,
+    System.MACOS: _macos_tags,
+    System.WINDOWS: _windows_tags,
+}
 
 
 def _detect_tags(system: str, machine: str) -> tuple[str, str]:
@@ -46,20 +88,11 @@ def _detect_tags(system: str, machine: str) -> tuple[str, str]:
     On Linux these differ (manylinux2014 vs manylinux_2_17 compat tag);
     on macOS and Windows they are identical.
     """
-    machine = machine.lower()
-
-    if system == "Linux":
-        download = f"manylinux2014_{machine}"
-        wheel = f"manylinux_2_17_{machine}.manylinux2014_{machine}"
-        return download, wheel
-    elif system == "Darwin":
-        tag = "macosx_11_0_arm64" if machine == "arm64" else "macosx_10_15_x86_64"
-        return tag, tag
-    elif system == "Windows":
-        tag = "win_amd64" if machine in ("amd64", "x86_64") else "win32"
-        return tag, tag
-    else:
-        raise RuntimeError(f"Unsupported platform: {system} {machine}")
+    try:
+        key = System(system)
+    except ValueError:
+        raise RuntimeError(f"Unsupported platform: {system} {machine}") from None
+    return _TAG_DISPATCH[key](machine.lower())
 
 
 def detect_platform_tag() -> str:
@@ -111,6 +144,70 @@ def _sha256_urlsafe_b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _vendor_llama_cpp(llama_dir: Path, lilbee_dir: Path) -> None:
+    """Copy llama_cpp/ into the wheel root and remove __pycache__ dirs."""
+    src = llama_dir / "llama_cpp"
+    dst = lilbee_dir / "llama_cpp"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+    for pycache in dst.rglob("__pycache__"):
+        shutil.rmtree(pycache)
+
+    print(f"Vendored llama_cpp ({_dir_size_mb(dst):.1f} MB)")
+
+
+def _strip_llama_dependency(dist_info: Path) -> None:
+    """Remove llama-cpp-python from Requires-Dist in METADATA."""
+    metadata_path = dist_info / "METADATA"
+    lines = metadata_path.read_text().splitlines()
+    lines = [
+        line
+        for line in lines
+        if not (line.startswith("Requires-Dist:") and "llama-cpp-python" in line.lower())
+    ]
+    metadata_path.write_text("\n".join(lines) + "\n")
+
+
+def _retag_wheel_file(dist_info: Path, py: str, wheel_platform: str) -> None:
+    """Update the WHEEL tag from py3-none-any to a platform-specific tag."""
+    wheel_path = dist_info / "WHEEL"
+    text = wheel_path.read_text()
+    text = text.replace("Tag: py3-none-any", f"Tag: {py}-{py}-{wheel_platform}")
+    wheel_path.write_text(text)
+
+
+def _regenerate_record(lilbee_dir: Path, dist_info: Path) -> None:
+    """Rebuild the RECORD file with correct sha256 hashes for all entries."""
+    record_path = dist_info / "RECORD"
+    record_rel = record_path.relative_to(lilbee_dir).as_posix()
+    records: list[str] = []
+
+    for fpath in sorted(lilbee_dir.rglob("*")):
+        if fpath.is_dir():
+            continue
+        rel = fpath.relative_to(lilbee_dir).as_posix()
+        if rel == record_rel:
+            records.append(f"{rel},,")
+            continue
+        data = fpath.read_bytes()
+        h = _sha256_urlsafe_b64(data)
+        records.append(f"{rel},sha256={h},{len(data)}")
+
+    record_path.write_text("\n".join(records) + "\n")
+
+
+def _write_wheel_zip(lilbee_dir: Path, output: Path) -> None:
+    """Pack the extracted wheel directory into a new zip."""
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fpath in sorted(lilbee_dir.rglob("*")):
+            if fpath.is_dir():
+                continue
+            arcname = fpath.relative_to(lilbee_dir).as_posix()
+            zf.write(fpath, arcname)
+
+
 def repack_wheel(
     lilbee_wheel: Path,
     llama_wheel: Path,
@@ -123,7 +220,6 @@ def repack_wheel(
         shutil.rmtree(work_dir)
     work_dir.mkdir()
 
-    # Extract both wheels
     lilbee_dir = work_dir / "lilbee"
     llama_dir = work_dir / "llama"
     with zipfile.ZipFile(lilbee_wheel) as zf:
@@ -131,76 +227,22 @@ def repack_wheel(
     with zipfile.ZipFile(llama_wheel) as zf:
         zf.extractall(llama_dir)
 
-    # Copy llama_cpp/ to wheel root so it installs as a top-level package
-    src_llama = llama_dir / "llama_cpp"
-    dst_vendor = lilbee_dir / "llama_cpp"
-    if dst_vendor.exists():
-        shutil.rmtree(dst_vendor)
-    shutil.copytree(src_llama, dst_vendor)
-
-    # Remove __pycache__ dirs
-    for pycache in dst_vendor.rglob("__pycache__"):
-        shutil.rmtree(pycache)
-
-    print(f"Vendored llama_cpp ({_dir_size_mb(dst_vendor):.1f} MB)")
+    _vendor_llama_cpp(llama_dir, lilbee_dir)
 
     dist_info = _find_dist_info(lilbee_dir)
+    _strip_llama_dependency(dist_info)
+    _retag_wheel_file(dist_info, py, wheel_platform)
+    _regenerate_record(lilbee_dir, dist_info)
 
-    # Patch METADATA: remove llama-cpp-python Requires-Dist
-    metadata_path = dist_info / "METADATA"
-    metadata_lines = metadata_path.read_text().splitlines()
-    metadata_lines = [
-        line
-        for line in metadata_lines
-        if not (line.startswith("Requires-Dist:") and "llama-cpp-python" in line.lower())
-    ]
-    metadata_path.write_text("\n".join(metadata_lines) + "\n")
-
-    # Patch WHEEL: update Tag from py3-none-any to platform-specific
-    wheel_path = dist_info / "WHEEL"
-    wheel_text = wheel_path.read_text()
-    wheel_text = re.sub(r"Tag: py3-none-any", f"Tag: {py}-{py}-{wheel_platform}", wheel_text)
-    wheel_path.write_text(wheel_text)
-
-    # Regenerate RECORD with correct hashes
-    record_path = dist_info / "RECORD"
-    records = []
-    for fpath in sorted(lilbee_dir.rglob("*")):
-        if fpath.is_dir():
-            continue
-        rel = fpath.relative_to(lilbee_dir).as_posix()
-        if rel == record_path.relative_to(lilbee_dir).as_posix():
-            records.append(f"{rel},,")
-            continue
-        data = fpath.read_bytes()
-        h = _sha256_urlsafe_b64(data)
-        size = len(data)
-        records.append(f"{rel},sha256={h},{size}")
-    record_path.write_text("\n".join(records) + "\n")
-
-    # Determine output filename
-    # Original: lilbee-0.6.0-py3-none-any.whl
-    # New:      lilbee-0.6.0-cp312-cp312-macosx_11_0_arm64.whl
-    # PEP 427: wheel filenames are {name}-{ver}-{python}-{abi}-{platform}.whl
-    # rsplit("-", 3) splits from the right into exactly 4 parts, so [0] is
-    # always "{name}-{ver}" regardless of hyphens in the project name/version.
-    name_version = lilbee_wheel.stem.rsplit("-", 3)[0]
+    name_version = lilbee_wheel.stem.rsplit("-", PEP_427_TAG_FIELD_COUNT)[0]
     output_name = f"{name_version}-{py}-{py}-{wheel_platform}.whl"
     output = lilbee_wheel.parent / output_name
 
-    # Remove old wheel
     lilbee_wheel.unlink()
-
-    # Write new wheel
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fpath in sorted(lilbee_dir.rglob("*")):
-            if fpath.is_dir():
-                continue
-            arcname = fpath.relative_to(lilbee_dir).as_posix()
-            zf.write(fpath, arcname)
+    _write_wheel_zip(lilbee_dir, output)
 
     shutil.rmtree(work_dir)
-    print(f"Wrote {output.name} ({output.stat().st_size / 1024 / 1024:.1f} MB)")
+    print(f"Wrote {output.name} ({output.stat().st_size / BYTES_PER_MB:.1f} MB)")
     return output
 
 
@@ -214,7 +256,7 @@ def _find_dist_info(wheel_dir: Path) -> Path:
 
 def _dir_size_mb(path: Path) -> float:
     """Return total size of a directory in MB."""
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1024 / 1024
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / BYTES_PER_MB
 
 
 def main() -> None:

@@ -105,37 +105,37 @@ class TestDetectPlatformTags:
     """Verify _detect_tags for each OS."""
 
     def test_linux_x86_64(self) -> None:
-        dl, whl = vendor._detect_tags("Linux", "x86_64")
+        dl, whl = vendor._detect_tags(vendor.System.LINUX, "x86_64")
         assert dl == "manylinux2014_x86_64"
         assert whl == "manylinux_2_17_x86_64.manylinux2014_x86_64"
 
     def test_linux_aarch64(self) -> None:
-        dl, whl = vendor._detect_tags("Linux", "aarch64")
+        dl, whl = vendor._detect_tags(vendor.System.LINUX, "aarch64")
         assert dl == "manylinux2014_aarch64"
         assert whl == "manylinux_2_17_aarch64.manylinux2014_aarch64"
 
     def test_macos_arm64(self) -> None:
-        dl, whl = vendor._detect_tags("Darwin", "arm64")
+        dl, whl = vendor._detect_tags(vendor.System.MACOS, "arm64")
         assert dl == "macosx_11_0_arm64"
         assert whl == "macosx_11_0_arm64"
 
     def test_macos_x86(self) -> None:
-        dl, whl = vendor._detect_tags("Darwin", "x86_64")
+        dl, whl = vendor._detect_tags(vendor.System.MACOS, "x86_64")
         assert dl == "macosx_10_15_x86_64"
         assert whl == "macosx_10_15_x86_64"
 
     def test_windows_amd64(self) -> None:
-        dl, whl = vendor._detect_tags("Windows", "amd64")
+        dl, whl = vendor._detect_tags(vendor.System.WINDOWS, "amd64")
         assert dl == "win_amd64"
         assert whl == "win_amd64"
 
     def test_windows_x86_64(self) -> None:
-        dl, whl = vendor._detect_tags("Windows", "x86_64")
+        dl, whl = vendor._detect_tags(vendor.System.WINDOWS, "x86_64")
         assert dl == "win_amd64"
         assert whl == "win_amd64"
 
     def test_windows_x86(self) -> None:
-        dl, whl = vendor._detect_tags("Windows", "i386")
+        dl, whl = vendor._detect_tags(vendor.System.WINDOWS, "i386")
         assert dl == "win32"
         assert whl == "win32"
 
@@ -155,9 +155,7 @@ class TestDetectPlatformTags:
             patch.object(vendor.platform, "system", return_value="Linux"),
             patch.object(vendor.platform, "machine", return_value="x86_64"),
         ):
-            assert vendor.detect_wheel_platform() == (
-                "manylinux_2_17_x86_64.manylinux2014_x86_64"
-            )
+            assert vendor.detect_wheel_platform() == ("manylinux_2_17_x86_64.manylinux2014_x86_64")
 
 
 class TestDownloadWheel:
