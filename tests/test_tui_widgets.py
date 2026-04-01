@@ -1597,6 +1597,37 @@ class TestNavBar:
             await pilot.pause()
             assert bar.active_task_text == ""
 
+    async def test_dock_top_in_css(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        assert "dock: top" in NavBar.DEFAULT_CSS
+
+    async def test_tasks_highlighted_when_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Chat"
+            bar.active_task_text = "Downloading..."
+            await pilot.pause()
+            content = app.query_one("#nav-bar-content", Static)
+            assert "[bold yellow]Tasks[/]" in content.content
+
+    async def test_tasks_not_highlighted_without_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Chat"
+            bar.active_task_text = ""
+            await pilot.pause()
+            content = app.query_one("#nav-bar-content", Static)
+            assert "[bold yellow]Tasks[/]" not in content.content
+
     async def test_view_index_0_is_chat(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import _VIEWS
 

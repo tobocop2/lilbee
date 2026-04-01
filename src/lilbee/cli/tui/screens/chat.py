@@ -80,6 +80,7 @@ class ChatScreen(Screen[None]):
         return self.app._task_bar  # type: ignore[attr-defined, no-any-return]
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
@@ -91,7 +92,6 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()

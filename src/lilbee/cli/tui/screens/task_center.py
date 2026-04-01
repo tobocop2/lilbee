@@ -26,12 +26,12 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("Background Tasks", id="task-center-title")
         yield DataTable(id="task-table")
         yield Static("", id="task-detail")
         yield Footer()
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)

@@ -146,12 +146,12 @@ class SettingsScreen(Screen[None]):
         self._editing_key: str | None = None
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield Header()
         yield DataTable(id="settings-table")
         yield Horizontal(id="edit-bar")
         yield Static("", id="setting-detail")
         yield Footer()
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         table = self.query_one("#settings-table", DataTable)

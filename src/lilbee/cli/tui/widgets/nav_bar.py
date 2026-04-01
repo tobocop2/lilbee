@@ -17,7 +17,7 @@ class NavBar(Widget):
 
     DEFAULT_CSS = """
     NavBar {
-        dock: bottom;
+        dock: top;
         height: 1;
         background: $surface;
     }
@@ -52,6 +52,8 @@ class NavBar(Widget):
         for name in _VIEWS:
             if name == self.active_view:
                 parts.append(f"[bold reverse] {name} [/]")
+            elif name == "Tasks" and self.active_task_text:
+                parts.append(f" [bold yellow]{name}[/] ")
             else:
                 parts.append(f" {name} ")
         if self.active_task_text:
