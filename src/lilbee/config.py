@@ -214,6 +214,10 @@ class Config(BaseSettings):
     # plain Static text (faster rendering, no formatting).
     markdown_rendering: bool = True
 
+    # Per-model generation defaults (not serialized, not a config field).
+    # Set via apply_model_defaults() when switching models.
+    _model_defaults: Any = None
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.
@@ -321,13 +325,26 @@ class Config(BaseSettings):
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
+    def apply_model_defaults(self, defaults: Any) -> None:
+        """Store per-model generation defaults for 3-layer merge."""
+        object.__setattr__(self, "_model_defaults", defaults)
+
+    def clear_model_defaults(self) -> None:
+        """Reset per-model defaults to None."""
+        object.__setattr__(self, "_model_defaults", None)
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
-        """Build LLM generation options from config fields and overrides.
+        """Build LLM generation options with 3-layer merge.
+
+        Layer 1 (base): model defaults from ``_model_defaults``
+        Layer 2 (override): user config fields — only if explicitly set (not None)
+        Layer 3 (override): per-call ``overrides`` parameter
 
         Remaps ``top_k_sampling`` to the provider's ``top_k`` key.
         Filters out ``None`` values so the provider uses its model defaults.
         """
-        mapping: dict[str, Any] = {
+        result = _model_defaults_dict(self._model_defaults)
+        user_fields: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k_sampling,
@@ -336,8 +353,30 @@ class Config(BaseSettings):
             "seed": self.seed,
             "max_tokens": self.max_tokens,
         }
-        mapping.update(overrides)
-        return {k: v for k, v in mapping.items() if v is not None}
+        for k, v in user_fields.items():
+            if v is not None:
+                result[k] = v
+        for k, v in overrides.items():
+            if v is not None:
+                result[k] = v
+        return result
+
+
+def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
+    """Convert a ModelDefaults instance to a dict with provider key names.
+
+    Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
+    Filters out None values.
+    """
+    if defaults is None:
+        return {}
+    from dataclasses import fields as dc_fields
+
+    return {
+        f.name: getattr(defaults, f.name)
+        for f in dc_fields(defaults)
+        if getattr(defaults, f.name) is not None
+    }
 
 
 class _PlainEnvSource:
