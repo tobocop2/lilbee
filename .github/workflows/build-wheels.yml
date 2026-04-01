@@ -31,60 +31,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-13, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
         include:
-          # Linux x86_64
           - os: ubuntu-latest
-            python-version: "3.11"
             llama-plat: manylinux2014_x86_64
             wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - os: ubuntu-latest
-            python-version: "3.12"
-            llama-plat: manylinux2014_x86_64
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - os: ubuntu-latest
-            python-version: "3.13"
-            llama-plat: manylinux2014_x86_64
-            wheel-plat: manylinux_2_17_x86_64.manylinux2014_x86_64
-
-          # macOS x86_64 (Intel)
           - os: macos-13
-            python-version: "3.11"
             llama-plat: macosx_10_15_x86_64
             wheel-plat: macosx_10_15_x86_64
-          - os: macos-13
-            python-version: "3.12"
-            llama-plat: macosx_10_15_x86_64
-            wheel-plat: macosx_10_15_x86_64
-          - os: macos-13
-            python-version: "3.13"
-            llama-plat: macosx_10_15_x86_64
-            wheel-plat: macosx_10_15_x86_64
-
-          # macOS arm64 (Apple Silicon)
           - os: macos-latest
-            python-version: "3.11"
             llama-plat: macosx_11_0_arm64
             wheel-plat: macosx_11_0_arm64
-          - os: macos-latest
-            python-version: "3.12"
-            llama-plat: macosx_11_0_arm64
-            wheel-plat: macosx_11_0_arm64
-          - os: macos-latest
-            python-version: "3.13"
-            llama-plat: macosx_11_0_arm64
-            wheel-plat: macosx_11_0_arm64
-
-          # Windows x86_64
           - os: windows-latest
-            python-version: "3.11"
-            llama-plat: win_amd64
-            wheel-plat: win_amd64
-          - os: windows-latest
-            python-version: "3.12"
-            llama-plat: win_amd64
-            wheel-plat: win_amd64
-          - os: windows-latest
-            python-version: "3.13"
             llama-plat: win_amd64
             wheel-plat: win_amd64
 
