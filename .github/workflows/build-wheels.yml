@@ -64,6 +64,7 @@ jobs:
         run: python -m build --wheel
 
       - name: Vendor llama-cpp-python and retag wheel
+        shell: bash
         run: >
           python -m tools.vendor.llama_cpp dist/*.whl
           --version ${{ env.LLAMA_CPP_VERSION }}

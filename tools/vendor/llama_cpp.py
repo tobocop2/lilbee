@@ -282,5 +282,5 @@ def main() -> None:
         repack_wheel(args.wheel, llama_whl, wheel_plat)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

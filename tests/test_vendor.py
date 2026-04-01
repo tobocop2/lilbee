@@ -291,6 +291,39 @@ class TestRepackWheel:
             names = zf.namelist()
         assert not any("__pycache__" in n for n in names)
 
+    def test_overwrites_existing_vendor_dir(self, tmp_path: Path) -> None:
+        """_vendor_llama_cpp replaces an existing llama_cpp/ in the target."""
+        llama_dir = tmp_path / "llama"
+        llama_pkg = llama_dir / "llama_cpp"
+        llama_pkg.mkdir(parents=True)
+        (llama_pkg / "__init__.py").write_bytes(b"# new\n")
+
+        lilbee_dir = tmp_path / "lilbee"
+        lilbee_dir.mkdir()
+        stale = lilbee_dir / "llama_cpp"
+        stale.mkdir()
+        (stale / "stale.py").write_text("# should be removed")
+
+        vendor._vendor_llama_cpp(llama_dir, lilbee_dir)
+
+        assert (lilbee_dir / "llama_cpp" / "__init__.py").read_bytes() == b"# new\n"
+        assert not (lilbee_dir / "llama_cpp" / "stale.py").exists()
+
+    def test_repack_cleans_stale_workdir(self, tmp_path: Path) -> None:
+        """repack_wheel removes a leftover _repack_work/ directory."""
+        lilbee_whl = _make_lilbee_wheel(tmp_path)
+        llama_whl = _make_llama_wheel(tmp_path / "llama_dl")
+
+        # Pre-create a stale work directory
+        stale_work = lilbee_whl.parent / "_repack_work"
+        stale_work.mkdir()
+        (stale_work / "leftover.txt").write_text("stale")
+
+        out = vendor.repack_wheel(lilbee_whl, llama_whl, "macosx_11_0_arm64")
+
+        assert out.exists()
+        assert not stale_work.exists()
+
 
 class TestHelpers:
     """Verify utility functions."""
