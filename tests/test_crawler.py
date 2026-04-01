@@ -683,9 +683,7 @@ class TestCrawlAndSave:
         """Setting cancel event causes crawl_and_save to return empty list."""
         import threading
 
-        mock_crawl_single.return_value = CrawlResult(
-            url="https://example.com", markdown="# Hello"
-        )
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
         cancel = threading.Event()
         cancel.set()
         paths = await crawl_and_save("https://example.com", cancel=cancel)

@@ -10,7 +10,9 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-_VIEWS = ["Chat", "Models", "Status", "Settings", "Tasks"]
+from lilbee.cli.tui import messages as msg
+
+_VIEWS = msg.NAV_VIEWS
 
 
 class NavBar(Widget):
@@ -57,7 +59,7 @@ class NavBar(Widget):
                 parts.append(f"[bold reverse] {i}:{name} [/]")
             else:
                 parts.append(f" {i}:{name} ")
-        parts.append("  [dim]?[/] Help  [dim]^c[/] Quit")
+        parts.append(msg.NAV_HELP_QUIT)
         content = self.query_one("#nav-bar-content", Static)
         content.update("".join(parts))
 

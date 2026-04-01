@@ -79,16 +79,12 @@ CATALOG_NO_MATCH = "No models match your filters."
 CATALOG_FILTER_PLACEHOLDER = "Filter models... ( Esc to close)"
 CATALOG_LOAD_MORE = "   \u2193 Load more models..."
 CATALOG_INSTALLED_HEADER = "INSTALLED ({provider})"
-CATALOG_HF_CHAT_ONLY = (
-    "Featured models only \u2014 HuggingFace browsing available for chat models"
-)
+CATALOG_HF_CHAT_ONLY = "Featured models only \u2014 HuggingFace browsing available for chat models"
 
 # -- Chat screen ---------------------------------------------------------------
 
 CHAT_INPUT_PLACEHOLDER = "Ask a question or type / for commands"
-CHAT_ONLY_BANNER = (
-    "Chat only \u2014 no document search. Press F5 to set up embedding model."
-)
+CHAT_ONLY_BANNER = "Chat only \u2014 no document search. Press F5 to set up embedding model."
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
 CHAT_LOGIN_FAILED = "Login failed: {error}"
