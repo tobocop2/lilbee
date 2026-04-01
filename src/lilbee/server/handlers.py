@@ -118,6 +118,16 @@ class ModelsResponse(BaseModel):
     vision: ModelCatalogSection
 
 
+@dataclass
+class AddFilesResult:
+    """Result of starting an add-files operation."""
+
+    paths: list[str]
+    queue: asyncio.Queue[str | None]
+    task: asyncio.Task[None]
+    cancel: threading.Event
+
+
 def sse_event(event: str, data: Any) -> str:
     """Format a single Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -417,16 +427,6 @@ async def _run_add(
     payload = f"event: summary\ndata: {json.dumps(summary)}\n\n"
     queue.put_nowait(payload)
     queue.put_nowait(None)  # sentinel
-
-
-@dataclass
-class AddFilesResult:
-    """Result of starting an add-files operation."""
-
-    paths: list[str]
-    queue: asyncio.Queue[str | None]
-    task: asyncio.Task[None]
-    cancel: threading.Event
 
 
 async def add_files(data: dict[str, Any]) -> AddFilesResult:
