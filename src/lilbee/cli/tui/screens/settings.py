@@ -13,6 +13,7 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from lilbee import settings
 from lilbee.cli.settings_map import SETTINGS_MAP
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 
 _MAX_VALUE_LEN = 60
@@ -118,11 +119,11 @@ class SettingsScreen(Screen[None]):
         key = str(key_cell[0])
 
         if key in _READONLY_FIELDS or key == _HF_TOKEN_KEY:
-            self.notify("read-only", severity="warning")
+            self.notify(msg.SETTINGS_READ_ONLY, severity="warning")
             return
 
         if key not in SETTINGS_MAP:
-            self.notify("read-only", severity="warning")
+            self.notify(msg.SETTINGS_READ_ONLY, severity="warning")
             return
 
         defn = SETTINGS_MAP[key]
@@ -165,9 +166,9 @@ class SettingsScreen(Screen[None]):
             else:
                 display = persisted
             table.update_cell(key, "value", display)
-            self.notify(f"{key} = {parsed}")
+            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
-            self.notify(f"Invalid value: {exc}", severity="error")
+            self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
 
         self._close_editor()
 

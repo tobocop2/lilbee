@@ -1092,7 +1092,6 @@ class TestGatedRepoShowsLoginMessage:
             download_model(entry)
 
 
-
 class TestCleanDisplayName:
     def test_strips_org_and_gguf(self) -> None:
         assert clean_display_name("Qwen/Qwen2.5-7B-Instruct-GGUF") == "Qwen2.5 7B"

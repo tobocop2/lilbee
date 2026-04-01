@@ -14,12 +14,20 @@ positions trust the reranker more.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from lilbee.config import Config
 from lilbee.store import SearchChunk
 
 log = logging.getLogger(__name__)
+
+
+class ScoredChunk(NamedTuple):
+    """A search chunk paired with its blended score."""
+
+    score: float
+    chunk: SearchChunk
+
 
 _TOP_POSITION_CUTOFF = 3
 _MID_POSITION_CUTOFF = 10
@@ -51,11 +59,9 @@ def _normalize_scores(scores: list[float]) -> list[float]:
     return [0.5] * len(scores)
 
 
-def _blend_scores(
-    to_rerank: list[SearchChunk], norm_scores: list[float]
-) -> list[tuple[float, SearchChunk]]:
+def _blend_scores(to_rerank: list[SearchChunk], norm_scores: list[float]) -> list[ScoredChunk]:
     """Blend fusion scores with reranker scores using position-aware weights."""
-    blended: list[tuple[float, SearchChunk]] = []
+    blended: list[ScoredChunk] = []
     for i, (chunk, rerank_score) in enumerate(zip(to_rerank, norm_scores, strict=True)):
         fusion_score = chunk.relevance_score or (1.0 - (chunk.distance or 0.5))
         fusion_norm = max(0.0, min(1.0, fusion_score))
@@ -68,23 +74,23 @@ def _blend_scores(
             fw, rw = _BLEND_SCHEDULE["bottom"]
 
         final_score = fw * fusion_norm + rw * rerank_score
-        blended.append((final_score, chunk))
+        blended.append(ScoredChunk(final_score, chunk))
     return blended
 
 
 def _pin_original_top(
-    blended: list[tuple[float, SearchChunk]],
+    blended: list[ScoredChunk],
     to_rerank: list[SearchChunk],
     skip_threshold: float,
-) -> list[tuple[float, SearchChunk]]:
+) -> list[ScoredChunk]:
     """Pin the original top result if its relevance exceeds the skip threshold."""
     top_score = to_rerank[0].relevance_score or 0 if to_rerank else 0
-    blended_sorted = sorted(blended, key=lambda x: x[0], reverse=True)
+    blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
     if top_score >= skip_threshold:
         original_top = to_rerank[0]
-        if blended_sorted[0][1] is not original_top:
-            blended_sorted = [(999.0, original_top)] + [
-                (s, c) for s, c in blended_sorted if c is not original_top
+        if blended_sorted[0].chunk is not original_top:
+            blended_sorted = [ScoredChunk(999.0, original_top)] + [
+                ScoredChunk(s, c) for s, c in blended_sorted if c is not original_top
             ]
     return blended_sorted
 

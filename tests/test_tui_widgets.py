@@ -1086,12 +1086,10 @@ class TestGroupHfByFamily:
 
 class TestHfBrowseChatOnly:
     def test_constant_defined(self) -> None:
-        from lilbee.cli.tui.screens.catalog import (
-            _HF_BROWSE_CHAT_ONLY,
-            _HF_BROWSE_TASKS,
-        )
+        from lilbee.cli.tui import messages as tui_msg
+        from lilbee.cli.tui.screens.catalog import _HF_BROWSE_TASKS
 
-        assert "Featured models only" in _HF_BROWSE_CHAT_ONLY
+        assert "Featured models only" in tui_msg.CATALOG_HF_CHAT_ONLY
         assert "Embedding" not in _HF_BROWSE_TASKS
         assert "Vision" not in _HF_BROWSE_TASKS
 

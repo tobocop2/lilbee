@@ -11,7 +11,7 @@ import threading
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
@@ -44,6 +44,17 @@ from lilbee.security import validate_path_within
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
+
+
+class FileToProcess(NamedTuple):
+    """A file queued for ingestion with its metadata."""
+
+    name: str
+    path: Path
+    content_type: str
+    file_hash: str
+    needs_cleanup: bool
+
 
 # Minimum total chars for extracted text to be considered meaningful.
 # 50 chars ≈ 12 words — if a PDF yields less, it's almost certainly a scanned
@@ -572,8 +583,7 @@ async def sync(
             _store.delete_source(name)
             removed.append(name)
 
-    # Process files on disk — (name, path, content_type, hash, needs_cleanup)
-    files_to_process: list[tuple[str, Path, str, str, bool]] = []
+    files_to_process: list[FileToProcess] = []
 
     for name, path in sorted(disk_files.items()):
         if cancel and cancel.is_set():
@@ -592,10 +602,14 @@ async def sync(
         if old_hash is not None:
             # Modified — defer old chunk deletion to ingest_batch so
             # delete + re-ingest are atomic per file (no data loss on cancel).
-            files_to_process.append((name, path, content_type, current_hash, True))
+            files_to_process.append(
+                FileToProcess(name, path, content_type, current_hash, needs_cleanup=True)
+            )
             updated.append(name)
         else:
-            files_to_process.append((name, path, content_type, current_hash, False))
+            files_to_process.append(
+                FileToProcess(name, path, content_type, current_hash, needs_cleanup=False)
+            )
             added.append(name)
 
     # Ingest files (with optional progress bar)
@@ -640,7 +654,7 @@ _MAX_CONCURRENT = os.cpu_count() or 4
 
 
 async def ingest_batch(
-    files_to_process: list[tuple[str, Path, str, str, bool]],
+    files_to_process: list[FileToProcess],
     added: list[str],
     updated: list[str],
     failed: list[str],
@@ -652,7 +666,6 @@ async def ingest_batch(
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar.
 
-    Each tuple is (name, path, content_type, file_hash, needs_cleanup).
     When *needs_cleanup* is True, old chunks are deleted immediately before
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.

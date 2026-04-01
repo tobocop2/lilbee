@@ -73,18 +73,23 @@ class TestNowIso:
 
 class TestMakeProgressUpdater:
     def test_updates_task_fields_on_crawl_page(self):
+        from lilbee.progress import CrawlPageEvent
+
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
         updater = make_progress_updater(task)
         updater(
-            EventType.CRAWL_PAGE, {"current": 5, "total": 10, "url": "https://example.com/page5"}
+            EventType.CRAWL_PAGE,
+            CrawlPageEvent(current=5, total=10, url="https://example.com/page5"),
         )
         assert task.pages_crawled == 5
         assert task.pages_total == 10
 
     def test_ignores_non_crawl_page_events(self):
+        from lilbee.progress import CrawlStartEvent
+
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
         updater = make_progress_updater(task)
-        updater(EventType.CRAWL_START, {"url": "https://example.com", "depth": 1})
+        updater(EventType.CRAWL_START, CrawlStartEvent(url="https://example.com", depth=1))
         assert task.pages_crawled == 0
         assert task.pages_total is None
 

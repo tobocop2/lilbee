@@ -13,6 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, ProgressBar, Static
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -66,13 +67,13 @@ class SetupWizard(Screen[str | None]):
         self._chat_installed, self._embed_installed = _scan_installed_models(cfg.models_dir)
 
     def compose(self) -> ComposeResult:
-        yield Static("Setup Wizard", id="setup-title")
+        yield Static(msg.SETUP_TITLE, id="setup-title")
         yield Label("", id="setup-step-label")
         yield ListView(id="setup-list")
         yield Label("", id="setup-status")
         yield ProgressBar(total=100, show_eta=False, id="setup-progress")
-        yield Button("Skip -- chat only (no document search)", id="setup-skip")
-        yield Button("Confirm", id="setup-confirm", disabled=True)
+        yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip")
+        yield Button(msg.SETUP_CONFIRM_BUTTON, id="setup-confirm", disabled=True)
 
     def on_mount(self) -> None:
         self._show_step()
@@ -85,21 +86,21 @@ class SetupWizard(Screen[str | None]):
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=0)
         self.query_one("#setup-status", Label).update("")
         if self._step == _STEP_CHAT:
-            label.update("Step 1/2: Choose a chat model")
+            label.update(msg.SETUP_STEP_CHAT)
             if self._chat_installed:
-                lv.append(ListItem(Label("Installed locally:")))
+                lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
                 for p in self._chat_installed:
                     lv.append(_InstalledRow(p))
-            lv.append(ListItem(Label("Featured models (download):")))
+            lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_CHAT:
                 lv.append(_CatalogRow(m))
         else:
-            label.update("Step 2/2: Choose an embedding model")
+            label.update(msg.SETUP_STEP_EMBED)
             if self._embed_installed:
-                lv.append(ListItem(Label("Installed locally:")))
+                lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
                 for p in self._embed_installed:
                     lv.append(_InstalledRow(p))
-            lv.append(ListItem(Label("Featured models (download):")))
+            lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_EMBEDDING:
                 lv.append(_CatalogRow(m))
 
@@ -122,7 +123,7 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
         """Download via catalog API with TUI-native progress (no Rich)."""
-        self.app.call_from_thread(self._set_status, "Connecting to HuggingFace...")
+        self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
             from lilbee.catalog import download_model
 
@@ -143,7 +144,7 @@ class SetupWizard(Screen[str | None]):
             log.warning("Download failed for %s", model.name, exc_info=True)
             error_msg = str(exc)
             if "401" in error_msg or "PermissionError" in error_msg:
-                error_msg = f"{model.name} requires login (run: lilbee login)"
+                error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.name)
             self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
 
     def _set_status(self, text: str) -> None:
@@ -154,7 +155,7 @@ class SetupWizard(Screen[str | None]):
 
     def _on_download_complete(self, name: str) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=100)
-        self._set_status(f"{name} installed!")
+        self._set_status(msg.SETUP_INSTALLED_STATUS.format(name=name))
         self._on_model_chosen(name)
 
     def _finish(self) -> None:
