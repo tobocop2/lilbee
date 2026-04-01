@@ -587,11 +587,38 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
         dest = Path(path)
 
+    # Register in manifest so the model is visible to the registry
+    _register_model(entry, dest)
+
     # Download mmproj file for vision models
     if entry.task == "vision":
         _download_mmproj(entry)
 
     return dest
+
+
+def _register_model(entry: CatalogModel, file_path: Path) -> None:
+    """Create a registry manifest for a downloaded model."""
+    from datetime import datetime, timezone
+
+    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    ref = ModelRef(name=entry.name, tag="latest")
+    manifest = ModelManifest(
+        name=entry.name,
+        tag="latest",
+        size_bytes=file_path.stat().st_size,
+        task=entry.task,
+        source_repo=entry.hf_repo,
+        source_filename=file_path.name,
+        downloaded_at=datetime.now(timezone.utc).isoformat(),
+    )
+    try:
+        registry.install(ref, file_path, manifest)
+        log.info("Registered %s:%s in manifest", entry.name, "latest")
+    except Exception:
+        log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
 
 
 def _download_mmproj(entry: CatalogModel) -> Path | None:

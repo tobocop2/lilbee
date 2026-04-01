@@ -241,10 +241,17 @@ class CatalogScreen(Screen[None]):
         self._fetch_remote_models()
 
     def _fetch_installed_names(self) -> None:
-        """Populate installed model names from model manager."""
+        """Populate installed source repos/filenames from registry manifests."""
         with contextlib.suppress(Exception):
-            mgr = get_model_manager()
-            self._installed_names = set(mgr.list_installed())
+            from lilbee.registry import ModelRegistry
+
+            registry = ModelRegistry(cfg.models_dir)
+            self._installed_names = set()
+            for m in registry.list_installed():
+                # Store both name:tag and source_repo/source_filename for matching
+                self._installed_names.add(f"{m.name}:{m.tag}")
+                if m.source_repo and m.source_filename:
+                    self._installed_names.add(f"{m.source_repo}/{m.source_filename}")
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -339,7 +346,9 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for fam in self._families:
             for v in fam.variants:
-                installed = self._is_installed(f"{fam.name}:{v.param_count}")
+                installed = self._is_installed(
+                    f"{fam.name}:{v.param_count}", repo=v.hf_repo, filename=v.filename
+                )
                 row = _variant_to_row(v, fam, installed)
                 if _matches_search(row, search):
                     rows.append(row)
@@ -349,7 +358,7 @@ class CatalogScreen(Screen[None]):
         """Build rows from HuggingFace models."""
         rows: list[TableRow] = []
         for m in self._hf_models:
-            installed = self._is_installed(m.name)
+            installed = self._is_installed(m.name, repo=m.hf_repo, filename=m.gguf_filename)
             row = _catalog_to_row(m, installed)
             if _matches_search(row, search):
                 rows.append(row)
@@ -364,8 +373,13 @@ class CatalogScreen(Screen[None]):
                 rows.append(row)
         return rows
 
-    def _is_installed(self, name: str) -> bool:
-        return name in self._installed_names
+    def _is_installed(self, name: str, repo: str = "", filename: str = "") -> bool:
+        """Check if a model is installed by name or source repo/filename."""
+        if name in self._installed_names:
+            return True
+        if repo and filename:
+            return f"{repo}/{filename}" in self._installed_names
+        return False
 
     def _sort_rows(self, rows: list[TableRow]) -> list[TableRow]:
         """Sort rows: featured first, then by current sort column."""
