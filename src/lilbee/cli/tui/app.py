@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding, BindingType
 
 from lilbee.cli.tui import messages as msg
@@ -67,10 +67,8 @@ class LilbeeApp(App[None]):
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
+        self._active_view = "Chat"
         self._theme_index = 0
-
-    def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
@@ -128,9 +126,10 @@ class LilbeeApp(App[None]):
         elif view_name == "Settings":
             self.push_screen(SettingsScreen())
 
-        # Update NavBar
+        # Update NavBar on current screen and persist state for new screens
+        self._active_view = view_name
         try:
-            nav = self.query_one("#global-nav-bar", NavBar)
+            nav = self.screen.query_one("#global-nav-bar", NavBar)
             nav.active_view = view_name
         except Exception:
             log.debug("NavBar update failed", exc_info=True)
@@ -163,16 +162,12 @@ class LilbeeApp(App[None]):
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view (h or left arrow)."""
-        nav = self.query_one("#global-nav-bar", NavBar)
-        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
-        prev_idx = (current_idx - 1) % 4
         view_names = ["Chat", "Models", "Status", "Settings"]
-        self._switch_view(view_names[prev_idx])
+        current_idx = view_names.index(self._active_view)
+        self._switch_view(view_names[(current_idx - 1) % 4])
 
     def action_nav_next(self) -> None:
         """Navigate to next view (l or right arrow)."""
-        nav = self.query_one("#global-nav-bar", NavBar)
-        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
-        next_idx = (current_idx + 1) % 4
         view_names = ["Chat", "Models", "Status", "Settings"]
-        self._switch_view(view_names[next_idx])
+        current_idx = view_names.index(self._active_view)
+        self._switch_view(view_names[(current_idx + 1) % 4])

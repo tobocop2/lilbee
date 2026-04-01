@@ -14,6 +14,7 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 from lilbee import settings
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 _MAX_VALUE_LEN = 60
@@ -67,6 +68,7 @@ class SettingsScreen(Screen[None]):
         yield Horizontal(id="edit-bar")
         yield Static("", id="setting-detail")
         yield Footer()
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         table = self.query_one("#settings-table", DataTable)

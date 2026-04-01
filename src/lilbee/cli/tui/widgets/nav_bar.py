@@ -50,6 +50,8 @@ class NavBar(Widget):
         self._refresh_display()
 
     def on_mount(self) -> None:
+        if hasattr(self.app, "_active_view"):
+            self.active_view = self.app._active_view  # type: ignore[union-attr]
         self._refresh_display()
 
     def _refresh_display(self) -> None:

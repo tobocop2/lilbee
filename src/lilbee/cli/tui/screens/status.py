@@ -10,6 +10,7 @@ from textual.binding import Binding, BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class StatusScreen(Screen[None]):
         yield Static("", id="status-info")
         yield DataTable(id="docs-table")
         yield Footer()
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self._load_status()

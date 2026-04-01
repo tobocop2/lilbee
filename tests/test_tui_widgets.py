@@ -1268,26 +1268,35 @@ class TestNavBar:
 
 
 class TestLilbeeAppGlobalNavBar:
-    async def test_app_composes_global_nav_bar(self) -> None:
+    async def test_screen_composes_global_nav_bar(self) -> None:
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
+            # Pop any setup wizard that may appear
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            nav = app.screen.query_one("#global-nav-bar")
             assert nav is not None
 
-    async def test_app_nav_bar_default_is_chat(self) -> None:
+    async def test_nav_bar_default_is_chat(self) -> None:
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            nav = app.screen.query_one("#global-nav-bar")
             assert nav.active_view == "Chat"

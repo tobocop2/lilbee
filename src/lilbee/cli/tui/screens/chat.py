@@ -48,7 +48,7 @@ class ChatScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "noop", "Tab", show=False, priority=True),
+        Binding("tab", "complete", "Tab", show=False, priority=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
@@ -66,6 +66,7 @@ class ChatScreen(Screen[None]):
         self._history_lock = threading.Lock()
         self._streaming = False
         self._insert_mode: bool = True
+        self._completing = False
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -80,6 +81,7 @@ class ChatScreen(Screen[None]):
             id="chat-input",
             suggester=SlashSuggester(use_cache=False),
         )
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
@@ -87,8 +89,6 @@ class ChatScreen(Screen[None]):
         self.query_one("#chat-only-banner", Static).display = False
         # Store TaskBar on app so other screens can find it
         self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
-        with contextlib.suppress(Exception):
-            self.app._nav_bar = self.app.query_one("#global-nav-bar", NavBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -607,10 +607,6 @@ class ChatScreen(Screen[None]):
         if log_widget.max_scroll_y - log_widget.scroll_y < 5:
             log_widget.scroll_end(animate=False)
 
-    def action_noop(self) -> None:
-        """Do nothing - prevents default Tab behavior."""
-        pass
-
     def action_scroll_up(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_up()
 
@@ -725,7 +721,9 @@ class ChatScreen(Screen[None]):
             selection = overlay.cycle_next()
             if selection:
                 cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
                 inp.value = cmd_prefix + selection
+                self._completing = False
                 inp.action_end()
             return
 
@@ -733,6 +731,7 @@ class ChatScreen(Screen[None]):
         if options:
             overlay.show_completions(options)
             first = overlay.get_current()
+            self._completing = True
             if first and " " in inp.value:
                 cmd_prefix = inp.value.split()[0] + " "
                 inp.value = cmd_prefix + first
@@ -740,9 +739,12 @@ class ChatScreen(Screen[None]):
             elif first:
                 inp.value = first
                 inp.action_end()
+            self._completing = False
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Hide completion overlay when input changes manually."""
+        if self._completing:
+            return
         if event.input.id == "chat-input":
             overlay = self.query_one("#completion-overlay", CompletionOverlay)
             if overlay.is_visible:

@@ -10,6 +10,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from lilbee.cli.tui.task_queue import TaskStatus
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 
 
 class TaskCenter(Screen[None]):
@@ -29,6 +30,7 @@ class TaskCenter(Screen[None]):
         yield DataTable(id="task-table")
         yield Static("", id="task-detail")
         yield Footer()
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)

@@ -36,6 +36,7 @@ from lilbee.catalog import (
     quant_tier,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 
@@ -218,6 +219,7 @@ class CatalogScreen(Screen[None]):
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         yield Footer()
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -643,6 +645,14 @@ class CatalogScreen(Screen[None]):
 
     def action_activate_tab_3(self) -> None:
         self._activate_tab(3)
+
+    def key_left(self) -> None:
+        """Navigate to previous view instead of switching tabs."""
+        self.app.action_nav_prev()
+
+    def key_right(self) -> None:
+        """Navigate to next view instead of switching tabs."""
+        self.app.action_nav_next()
 
 
 def _filter_catalog(

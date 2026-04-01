@@ -662,9 +662,6 @@ class ChatTestApp(App[None]):
     CSS = ""
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        yield NavBar(id="global-nav-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -3366,16 +3363,15 @@ async def test_app_nav_prev_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
-        assert nav.active_view == "Chat"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert nav.active_view == "Settings"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
 
 
 async def test_app_nav_next_cycles_views():
@@ -3388,16 +3384,15 @@ async def test_app_nav_next_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
-        assert nav.active_view == "Chat"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_next()
         await pilot.pause()
-        assert nav.active_view == "Models"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
 
         app.action_nav_next()
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
 
 
 async def test_app_number_keys_switch_views():
@@ -3410,20 +3405,19 @@ async def test_app_number_keys_switch_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
 
         app.action_switch_chat()
         await pilot.pause()
-        assert nav.active_view == "Chat"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_switch_models()
         await pilot.pause()
-        assert nav.active_view == "Models"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
 
         app.action_switch_status()
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
 
         app.action_switch_settings()
         await pilot.pause()
-        assert nav.active_view == "Settings"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
