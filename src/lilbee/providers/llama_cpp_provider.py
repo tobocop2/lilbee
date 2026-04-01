@@ -454,22 +454,98 @@ def _find_mmproj_for_model(model_path: Path) -> Path:
     )
 
 
-def _load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
-    """Load a Llama instance with a vision chat handler.
+_PROJECTOR_HANDLER_MAP: dict[str, str] = {
+    "ldp": "Llava15ChatHandler",
+    "ldpv2": "Llava16ChatHandler",
+    "lightonocr": "ObsidianChatHandler",
+    "minicpmv": "MiniCPMv26ChatHandler",
+    "moondream": "MoondreamChatHandler",
+    "qwen2vl": "Qwen25VLChatHandler",
+    "resampler": "Llava15ChatHandler",
+}
 
-    The chat handler (Llava15ChatHandler) processes image content in messages
-    through the mmproj CLIP projection model.
+
+def _read_mmproj_projector_type(mmproj_path: Path) -> str | None:
+    """Read clip.projector_type from a GGUF mmproj file without loading the model."""
+    import struct
+
+    try:
+        with open(mmproj_path, "rb") as f:
+            magic = f.read(4)
+            if magic != b"GGUF":
+                return None
+            _version = struct.unpack("<I", f.read(4))[0]
+            _tensor_count = struct.unpack("<Q", f.read(8))[0]
+            kv_count = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(kv_count):
+                key_len = struct.unpack("<Q", f.read(8))[0]
+                key = f.read(key_len).decode("utf-8", errors="replace")
+                value_type = struct.unpack("<I", f.read(4))[0]
+                if key == "clip.projector_type" and value_type == 8:
+                    str_len = struct.unpack("<Q", f.read(8))[0]
+                    return f.read(str_len).decode("utf-8", errors="replace")
+                _skip_gguf_value(f, value_type)
+    except Exception:
+        log.debug("Failed to read mmproj metadata from %s", mmproj_path, exc_info=True)
+    return None
+
+
+def _skip_gguf_value(f: Any, value_type: int) -> None:
+    """Skip over a GGUF metadata value based on its type."""
+    import struct
+
+    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 8, 8: 0, 10: 8, 11: 8, 12: 8}
+    if value_type == 8:  # string
+        str_len = struct.unpack("<Q", f.read(8))[0]
+        f.read(str_len)
+    elif value_type == 9:  # array
+        elem_type = struct.unpack("<I", f.read(4))[0]
+        count = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(count):
+            _skip_gguf_value(f, elem_type)
+    elif value_type in sizes:
+        f.read(sizes[value_type])
+    else:
+        f.read(8)  # best effort skip
+
+
+def _resolve_vision_handler(mmproj_path: Path) -> Any:
+    """Determine the correct chat handler class for a vision model's mmproj file."""
+    from llama_cpp import llama_chat_format
+
+    projector = _read_mmproj_projector_type(mmproj_path)
+    if projector:
+        handler_name = _PROJECTOR_HANDLER_MAP.get(projector.lower())
+        if handler_name:
+            handler_cls = getattr(llama_chat_format, handler_name, None)
+            if handler_cls:
+                log.info("Using %s for projector type '%s'", handler_name, projector)
+                return handler_cls
+            log.warning("Handler %s not found in llama_chat_format", handler_name)
+        else:
+            log.warning("Unknown projector type '%s', falling back to Llava15", projector)
+
+    from llama_cpp.llama_chat_format import Llava15ChatHandler
+
+    return Llava15ChatHandler
+
+
+def _load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
+    """Load a Llama instance with the correct vision chat handler.
+
+    Reads the mmproj GGUF metadata to determine which chat handler to use,
+    rather than hardcoding Llava15ChatHandler for all models.
     """
     from llama_cpp import Llama
-    from llama_cpp.llama_chat_format import Llava15ChatHandler
 
     from lilbee.config import cfg
 
     if mmproj_path is None:
         mmproj_path = _find_mmproj_for_model(model_path)
 
+    handler_cls = _resolve_vision_handler(mmproj_path)
     log.info("Loading vision model %s with mmproj %s", model_path.name, mmproj_path.name)
-    chat_handler = _suppress_stderr(Llava15ChatHandler, clip_model_path=str(mmproj_path))
+    chat_handler = _suppress_stderr(handler_cls, clip_model_path=str(mmproj_path))
 
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),

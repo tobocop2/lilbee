@@ -274,6 +274,18 @@ def _worker_main(
     config: ConfigSnapshot,
 ) -> None:
     """Child process entry point. Loads models lazily, processes requests."""
+    # Redirect stdout/stderr to devnull so llama-cpp's C-level prints
+    # don't corrupt the parent TUI. Queues use pipes, not stdout.
+    import os
+    import sys
+
+    devnull_fd = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull_fd, 1)  # stdout
+    os.dup2(devnull_fd, 2)  # stderr
+    os.close(devnull_fd)
+    sys.stdout = open(os.devnull, "w")  # noqa: SIM115
+    sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+
     embed_llm: Any = None
     vision_llm: Any = None
     current_embed_model = ""
