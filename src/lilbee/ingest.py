@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import threading
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
@@ -538,11 +539,13 @@ async def sync(
     *,
     force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
 
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
+    When *cancel* is set, processing stops between files without data loss.
     """
     from lilbee.services import get_services
 
@@ -569,10 +572,13 @@ async def sync(
             _store.delete_source(name)
             removed.append(name)
 
-    # Process files on disk — (name, path, content_type, hash)
-    files_to_process: list[tuple[str, Path, str, str]] = []
+    # Process files on disk — (name, path, content_type, hash, needs_cleanup)
+    files_to_process: list[tuple[str, Path, str, str, bool]] = []
 
     for name, path in sorted(disk_files.items()):
+        if cancel and cancel.is_set():
+            break
+
         content_type = classify_file(path)
         assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
 
@@ -584,13 +590,12 @@ async def sync(
             continue
 
         if old_hash is not None:
-            # Modified -- remove old data
-            _store.delete_by_source(name)
-            _store.delete_source(name)
-            files_to_process.append((name, path, content_type, current_hash))
+            # Modified — defer old chunk deletion to ingest_batch so
+            # delete + re-ingest are atomic per file (no data loss on cancel).
+            files_to_process.append((name, path, content_type, current_hash, True))
             updated.append(name)
         else:
-            files_to_process.append((name, path, content_type, current_hash))
+            files_to_process.append((name, path, content_type, current_hash, False))
             added.append(name)
 
     # Ingest files (with optional progress bar)
@@ -604,6 +609,7 @@ async def sync(
             quiet=quiet,
             force_vision=force_vision,
             on_progress=on_progress,
+            cancel=cancel,
         )
 
     if files_to_process or removed:
@@ -634,7 +640,7 @@ _MAX_CONCURRENT = os.cpu_count() or 4
 
 
 async def ingest_batch(
-    files_to_process: list[tuple[str, Path, str, str]],
+    files_to_process: list[tuple[str, Path, str, str, bool]],
     added: list[str],
     updated: list[str],
     failed: list[str],
@@ -642,20 +648,39 @@ async def ingest_batch(
     quiet: bool = False,
     force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
+    cancel: threading.Event | None = None,
 ) -> None:
-    """Ingest a batch of files, optionally showing a Rich progress bar."""
+    """Ingest a batch of files, optionally showing a Rich progress bar.
+
+    Each tuple is (name, path, content_type, file_hash, needs_cleanup).
+    When *needs_cleanup* is True, old chunks are deleted immediately before
+    ingesting new ones so the two operations are atomic per file.
+    When *cancel* is set, pending files raise CancelledError before starting.
+    """
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
     total_files = len(files_to_process)
 
     async def _process_one(
-        name: str, path: Path, content_type: str, fhash: str, file_index: int
+        name: str,
+        path: Path,
+        content_type: str,
+        fhash: str,
+        needs_cleanup: bool,
+        file_index: int,
     ) -> _IngestResult:
         async with semaphore:
+            if cancel and cancel.is_set():
+                raise asyncio.CancelledError
+
             on_progress(
                 EventType.FILE_START,
                 FileStartEvent(file=name, total_files=total_files, current_file=file_index),
             )
             try:
+                if needs_cleanup:
+                    from lilbee.services import get_services
+
+                    get_services().store.delete_by_source(name)
                 chunk_count = await _ingest_file(
                     path,
                     name,
@@ -684,8 +709,8 @@ async def ingest_batch(
 
     if quiet:
         tasks = [
-            asyncio.ensure_future(_process_one(name, path, ct, fh, idx))
-            for idx, (name, path, ct, fh) in enumerate(files_to_process, 1)
+            asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+            for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
         ]
         await _collect_results(tasks, added, updated, failed, on_progress=on_progress)
     else:
@@ -701,8 +726,8 @@ async def ingest_batch(
             token = shared_progress.set((progress, ptask))
             try:
                 tasks = [
-                    asyncio.ensure_future(_process_one(name, path, ct, fh, idx))
-                    for idx, (name, path, ct, fh) in enumerate(files_to_process, 1)
+                    asyncio.ensure_future(_process_one(name, path, ct, fh, cleanup, idx))
+                    for idx, (name, path, ct, fh, cleanup) in enumerate(files_to_process, 1)
                 ]
                 await _collect_results(
                     tasks,

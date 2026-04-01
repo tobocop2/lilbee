@@ -696,6 +696,11 @@ class ChatScreen(Screen[None]):
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
             self.app.call_from_thread(task_bar.complete_task, task_id)
+        except asyncio.CancelledError:
+            self._auto_sync = False
+            self.app.call_from_thread(
+                task_bar.fail_task, task_id, "Sync cancelled. Use /sync to resume."
+            )
         except Exception:
             log.warning("Background sync failed", exc_info=True)
             self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)

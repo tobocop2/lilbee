@@ -363,7 +363,7 @@ class TestSyncStream:
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
         async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, SyncDoneEvent
@@ -387,7 +387,7 @@ class TestSyncStream:
         sync_result = SyncResult(added=["b.txt"])
 
         async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
@@ -416,7 +416,7 @@ class TestSyncStream:
         sync_result = SyncResult()
 
         async def slow_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
@@ -426,6 +426,58 @@ class TestSyncStream:
 
         done_events = [e for e in events if e.startswith("event: done")]
         assert len(done_events) == 1
+
+    async def test_cancel_sets_cancel_event(self, caplog):
+        """Closing the sync_stream generator signals cancel to the sync task."""
+        import threading
+
+        barrier = threading.Event()
+        captured_cancel: list[threading.Event] = []
+
+        async def blocking_sync(
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
+        ):
+            captured_cancel.append(cancel)
+            if on_progress:
+                from lilbee.progress import FileStartEvent
+
+                on_progress(
+                    "file_start", FileStartEvent(file="a.txt", total_files=1, current_file=1)
+                )
+            barrier.wait(timeout=2)
+            return SyncResult()
+
+        with (
+            patch("lilbee.ingest.sync", side_effect=blocking_sync),
+            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
+        ):
+            gen = handlers.sync_stream()
+            async for event in gen:
+                if event and "file_start" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        assert captured_cancel and captured_cancel[0].is_set()
+        assert any("Sync stream cancelled by client" in r.message for r in caplog.records)
+
+
+class TestAddFiles:
+    async def test_returns_cancel_event(self, isolated_env):
+        """add_files returns a cancel event as the fourth element."""
+        import threading
+
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content")
+
+        async def fake_sync(**kwargs):
+            return SyncResult()
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            result = await handlers.add_files({"paths": [str(test_file)]})
+            assert isinstance(result.cancel, threading.Event)
+            assert not result.cancel.is_set()
+            result.task.cancel()
 
 
 class TestListModels:
@@ -574,7 +626,7 @@ class TestModelsInstalled:
         from lilbee.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.LITELLM
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert len(result.models) == 2
         assert result.models[0].source == "litellm"
@@ -583,7 +635,7 @@ class TestModelsInstalled:
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert result.models[0].source == "litellm"
 
@@ -599,7 +651,7 @@ class TestModelsPull:
             return None
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
@@ -608,17 +660,45 @@ class TestModelsPull:
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
+
+    async def test_cancel_stops_pull(self, caplog):
+        """Closing the pull generator mid-stream sets cancel and logs."""
+        import threading
+
+        barrier = threading.Event()
+        mock_manager = MagicMock()
+
+        def blocking_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"status": "downloading"})
+            barrier.wait(timeout=2)
+            if on_progress:
+                on_progress({"status": "done"})
+
+        mock_manager.pull.side_effect = blocking_pull
+        with (
+            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
+        ):
+            gen = handlers.models_pull("test", source="native")
+            async for event in gen:
+                if event and "downloading" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestModelsDelete:
     async def test_returns_deleted_true(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("test", source="litellm")
         assert result.deleted is True
         assert result.model == "test"
@@ -626,7 +706,7 @@ class TestModelsDelete:
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
@@ -868,7 +948,7 @@ class TestCrawlStream:
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
         from pathlib import Path
 
-        async def fake_crawl(url, *, depth, max_pages, on_progress):
+        async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None):
             from lilbee.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
 
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
@@ -891,6 +971,32 @@ class TestCrawlStream:
         async for event in handlers.crawl_stream("https://example.com"):
             events.append(event)
         assert any("error" in e and "network fail" in e for e in events)
+
+    @patch("lilbee.crawler.crawl_and_save")
+    @patch("lilbee.crawler.validate_crawl_url")
+    async def test_cancel_stops_crawl(self, _mock_validate, mock_crawl, caplog):
+        """Closing the crawl generator mid-stream sets cancel and logs."""
+        import threading
+
+        barrier = threading.Event()
+
+        async def blocking_crawl(url, *, depth, max_pages, on_progress, cancel=None):
+            from lilbee.progress import CrawlStartEvent
+
+            on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
+            barrier.wait(timeout=2)
+            return []
+
+        mock_crawl.side_effect = blocking_crawl
+        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
+            gen = handlers.crawl_stream("https://example.com")
+            async for event in gen:
+                if event and "crawl_start" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+
+        assert any("Crawl stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestSseHelpers:
