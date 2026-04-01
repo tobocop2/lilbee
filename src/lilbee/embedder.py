@@ -52,8 +52,8 @@ class Embedder:
             return False
         try:
             available = self._provider.list_models()
-            model_base = model.split(":")[0].lower()
-            return any(model_base in m.lower() for m in available)
+            model_base = model.split(":")[0].lower().replace(" ", "-")
+            return any(model_base in m.lower().replace(" ", "-") for m in available)
         except Exception:
             log.debug("embedding_available check failed", exc_info=True)
             return False
