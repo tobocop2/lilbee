@@ -227,9 +227,7 @@ class TestGenerationOptions3LayerMerge:
 
     def test_all_three_layers(self):
         """Full 3-layer merge: model default -> user config -> per-call."""
-        cfg.apply_model_defaults(
-            ModelDefaults(temperature=0.7, top_p=0.9, num_ctx=4096, top_k=40)
-        )
+        cfg.apply_model_defaults(ModelDefaults(temperature=0.7, top_p=0.9, num_ctx=4096, top_k=40))
         cfg.temperature = 0.5
         cfg.max_tokens = None
         result = cfg.generation_options(num_ctx=8192)

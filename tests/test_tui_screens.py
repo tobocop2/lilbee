@@ -809,12 +809,19 @@ async def test_app_auto_sync_flag():
 class ChatTestApp(App[None]):
     CSS = ""
 
+    def __init__(self) -> None:
+        super().__init__()
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        self._task_bar = TaskBar(id="app-task-bar")
+
     def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
+        self.mount(self._task_bar)
         self.push_screen(ChatScreen())
 
 
@@ -2143,7 +2150,7 @@ async def test_chat_sync_progress_percentage():
         from lilbee.progress import EventType, FileStartEvent
 
         update_calls: list[tuple] = []
-        task_bar = app.screen.query_one("#task-bar")
+        task_bar = app._task_bar  # type: ignore[attr-defined]
         original_update = task_bar.update_task
 
         def tracking_update(task_id, pct, status):
@@ -3049,9 +3056,7 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
             ) as mock_copy,
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
-            from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-            task_bar = app.screen.query_one("#task-bar", TaskBar)
+            task_bar = app._task_bar  # type: ignore[attr-defined]
             add_task_spy = MagicMock(wraps=task_bar.add_task)
             with patch.object(task_bar, "add_task", add_task_spy):
                 app.screen._handle_slash(f"/add {test_file}")
@@ -3328,12 +3333,9 @@ async def test_task_center_renders_empty():
     """TaskCenter shows 'No tasks' when queue is empty."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
         app.push_screen(TaskCenter())
         await pilot.pause()
         table = app.screen.query_one("#task-table")
@@ -3344,12 +3346,10 @@ async def test_task_center_renders_active_and_history():
     """TaskCenter shows active task and completed history."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
+        task_bar = app._task_bar  # type: ignore[attr-defined]
 
         # Complete a task to create history
         t1 = task_bar.add_task("Sync A", "sync")
@@ -3388,12 +3388,10 @@ async def test_task_center_cancel_action():
     """TaskCenter cancel action triggers on active task."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
+        task_bar = app._task_bar  # type: ignore[attr-defined]
 
         task_bar.add_task("Sync", "sync")
         task_bar.queue.advance()
@@ -3409,13 +3407,9 @@ async def test_task_center_refresh_action():
     """TaskCenter refresh action refreshes table."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
-
         app.push_screen(TaskCenter())
         await pilot.pause()
         app.screen.action_refresh_tasks()
@@ -3426,13 +3420,9 @@ async def test_task_center_cursor_actions():
     """TaskCenter cursor up/down delegate to DataTable."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
-
         app.push_screen(TaskCenter())
         await pilot.pause()
         app.screen.action_cursor_down()
@@ -3445,13 +3435,9 @@ async def test_task_center_pop_screen():
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
-
         app.push_screen(TaskCenter())
         await pilot.pause()
         app.screen.action_pop_screen()
@@ -3539,9 +3525,7 @@ async def test_chat_sync_gating_rejects_add(tmp_path):
         app.screen._handle_slash(f"/add {test_file}")
         await pilot.pause()
         # No task should have been created
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        task_bar = app._task_bar  # type: ignore[attr-defined]
         assert task_bar.queue.is_empty
 
 
@@ -3552,9 +3536,7 @@ async def test_chat_sync_gating_rejects_sync():
         app.screen._sync_active = True
         app.screen._run_sync()
         await pilot.pause()
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
+        task_bar = app._task_bar  # type: ignore[attr-defined]
         # No new sync task should be queued
         assert task_bar.queue.active_task is None
 
@@ -3640,17 +3622,15 @@ async def test_task_center_with_queued_tasks():
     """TaskCenter shows queued tasks when active + queued present."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.screen.query_one("#task-bar", TaskBar)
-        app._task_bar = task_bar  # type: ignore[attr-defined]
+        task_bar = app._task_bar  # type: ignore[attr-defined]
 
-        # Add active + queued tasks
+        # Add active + queued tasks (same type so one is queued)
         task_bar.add_task("Download A", "download")
-        task_bar.queue.advance()
-        task_bar.add_task("Sync B", "sync")
+        task_bar.queue.advance("download")
+        task_bar.add_task("Download B", "download")
 
         app.push_screen(TaskCenter())
         await pilot.pause()

@@ -472,7 +472,7 @@ class CatalogScreen(Screen[None]):
             return
 
         task_id = task_bar.add_task(f"Downloading {model.name}", "download")
-        task_bar.queue.advance()
+        task_bar.queue.advance("download")
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
         self._run_download(model, task_id, task_bar)
 

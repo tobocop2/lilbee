@@ -59,10 +59,15 @@ class LilbeeApp(App[None]):
         self._auto_sync = auto_sync
         self._active_view = "Chat"
         self._theme_index = 0
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        self._task_bar = TaskBar(id="app-task-bar")
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
+        # Mount the app-level TaskBar (hidden, used for queue management + NavBar updates)
+        self.mount(self._task_bar)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 

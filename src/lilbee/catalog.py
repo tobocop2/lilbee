@@ -507,20 +507,33 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
 def _make_progress_tqdm(callback: Any) -> type:
     """Create a minimal tqdm-compatible class that routes progress to a callback.
 
-    Does NOT inherit from real tqdm — avoids multiprocessing lock issues
-    that crash in Textual worker threads. Only implements the interface
-    that huggingface_hub actually calls.
+    Does NOT inherit from real tqdm -- avoids multiprocessing lock issues
+    that crash in Textual worker threads. Implements the interface that
+    huggingface_hub actually calls: __init__, update, reset, close,
+    set_postfix_str, refresh, and context manager protocol.
     """
 
     class _CallbackProgress:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.total: int = kwargs.get("total", 0) or 0
-            self.n: int = kwargs.get("initial", 0) or 0
+            self.total: int = int(kwargs.get("total", 0) or 0)
+            self.n: int = int(kwargs.get("initial", 0) or 0)
+            self.disable: bool = bool(kwargs.get("disable", False))
 
         def update(self, n: int = 1) -> None:
             self.n += n
-            if callback and self.total > 0:
+            if not self.disable and callback and self.total > 0:
                 callback(self.n, self.total)
+
+        def reset(self, total: int | None = None) -> None:
+            self.n = 0
+            if total is not None:
+                self.total = int(total)
+
+        def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+            pass
+
+        def refresh(self) -> None:
+            pass
 
         def close(self) -> None:
             pass

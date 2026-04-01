@@ -447,31 +447,46 @@ class TestClassifyInstalledModels:
         from lilbee.registry import ModelManifest
 
         chat_manifest = ModelManifest(
-            name="qwen3", tag="8b", size_bytes=100, task="chat",
-            source_repo="", source_filename="", downloaded_at="",
+            name="qwen3",
+            tag="8b",
+            size_bytes=100,
+            task="chat",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
         )
         embed_manifest = ModelManifest(
-            name="nomic-embed-text", tag="latest", size_bytes=100, task="embedding",
-            source_repo="", source_filename="", downloaded_at="",
+            name="nomic-embed-text",
+            tag="latest",
+            size_bytes=100,
+            task="embedding",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
         )
         vision_manifest = ModelManifest(
-            name="llava", tag="latest", size_bytes=100, task="vision",
-            source_repo="", source_filename="", downloaded_at="",
+            name="llava",
+            tag="latest",
+            size_bytes=100,
+            task="vision",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch(
-                "lilbee.registry.ModelRegistry"
-            ) as MockRegistry,
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
             mock.patch(
                 "lilbee.model_manager.classify_remote_models",
                 return_value=[],
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [
-                chat_manifest, embed_manifest, vision_manifest,
+                chat_manifest,
+                embed_manifest,
+                vision_manifest,
             ]
             chat, embed, vision = _classify_installed_models()
 
@@ -485,8 +500,13 @@ class TestClassifyInstalledModels:
         from lilbee.registry import ModelManifest
 
         mmproj_manifest = ModelManifest(
-            name="llava-mmproj", tag="latest", size_bytes=100, task="vision",
-            source_repo="", source_filename="", downloaded_at="",
+            name="llava-mmproj",
+            tag="latest",
+            size_bytes=100,
+            task="vision",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
@@ -494,13 +514,13 @@ class TestClassifyInstalledModels:
         (cfg.models_dir / "clip-mmproj-f16.gguf").write_text("fake")
 
         remote_mmproj = RemoteModel(
-            name="mmproj-model:latest", task="vision", family="clip",
+            name="mmproj-model:latest",
+            task="vision",
+            family="clip",
             parameter_size="",
         )
         with (
-            mock.patch(
-                "lilbee.registry.ModelRegistry"
-            ) as MockRegistry,
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
             mock.patch(
                 "lilbee.model_manager.classify_remote_models",
                 return_value=[remote_mmproj],
@@ -517,19 +537,22 @@ class TestClassifyInstalledModels:
         from lilbee.model_manager import RemoteModel
 
         remote_chat = RemoteModel(
-            name="llama3:8b", task="chat", family="llama", parameter_size="8B",
+            name="llama3:8b",
+            task="chat",
+            family="llama",
+            parameter_size="8B",
         )
         remote_embed = RemoteModel(
-            name="nomic-embed-text:latest", task="embedding", family="nomic-bert",
+            name="nomic-embed-text:latest",
+            task="embedding",
+            family="nomic-bert",
             parameter_size="137M",
         )
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
 
         with (
-            mock.patch(
-                "lilbee.registry.ModelRegistry"
-            ) as MockRegistry,
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
             mock.patch(
                 "lilbee.model_manager.classify_remote_models",
                 return_value=[remote_chat, remote_embed],
@@ -549,9 +572,7 @@ class TestClassifyInstalledModels:
         (cfg.models_dir / "custom-model.gguf").write_text("fake")
 
         with (
-            mock.patch(
-                "lilbee.registry.ModelRegistry"
-            ) as MockRegistry,
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
             mock.patch(
                 "lilbee.model_manager.classify_remote_models",
                 return_value=[],
@@ -1092,14 +1113,26 @@ class TestTaskQueue:
         assert q.cancel(tid) is True
         assert q.active_task is None
 
-    def test_advance_returns_none_when_active(self) -> None:
+    def test_advance_returns_none_when_same_type_active(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
 
         q = TaskQueue()
         q.enqueue(lambda: None, "A", "download")
-        q.advance()
+        q.advance("download")
+        q.enqueue(lambda: None, "B", "download")
+        assert q.advance("download") is None  # same type already active
+
+    def test_advance_different_types_concurrent(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance("download")
         q.enqueue(lambda: None, "B", "sync")
-        assert q.advance() is None  # already has active
+        task = q.advance("sync")
+        assert task is not None  # different type can advance
+        assert task.name == "B"
+        assert len(q.active_tasks) == 2
 
     def test_fail_task(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
@@ -1194,6 +1227,83 @@ class TestTaskQueue:
         assert q.active_task is not None
         q.remove_task(tid)
         assert q.active_task is None
+
+    def test_active_tasks_returns_all(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        q.advance("download")
+        q.advance("sync")
+        assert len(q.active_tasks) == 2
+
+    def test_active_tasks_empty_initially(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.active_tasks == []
+
+    def test_is_empty_with_multiple_types(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL", "download")
+        q.advance("download")
+        assert not q.is_empty
+        q.complete_task(t1)
+        q.remove_task(t1)
+        assert q.is_empty
+
+    def test_advance_with_task_type_arg(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        task = q.advance("sync")
+        assert task is not None
+        assert task.name == "Sync"
+        assert task.status == TaskStatus.ACTIVE
+        # download not yet advanced
+        assert len(q.active_tasks) == 1
+
+    def test_complete_frees_type_slot(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL-A", "download")
+        q.enqueue(lambda: None, "DL-B", "download")
+        q.advance("download")
+        q.complete_task(t1)
+        q.remove_task(t1)
+        t2 = q.advance("download")
+        assert t2 is not None
+        assert t2.name == "DL-B"
+
+    def test_queued_tasks_across_types(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        assert len(q.queued_tasks) == 2
+        q.advance("download")
+        # DL is now active, Sync still queued
+        assert len(q.queued_tasks) == 1
+
+    def test_cancel_concurrent_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL", "download")
+        t2 = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance("download")
+        q.advance("sync")
+        assert len(q.active_tasks) == 2
+        q.cancel(t1)
+        assert len(q.active_tasks) == 1
+        assert q.active_tasks[0].task_id == t2
 
 
 # ---------------------------------------------------------------------------

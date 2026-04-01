@@ -50,16 +50,16 @@ class TaskCenter(Screen[None]):
             return
 
         queue = task_bar.queue
-        active = queue.active_task
+        active_list = queue.active_tasks
         queued = queue.queued_tasks
         history = queue.history
 
-        if not active and not queued and not history:
+        if not active_list and not queued and not history:
             table.add_row("\u2014", "No tasks", "", "")
             self.query_one("#task-detail", Static).update("All quiet.")
             return
 
-        if active:
+        for active in active_list:
             pct = f"{active.progress}%" if active.progress > 0 else "..."
             detail = active.detail or ""
             table.add_row(
@@ -89,13 +89,13 @@ class TaskCenter(Screen[None]):
             )
 
     def action_cancel_task(self) -> None:
-        """Cancel the active task if one exists."""
+        """Cancel the first active task if one exists."""
         task_bar = getattr(self.app, "_task_bar", None)
         if task_bar is None:
             return
-        active = task_bar.queue.active_task
-        if active:
-            task_bar.cancel_task(active.task_id)
+        active_list = task_bar.queue.active_tasks
+        if active_list:
+            task_bar.cancel_task(active_list[0].task_id)
             self._refresh_table()
 
     def action_refresh_tasks(self) -> None:
