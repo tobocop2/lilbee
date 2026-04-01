@@ -42,17 +42,17 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
-        _paths, queue, task, cancel = await handlers.add_files(data.model_dump())
+        result = await handlers.add_files(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
 
     async def _stream() -> AsyncGenerator[bytes, None]:
         try:
-            async for chunk in sse_generator(queue):
+            async for chunk in sse_generator(result.queue):
                 yield chunk
-            await task
+            await result.task
         except (GeneratorExit, Exception):
-            cancel.set()
+            result.cancel.set()
 
     return Stream(_stream(), media_type="text/event-stream", status_code=201)
 

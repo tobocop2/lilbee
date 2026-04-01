@@ -474,12 +474,10 @@ class TestAddFiles:
             return SyncResult()
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
-            _paths, _queue, _task, cancel = await handlers.add_files(
-                {"paths": [str(test_file)]}
-            )
-            assert isinstance(cancel, threading.Event)
-            assert not cancel.is_set()
-            _task.cancel()
+            result = await handlers.add_files({"paths": [str(test_file)]})
+            assert isinstance(result.cancel, threading.Event)
+            assert not result.cancel.is_set()
+            result.task.cancel()
 
 
 class TestListModels:
@@ -628,7 +626,7 @@ class TestModelsInstalled:
         from lilbee.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.LITELLM
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert len(result.models) == 2
         assert result.models[0].source == "litellm"
@@ -637,7 +635,7 @@ class TestModelsInstalled:
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
         assert result.models[0].source == "litellm"
 
@@ -653,7 +651,7 @@ class TestModelsPull:
             return None
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
@@ -662,7 +660,7 @@ class TestModelsPull:
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
@@ -683,7 +681,7 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = blocking_pull
         with (
-            patch("lilbee.model_manager.get_model_manager", return_value=mock_manager),
+            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
             caplog.at_level(logging.INFO, logger="lilbee.server.handlers"),
         ):
             gen = handlers.models_pull("test", source="native")
@@ -700,7 +698,7 @@ class TestModelsDelete:
     async def test_returns_deleted_true(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("test", source="litellm")
         assert result.deleted is True
         assert result.model == "test"
@@ -708,7 +706,7 @@ class TestModelsDelete:
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
         assert result.freed_gb == 0.0
