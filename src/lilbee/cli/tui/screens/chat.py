@@ -47,8 +47,10 @@ class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("slash", "focus_commands", "Commands", show=True),
+        Binding("slash", "focus_commands", "/ commands", show=True),
         Binding("tab", "complete", "Tab", show=False, priority=True),
+        Binding("ctrl+n", "complete_next", "^n next", show=False),
+        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
@@ -67,6 +69,9 @@ class ChatScreen(Screen[None]):
         self._streaming = False
         self._insert_mode: bool = True
         self._completing = False
+        self._sync_active: bool = False
+        self._input_history: list[str] = []
+        self._history_index: int = -1
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -199,6 +204,8 @@ class ChatScreen(Screen[None]):
         if not text:
             return
         event.input.value = ""
+        self._input_history.append(text)
+        self._history_index = -1
 
         if text.startswith("/"):
             self._handle_slash(text)
@@ -221,6 +228,9 @@ class ChatScreen(Screen[None]):
     def _cmd_add(self, args: str) -> None:
         if not args:
             return
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
         # Auto-detect URLs and route to crawl logic
         if is_url(args):
             self._cmd_crawl(args)
@@ -237,6 +247,7 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_add_background(self, path: Path, task_id: str) -> None:
         """Copy files and sync in a background thread."""
+        self._sync_active = True
         task_bar = self.query_one("#task-bar", TaskBar)
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
@@ -276,6 +287,8 @@ class ChatScreen(Screen[None]):
             self.app.call_from_thread(
                 self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
             )
+        finally:
+            self._sync_active = False
 
     def _cmd_cancel(self, _args: str) -> None:
         for worker in self.workers:
@@ -657,6 +670,9 @@ class ChatScreen(Screen[None]):
 
     def _run_sync(self) -> None:
         """Enqueue a document sync in the task bar."""
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
         task_bar = self.query_one("#task-bar", TaskBar)
         task_id = task_bar.add_task("Sync documents", "sync")
         task_bar.queue.advance()
@@ -674,6 +690,7 @@ class ChatScreen(Screen[None]):
         """
         import asyncio
 
+        self._sync_active = True
         task_bar = self.query_one("#task-bar", TaskBar)
         try:
             from lilbee.ingest import sync
@@ -703,6 +720,8 @@ class ChatScreen(Screen[None]):
         except Exception:
             log.warning("Background sync failed", exc_info=True)
             self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+        finally:
+            self._sync_active = False
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
@@ -740,6 +759,66 @@ class ChatScreen(Screen[None]):
                 inp.value = first
                 inp.action_end()
             self._completing = False
+
+    def action_complete_next(self) -> None:
+        """Ctrl+N: show completions or cycle forward."""
+        self.action_complete()
+
+    def action_complete_prev(self) -> None:
+        """Ctrl+P: cycle backward through completions."""
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        inp = self.query_one("#chat-input", Input)
+
+        if overlay.is_visible:
+            selection = overlay.cycle_prev()
+            if selection:
+                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
+                inp.value = cmd_prefix + selection
+                self._completing = False
+                inp.action_end()
+            return
+
+        options = get_completions(inp.value)
+        if options:
+            overlay.show_completions(options)
+            last = overlay.get_current()
+            self._completing = True
+            if last and " " in inp.value:
+                cmd_prefix = inp.value.split()[0] + " "
+                inp.value = cmd_prefix + last
+                inp.action_end()
+            elif last:
+                inp.value = last
+                inp.action_end()
+            self._completing = False
+
+    def key_up(self) -> None:
+        """Up arrow: recall previous input when chat-input is focused."""
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or not self._input_history:
+            return
+        if self._history_index == -1:
+            self._history_index = len(self._input_history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return
+        inp.value = self._input_history[self._history_index]
+        inp.action_end()
+
+    def key_down(self) -> None:
+        """Down arrow: recall next input or clear when chat-input is focused."""
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or self._history_index == -1:
+            return
+        if self._history_index < len(self._input_history) - 1:
+            self._history_index += 1
+            inp.value = self._input_history[self._history_index]
+            inp.action_end()
+        else:
+            self._history_index = -1
+            inp.value = ""
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Hide completion overlay when input changes manually."""

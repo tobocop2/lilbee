@@ -43,25 +43,15 @@ class LilbeeApp(App[None]):
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=False),
+        Binding("question_mark", "push_help", "? help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
-        Binding("f2", "push_catalog", "Models", show=False),
-        Binding("ctrl+n", "push_catalog", "Models", show=False),
-        Binding("f3", "push_status", "Status", show=False),
-        Binding("ctrl+s", "push_status", "Status", show=False),
-        Binding("f4", "push_settings", "Settings", show=False),
-        Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("1", "switch_chat", "Chat", show=False),
-        Binding("2", "switch_models", "Models", show=False),
-        Binding("3", "switch_status", "Status", show=False),
-        Binding("4", "switch_settings", "Settings", show=False),
         Binding("h", "nav_prev", "Prev", show=False),
         Binding("left", "nav_prev", "Prev", show=False),
         Binding("l", "nav_next", "Next", show=False),
         Binding("right", "nav_next", "Next", show=False),
-        Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
+        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -110,6 +100,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.screens.settings import SettingsScreen
         from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.cli.tui.screens.task_center import TaskCenter
 
         # Pop non-chat screens until we're back at chat
         while len(self.screen_stack) > 1 and not isinstance(self.screen, ChatScreen):
@@ -125,6 +116,8 @@ class LilbeeApp(App[None]):
             self.push_screen(StatusScreen())
         elif view_name == "Settings":
             self.push_screen(SettingsScreen())
+        elif view_name == "Tasks":
+            self.push_screen(TaskCenter())
 
         # Update NavBar on current screen and persist state for new screens
         self._active_view = view_name
@@ -134,40 +127,19 @@ class LilbeeApp(App[None]):
         except Exception:
             log.debug("NavBar update failed", exc_info=True)
 
-    def action_push_catalog(self) -> None:
-        self._switch_view("Models")
-
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal
 
         self.push_screen(HelpModal())
 
-    def action_push_status(self) -> None:
-        self._switch_view("Status")
-
-    def action_push_settings(self) -> None:
-        self._switch_view("Settings")
-
-    def action_switch_chat(self) -> None:
-        self._switch_view("Chat")
-
-    def action_switch_models(self) -> None:
-        self._switch_view("Models")
-
-    def action_switch_status(self) -> None:
-        self._switch_view("Status")
-
-    def action_switch_settings(self) -> None:
-        self._switch_view("Settings")
-
     def action_nav_prev(self) -> None:
         """Navigate to previous view (h or left arrow)."""
-        view_names = ["Chat", "Models", "Status", "Settings"]
+        view_names = msg.NAV_VIEWS
         current_idx = view_names.index(self._active_view)
-        self._switch_view(view_names[(current_idx - 1) % 4])
+        self._switch_view(view_names[(current_idx - 1) % len(view_names)])
 
     def action_nav_next(self) -> None:
         """Navigate to next view (l or right arrow)."""
-        view_names = ["Chat", "Models", "Status", "Settings"]
+        view_names = msg.NAV_VIEWS
         current_idx = view_names.index(self._active_view)
-        self._switch_view(view_names[(current_idx + 1) % 4])
+        self._switch_view(view_names[(current_idx + 1) % len(view_names)])

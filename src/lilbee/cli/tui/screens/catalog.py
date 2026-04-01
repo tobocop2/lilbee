@@ -191,10 +191,6 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False),
         Binding("ctrl+d", "page_down", "PgDn", show=False),
         Binding("ctrl+u", "page_up", "PgUp", show=False),
-        Binding("1", "activate_tab_0", "1", show=False),
-        Binding("2", "activate_tab_1", "2", show=False),
-        Binding("3", "activate_tab_2", "3", show=False),
-        Binding("4", "activate_tab_3", "4", show=False),
     ]
 
     def __init__(self) -> None:
@@ -627,24 +623,6 @@ class CatalogScreen(Screen[None]):
             count = len(lv.children)
             if count > 0:
                 lv.index = count - 1
-
-    def _activate_tab(self, index: int) -> None:
-        """Switch to tab by zero-based index."""
-        tabs = self.query_one("#catalog-tabs", TabbedContent)
-        tab_id = f"cat-{TASK_TABS[index].lower()}"
-        tabs.active = tab_id
-
-    def action_activate_tab_0(self) -> None:
-        self._activate_tab(0)
-
-    def action_activate_tab_1(self) -> None:
-        self._activate_tab(1)
-
-    def action_activate_tab_2(self) -> None:
-        self._activate_tab(2)
-
-    def action_activate_tab_3(self) -> None:
-        self._activate_tab(3)
 
     def key_left(self) -> None:
         """Navigate to previous view instead of switching tabs."""

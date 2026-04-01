@@ -21,6 +21,7 @@ class TaskCenter(Screen[None]):
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
+        Binding("d", "cancel_task", "Cancel", show=True),
         Binding("r", "refresh_tasks", "Refresh", show=True),
     ]
 
@@ -39,30 +40,30 @@ class TaskCenter(Screen[None]):
         self._refresh_table()
 
     def _refresh_table(self) -> None:
-        """Populate table from TaskBar's queue."""
+        """Populate table from TaskBar's queue (active + queued + history)."""
         table = self.query_one("#task-table", DataTable)
         table.clear()
 
         task_bar = getattr(self.app, "_task_bar", None)
         if task_bar is None:
-            table.add_row("—", "No task bar available", "", "")
+            table.add_row("\u2014", "No task bar available", "", "")
             return
 
         queue = task_bar.queue
         active = queue.active_task
         queued = queue.queued_tasks
+        history = queue.history
 
-        if not active and not queued:
-            table.add_row("—", "No active tasks", "", "")
+        if not active and not queued and not history:
+            table.add_row("\u2014", "No tasks", "", "")
             self.query_one("#task-detail", Static).update("All quiet.")
             return
 
         if active:
-            status_icon = _status_icon(active.status)
             pct = f"{active.progress}%" if active.progress > 0 else "..."
             detail = active.detail or ""
             table.add_row(
-                status_icon,
+                _status_icon(active.status),
                 active.name,
                 active.task_type,
                 f"{pct} {detail}",
@@ -77,6 +78,32 @@ class TaskCenter(Screen[None]):
                 "queued",
                 key=task.task_id,
             )
+
+        for task in reversed(history):
+            table.add_row(
+                _status_icon(task.status),
+                task.name,
+                task.task_type,
+                task.detail or task.status.value,
+                key=task.task_id,
+            )
+
+    def action_cancel_task(self) -> None:
+        """Cancel the currently highlighted active task."""
+        task_bar = getattr(self.app, "_task_bar", None)
+        if task_bar is None:
+            return
+        table = self.query_one("#task-table", DataTable)
+        if table.cursor_row is None:
+            return
+        row_key = table.get_row_at(table.cursor_row)
+        if not row_key:
+            return
+        # The key is set on active/queued rows; try to cancel
+        active = task_bar.queue.active_task
+        if active and active.task_id == str(table.get_cell_at((table.cursor_row, 1))):
+            task_bar.cancel_task(active.task_id)
+            self._refresh_table()
 
     def action_refresh_tasks(self) -> None:
         self._refresh_table()
@@ -94,9 +121,9 @@ class TaskCenter(Screen[None]):
 def _status_icon(status: TaskStatus) -> str:
     """Map task status to a display icon."""
     return {
-        TaskStatus.QUEUED: "⏳",
-        TaskStatus.ACTIVE: "▶",
-        TaskStatus.DONE: "✓",
-        TaskStatus.FAILED: "✗",
-        TaskStatus.CANCELLED: "⊘",
+        TaskStatus.QUEUED: "\u23f3",
+        TaskStatus.ACTIVE: "\u25b6",
+        TaskStatus.DONE: "\u2713",
+        TaskStatus.FAILED: "\u2717",
+        TaskStatus.CANCELLED: "\u2298",
     }.get(status, "?")

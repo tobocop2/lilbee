@@ -49,6 +49,7 @@ class TaskQueue:
         self._queue: list[str] = []
         self._active_id: str | None = None
         self._on_change = on_change
+        self._history: list[Task] = []
 
     @property
     def active_task(self) -> Task | None:
@@ -61,6 +62,11 @@ class TaskQueue:
     def queued_tasks(self) -> list[Task]:
         with self._lock:
             return [self._tasks[tid] for tid in self._queue if tid in self._tasks]
+
+    @property
+    def history(self) -> list[Task]:
+        with self._lock:
+            return list(self._history)
 
     @property
     def is_empty(self) -> bool:
@@ -93,6 +99,7 @@ class TaskQueue:
             if task:
                 task.status = TaskStatus.DONE
                 task.progress = 100
+                self._history.append(task)
             if self._active_id == task_id:
                 self._active_id = None
             self._queue = [tid for tid in self._queue if tid != task_id]
@@ -105,6 +112,7 @@ class TaskQueue:
             if task:
                 task.status = TaskStatus.FAILED
                 task.detail = detail
+                self._history.append(task)
             if self._active_id == task_id:
                 self._active_id = None
             self._queue = [tid for tid in self._queue if tid != task_id]

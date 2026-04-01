@@ -595,7 +595,7 @@ async def test_app_set_theme():
         assert app.theme == "dracula"
 
 
-async def test_app_push_catalog():
+async def test_app_switch_to_catalog():
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -605,29 +605,29 @@ async def test_app_push_catalog():
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
-            app.action_push_catalog()
+            app._switch_view("Models")
             await _pilot.pause()
             assert isinstance(app.screen, CatalogScreen)
 
 
-async def test_app_push_status():
+async def test_app_switch_to_status():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.action_push_status()
+        app._switch_view("Status")
         await _pilot.pause()
         from lilbee.cli.tui.screens.status import StatusScreen
 
         assert isinstance(app.screen, StatusScreen)
 
 
-async def test_app_push_settings():
+async def test_app_switch_to_settings():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.action_push_settings()
+        app._switch_view("Settings")
         await _pilot.pause()
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -2911,52 +2911,15 @@ async def test_catalog_key_g_G_noop_in_input():
             screen.action_jump_bottom()
 
 
-async def test_catalog_number_keys_switch_tabs():
-    """Number keys 1-4 switch catalog tabs."""
+async def test_catalog_tab_bindings_removed():
+    """Number key tab-switching bindings removed from catalog."""
+    from textual.binding import Binding as B
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            from textual.widgets import ListView, TabbedContent
-
-            screen.query_one("#catlist-all", ListView).focus()
-            await _pilot.pause()
-            tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            screen.action_activate_tab_1()
-            await _pilot.pause()
-            assert tabs.active == "cat-chat"
-            screen.action_activate_tab_2()
-            await _pilot.pause()
-            assert tabs.active == "cat-embedding"
-            screen.action_activate_tab_3()
-            await _pilot.pause()
-            assert tabs.active == "cat-vision"
-            screen.action_activate_tab_0()
-            await _pilot.pause()
-            assert tabs.active == "cat-all"
-
-
-async def test_catalog_number_keys_noop_in_input():
-    """Number keys do nothing when catalog search Input is focused."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            from textual.widgets import Input
-
-            screen.query_one("#catalog-search", Input).focus()
-            screen.action_activate_tab_0()
-            screen.action_activate_tab_1()
-            screen.action_activate_tab_2()
-            screen.action_activate_tab_3()
+    keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, B)}
+    for k in ("1", "2", "3", "4"):
+        assert k not in keys
 
 
 async def test_app_question_mark_opens_help():
@@ -3367,11 +3330,11 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Tasks"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
 
 
 async def test_app_nav_next_cycles_views():
@@ -3395,8 +3358,8 @@ async def test_app_nav_next_cycles_views():
         assert app.screen.query_one("#global-nav-bar").active_view == "Status"
 
 
-async def test_app_number_keys_switch_views():
-    """Number keys 1-4 switch between views."""
+async def test_app_nav_switches_all_views():
+    """Nav prev/next cycles through all 5 views including Tasks."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3406,18 +3369,14 @@ async def test_app_number_keys_switch_views():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
 
-        app.action_switch_chat()
+        app._switch_view("Chat")
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+        assert app._active_view == "Chat"
 
-        app.action_switch_models()
+        app._switch_view("Tasks")
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
+        assert app._active_view == "Tasks"
 
-        app.action_switch_status()
+        app._switch_view("Models")
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
-
-        app.action_switch_settings()
-        await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
+        assert app._active_view == "Models"

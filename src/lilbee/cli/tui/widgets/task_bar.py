@@ -120,6 +120,12 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             self.app.call_from_thread(self._refresh_display)
 
+    def _update_nav_bar_task_text(self, text: str) -> None:
+        """Push task status into the NavBar indicator."""
+        with contextlib.suppress(Exception):
+            nav = self.app.screen.query_one("#global-nav-bar")
+            nav.active_task_text = text  # type: ignore[attr-defined]
+
     def _refresh_display(self) -> None:
         """Update widget contents based on queue state."""
         active = self._queue.active_task
@@ -127,6 +133,7 @@ class TaskBar(Static):
 
         if not active and not queued:
             self.display = False
+            self._update_nav_bar_task_text("")
             return
 
         self.display = True
@@ -145,6 +152,8 @@ class TaskBar(Static):
             active_label.display = True
             progress_bar.update(total=100, progress=active.progress)
             progress_bar.display = True
+            nav_text = f"\u25b6 {active.name} {active.progress}%"
+            self._update_nav_bar_task_text(nav_text)
         else:
             active_label.display = False
             progress_bar.display = False
