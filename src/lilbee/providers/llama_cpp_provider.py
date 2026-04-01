@@ -186,13 +186,11 @@ class LlamaCppProvider(LLMProvider):
                 self._chat_lock.release()
 
     def list_models(self) -> list[str]:
-        """List .gguf files in the models directory."""
-        from lilbee.config import cfg
+        """List installed models from the registry."""
+        from lilbee.services import get_services
 
-        models_dir = cfg.models_dir
-        if not models_dir.exists():
-            return []
-        return sorted(p.name for p in models_dir.glob("*.gguf"))
+        registry = get_services().registry
+        return sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Not supported directly — catalog.py handles downloads."""
@@ -332,15 +330,12 @@ def _read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
 
 def _resolve_model_path(model: str) -> Path:
-    """Resolve a model name to a .gguf file path.
+    """Resolve a model name to a .gguf file path via the registry.
 
-    Resolution order:
-    1. Registry manifest -> blob
-    2. Direct .gguf filename in models_dir
-    3. Append .gguf extension to model name
-    4. Prefix match (e.g. "nomic-embed-text" -> "nomic-embed-text-v1.5.Q4_K_M.gguf")
+    The registry is the single source of truth for installed models.
+    All models must be installed through the catalog/registry — no
+    loose .gguf file scanning.
     """
-    from lilbee.config import cfg
     from lilbee.services import get_services
 
     registry = get_services().registry
@@ -349,33 +344,9 @@ def _resolve_model_path(model: str) -> Path:
     except (KeyError, ValueError):
         pass
 
-    models_dir = cfg.models_dir
-
-    # Direct path
-    if model.endswith(".gguf"):
-        candidate = models_dir / Path(model).name
-        if candidate.exists():
-            from lilbee.security import validate_path_within
-
-            return validate_path_within(candidate, models_dir)
-        raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
-
-    # Try common extensions
-    for ext in (".gguf",):
-        candidate = models_dir / f"{model}{ext}"
-        if candidate.exists():
-            return candidate
-
-    # Prefix match: "nomic-embed-text" matches "nomic-embed-text-v1.5.Q4_K_M.gguf"
-    # Uses *.gguf glob + startswith filter to avoid glob injection
-    if models_dir.exists():
-        candidates = sorted(p for p in models_dir.glob("*.gguf") if p.name.startswith(model))
-        if candidates:
-            return candidates[0]
-
     raise ProviderError(
-        f"Model {model!r} not found in {models_dir}. "
-        f"Available: {[p.name for p in models_dir.glob('*.gguf')] if models_dir.exists() else []}",
+        f"Model {model!r} not found in registry. "
+        f"Install it via the catalog or 'lilbee models install'.",
         provider="llama-cpp",
     )
 

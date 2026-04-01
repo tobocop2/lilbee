@@ -119,44 +119,60 @@ class TestEmbeddingAvailable:
 
 
 class TestModelClassification:
-    def test_vision_model_excluded_from_chat(self):
-        """LightOnOCR must NOT appear in chat bucket."""
-        from lilbee.cli.tui.widgets.model_bar import _is_likely_vision_model
-
-        assert _is_likely_vision_model("LightOnOCR-2-1B-Q4_K_M.gguf") is True
-
-    def test_chat_model_not_classified_as_vision(self):
-        from lilbee.cli.tui.widgets.model_bar import _is_likely_vision_model
-
-        assert _is_likely_vision_model("Qwen3-4B-Q4_K_M.gguf") is False
-
-    def test_embed_model_detected_by_name(self):
-        from lilbee.cli.tui.widgets.model_bar import _is_likely_vision_model
-
-        assert _is_likely_vision_model("nomic-embed-text-v1.5.gguf") is False
-
     def test_mmproj_filtered_out(self):
         from lilbee.cli.tui.widgets.model_bar import _is_mmproj
 
         assert _is_mmproj("mmproj-BF16.gguf") is True
         assert _is_mmproj("Qwen3-4B.gguf") is False
 
-    def test_full_classification_with_real_files(self):
-        """Create actual GGUF-like files and verify classification."""
+    def test_registry_based_classification(self):
+        """Models classified by registry manifest task field."""
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
-        # Create fake model files
-        (cfg.models_dir / "chat-model.gguf").touch()
-        (cfg.models_dir / "nomic-embed.gguf").touch()
-        (cfg.models_dir / "LightOnOCR-vision.gguf").touch()
-        (cfg.models_dir / "mmproj-BF16.gguf").touch()
+        # Mock registry with proper manifests
+        mock_manifests = [
+            mock.MagicMock(name="Qwen3", tag="latest", task="chat"),
+            mock.MagicMock(name="Nomic Embed", tag="latest", task="embedding"),
+            mock.MagicMock(name="LightOnOCR", tag="latest", task="vision"),
+        ]
+        # Set .name properly (MagicMock uses name for repr)
+        mock_manifests[0].name = "Qwen3"
+        mock_manifests[1].name = "Nomic Embed"
+        mock_manifests[2].name = "LightOnOCR"
 
-        chat, embed, vision = _classify_installed_models()
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._collect_native_models"
+        ) as mock_native:
+            def fill_buckets(buckets, seen):
+                for m in mock_manifests:
+                    name = f"{m.name}:{m.tag}"
+                    buckets.get(m.task, buckets["chat"]).append(name)
+                    seen.add(name)
 
-        assert "chat-model.gguf" in chat
-        assert "nomic-embed.gguf" in embed
-        assert "LightOnOCR-vision.gguf" in vision
-        assert "mmproj-BF16.gguf" not in chat + embed + vision
+            mock_native.side_effect = fill_buckets
+            with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
+                chat, embed, vision = _classify_installed_models()
+
+        assert "Qwen3:latest" in chat
+        assert "Nomic Embed:latest" in embed
+        assert "LightOnOCR:latest" in vision
+
+    def test_no_loose_gguf_scanning(self):
+        """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+
+        # Create loose files that should be ignored
+        (cfg.models_dir / "loose-chat.gguf").touch()
+        (cfg.models_dir / "loose-vision.gguf").touch()
+
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._collect_native_models"
+        ), mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
+            chat, embed, vision = _classify_installed_models()
+
+        all_models = chat + embed + vision
+        assert "loose-chat.gguf" not in all_models
+        assert "loose-vision.gguf" not in all_models
 
 
 # -- Bug: model switch during stream caused segfault --

@@ -36,7 +36,6 @@ def _classify_installed_models() -> tuple[list[str], list[str], list[str]]:
 
     _collect_native_models(buckets, seen)
     _collect_remote_models(buckets, seen)
-    _collect_legacy_gguf(buckets, seen)
 
     return sorted(buckets["chat"]), sorted(buckets["embedding"]), sorted(buckets["vision"])
 
@@ -71,37 +70,6 @@ def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
         log.debug("Could not classify remote models", exc_info=True)
 
 
-_VISION_KEYWORDS = frozenset({"ocr", "vision", "llava", "minicpm", "moondream", "nanollava"})
-
-
-def _is_likely_vision_model(name: str) -> bool:
-    """Detect vision models by name keywords or catalog membership."""
-    lower = name.lower()
-    if any(kw in lower for kw in _VISION_KEYWORDS):
-        return True
-    try:
-        from lilbee.catalog import FEATURED_VISION
-
-        return any(name in m.gguf_filename for m in FEATURED_VISION)
-    except Exception:
-        return False
-
-
-def _collect_legacy_gguf(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add legacy .gguf files not in the registry, classified by type."""
-    try:
-        if cfg.models_dir.is_dir():
-            for p in cfg.models_dir.iterdir():
-                if p.suffix == ".gguf" and p.name not in seen and not _is_mmproj(p.name):
-                    seen.add(p.name)
-                    if _is_likely_vision_model(p.name):
-                        buckets["vision"].append(p.name)
-                    elif "embed" in p.name.lower() or "nomic" in p.name.lower():
-                        buckets["embedding"].append(p.name)
-                    else:
-                        buckets["chat"].append(p.name)
-    except Exception:
-        log.debug("Could not scan models_dir for legacy .gguf files", exc_info=True)
 
 
 class ModelBar(Widget, can_focus=True):

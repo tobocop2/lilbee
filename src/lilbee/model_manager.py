@@ -45,13 +45,8 @@ class ModelManager:
         return self._list_litellm()
 
     def _list_native(self) -> list[str]:
-        """List native models: registry manifests + legacy .gguf files."""
-        names = [f"{m.name}:{m.tag}" for m in self._registry.list_installed()]
-        if self._models_dir.is_dir():
-            for p in self._models_dir.iterdir():
-                if p.suffix == ".gguf":
-                    names.append(p.name)
-        return sorted(set(names))
+        """List native models from the registry only."""
+        return sorted(f"{m.name}:{m.tag}" for m in self._registry.list_installed())
 
     def _list_litellm(self) -> list[str]:
         """List models from the litellm backend via its HTTP API."""
