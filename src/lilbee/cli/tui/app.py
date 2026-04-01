@@ -80,7 +80,19 @@ class LilbeeApp(App[None]):
             self.theme = name
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
+
+        On second Ctrl+C (within 2s), force-exits via os._exit to handle
+        cases where the GIL is held by native code.
+        """
+        import time
+
+        now = time.monotonic()
+        if hasattr(self, "_last_quit_time") and now - self._last_quit_time < 2.0:
+            self._force_quit()
+            return
+        self._last_quit_time = now
+
         task_bar = getattr(self, "_task_bar", None)
         if task_bar and not task_bar.queue.is_empty:
             active = task_bar.queue.active_task
@@ -93,6 +105,18 @@ class LilbeeApp(App[None]):
             screen.action_cancel_stream()  # type: ignore[attr-defined]
             return
         self.exit()
+
+    def _force_quit(self) -> None:
+        """Force-exit when normal quit is blocked (e.g. GIL held by native code)."""
+        import os
+
+        from lilbee.services import reset_services
+
+        try:
+            reset_services()
+        except Exception:
+            pass
+        os._exit(1)
 
     def _switch_view(self, view_name: str) -> None:
         """Switch to a named view, popping any overlay screens first."""
