@@ -363,11 +363,13 @@ class _ModelBarApp(App):
 
 class TestModelBar:
     @pytest.fixture(autouse=True)
-    def mock_provider(self):
-        mock_svc = mock.MagicMock()
-        mock_svc.provider.list_models.return_value = []
-        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
-            yield mock_svc
+    def mock_classify(self):
+        empty = ([], [], [])
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=empty,
+        ):
+            yield
 
     async def test_renders_select_widgets(self) -> None:
         from textual.widgets import Select
@@ -406,6 +408,159 @@ class TestModelBar:
             await pilot.pause()
             vision_sel = app.query_one("#vision-model-select", Select)
             assert vision_sel.value == "llava"
+
+    async def test_labels_rendered(self) -> None:
+        from textual.widgets import Label
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels = [str(lbl.render()) for lbl in app.query(Label)]
+            assert "Chat:" in labels
+            assert "Embed:" in labels
+            assert "Vision:" in labels
+
+
+class TestIsMmproj:
+    def test_mmproj_detected(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("llava-mmproj-f16.gguf") is True
+
+    def test_mmproj_case_insensitive(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("model-MMPROJ-q4.gguf") is True
+
+    def test_normal_model_not_mmproj(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("qwen3:8b") is False
+
+
+class TestClassifyInstalledModels:
+    def test_native_models_classified_by_task(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.registry import ModelManifest
+
+        chat_manifest = ModelManifest(
+            name="qwen3", tag="8b", size_bytes=100, task="chat",
+            source_repo="", source_filename="", downloaded_at="",
+        )
+        embed_manifest = ModelManifest(
+            name="nomic-embed-text", tag="latest", size_bytes=100, task="embedding",
+            source_repo="", source_filename="", downloaded_at="",
+        )
+        vision_manifest = ModelManifest(
+            name="llava", tag="latest", size_bytes=100, task="vision",
+            source_repo="", source_filename="", downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch(
+                "lilbee.registry.ModelRegistry"
+            ) as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [
+                chat_manifest, embed_manifest, vision_manifest,
+            ]
+            chat, embed, vision = _classify_installed_models()
+
+        assert "qwen3:8b" in chat
+        assert "nomic-embed-text:latest" in embed
+        assert "llava:latest" in vision
+
+    def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+        from lilbee.registry import ModelManifest
+
+        mmproj_manifest = ModelManifest(
+            name="llava-mmproj", tag="latest", size_bytes=100, task="vision",
+            source_repo="", source_filename="", downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        # Legacy mmproj .gguf file
+        (cfg.models_dir / "clip-mmproj-f16.gguf").write_text("fake")
+
+        remote_mmproj = RemoteModel(
+            name="mmproj-model:latest", task="vision", family="clip",
+            parameter_size="",
+        )
+        with (
+            mock.patch(
+                "lilbee.registry.ModelRegistry"
+            ) as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[remote_mmproj],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
+            chat, embed, vision = _classify_installed_models()
+
+        all_names = chat + embed + vision
+        assert not any("mmproj" in n.lower() for n in all_names)
+
+    def test_remote_models_classified(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+
+        remote_chat = RemoteModel(
+            name="llama3:8b", task="chat", family="llama", parameter_size="8B",
+        )
+        remote_embed = RemoteModel(
+            name="nomic-embed-text:latest", task="embedding", family="nomic-bert",
+            parameter_size="137M",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch(
+                "lilbee.registry.ModelRegistry"
+            ) as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[remote_chat, remote_embed],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, embed, vision = _classify_installed_models()
+
+        assert "llama3:8b" in chat
+        assert "nomic-embed-text:latest" in embed
+
+    def test_legacy_gguf_added_as_chat(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        (cfg.models_dir / "custom-model.gguf").write_text("fake")
+
+        with (
+            mock.patch(
+                "lilbee.registry.ModelRegistry"
+            ) as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, embed, vision = _classify_installed_models()
+
+        assert "custom-model.gguf" in chat
 
 
 # ---------------------------------------------------------------------------
