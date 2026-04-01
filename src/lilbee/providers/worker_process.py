@@ -116,8 +116,8 @@ class WorkerProcess:
         self._config = config
         self._process: Any = None
         self._ctx = get_context("spawn")
-        self._request_queue: multiprocessing.Queue[_WorkerRequest] = self._ctx.Queue()
-        self._response_queue: multiprocessing.Queue[_WorkerResponse] = self._ctx.Queue()
+        self._request_queue: multiprocessing.Queue[_WorkerRequest] | None = None
+        self._response_queue: multiprocessing.Queue[_WorkerResponse] | None = None
         self._next_id = 0
         self._started = False
 
@@ -147,8 +147,9 @@ class WorkerProcess:
         if self._process is None:
             self._started = False
             return
-        with contextlib.suppress(OSError, ValueError):
-            self._request_queue.put(ShutdownRequest())
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            if self._request_queue is not None:
+                self._request_queue.put(ShutdownRequest())
         self._process.join(timeout=_JOIN_TIMEOUT_S)
         if self._process.is_alive():
             log.warning("Worker did not exit gracefully, terminating")
