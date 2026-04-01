@@ -563,6 +563,9 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     dest = cfg.models_dir / filename
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
+        if on_progress is not None:
+            size = dest.stat().st_size
+            on_progress(size, size)  # Report 100% immediately
     else:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
