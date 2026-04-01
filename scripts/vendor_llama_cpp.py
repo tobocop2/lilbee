@@ -37,42 +37,39 @@ PREBUILT_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
 DEFAULT_VERSION = "0.3.18"
 
 
-def detect_platform_tag() -> str:
-    """Return the llama-cpp-python wheel platform tag for the current system."""
-    system = platform.system()
-    machine = platform.machine().lower()
+def _detect_tags(system: str, machine: str) -> tuple[str, str]:
+    """Return (download_tag, wheel_tag) for a given OS and architecture.
+
+    download_tag: platform tag used to fetch the prebuilt llama-cpp-python wheel.
+    wheel_tag:    platform tag stamped on the output lilbee wheel.
+
+    On Linux these differ (manylinux2014 vs manylinux_2_17 compat tag);
+    on macOS and Windows they are identical.
+    """
+    machine = machine.lower()
 
     if system == "Linux":
-        return f"manylinux2014_{machine}"
+        download = f"manylinux2014_{machine}"
+        wheel = f"manylinux_2_17_{machine}.manylinux2014_{machine}"
+        return download, wheel
     elif system == "Darwin":
-        if machine == "arm64":
-            return "macosx_11_0_arm64"
-        return "macosx_10_15_x86_64"
+        tag = "macosx_11_0_arm64" if machine == "arm64" else "macosx_10_15_x86_64"
+        return tag, tag
     elif system == "Windows":
-        if machine in ("amd64", "x86_64"):
-            return "win_amd64"
-        return "win32"
+        tag = "win_amd64" if machine in ("amd64", "x86_64") else "win32"
+        return tag, tag
     else:
         raise RuntimeError(f"Unsupported platform: {system} {machine}")
+
+
+def detect_platform_tag() -> str:
+    """Return the llama-cpp-python wheel platform tag for the current system."""
+    return _detect_tags(platform.system(), platform.machine())[0]
 
 
 def detect_wheel_platform() -> str:
     """Return the output wheel platform tag."""
-    system = platform.system()
-    machine = platform.machine().lower()
-
-    if system == "Linux":
-        return f"manylinux_2_17_{machine}.manylinux2014_{machine}"
-    elif system == "Darwin":
-        if machine == "arm64":
-            return "macosx_11_0_arm64"
-        return "macosx_10_15_x86_64"
-    elif system == "Windows":
-        if machine in ("amd64", "x86_64"):
-            return "win_amd64"
-        return "win32"
-    else:
-        raise RuntimeError(f"Unsupported platform: {system} {machine}")
+    return _detect_tags(platform.system(), platform.machine())[1]
 
 
 def python_tag() -> str:
@@ -96,7 +93,7 @@ def download_wheel(version: str, plat: str, dest_dir: Path) -> Path:
             "--only-binary=:all:",
             f"--platform={plat}",
             f"--python-version={py.removeprefix('cp')}",
-            f"--extra-index-url={PREBUILT_INDEX}",
+            f"--index-url={PREBUILT_INDEX}",
             f"llama-cpp-python=={version}",
             f"--dest={dest_dir}",
         ],
@@ -184,7 +181,9 @@ def repack_wheel(
     # Determine output filename
     # Original: lilbee-0.6.0-py3-none-any.whl
     # New:      lilbee-0.6.0-cp312-cp312-macosx_11_0_arm64.whl
-    # rsplit with 3 splits: [name-version, python, abi, platform]
+    # PEP 427: wheel filenames are {name}-{ver}-{python}-{abi}-{platform}.whl
+    # rsplit("-", 3) splits from the right into exactly 4 parts, so [0] is
+    # always "{name}-{ver}" regardless of hyphens in the project name/version.
     name_version = lilbee_wheel.stem.rsplit("-", 3)[0]
     output_name = f"{name_version}-{py}-{py}-{wheel_platform}.whl"
     output = lilbee_wheel.parent / output_name
