@@ -516,8 +516,10 @@ def _start_progress_poller(
     import threading
 
     stop = threading.Event()
-    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-    repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}" / "blobs"
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    # huggingface_hub's documented cache layout: {HF_HUB_CACHE}/models--{org}--{repo}/blobs/
+    repo_dir = Path(HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "blobs"
 
     def _poll() -> None:
         while not stop.is_set():
