@@ -493,28 +493,25 @@ class CatalogScreen(Screen[None]):
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
         """Download a model in a background thread, reporting to TaskBar."""
-        import time
-
         from lilbee.catalog import download_model
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         bar: TaskBar = task_bar  # type: ignore[assignment]
 
         try:
-            last_update = 0.0
 
             def on_progress(downloaded: int, total: int) -> None:
-                nonlocal last_update
-                now = time.monotonic()
-                if now - last_update < 0.25:
-                    return
-                last_update = now
+                mb_done = downloaded / (1024 * 1024)
                 if total > 0:
                     pct = min(int(downloaded * 100 / total), 100)
-                    mb_done = downloaded / (1024 * 1024)
                     mb_total = total / (1024 * 1024)
                     self._safe_call(
                         bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
+                    )
+                else:
+                    # Total unknown - just show MB downloaded
+                    self._safe_call(
+                        bar.update_task, task_id, 0, f"{mb_done:.0f} MB"
                     )
 
             download_model(model, on_progress=on_progress)
@@ -533,8 +530,14 @@ class CatalogScreen(Screen[None]):
 
     def _safe_call(self, fn: Any, *args: Any, **kwargs: Any) -> None:
         """Call fn via call_from_thread, suppressing errors if app context is gone."""
-        with contextlib.suppress(Exception):
+        try:
             self.app.call_from_thread(fn, *args, **kwargs)
+        except Exception:
+            log.debug(
+                "_safe_call failed for %s",
+                fn.__name__ if hasattr(fn, "__name__") else fn,
+                exc_info=True,
+            )
 
     def action_pop_screen(self) -> None:
         self.app.pop_screen()

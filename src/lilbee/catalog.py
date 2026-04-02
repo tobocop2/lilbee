@@ -11,17 +11,29 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
 HF_API_URL = "https://huggingface.co/api/models"
+
+
+class DownloadConfig(BaseModel):
+    repo_id: str
+    filename: str
+    token: str | None
+    force_download: bool = True
+    tqdm_class: type | None = None
+    progress_updater: Any = None
+
+
 _DEFAULT_TIMEOUT = 30.0
 
 
@@ -505,41 +517,6 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
     return None
 
 
-def _start_progress_poller(
-    repo_id: str, callback: Any, expected_bytes: float
-) -> Callable[[], None]:
-    """Poll the HF cache for .incomplete files and report download progress.
-
-    Returns a stop function. hf_xet sends update(0) during downloads, so we
-    watch the actual file size on disk instead.
-    """
-    import threading
-
-    stop = threading.Event()
-    from huggingface_hub.constants import HF_HUB_CACHE
-
-    # huggingface_hub's documented cache layout: {HF_HUB_CACHE}/models--{org}--{repo}/blobs/
-    repo_dir = Path(HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "blobs"
-
-    def _poll() -> None:
-        while not stop.is_set():
-            try:
-                if repo_dir.exists():
-                    for p in repo_dir.iterdir():
-                        if p.name.endswith(".incomplete"):
-                            size = p.stat().st_size
-                            if size > 0 and expected_bytes > 0:
-                                callback(size, int(expected_bytes))
-                            break
-            except (OSError, ValueError):
-                pass
-            stop.wait(0.5)
-
-    t = threading.Thread(target=_poll, daemon=True)
-    t.start()
-    return stop.set
-
-
 def _make_progress_tqdm(callback: Any) -> type:
     """Create a minimal tqdm-compatible class that routes progress to a callback.
 
@@ -550,15 +527,15 @@ def _make_progress_tqdm(callback: Any) -> type:
     """
 
     class _CallbackProgress:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.total: int = int(kwargs.get("total", 0) or 0)
-            self.n: int = int(kwargs.get("initial", 0) or 0)
-            self.disable: bool = bool(kwargs.get("disable", False))
+        def __init__(self, *args: Any, total: int = 0, initial: int = 0, disable: bool = False, **kwargs: Any) -> None:
+            self.total: int = total
+            self.n: int = initial
+            self.disable: bool = disable
 
         def update(self, n: int = 1) -> None:
             self.n += n
-            if not self.disable and callback and self.total > 0:
-                callback(self.n, self.total)
+            if n > 0 and not self.disable and callback:
+                callback(self.n, self.total or 0)
 
         def reset(self, total: int | None = None) -> None:
             self.n = 0
@@ -606,21 +583,31 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
 
-        kwargs: dict[str, Any] = {
-            "repo_id": entry.hf_repo,
-            "filename": filename,
-            "token": token,
-            "force_download": True,
-        }
+        # Create detailed callback wrapper for xet-core's detailed progress mode.
+        # xet-core detects callback signature: 1-arg = simple, 2-arg = detailed.
+        # With detailed mode, we get network-level progress (~200KB granularity)
+        # via total_transfer_bytes_completion_increment instead of disk-write progress.
+        def make_xet_callback(user_callback: Any) -> Any:
+            def xet_callback(total_update: Any, item_updates: Any) -> None:
+                if user_callback is None:
+                    return
+                # Use network transfer bytes for smoother progress (~200KB chunks)
+                increment = total_update.total_transfer_bytes_completion_increment
+                total = total_update.total_transfer_bytes
+                if increment > 0:
+                    user_callback(increment, total)
+            return xet_callback
 
-        # Poll file size for progress since hf_xet reports update(0) during download.
-        # Start a background thread that watches the .incomplete file in the HF cache.
-        stop_polling = _start_progress_poller(
-            entry.hf_repo, on_progress, entry.size_gb * 1024 * 1024 * 1024
-        ) if on_progress else None
+        config = DownloadConfig(
+            repo_id=entry.hf_repo,
+            filename=filename,
+            token=token,
+            tqdm_class=_make_progress_tqdm(on_progress),
+            progress_updater=[make_xet_callback(on_progress)] if on_progress else None,
+        )
 
         try:
-            cached = Path(hf_hub_download(**kwargs))
+            cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
         except GatedRepoError:
             raise PermissionError(
                 f"{entry.name} requires HuggingFace authentication. "
@@ -628,12 +615,11 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             ) from None
         except RepositoryNotFoundError:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
-        finally:
-            if stop_polling:
-                stop_polling()
 
         if on_progress:
-            on_progress(int(entry.size_gb * 1024 * 1024 * 1024), int(entry.size_gb * 1024 * 1024 * 1024))
+            on_progress(
+                int(entry.size_gb * 1024 * 1024 * 1024), int(entry.size_gb * 1024 * 1024 * 1024)
+            )
         dest = cached
 
     # Register in manifest so the model is visible to the registry
@@ -648,7 +634,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
 
 def _register_model(entry: CatalogModel, file_path: Path) -> None:
     """Create a registry manifest for a downloaded model."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
@@ -661,7 +647,7 @@ def _register_model(entry: CatalogModel, file_path: Path) -> None:
         task=entry.task,
         source_repo=entry.hf_repo,
         source_filename=file_path.name,
-        downloaded_at=datetime.now(timezone.utc).isoformat(),
+        downloaded_at=datetime.now(UTC).isoformat(),
     )
     try:
         registry.install(ref, file_path, manifest)

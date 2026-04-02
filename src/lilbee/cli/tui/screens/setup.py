@@ -130,24 +130,57 @@ class SetupWizard(Screen[str | None]):
 
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
-        """Download via catalog API with TUI-native progress (no Rich)."""
+        """Download via catalog API with TUI-native progress (no Rich).
+        
+        Runs in a worker thread to avoid blocking the UI. Progress is reported
+        via callbacks rather than tqdm to avoid multiprocessing lock issues
+        with Textual's worker threads.
+        """
+        # Disable huggingface_hub's internal progress bars to prevent
+        # multiprocessing lock issues with Textual worker threads
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+        
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
             from lilbee.catalog import download_model
 
+            last_update_time = 0
+            last_pct = -1
+            
             def _on_progress(downloaded: int, total: int) -> None:
-                if total > 0:
-                    pct = int(downloaded * 100 / total)
-                    mb_done = downloaded / (1024 * 1024)
-                    mb_total = total / (1024 * 1024)
-                    try:
+                nonlocal last_update_time, last_pct
+                import time
+                current_time = time.time()
+                
+                # Throttle updates to every 100ms to avoid UI spam
+                if current_time - last_update_time < 0.1:
+                    return
+                    
+                try:
+                    if total > 0:
+                        pct = min(int(downloaded * 100 / total), 100)
+                        # Only update if percentage changed
+                        if pct == last_pct:
+                            return
+                        last_pct = pct
+                        
+                        mb_done = downloaded / (1024 * 1024)
+                        mb_total = total / (1024 * 1024)
+                        last_update_time = current_time
                         self.app.call_from_thread(self._update_progress, pct)
                         self.app.call_from_thread(
                             self._set_status,
                             f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
                         )
-                    except Exception:
-                        log.debug("Progress callback failed", exc_info=True)
+                    else:
+                        mb_done = downloaded / (1024 * 1024)
+                        self.app.call_from_thread(
+                            self._set_status,
+                            f"Downloading... {mb_done:.0f} MB",
+                        )
+                except Exception:
+                    log.debug("Progress callback failed", exc_info=True)
 
             dest = download_model(model, on_progress=_on_progress)
             self.app.call_from_thread(self._on_download_complete, dest.stem)
