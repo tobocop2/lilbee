@@ -89,7 +89,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -108,7 +108,7 @@ jobs:
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   test-with-ollama:
     runs-on: ubuntu-latest
