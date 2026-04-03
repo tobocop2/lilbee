@@ -30,6 +30,7 @@ class DownloadConfig(BaseModel):
     filename: str
     token: str | None
     force_download: bool = True
+    cache_dir: str | None = None
     tqdm_class: type | None = None
     progress_updater: Any = None
 
@@ -527,7 +528,14 @@ def _make_progress_tqdm(callback: Any) -> type:
     """
 
     class _CallbackProgress:
-        def __init__(self, *args: Any, total: int = 0, initial: int = 0, disable: bool = False, **kwargs: Any) -> None:
+        def __init__(
+            self,
+            *args: Any,
+            total: int = 0,
+            initial: int = 0,
+            disable: bool = False,
+            **kwargs: Any,
+        ) -> None:
             self.total: int = total
             self.n: int = initial
             self.disable: bool = disable
@@ -591,8 +599,6 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             cumulative_bytes = [0]
 
             def xet_callback(total_update: Any, item_updates: Any) -> None:
-                if user_callback is None:
-                    return
                 increment = total_update.total_transfer_bytes_completion_increment
                 total = total_update.total_transfer_bytes
                 if increment > 0:
@@ -604,6 +610,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             repo_id=entry.hf_repo,
             filename=filename,
             token=token,
+            cache_dir=str(cfg.models_dir),
             tqdm_class=_make_progress_tqdm(on_progress),
             progress_updater=[make_xet_callback(on_progress)] if on_progress else None,
         )
