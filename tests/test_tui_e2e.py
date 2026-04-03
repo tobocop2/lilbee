@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Footer
+from textual.widgets import Collapsible, Footer, Static
 
 from lilbee.config import cfg
 
@@ -446,3 +446,129 @@ class TestDownloadProgress:
 
         assert len(results) >= 2
         assert results[-1][0] > 0
+
+
+class TestTaskCenter:
+    async def test_task_center_renders_with_active_task(self, _mock_resolve):
+        """Task Center must render collapsible task widgets without crashing."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # Add a mock task directly to the task bar
+            task_bar = getattr(app, "_task_bar", None)
+            assert task_bar is not None
+
+            task_id = task_bar.add_task("Test Download", "download")
+
+            # Update task to have progress
+            task_bar.update_task(task_id, 45, "100/500 MB")
+
+            # Switch to Task Center - this triggers on_mount which calls _refresh_tasks
+            app._switch_view("Tasks")
+            await pilot.pause()
+
+            # Verify the task list has the task
+            task_list = app.screen.query_one("#task-list")
+            assert task_list is not None
+
+            # Should have at least one collapsible
+            collapsibles = app.screen.query(Collapsible)
+            assert len(collapsibles) >= 1, f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+
+    async def test_task_center_renders_empty_state(self, _mock_resolve):
+        """Task Center shows 'All quiet' when no tasks."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # Switch to Task Center with no tasks
+            app._switch_view("Tasks")
+            await pilot.pause()
+
+            # The task-list VerticalScroll should have children
+            task_list = app.screen.query_one("#task-list")
+            # Should have at least one child (the empty state Static)
+            assert len(task_list.children) >= 1, f"Expected at least 1 child, got {len(task_list.children)}"
+
+
+class TestDownloadProgress:
+    @pytest.mark.slow
+    def test_download_progress_callback_receives_cumulative_values(self, tmp_path):
+        """Download Mistral and verify progress callbacks receive cumulative values."""
+        import os
+        import threading
+
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token:
+            pytest.skip("HF_TOKEN environment variable not set")
+
+        from lilbee.catalog import CatalogModel, download_model
+        from lilbee.model_manager import reset_model_manager
+
+        snapshot = cfg.model_copy()
+        try:
+            cfg.data_dir = tmp_path / "data"
+            cfg.models_dir = tmp_path / "models"
+            cfg.data_root = tmp_path
+            cfg.documents_dir = tmp_path / "documents"
+            cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+            cfg.models_dir.mkdir(parents=True, exist_ok=True)
+            cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+            reset_model_manager()
+
+            entry = CatalogModel(
+                name="Mistral 7B",
+                hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
+                gguf_filename="*Q4_K_M.gguf",
+                size_gb=4.2,
+                min_ram_gb=8,
+                description="Test",
+                featured=False,
+                downloads=0,
+                task="chat",
+            )
+
+            progress_calls = []
+            download_error = [None]
+            download_done = [False]
+
+            def on_progress(downloaded: int, total: int):
+                progress_calls.append((downloaded, total))
+                # Exit after receiving some progress (at least 1MB)
+                if downloaded > 1024 * 1024:
+                    download_done[0] = True
+
+            def download_in_thread():
+                try:
+                    download_model(entry, on_progress=on_progress)
+                except Exception as e:
+                    if not download_done[0]:
+                        download_error[0] = e
+
+            thread = threading.Thread(target=download_in_thread)
+            thread.start()
+            thread.join(timeout=30)
+
+            if thread.is_alive():
+                thread.join(timeout=5)
+
+            if download_error[0]:
+                raise download_error[0]
+
+            assert len(progress_calls) > 0, "No progress callbacks received"
+
+            cumulative_values = [c[0] for c in progress_calls]
+            assert cumulative_values[-1] > 0, "No cumulative bytes received"
+
+            print(f"\nProgress calls: {len(progress_calls)}")
+            print(f"Final: {cumulative_values[-1] / 1024 / 1024:.1f} MB")
+        finally:
+            for field_name in type(snapshot).model_fields:
+                setattr(cfg, field_name, getattr(snapshot, field_name))

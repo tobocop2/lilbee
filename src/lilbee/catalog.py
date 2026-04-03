@@ -588,14 +588,16 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         # With detailed mode, we get network-level progress (~200KB granularity)
         # via total_transfer_bytes_completion_increment instead of disk-write progress.
         def make_xet_callback(user_callback: Any) -> Any:
+            cumulative_bytes = [0]
+
             def xet_callback(total_update: Any, item_updates: Any) -> None:
                 if user_callback is None:
                     return
-                # Use network transfer bytes for smoother progress (~200KB chunks)
                 increment = total_update.total_transfer_bytes_completion_increment
                 total = total_update.total_transfer_bytes
                 if increment > 0:
-                    user_callback(increment, total)
+                    cumulative_bytes[0] += increment
+                    user_callback(cumulative_bytes[0], total)
             return xet_callback
 
         config = DownloadConfig(

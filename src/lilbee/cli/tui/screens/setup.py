@@ -135,12 +135,9 @@ class SetupWizard(Screen[str | None]):
         Runs in a worker thread to avoid blocking the UI. Progress is reported
         via callbacks rather than tqdm to avoid multiprocessing lock issues
         with Textual's worker threads.
-        """
-        # Disable huggingface_hub's internal progress bars to prevent
-        # multiprocessing lock issues with Textual worker threads
-        from huggingface_hub.utils import disable_progress_bars
-        disable_progress_bars()
         
+        Note: disable_progress_bars() is called in catalog.py during download.
+        """
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
             from lilbee.catalog import download_model
@@ -158,23 +155,28 @@ class SetupWizard(Screen[str | None]):
                     return
                     
                 try:
+                    mb_done = downloaded / (1024 * 1024)
+                    
                     if total > 0:
                         pct = min(int(downloaded * 100 / total), 100)
-                        # Only update if percentage changed
-                        if pct == last_pct:
+                        
+                        # Always update status with MB downloaded (more informative than %)
+                        mb_total = total / (1024 * 1024)
+                        last_update_time = current_time
+                        
+                        # Update progress bar - but allow 0% to show if truly at start
+                        # Only throttle if we're at same percentage AND > 0%
+                        if pct == last_pct and pct > 0:
                             return
                         last_pct = pct
                         
-                        mb_done = downloaded / (1024 * 1024)
-                        mb_total = total / (1024 * 1024)
-                        last_update_time = current_time
                         self.app.call_from_thread(self._update_progress, pct)
                         self.app.call_from_thread(
                             self._set_status,
                             f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
                         )
                     else:
-                        mb_done = downloaded / (1024 * 1024)
+                        # Show raw MB if total is unknown
                         self.app.call_from_thread(
                             self._set_status,
                             f"Downloading... {mb_done:.0f} MB",
