@@ -31,7 +31,6 @@ class DownloadConfig(BaseModel):
     token: str | None
     force_download: bool = True
     cache_dir: str | None = None
-    tqdm_class: type | None = None
     progress_updater: Any = None
 
 
@@ -518,56 +517,6 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
     return None
 
 
-def _make_progress_tqdm(callback: Any) -> type:
-    """Create a minimal tqdm-compatible class that routes progress to a callback.
-
-    Does NOT inherit from real tqdm -- avoids multiprocessing lock issues
-    that crash in Textual worker threads. Implements the interface that
-    huggingface_hub actually calls: __init__, update, reset, close,
-    set_postfix_str, refresh, and context manager protocol.
-    """
-
-    class _CallbackProgress:
-        def __init__(
-            self,
-            *args: Any,
-            total: int = 0,
-            initial: int = 0,
-            disable: bool = False,
-            **kwargs: Any,
-        ) -> None:
-            self.total: int = total
-            self.n: int = initial
-            self.disable: bool = disable
-
-        def update(self, n: int = 1) -> None:
-            self.n += n
-            if n > 0 and not self.disable and callback:
-                callback(self.n, self.total or 0)
-
-        def reset(self, total: int | None = None) -> None:
-            self.n = 0
-            if total is not None:
-                self.total = int(total)
-
-        def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
-            pass
-
-        def refresh(self) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-        def __enter__(self) -> Any:
-            return self
-
-        def __exit__(self, *args: Any) -> None:
-            self.close()
-
-    return _CallbackProgress
-
-
 def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
 
@@ -591,28 +540,12 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
 
-        # Create detailed callback wrapper for xet-core's detailed progress mode.
-        # xet-core detects callback signature: 1-arg = simple, 2-arg = detailed.
-        # With detailed mode, we get network-level progress (~200KB granularity)
-        # via total_transfer_bytes_completion_increment instead of disk-write progress.
-        def make_xet_callback(user_callback: Any) -> Any:
-            cumulative_bytes = [0]
-
-            def xet_callback(total_update: Any, item_updates: Any) -> None:
-                increment = total_update.total_transfer_bytes_completion_increment
-                total = total_update.total_transfer_bytes
-                if increment > 0:
-                    cumulative_bytes[0] += increment
-                    user_callback(cumulative_bytes[0], total)
-            return xet_callback
-
         config = DownloadConfig(
             repo_id=entry.hf_repo,
             filename=filename,
             token=token,
             cache_dir=str(cfg.models_dir),
-            tqdm_class=_make_progress_tqdm(on_progress),
-            progress_updater=[make_xet_callback(on_progress)] if on_progress else None,
+            progress_updater=on_progress,
         )
 
         try:

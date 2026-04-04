@@ -994,7 +994,7 @@ class TestRealDownloadProgress:
         
         The 'bad value(s) in fds_to_keep' error occurred when tqdm
         was used in Textual worker threads. This test verifies the
-        fix (disable_progress_bars + tqdm_class=None) works.
+        fix (disable_progress_bars + progress_updater callback) works.
         """
         import threading
         from lilbee.catalog import CatalogModel

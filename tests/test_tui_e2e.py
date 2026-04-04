@@ -379,31 +379,6 @@ class TestDownloadProgress:
             stop()
         # No exception = pass
 
-    def test_make_progress_tqdm_fires_callback(self):
-        """_CallbackProgress must call callback on update with real bytes."""
-        from lilbee.catalog import _make_progress_tqdm
-
-        results = []
-        ProgressClass = _make_progress_tqdm(lambda d, t: results.append((d, t)))
-        inst = ProgressClass(total=1000, initial=0)
-        inst.update(250)
-        inst.update(750)
-        assert results == [(250, 1000), (1000, 1000)]
-
-    def test_make_progress_tqdm_skips_zero_update(self):
-        """Callback must not fire when update(0) is called (xet bug)."""
-        from lilbee.catalog import _make_progress_tqdm
-
-        results = []
-        ProgressClass = _make_progress_tqdm(lambda d, t: results.append((d, t)))
-        inst = ProgressClass(total=1000, initial=0)
-        inst.update(0)
-        inst.update(0)
-        inst.update(500)
-        # Only the real update should fire
-        assert len(results) == 1
-        assert results[0] == (500, 1000)
-
     def test_download_model_calls_progress(self):
         """download_model must call on_progress during download."""
         from lilbee.catalog import CatalogModel, download_model
@@ -423,12 +398,10 @@ class TestDownloadProgress:
 
         # Mock hf_hub_download to simulate a download
         def fake_download(**kwargs):
-            tqdm_class = kwargs.get("tqdm_class")
-            if tqdm_class:
-                progress = tqdm_class(total=1000, initial=0)
-                progress.update(500)
-                progress.update(500)
-                progress.close()
+            progress_updater = kwargs.get("progress_updater")
+            if progress_updater:
+                progress_updater(500, 1000)
+                progress_updater(1000, 1000)
             return str(cfg.models_dir / "test.gguf")
 
         # Create the dest file so _register_model works

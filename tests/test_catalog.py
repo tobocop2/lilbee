@@ -545,18 +545,12 @@ class TestDownloadModel:
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        class MockProgressUpdate:
-            def __init__(self, increment: int, total: int):
-                self.total_transfer_bytes_completion_increment = increment
-                self.total_transfer_bytes = total
-
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
             progress_updater = kwargs.get("progress_updater")
             if progress_updater:
-                for callback in progress_updater:
-                    callback(MockProgressUpdate(100, 1000), None)
-                    callback(MockProgressUpdate(200, 1000), None)
+                progress_updater(100, 1000)
+                progress_updater(200, 1000)
             return result
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
@@ -587,12 +581,10 @@ class TestDownloadModel:
         progress_calls: list[tuple[int, int]] = []
 
         def fake_with_progress(**kwargs: Any) -> str:
-            tqdm_cls = kwargs.get("tqdm_class")
-            if tqdm_cls:
-                bar = tqdm_cls(total=100)
-                bar.update(50)
-                bar.update(50)
-                bar.close()
+            progress_updater = kwargs.get("progress_updater")
+            if progress_updater:
+                progress_updater(500, 1000)
+                progress_updater(1000, 1000)
             return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_with_progress)
@@ -635,72 +627,6 @@ class TestDownloadModel:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
             download_model(entry)
-
-
-class TestMakeProgressTqdm:
-    """Tests for the tqdm-compatible progress callback class."""
-
-    def test_update_fires_callback(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=200)
-        bar.update(50)
-        bar.update(100)
-        assert calls == [(50, 200), (150, 200)]
-
-    def test_reset_clears_progress(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=100)
-        bar.update(60)
-        bar.reset(total=200)
-        assert bar.n == 0
-        assert bar.total == 200
-
-    def test_disabled_suppresses_callback(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=100, disable=True)
-        bar.update(50)
-        assert calls == []
-
-    def test_none_total_treated_as_zero(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=None)
-        bar.update(50)
-        # total=None treated as 0, but callback still fires with total=0
-        assert calls == [(50, 0)]
-
-    def test_context_manager_protocol(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        with cls(total=100) as bar:
-            bar.update(10)
-        # No error means pass
-
-    def test_set_postfix_str_is_noop(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        bar = cls(total=100)
-        bar.set_postfix_str("test")  # Should not raise
-
-    def test_refresh_is_noop(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        bar = cls(total=100)
-        bar.refresh()  # Should not raise
 
 
 class TestResolveFilename:
@@ -1517,39 +1443,26 @@ class TestDownloadProgressCallback:
             repo_id="test/test",
             filename="test.gguf",
             token="test",
-            progress_updater=[lambda x, y: None],
+            progress_updater=lambda x, y: None,
         )
         assert config.progress_updater is not None
 
-    def test_xet_detailed_callback_signature(self) -> None:
-        """Verify xet-core detects 2-arg callback as detailed mode."""
-        import inspect
-
-        def detailed_callback(total_update, item_updates):
-            pass
-
-        sig = inspect.signature(detailed_callback)
-        params = list(sig.parameters.keys())
-
-        assert len(params) == 2
-        assert params == ["total_update", "item_updates"]
-
-    def test_progress_updater_wrapper_uses_transfer_bytes(self) -> None:
-        """Verify lilbee's callback wrapper extracts transfer bytes."""
-        # This tests that the wrapper function exists and has correct structure
+    def test_progress_updater_is_bare_callable(self) -> None:
+        """Verify progress_updater accepts a bare callable, not a list."""
         from lilbee.catalog import DownloadConfig
 
-        calls = []
+        calls: list[tuple[int, int]] = []
 
-        def user_callback(downloaded, total):
+        def user_callback(downloaded: int, total: int) -> None:
             calls.append((downloaded, total))
 
-        # Create config with callback - the wrapper should be created internally
         config = DownloadConfig(
             repo_id="test/test",
             filename="test.gguf",
             token="test",
-            progress_updater=[lambda total_update, item_updates: None],
+            progress_updater=user_callback,
         )
 
         assert config.progress_updater is not None
+        config.progress_updater(100, 200)
+        assert calls == [(100, 200)]
