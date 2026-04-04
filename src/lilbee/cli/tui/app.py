@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding, BindingType
 
 from lilbee.cli.tui import messages as msg
@@ -43,38 +43,31 @@ class LilbeeApp(App[None]):
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "Help", show=False),
+        Binding("question_mark", "push_help", "? help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
-        Binding("f2", "push_catalog", "Models", show=False),
-        Binding("ctrl+n", "push_catalog", "Models", show=False),
-        Binding("f3", "push_status", "Status", show=False),
-        Binding("ctrl+s", "push_status", "Status", show=False),
-        Binding("f4", "push_settings", "Settings", show=False),
-        Binding("ctrl+e", "push_settings", "Settings", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("1", "switch_chat", "Chat", show=False),
-        Binding("2", "switch_models", "Models", show=False),
-        Binding("3", "switch_status", "Status", show=False),
-        Binding("4", "switch_settings", "Settings", show=False),
         Binding("h", "nav_prev", "Prev", show=False),
         Binding("left", "nav_prev", "Prev", show=False),
         Binding("l", "nav_next", "Next", show=False),
         Binding("right", "nav_next", "Next", show=False),
-        Binding("ctrl+c", "quit", "Cancel/Quit", show=False, priority=True),
+        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
+        self._active_view = "Chat"
         self._theme_index = 0
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-    def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
+        self._task_bar = TaskBar(id="app-task-bar")
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
+        # Mount the app-level TaskBar (hidden, used for queue management + NavBar updates)
+        self.mount(self._task_bar)
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -92,7 +85,19 @@ class LilbeeApp(App[None]):
             self.theme = name
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
+
+        On second Ctrl+C (within 2s), force-exits via os._exit to handle
+        cases where the GIL is held by native code.
+        """
+        import time
+
+        now = time.monotonic()
+        if hasattr(self, "_last_quit_time") and now - self._last_quit_time < 2.0:
+            self._force_quit()
+            return
+        self._last_quit_time = now
+
         task_bar = getattr(self, "_task_bar", None)
         if task_bar and not task_bar.queue.is_empty:
             active = task_bar.queue.active_task
@@ -106,12 +111,25 @@ class LilbeeApp(App[None]):
             return
         self.exit()
 
+    def _force_quit(self) -> None:
+        """Force-exit when normal quit is blocked (e.g. GIL held by native code)."""
+        import os
+
+        from lilbee.services import reset_services
+
+        try:
+            reset_services()
+        except Exception:
+            pass
+        os._exit(1)
+
     def _switch_view(self, view_name: str) -> None:
         """Switch to a named view, popping any overlay screens first."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.screens.settings import SettingsScreen
         from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.cli.tui.screens.task_center import TaskCenter
 
         # Pop non-chat screens until we're back at chat
         while len(self.screen_stack) > 1 and not isinstance(self.screen, ChatScreen):
@@ -127,52 +145,30 @@ class LilbeeApp(App[None]):
             self.push_screen(StatusScreen())
         elif view_name == "Settings":
             self.push_screen(SettingsScreen())
+        elif view_name == "Tasks":
+            self.push_screen(TaskCenter())
 
-        # Update NavBar
+        # Update NavBar on current screen and persist state for new screens
+        self._active_view = view_name
         try:
-            nav = self.query_one("#global-nav-bar", NavBar)
+            nav = self.screen.query_one("#global-nav-bar", NavBar)
             nav.active_view = view_name
         except Exception:
             log.debug("NavBar update failed", exc_info=True)
-
-    def action_push_catalog(self) -> None:
-        self._switch_view("Models")
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal
 
         self.push_screen(HelpModal())
 
-    def action_push_status(self) -> None:
-        self._switch_view("Status")
-
-    def action_push_settings(self) -> None:
-        self._switch_view("Settings")
-
-    def action_switch_chat(self) -> None:
-        self._switch_view("Chat")
-
-    def action_switch_models(self) -> None:
-        self._switch_view("Models")
-
-    def action_switch_status(self) -> None:
-        self._switch_view("Status")
-
-    def action_switch_settings(self) -> None:
-        self._switch_view("Settings")
-
     def action_nav_prev(self) -> None:
         """Navigate to previous view (h or left arrow)."""
-        nav = self.query_one("#global-nav-bar", NavBar)
-        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
-        prev_idx = (current_idx - 1) % 4
-        view_names = ["Chat", "Models", "Status", "Settings"]
-        self._switch_view(view_names[prev_idx])
+        view_names = msg.NAV_VIEWS
+        current_idx = view_names.index(self._active_view)
+        self._switch_view(view_names[(current_idx - 1) % len(view_names)])
 
     def action_nav_next(self) -> None:
         """Navigate to next view (l or right arrow)."""
-        nav = self.query_one("#global-nav-bar", NavBar)
-        current_idx = ["Chat", "Models", "Status", "Settings"].index(nav.active_view)
-        next_idx = (current_idx + 1) % 4
-        view_names = ["Chat", "Models", "Status", "Settings"]
-        self._switch_view(view_names[next_idx])
+        view_names = msg.NAV_VIEWS
+        current_idx = view_names.index(self._active_view)
+        self._switch_view(view_names[(current_idx + 1) % len(view_names)])

@@ -48,6 +48,7 @@ SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"
 SYNC_STATUS_FAILED = "Sync failed"
 SYNC_FILE_PROGRESS = "Syncing [{current}/{total}]: {file}"
+SYNC_ALREADY_ACTIVE = "Sync in progress, please wait"
 EMBEDDING_SET = "Embedding model: {name}"
 CMD_CRAWL_UNAVAILABLE = "Install crawl4ai: pip install 'lilbee[crawler]'"
 EMBEDDING_MISSING = (
@@ -73,13 +74,8 @@ CATALOG_NOT_INSTALLED = "{name} is not installed"
 CATALOG_CONFIRM_DELETE = "Delete {name}? Press d again to confirm"
 CATALOG_DELETED = "Deleted {name}"
 CATALOG_DELETE_FAILED = "Delete failed: {error}"
-CATALOG_FEATURED_HEADER = "\u2605 FEATURED"
-CATALOG_HF_HEADER = "HUGGINGFACE \u2014 {name}"
 CATALOG_NO_MATCH = "No models match your filters."
 CATALOG_FILTER_PLACEHOLDER = "Filter models... ( Esc to close)"
-CATALOG_LOAD_MORE = "   \u2193 Load more models..."
-CATALOG_INSTALLED_HEADER = "INSTALLED ({provider})"
-CATALOG_HF_CHAT_ONLY = "Featured models only \u2014 HuggingFace browsing available for chat models"
 
 # -- Chat screen ---------------------------------------------------------------
 
@@ -116,48 +112,49 @@ SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 # -- Navigation bar ------------------------------------------------------------
 
 NAV_VIEWS: list[str] = ["Chat", "Models", "Status", "Settings", "Tasks"]
-NAV_HELP_QUIT = "  [dim]?[/] Help  [dim]^c[/] Quit"
+NAV_HELP_QUIT = "  [dim]click/h/l[/] Nav  [dim]?[/] Help  [dim]^c[/] Quit"
+MODE_NORMAL = "-- NORMAL --"
+MODE_INSERT = "-- INSERT --"
 
 # -- Help modal ----------------------------------------------------------------
 
 HELP_TEXT_TEMPLATE = """\
-[bold]Global[/bold]
+[bold]Navigation[/bold]
 
+  h / Left       Previous view
+  l / Right      Next view
   ? / F1 / ^h    Help (this screen)
-  1              Chat view
-  2              Model catalog
-  3              Knowledge base status
-  4              Settings
-  F2 / ^n        Model catalog
-  F3 / ^s        Knowledge base status
-  F4 / ^e        Settings
   ^t             Cycle theme
   ^c             Quit
 
   [bold]Chat[/bold]
   Enter          Send message
-  Escape         Cancel stream
-  j / k          Scroll line (vim)
+  Escape         Cancel stream / normal mode
+  /              Focus command input
+  Tab            Autocomplete
+  ^n / ^p        Cycle completions fwd / back
+  Up / Down      Input history (when input focused)
+  j / k          Scroll line (normal mode)
   g / G          Scroll to top / bottom
-  ^d             Half-page down
-  ^u             Half-page up
+  ^d / ^u        Half-page down / up
   PgUp / PgDn    Full page scroll
-  Tab            Accept suggestion
+  ^r             Toggle markdown rendering
 
   [bold]Catalog[/bold]
   j / k          Navigate list
   g / G          Jump to top / bottom
-  1-4 / Ctrl+1-4  Switch tab (All/Chat/Embed/Vision)
   /              Focus search
   s              Cycle sort order
+  d / x          Delete model
   Space          Page down
   ^d / ^u        Half-page down / up
   Enter          Install / select model
   q / Escape     Back
 
-  [bold]Settings / Status[/bold]
+  [bold]Settings / Status / Tasks[/bold]
   j / k          Navigate rows
   g / G          Jump to top / bottom
+  d              Cancel task (Tasks only)
   q / Escape     Back
 
   [bold]Commands[/bold]  (type / for suggestions)

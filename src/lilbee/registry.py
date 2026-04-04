@@ -1,7 +1,7 @@
-"""Model registry -- content-addressable storage with manifest-based resolution.
+"""Model registry -- manifest-based resolution over HuggingFace cache.
 
 Inspired by Ollama's model management. Model names (e.g., "nomic-embed-text")
-resolve through manifests to content-addressed .gguf blobs.
+resolve through manifests to files in the HF cache.
 
 Storage layout::
 
@@ -12,7 +12,7 @@ Storage layout::
     |   +-- qwen3/
     |       +-- latest.json
     |       +-- 0.6b.json
-    +-- blobs/
+    +-- models--ORG--NAME/blobs/
         +-- sha256-abc123...
         +-- sha256-def456...
 """
@@ -107,15 +107,17 @@ def _sha256_file(path: Path) -> str:
 
 
 class ModelRegistry:
-    """Content-addressable model storage with manifest resolution."""
+    """Content-addressable model storage with manifest resolution.
+
+    Now references HF cache directly instead of copying files.
+    """
 
     def __init__(self, models_dir: Path) -> None:
         self._root = models_dir
         self._manifests_dir = models_dir / "manifests"
-        self._blobs_dir = models_dir / "blobs"
 
     def resolve(self, ref: str | ModelRef) -> Path:
-        """Resolve model name to blob file path.
+        """Resolve model name to file path in HF cache.
 
         Raises ``KeyError`` if the model is not installed.
         """
@@ -123,13 +125,26 @@ class ModelRegistry:
         manifest = self._read_manifest(r)
         if manifest is None:
             raise KeyError(f"Model {r} not installed")
-        blob_path = self._blobs_dir / f"{_HASH_ALGORITHM}-{manifest.blob}"
-        if not blob_path.exists():
-            raise KeyError(f"Blob missing for {r}: {blob_path.name}")
-        return blob_path
+
+        # Find the file in HF cache structure: models--ORG--NAME/blobs/*
+        cache_path = self._root / f"models--{manifest.source_repo.replace('/', '--')}"
+        if not cache_path.exists():
+            raise KeyError(f"Cache folder missing for {r}: {cache_path.name}")
+
+        # Find the blobs directory
+        blobs_dir = cache_path / "blobs"
+        if not blobs_dir.exists():
+            raise KeyError(f"Blobs directory missing for {r}")
+
+        # Look for file matching the blob hash
+        blob_file = blobs_dir / manifest.blob
+        if not blob_file.exists():
+            raise KeyError(f"Blob file missing for {r}: {manifest.blob}")
+
+        return blob_file
 
     def is_installed(self, ref: str | ModelRef) -> bool:
-        """Check if a model is installed (manifest exists and blob is present)."""
+        """Check if a model is installed (manifest exists and file is in cache)."""
         try:
             self.resolve(ref)
             return True
@@ -137,14 +152,23 @@ class ModelRegistry:
             return False
 
     def install(self, ref: ModelRef, source_path: Path, manifest: ModelManifest) -> Path:
-        """Move a downloaded file into blob storage and write manifest.
+        """Write manifest for a model already in HF cache.
 
-        Returns the blob path.
+        The file is already in the cache dir (thanks to cache_dir setting).
+        This just creates the manifest to track it.
         """
-        self._blobs_dir.mkdir(parents=True, exist_ok=True)
+        # Compute hash to store in manifest
         digest = _sha256_file(source_path)
-        blob_path = self._blobs_dir / f"{_HASH_ALGORITHM}-{digest}"
-        os.replace(source_path, blob_path)
+
+        # Resolve the cache path to get the blob filename
+        cache_path = self._root / f"models--{manifest.source_repo.replace('/', '--')}"
+        blob_path = cache_path / "blobs" / digest
+
+        # Verify file exists in cache
+        if not blob_path.exists():
+            raise FileNotFoundError(f"Downloaded file not found in cache: {blob_path}")
+
+        # Write manifest
         updated = ModelManifest(
             name=manifest.name,
             tag=manifest.tag,
@@ -159,7 +183,7 @@ class ModelRegistry:
         return blob_path
 
     def remove(self, ref: str | ModelRef) -> bool:
-        """Remove a model manifest. Delete blob if no other manifests reference it."""
+        """Remove a model manifest. Does NOT delete cache files (managed by HF)."""
         try:
             r = _coerce_ref(ref)
             manifest = self._read_manifest(r)
@@ -173,11 +197,7 @@ class ModelRegistry:
         name_dir = manifest_path.parent
         if name_dir.exists() and not any(name_dir.iterdir()):
             name_dir.rmdir()
-        # Garbage-collect blob if unreferenced
-        if not self._blob_referenced(manifest.blob):
-            blob_path = self._blobs_dir / f"{_HASH_ALGORITHM}-{manifest.blob}"
-            blob_path.unlink(missing_ok=True)
-            log.info("Deleted unreferenced blob %s", blob_path.name)
+        log.info("Removed manifest for %s (cache file untouched)", r)
         return True
 
     def list_installed(self) -> list[ModelManifest]:
@@ -197,8 +217,8 @@ class ModelRegistry:
     def migrate_legacy(self) -> int:
         """Scan for .gguf files in root dir and register them.
 
-        On first run, finds existing .gguf files and creates manifests.
-        Uses catalog to match display names. Returns the number of models migrated.
+        On first run, finds existing .gguf files, moves them to HF cache
+        structure, and creates manifests. Returns the number of models migrated.
         """
         if not self._root.exists():
             return 0
@@ -209,16 +229,29 @@ class ModelRegistry:
         for path in gguf_files:
             name, task, repo = _match_catalog_entry(path.name)
             ref = ModelRef.parse(name)
+            digest = _sha256_file(path)
+
+            if repo:
+                cache_path = self._root / f"models--{repo.replace('/', '--')}"
+            else:
+                safe_name = name.replace(" ", "_").replace("/", "_")
+                cache_path = self._root / f"models--{safe_name}"
+            blobs_dir = cache_path / "blobs"
+            blobs_dir.mkdir(parents=True, exist_ok=True)
+            blob_path = blobs_dir / digest
+            path.rename(blob_path)
+
             manifest = ModelManifest(
                 name=name,
                 tag="latest",
-                size_bytes=path.stat().st_size,
+                size_bytes=blob_path.stat().st_size,
                 task=task,
                 source_repo=repo,
                 source_filename=path.name,
                 downloaded_at=datetime.now(tz=UTC).isoformat(),
+                blob=digest,
             )
-            self.install(ref, path, manifest)
+            self._write_manifest(ref, manifest)
             log.info("Migrated legacy model %s -> %s", path.name, ref)
             count += 1
         return count

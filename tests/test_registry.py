@@ -17,6 +17,18 @@ from lilbee.registry import (
 )
 
 
+def _create_hf_cache_structure(models_dir: Path, source_repo: str, content: bytes) -> Path:
+    """Create a file in HF cache structure and return the path."""
+    safe_repo = source_repo.replace("/", "--")
+    cache_path = models_dir / f"models--{safe_repo}"
+    blobs_dir = cache_path / "blobs"
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(content).hexdigest()
+    blob_path = blobs_dir / digest
+    blob_path.write_bytes(content)
+    return blob_path
+
+
 class TestModelRef:
     def test_parse_name_only(self) -> None:
         ref = ModelRef.parse("nomic-embed-text")
@@ -141,11 +153,42 @@ class TestModelRegistry:
             registry.resolve("missing-model")
 
     def test_resolve_missing_blob(self, tmp_path: Path) -> None:
-        registry = ModelRegistry(tmp_path)
-        manifest = _make_manifest(blob="deadbeef")
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        manifest = _make_manifest(source_repo="org/repo", blob="deadbeef")
         ref = ModelRef(name="test-model")
         registry._write_manifest(ref, manifest)
-        with pytest.raises(KeyError, match="Blob missing"):
+        # Create cache folder but not the blob file
+        cache_path = models_dir / "models--org--repo"
+        (cache_path / "blobs").mkdir(parents=True)
+        with pytest.raises(KeyError, match="Blob file missing"):
+            registry.resolve(ref)
+
+    def test_resolve_missing_cache_folder(self, tmp_path: Path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        manifest = _make_manifest(source_repo="org/repo", blob="deadbeef")
+        ref = ModelRef(name="test-model")
+        registry._write_manifest(ref, manifest)
+        with pytest.raises(KeyError, match="Cache folder missing"):
+            registry.resolve(ref)
+
+    def test_resolve_missing_blobs_dir(self, tmp_path: Path) -> None:
+        """Test when cache folder exists but blobs/ subdir is missing."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        cache_path = models_dir / "models--org--repo"
+        cache_path.mkdir(parents=True)
+
+        manifest = _make_manifest(source_repo="org/repo", blob="deadbeef")
+        ref = ModelRef(name="test-model")
+        registry._write_manifest(ref, manifest)
+
+        with pytest.raises(KeyError, match="Blobs directory missing"):
             registry.resolve(ref)
 
     def test_install_and_resolve_roundtrip(self, tmp_path: Path) -> None:
@@ -153,53 +196,66 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"fake model data")
-        digest = hashlib.sha256(b"fake model data").hexdigest()
+        content = b"fake model data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
 
         ref = ModelRef(name="test-model", tag="latest")
-        manifest = _make_manifest(size_bytes=len(b"fake model data"))
+        manifest = _make_manifest(
+            source_repo="org/repo",
+            size_bytes=len(content),
+            source_filename="model.gguf",
+        )
 
-        blob_path = registry.install(ref, source, manifest)
+        result = registry.install(ref, blob_path, manifest)
 
-        assert blob_path == models_dir / "blobs" / f"sha256-{digest}"
+        assert result == blob_path
         assert blob_path.exists()
-        assert not source.exists()  # moved, not copied
 
         resolved = registry.resolve(ref)
         assert resolved == blob_path
 
-    def test_install_deduplicates_blobs(self, tmp_path: Path) -> None:
+    def test_install_missing_cache_file_raises(self, tmp_path: Path) -> None:
+        """install() raises FileNotFoundError when file not in cache."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        nonexistent = tmp_path / "nonexistent.gguf"
+        nonexistent.write_bytes(b"data")
+
+        ref = ModelRef(name="test-model")
+        manifest = _make_manifest(source_repo="org/repo")
+
+        with pytest.raises(FileNotFoundError, match="not found in cache"):
+            registry.install(ref, nonexistent, manifest)
+
+    def test_install_same_content_creates_same_blob(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
         content = b"same content"
-        source1 = tmp_path / "model1.gguf"
-        source1.write_bytes(content)
-        source2 = tmp_path / "model2.gguf"
-        source2.write_bytes(content)
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo-a", content)
 
         ref1 = ModelRef(name="model-a", tag="latest")
         ref2 = ModelRef(name="model-b", tag="latest")
-        manifest1 = _make_manifest(name="model-a")
-        manifest2 = _make_manifest(name="model-b")
+        manifest1 = _make_manifest(name="model-a", source_repo="org/repo-a")
+        manifest2 = _make_manifest(name="model-b", source_repo="org/repo-a")
 
-        blob1 = registry.install(ref1, source1, manifest1)
-        blob2 = registry.install(ref2, source2, manifest2)
+        result1 = registry.install(ref1, blob_path, manifest1)
+        result2 = registry.install(ref2, blob_path, manifest2)
 
-        assert blob1 == blob2
-        assert not source2.exists()  # cleaned up since blob already existed
+        assert result1 == result2  # Same blob for same content
 
     def test_is_installed_true(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"data")
+        content = b"data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
         ref = ModelRef(name="test")
-        registry.install(ref, source, _make_manifest())
+        registry.install(ref, blob_path, _make_manifest(source_repo="org/repo"))
 
         assert registry.is_installed("test") is True
         assert registry.is_installed("test:latest") is True
@@ -208,38 +264,68 @@ class TestModelRegistry:
         registry = ModelRegistry(tmp_path)
         assert registry.is_installed("nonexistent") is False
 
-    def test_remove_unique_blob(self, tmp_path: Path) -> None:
+    def test_is_installed_invalid_ref(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        assert registry.is_installed("") is False
+
+    def test_remove_invalid_ref_returns_false(self, tmp_path: Path) -> None:
+        """remove() returns False when given an invalid ref that raises ValueError."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"unique data")
+        # Empty string ref triggers ValueError in _coerce_ref
+        assert registry.remove("") is False
+
+    def test_blob_referenced(self, tmp_path: Path) -> None:
+        """_blob_referenced checks if any manifest references a given digest."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        content = b"shared-data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/shared", content)
+        digest = blob_path.name
+
+        ref = ModelRef(name="model-a")
+        manifest = _make_manifest(name="model-a", source_repo="org/shared", blob=digest)
+        registry.install(ref, blob_path, manifest)
+
+        assert registry._blob_referenced(digest) is True
+        assert registry._blob_referenced("nonexistent-hash") is False
+
+    def test_remove_deletes_manifest_keeps_cache(self, tmp_path: Path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+
+        content = b"unique data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
         ref = ModelRef(name="removeme")
-        blob_path = registry.install(ref, source, _make_manifest(name="removeme"))
+        manifest = _make_manifest(name="removeme", source_repo="org/repo")
+        registry.install(ref, blob_path, manifest)
 
         assert registry.remove("removeme") is True
-        assert not blob_path.exists()  # blob deleted (no other refs)
+        assert blob_path.exists()
         assert registry.is_installed("removeme") is False
 
-    def test_remove_shared_blob_keeps_blob(self, tmp_path: Path) -> None:
+    def test_remove_multiple_manifests_keeps_cache(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
         content = b"shared blob data"
-        source1 = tmp_path / "m1.gguf"
-        source1.write_bytes(content)
-        source2 = tmp_path / "m2.gguf"
-        source2.write_bytes(content)
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo-shared", content)
 
         ref1 = ModelRef(name="model-a")
         ref2 = ModelRef(name="model-b")
-        blob = registry.install(ref1, source1, _make_manifest(name="model-a"))
-        registry.install(ref2, source2, _make_manifest(name="model-b"))
+        m1 = _make_manifest(name="model-a", source_repo="org/repo-shared")
+        m2 = _make_manifest(name="model-b", source_repo="org/repo-shared")
+        registry.install(ref1, blob_path, m1)
+        registry.install(ref2, blob_path, m2)
 
         assert registry.remove("model-a") is True
-        assert blob.exists()  # still referenced by model-b
+        assert blob_path.exists()  # still exists, still referenced by model-b
         assert registry.is_installed("model-b") is True
 
     def test_remove_nonexistent(self, tmp_path: Path) -> None:
@@ -255,11 +341,11 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        for name in ("alpha", "beta"):
-            source = tmp_path / f"{name}.gguf"
-            source.write_bytes(f"data-{name}".encode())
+        for name, repo in (("alpha", "org/alpha"), ("beta", "org/beta")):
+            content = f"data-{name}".encode()
+            blob_path = _create_hf_cache_structure(models_dir, repo, content)
             ref = ModelRef(name=name)
-            registry.install(ref, source, _make_manifest(name=name))
+            registry.install(ref, blob_path, _make_manifest(name=name, source_repo=repo))
 
         installed = registry.list_installed()
         names = [m.name for m in installed]
@@ -272,12 +358,11 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        # Install one real model
-        source = tmp_path / "real.gguf"
-        source.write_bytes(b"data")
-        registry.install(ModelRef(name="real"), source, _make_manifest(name="real"))
+        content = b"data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/real", content)
+        m = _make_manifest(name="real", source_repo="org/real")
+        registry.install(ModelRef(name="real"), blob_path, m)
 
-        # Place a stray file in manifests/
         (models_dir / "manifests" / "stray.txt").write_text("junk")
 
         installed = registry.list_installed()
@@ -289,16 +374,19 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source_latest = tmp_path / "latest.gguf"
-        source_latest.write_bytes(b"latest-data")
-        source_v2 = tmp_path / "v2.gguf"
-        source_v2.write_bytes(b"v2-data")
+        content_latest = b"latest-data"
+        content_v2 = b"v2-data"
+
+        blob_latest = _create_hf_cache_structure(models_dir, "org/qwen3", content_latest)
+        blob_v2 = _create_hf_cache_structure(models_dir, "org/qwen3-v2", content_v2)
 
         ref_latest = ModelRef(name="qwen3", tag="latest")
         ref_v2 = ModelRef(name="qwen3", tag="0.6b")
 
-        registry.install(ref_latest, source_latest, _make_manifest(name="qwen3", tag="latest"))
-        registry.install(ref_v2, source_v2, _make_manifest(name="qwen3", tag="0.6b"))
+        m1 = _make_manifest(name="qwen3", tag="latest", source_repo="org/qwen3")
+        m2 = _make_manifest(name="qwen3", tag="0.6b", source_repo="org/qwen3-v2")
+        registry.install(ref_latest, blob_latest, m1)
+        registry.install(ref_v2, blob_v2, m2)
 
         assert registry.is_installed("qwen3:latest")
         assert registry.is_installed("qwen3:0.6b")
@@ -312,9 +400,10 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"content")
-        registry.install(ModelRef(name="mymodel"), source, _make_manifest(name="mymodel"))
+        content = b"content"
+        blob_path = _create_hf_cache_structure(models_dir, "org/mymodel", content)
+        m = _make_manifest(name="mymodel", source_repo="org/mymodel")
+        registry.install(ModelRef(name="mymodel"), blob_path, m)
 
         path = registry.resolve("mymodel:latest")
         assert path.exists()
@@ -355,10 +444,11 @@ class TestModelRegistry:
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"data")
+        content = b"data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/cleanup", content)
         ref = ModelRef(name="cleanup-test")
-        registry.install(ref, source, _make_manifest(name="cleanup-test"))
+        manifest = _make_manifest(name="cleanup-test", source_repo="org/cleanup")
+        registry.install(ref, blob_path, manifest)
 
         name_dir = models_dir / "manifests" / "cleanup-test"
         assert name_dir.exists()
@@ -377,8 +467,28 @@ class TestMigrateLegacy:
         count = registry.migrate_legacy()
 
         assert count == 1
-        assert not (models_dir / "some-model.gguf").exists()  # moved to blobs
-        assert registry.list_installed()[0].source_filename == "some-model.gguf"
+        assert not (models_dir / "some-model.gguf").exists()  # moved to cache
+        installed = registry.list_installed()
+        assert len(installed) == 1
+        assert installed[0].source_filename == "some-model.gguf"
+
+    def test_migrates_to_hf_cache_structure(self, tmp_path: Path) -> None:
+        """Verifies migrated files go to models--NAME/blobs/ structure (no repo)."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "some-model.gguf").write_bytes(b"model-bytes")
+
+        registry = ModelRegistry(models_dir)
+        count = registry.migrate_legacy()
+
+        assert count == 1
+        # When repo is empty, uses models--NAME format (keeps hyphens)
+        cache_dir = models_dir / "models--some-model"
+        assert cache_dir.exists()
+        blobs_dir = cache_dir / "blobs"
+        assert blobs_dir.exists()
+        blob_files = list(blobs_dir.glob("*"))  # HF cache uses raw hash, no prefix
+        assert len(blob_files) == 1
 
     def test_migrates_known_catalog_model(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"

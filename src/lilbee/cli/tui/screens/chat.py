@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
 from textual.app import ComposeResult
@@ -30,11 +30,13 @@ from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.nav_bar import NavBar
-from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
 from lilbee.query import ChatMessage
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
 log = logging.getLogger(__name__)
 
@@ -42,15 +44,17 @@ _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
+_FOCUSABLE_IDS = ("model-bar", "chat-log", "chat-input")
+
 
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("slash", "focus_commands", "Commands", show=True),
-        Binding("tab", "noop", "Tab", show=False, priority=True),
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
+        Binding("slash", "focus_commands", "/ commands", show=True),
+        Binding("tab", "complete", "Tab", show=False, priority=True),
+        Binding("ctrl+n", "complete_next", "^n next", show=False),
+        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
         Binding("pageup", "scroll_up", "PgUp", show=False),
         Binding("pagedown", "scroll_down", "PgDn", show=False),
         Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False),
@@ -66,12 +70,20 @@ class ChatScreen(Screen[None]):
         self._history_lock = threading.Lock()
         self._streaming = False
         self._insert_mode: bool = True
+        self._completing = False
+        self._sync_active: bool = False
+        self._input_history: list[str] = []
+        self._history_index: int = -1
+
+    def _get_task_bar(self) -> TaskBar:
+        """Get the app-level TaskBar (created by LilbeeApp)."""
+        return self.app._task_bar  # type: ignore[attr-defined, no-any-return]
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
-        yield TaskBar(id="task-bar")
         yield CompletionOverlay(id="completion-overlay")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
@@ -85,15 +97,13 @@ class ChatScreen(Screen[None]):
         self.query_one("#chat-input", Input).focus()
         self._update_input_style()
         self.query_one("#chat-only-banner", Static).display = False
-        # Store TaskBar on app so other screens can find it
-        self.app._task_bar = self.query_one("#task-bar", TaskBar)  # type: ignore[attr-defined]
-        with contextlib.suppress(Exception):
-            self.app._nav_bar = self.app.query_one("#global-nav-bar", NavBar)  # type: ignore[attr-defined]
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif self._auto_sync and self._embedding_ready():
+        elif not self._embedding_ready():
+            self._show_chat_only_banner()
+        elif self._auto_sync:
             self._run_sync()
 
     def on_show(self) -> None:
@@ -158,7 +168,7 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def _update_input_style(self) -> None:
-        """Toggle input border based on current mode."""
+        """Toggle input border and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
         if self._insert_mode:
             inp.remove_class("normal-mode")
@@ -166,6 +176,15 @@ class ChatScreen(Screen[None]):
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
+        self._update_mode_indicator()
+
+    def _update_mode_indicator(self) -> None:
+        """Update the NavBar mode text to reflect the current mode."""
+        try:
+            nav = self.query_one("#global-nav-bar", NavBar)
+            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
+        except Exception:
+            pass
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -174,7 +193,7 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-        if not inp.has_focus and event.is_printable and event.character:
+        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
             inp.focus()
             inp.insert_text_at_cursor(event.character)
             event.prevent_default()
@@ -199,6 +218,8 @@ class ChatScreen(Screen[None]):
         if not text:
             return
         event.input.value = ""
+        self._input_history.append(text)
+        self._history_index = -1
 
         if text.startswith("/"):
             self._handle_slash(text)
@@ -221,6 +242,9 @@ class ChatScreen(Screen[None]):
     def _cmd_add(self, args: str) -> None:
         if not args:
             return
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
         # Auto-detect URLs and route to crawl logic
         if is_url(args):
             self._cmd_crawl(args)
@@ -229,15 +253,16 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
-        task_bar = self.query_one("#task-bar", TaskBar)
+        task_bar = self._get_task_bar()
         task_id = task_bar.add_task(f"Add {path.name}", "add")
-        task_bar.queue.advance()
+        task_bar.queue.advance("add")
         self._run_add_background(path, task_id)
 
     @work(thread=True)
     def _run_add_background(self, path: Path, task_id: str) -> None:
         """Copy files and sync in a background thread."""
-        task_bar = self.query_one("#task-bar", TaskBar)
+        self._sync_active = True
+        task_bar = self._get_task_bar()
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.helpers import copy_files
@@ -276,6 +301,8 @@ class ChatScreen(Screen[None]):
             self.app.call_from_thread(
                 self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
             )
+        finally:
+            self._sync_active = False
 
     def _cmd_cancel(self, _args: str) -> None:
         for worker in self.workers:
@@ -297,9 +324,9 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
-        task_bar = self.query_one("#task-bar", TaskBar)
+        task_bar = self._get_task_bar()
         task_id = task_bar.add_task(f"Crawl {url}", "crawl")
-        task_bar.queue.advance()
+        task_bar.queue.advance("crawl")
         self._run_crawl_background(url, depth, max_pages, task_id)
 
     @staticmethod
@@ -323,7 +350,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
-        task_bar = self.query_one("#task-bar", TaskBar)
+        task_bar = self._get_task_bar()
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
@@ -607,25 +634,21 @@ class ChatScreen(Screen[None]):
         if log_widget.max_scroll_y - log_widget.scroll_y < 5:
             log_widget.scroll_end(animate=False)
 
-    def action_noop(self) -> None:
-        """Do nothing - prevents default Tab behavior."""
-        pass
-
     def action_scroll_up(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_up()
 
     def action_scroll_down(self) -> None:
         self.query_one("#chat-log", VerticalScroll).scroll_page_down()
 
-    def action_cursor_up(self) -> None:
-        """Move cursor up in normal mode - scroll chat log up."""
-        if not self._insert_mode:
-            self.query_one("#chat-log", VerticalScroll).scroll_up()
-
-    def action_cursor_down(self) -> None:
-        """Move cursor down in normal mode - scroll chat log down."""
-        if not self._insert_mode:
-            self.query_one("#chat-log", VerticalScroll).scroll_down()
+    def _cycle_focus(self, direction: int) -> None:
+        """Cycle focus between focusable widgets in normal mode."""
+        current_id = self.focused.id if self.focused else None
+        try:
+            idx = _FOCUSABLE_IDS.index(current_id)
+        except ValueError:
+            idx = 0
+        next_idx = (idx + direction) % len(_FOCUSABLE_IDS)
+        self.query_one(f"#{_FOCUSABLE_IDS[next_idx]}").focus()
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream if active, otherwise enter normal mode."""
@@ -661,9 +684,12 @@ class ChatScreen(Screen[None]):
 
     def _run_sync(self) -> None:
         """Enqueue a document sync in the task bar."""
-        task_bar = self.query_one("#task-bar", TaskBar)
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
+        task_bar = self._get_task_bar()
         task_id = task_bar.add_task("Sync documents", "sync")
-        task_bar.queue.advance()
+        task_bar.queue.advance("sync")
         self._run_sync_worker(task_id)
 
     @work(thread=True)
@@ -678,7 +704,8 @@ class ChatScreen(Screen[None]):
         """
         import asyncio
 
-        task_bar = self.query_one("#task-bar", TaskBar)
+        self._sync_active = True
+        task_bar = self._get_task_bar()
         try:
             from lilbee.ingest import sync
 
@@ -707,6 +734,8 @@ class ChatScreen(Screen[None]):
         except Exception:
             log.warning("Background sync failed", exc_info=True)
             self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+        finally:
+            self._sync_active = False
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""
@@ -725,7 +754,9 @@ class ChatScreen(Screen[None]):
             selection = overlay.cycle_next()
             if selection:
                 cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
                 inp.value = cmd_prefix + selection
+                self._completing = False
                 inp.action_end()
             return
 
@@ -733,6 +764,7 @@ class ChatScreen(Screen[None]):
         if options:
             overlay.show_completions(options)
             first = overlay.get_current()
+            self._completing = True
             if first and " " in inp.value:
                 cmd_prefix = inp.value.split()[0] + " "
                 inp.value = cmd_prefix + first
@@ -740,9 +772,78 @@ class ChatScreen(Screen[None]):
             elif first:
                 inp.value = first
                 inp.action_end()
+            self._completing = False
+
+    def action_complete_next(self) -> None:
+        """Ctrl+N: show completions or cycle forward."""
+        self.action_complete()
+
+    def action_complete_prev(self) -> None:
+        """Ctrl+P: cycle backward through completions."""
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        inp = self.query_one("#chat-input", Input)
+
+        if overlay.is_visible:
+            selection = overlay.cycle_prev()
+            if selection:
+                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
+                inp.value = cmd_prefix + selection
+                self._completing = False
+                inp.action_end()
+            return
+
+        options = get_completions(inp.value)
+        if options:
+            overlay.show_completions(options)
+            last = overlay.get_current()
+            self._completing = True
+            if last and " " in inp.value:
+                cmd_prefix = inp.value.split()[0] + " "
+                inp.value = cmd_prefix + last
+                inp.action_end()
+            elif last:
+                inp.value = last
+                inp.action_end()
+            self._completing = False
+
+    def key_up(self) -> None:
+        """Up arrow: cycle focus in normal mode, recall input history in insert mode."""
+        if not self._insert_mode:
+            self._cycle_focus(-1)
+            return
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or not self._input_history:
+            return
+        if self._history_index == -1:
+            self._history_index = len(self._input_history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return
+        inp.value = self._input_history[self._history_index]
+        inp.action_end()
+
+    def key_down(self) -> None:
+        """Down arrow: cycle focus in normal mode, recall input history in insert mode."""
+        if not self._insert_mode:
+            self._cycle_focus(1)
+            return
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or self._history_index == -1:
+            return
+        if self._history_index < len(self._input_history) - 1:
+            self._history_index += 1
+            inp.value = self._input_history[self._history_index]
+            inp.action_end()
+        else:
+            self._history_index = -1
+            inp.value = ""
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Hide completion overlay when input changes manually."""
+        if self._completing:
+            return
         if event.input.id == "chat-input":
             overlay = self.query_one("#completion-overlay", CompletionOverlay)
             if overlay.is_visible:
@@ -753,18 +854,14 @@ class ChatScreen(Screen[None]):
         self.query_one("#model-bar", ModelBar).refresh_models()
 
     def key_j(self) -> None:
-        """Vim: scroll down."""
-        focused = self.focused
-        if focused and isinstance(focused, Input):
-            return
-        self.query_one("#chat-log", VerticalScroll).scroll_down()
+        """Vim j: cycle focus to next widget in normal mode."""
+        if not self._insert_mode:
+            self._cycle_focus(1)
 
     def key_k(self) -> None:
-        """Vim: scroll up."""
-        focused = self.focused
-        if focused and isinstance(focused, Input):
-            return
-        self.query_one("#chat-log", VerticalScroll).scroll_up()
+        """Vim k: cycle focus to previous widget in normal mode."""
+        if not self._insert_mode:
+            self._cycle_focus(-1)
 
     def key_g(self) -> None:
         """Vim: scroll to top."""

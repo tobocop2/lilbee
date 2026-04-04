@@ -8,7 +8,7 @@ import pytest
 from textual.binding import Binding
 
 from lilbee.catalog import CatalogModel, CatalogResult
-from lilbee.cli.tui.screens.catalog import _TAB_TO_TASK, ModelRow, RemoteRow
+from lilbee.cli.tui.screens.catalog import _catalog_to_row, _remote_to_row
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
@@ -147,31 +147,21 @@ class TestRemoteClassification:
         assert by_task["vision"] == "llava:latest"
 
 
-class TestTabToTask:
-    def test_all_maps_to_none(self) -> None:
-        assert _TAB_TO_TASK["All"] is None
-
-    def test_chat_maps_to_chat(self) -> None:
-        assert _TAB_TO_TASK["Chat"] == "chat"
-
-    def test_embedding_maps_to_embedding(self) -> None:
-        assert _TAB_TO_TASK["Embedding"] == "embedding"
-
-    def test_vision_maps_to_vision(self) -> None:
-        assert _TAB_TO_TASK["Vision"] == "vision"
-
-
-class TestModelRow:
-    def test_stores_model(self) -> None:
+class TestCatalogToRow:
+    def test_stores_catalog_model(self) -> None:
         m = _make_model("Qwen3 8B", featured=True)
-        row = ModelRow(m)
-        assert row.model is m
+        row = _catalog_to_row(m, installed=False)
+        assert row.catalog_model is m
 
-    def test_compose_yields_static(self) -> None:
+    def test_featured_flag_set(self) -> None:
+        m = _make_model("TestModel", task="chat", size_gb=5.0, featured=True)
+        row = _catalog_to_row(m, installed=False)
+        assert row.featured is True
+
+    def test_installed_flag_set(self) -> None:
         m = _make_model("TestModel", task="chat", size_gb=5.0)
-        row = ModelRow(m)
-        children = list(row.compose())
-        assert len(children) == 1
+        row = _catalog_to_row(m, installed=True)
+        assert row.installed is True
 
 
 class TestChatScreenAsync:
@@ -226,7 +216,7 @@ class TestChatScreenAsync:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.action_push_catalog()
+            app._switch_view("Models")
             await pilot.pause()
             assert len(app.screen_stack) > 1
 
@@ -506,13 +496,14 @@ class TestCanonicalModelsDir:
         assert "lilbee" in str(result)
 
 
-class TestRemoteRow:
+class TestRemoteToRow:
     def test_creates(self) -> None:
         from lilbee.model_manager import RemoteModel
 
         rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
-        row = RemoteRow(rm)
+        row = _remote_to_row(rm)
         assert row.remote_model.name == "mistral:latest"
+        assert row.installed is True
 
 
 class TestSlashSuggester:
@@ -623,65 +614,69 @@ class TestMinimalFooter:
         from lilbee.cli.tui.app import LilbeeApp
 
         visible = self._visible_bindings(LilbeeApp.BINDINGS)
-        assert "? help" in visible
-        assert "^c cancel/quit" in visible
-        # F-key and ctrl-alternative bindings should be hidden
-        assert not any("Models" in d for d in visible)
-        assert not any("Status" in d for d in visible)
-        assert not any("Settings" in d for d in visible)
-        assert not any("Theme" in d for d in visible)
+        assert any("help" in d.lower() for d in visible)
+        assert any("quit" in d.lower() or "cancel" in d.lower() for d in visible)
+        assert not any(d == "Models" for d in visible)
+        assert not any(d == "Status" for d in visible)
+        assert not any(d == "Settings" for d in visible)
+        assert not any(d == "Theme" for d in visible)
 
     def test_chat_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         visible = self._visible_bindings(ChatScreen.BINDINGS)
-        assert "/ commands" in visible
+        assert any("command" in d.lower() for d in visible)
         assert len(visible) <= 3
+
+    def test_catalog_tab_bindings_removed(self) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, Binding)}
+        for k in ("1", "2", "3", "4"):
+            assert k not in keys
 
     def test_catalog_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         visible = self._visible_bindings(CatalogScreen.BINDINGS)
-        assert "q back" in visible
-        assert "/ search" in visible
-        assert "d delete" in visible
+        assert any("Back" in d for d in visible)
+        assert any("Search" in d for d in visible)
+        assert any("Delete" in d for d in visible)
         assert len(visible) <= 5
 
     def test_status_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.status import StatusScreen
 
         visible = self._visible_bindings(StatusScreen.BINDINGS)
-        assert "q back" in visible
+        assert any("Back" in d for d in visible)
         assert len(visible) <= 3
 
     def test_settings_bindings_minimal(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
-        assert "q back" in visible
+        assert any("Back" in d for d in visible)
         assert len(visible) <= 3
 
 
-class TestNumberKeyBindings:
-    """B4: Verify 1-4 key bindings exist in app BINDINGS."""
+class TestNavBindings:
+    """Verify h/l nav bindings exist in app BINDINGS (number keys removed)."""
 
-    def test_bindings_1_through_4_exist(self) -> None:
+    def test_nav_bindings_exist(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
         keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        assert "1" in keys
-        assert "2" in keys
-        assert "3" in keys
-        assert "4" in keys
+        assert "h" in keys
+        assert "l" in keys
+        assert "left" in keys
+        assert "right" in keys
 
-    def test_bindings_map_to_switch_actions(self) -> None:
+    def test_number_keys_removed(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        key_action = {b.key: b.action for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        assert key_action["1"] == "switch_chat"
-        assert key_action["2"] == "switch_models"
-        assert key_action["3"] == "switch_status"
-        assert key_action["4"] == "switch_settings"
+        keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
+        for k in ("1", "2", "3", "4", "f2", "f3", "f4", "ctrl+n", "ctrl+s", "ctrl+e"):
+            assert k not in keys
 
 
 class TestNoRichConsoleInTui:

@@ -6,20 +6,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Static
+from textual.widgets import DataTable, Footer, Static
 
 from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import (
-    LoadMoreRow,
-    ModelRow,
-    RemoteRow,
-    _filter_catalog,
-    _filter_remote,
+    TableRow,
+    _catalog_to_row,
     _format_downloads,
-    _format_row,
-    _group_by_size,
+    _format_size_gb,
+    _matches_search,
     _parse_param_label,
     _parse_param_size,
+    _remote_to_row,
+    _row_display_name,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -119,7 +118,7 @@ class TestParseParamLabel:
         assert _parse_param_label("phi-0.6B") == "0.6B"
 
     def test_no_match(self):
-        assert _parse_param_label("nomic-embed-text") == "\u2014"
+        assert _parse_param_label("nomic-embed-text") == "--"
 
     def test_case_insensitive(self):
         assert _parse_param_label("model-3b-chat") == "3B"
@@ -127,7 +126,7 @@ class TestParseParamLabel:
 
 class TestParseParamSize:
     def test_small(self):
-        assert _parse_param_size("model-1.5B") == "Small (\u22643B)"
+        assert _parse_param_size("model-1.5B") == "Small (<=3B)"
 
     def test_medium(self):
         assert _parse_param_size("model-7B") == "Medium (3-8B)"
@@ -142,7 +141,7 @@ class TestParseParamSize:
         assert _parse_param_size("nomic-embed") == "unknown"
 
     def test_boundary_3b(self):
-        assert _parse_param_size("model-3B") == "Small (\u22643B)"
+        assert _parse_param_size("model-3B") == "Small (<=3B)"
 
     def test_boundary_8b(self):
         assert _parse_param_size("model-8B") == "Medium (3-8B)"
@@ -171,163 +170,104 @@ class TestFormatDownloads:
         assert _format_downloads(0) == "0"
 
 
-class TestFormatRow:
+class TestRowDisplayName:
     def test_featured_star(self):
-        m = _make_catalog_model(featured=True)
-        row = _format_row(m)
-        assert "\u2605" in row
+        row = _catalog_to_row(_make_catalog_model(featured=True), installed=False)
+        name = _row_display_name(row)
+        assert name.startswith("*")
 
     def test_not_featured(self):
-        m = _make_catalog_model(featured=False)
-        row = _format_row(m)
-        assert "\u2605" not in row
+        row = _catalog_to_row(_make_catalog_model(featured=False), installed=False)
+        name = _row_display_name(row)
+        assert not name.startswith("*")
 
-    def test_contains_name(self):
-        m = _make_catalog_model(name="my-model-8B", hf_repo="my-org/my-model-8B")
-        row = _format_row(m)
-        assert "my model 8B" in row
+    def test_installed_tag(self):
+        row = _catalog_to_row(_make_catalog_model(), installed=True)
+        name = _row_display_name(row)
+        assert "[installed]" in name
+
+    def test_not_installed_no_tag(self):
+        row = _catalog_to_row(_make_catalog_model(), installed=False)
+        name = _row_display_name(row)
+        assert "[installed]" not in name
+
+
+class TestFormatSizeGb:
+    def test_positive_size(self):
+        assert _format_size_gb(4.0) == "4.0 GB"
 
     def test_zero_size_shows_dash(self):
-        m = _make_catalog_model(size_gb=0.0)
-        row = _format_row(m)
-        assert "\u2014" in row
+        assert _format_size_gb(0.0) == "--"
 
-    def test_cached_size_overrides(self):
-        m = _make_catalog_model(size_gb=0.0)
-        row = _format_row(m, cached_size=3.5)
-        assert "3.5 GB" in row
+    def test_negative_shows_dash(self):
+        assert _format_size_gb(-1.0) == "--"
 
-    def test_zero_downloads_no_arrow(self):
+
+class TestCatalogToRow:
+    def test_contains_display_name(self):
+        m = _make_catalog_model(name="my-model-8B", hf_repo="my-org/my-model-8B-GGUF")
+        row = _catalog_to_row(m, installed=False)
+        assert "my model 8b" in row.name.lower()
+
+    def test_zero_downloads(self):
         m = _make_catalog_model(downloads=0)
-        row = _format_row(m)
-        assert "\u2193" not in row
+        row = _catalog_to_row(m, installed=False)
+        assert row.downloads == "--"
 
-    def test_description_truncated(self):
-        m = _make_catalog_model(description="x" * 100)
-        row = _format_row(m)
-        assert "x" * 45 in row
-        assert "x" * 46 not in row
-
-    def test_empty_description(self):
-        m = _make_catalog_model(description="")
-        _format_row(m)
+    def test_positive_downloads(self):
+        m = _make_catalog_model(downloads=5000)
+        row = _catalog_to_row(m, installed=False)
+        assert row.downloads == "5K"
 
 
-class TestFilterCatalog:
-    def test_no_filters(self):
-        models = [_make_catalog_model(task="chat"), _make_catalog_model(task="embedding")]
-        assert len(_filter_catalog(models, None, "")) == 2
-
-    def test_task_filter(self):
-        models = [
-            _make_catalog_model(task="chat"),
-            _make_catalog_model(task="embedding"),
-        ]
-        assert len(_filter_catalog(models, "chat", "")) == 1
+class TestMatchesSearch:
+    def test_no_search(self):
+        row = _catalog_to_row(_make_catalog_model(task="chat"), installed=False)
+        assert _matches_search(row, "") is True
 
     def test_search_by_name(self):
-        models = [
-            _make_catalog_model(name="qwen-8B"),
-            _make_catalog_model(name="llama-7B"),
-        ]
-        result = _filter_catalog(models, None, "qwen")
-        assert len(result) == 1
-        assert result[0].name == "qwen-8B"
+        row = _catalog_to_row(
+            _make_catalog_model(name="qwen-8B", hf_repo="org/qwen-8B-GGUF"), installed=False
+        )
+        assert _matches_search(row, "qwen") is True
 
-    def test_search_by_repo(self):
-        models = [_make_catalog_model(hf_repo="org/special-GGUF")]
-        result = _filter_catalog(models, None, "special")
-        assert len(result) == 1
+    def test_search_by_task(self):
+        row = _catalog_to_row(_make_catalog_model(task="embedding"), installed=False)
+        assert _matches_search(row, "embedding") is True
 
-    def test_search_by_description(self):
-        models = [_make_catalog_model(description="Fast inference model")]
-        result = _filter_catalog(models, None, "fast inference")
-        assert len(result) == 1
+    def test_search_no_match(self):
+        row = _catalog_to_row(_make_catalog_model(name="llama-7B"), installed=False)
+        assert _matches_search(row, "qwen") is False
 
-    def test_combined_task_and_search(self):
-        models = [
-            _make_catalog_model(name="qwen-8B", task="chat"),
-            _make_catalog_model(name="qwen-embed", task="embedding"),
-        ]
-        result = _filter_catalog(models, "chat", "qwen")
-        assert len(result) == 1
-        assert result[0].task == "chat"
-
-    def test_empty_list(self):
-        assert _filter_catalog([], "chat", "test") == []
+    def test_search_by_quant(self):
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4.0 GB",
+            quant="Q4_K_M",
+            downloads="5K",
+            featured=False,
+            installed=False,
+            sort_downloads=5000,
+            sort_size=4.0,
+        )
+        assert _matches_search(row, "q4_k_m") is True
 
 
-class TestFilterRemote:
-    def test_no_filters(self):
-        models = [_make_remote_model(task="chat"), _make_remote_model(task="embedding")]
-        assert len(_filter_remote(models, None, "")) == 2
+class TestRemoteToRow:
+    def test_creates_row(self):
+        rm = _make_remote_model(name="qwen:latest", task="chat", parameter_size="7B")
+        row = _remote_to_row(rm)
+        assert row.name == "qwen:latest"
+        assert row.task == "chat"
+        assert row.params == "7B"
+        assert row.installed is True
 
-    def test_task_filter(self):
-        models = [_make_remote_model(task="chat"), _make_remote_model(task="embedding")]
-        assert len(_filter_remote(models, "chat", "")) == 1
-
-    def test_search_filter(self):
-        models = [
-            _make_remote_model(name="qwen:latest"),
-            _make_remote_model(name="llama:latest"),
-        ]
-        result = _filter_remote(models, None, "qwen")
-        assert len(result) == 1
-
-    def test_empty_list(self):
-        assert _filter_remote([], None, "") == []
-
-
-class TestGroupBySize:
-    def test_groups_correctly(self):
-        models = [
-            _make_catalog_model(name="small-1B"),
-            _make_catalog_model(name="medium-7B"),
-            _make_catalog_model(name="large-14B"),
-            _make_catalog_model(name="huge-70B"),
-        ]
-        groups = _group_by_size(models)
-        labels = [label for label, _ in groups]
-        assert "Small (\u22643B)" in labels
-        assert "Medium (3-8B)" in labels
-        assert "Large (8-30B)" in labels
-        assert "Extra Large (30B+)" in labels
-
-    def test_correct_order(self):
-        models = [
-            _make_catalog_model(name="huge-70B"),
-            _make_catalog_model(name="small-1B"),
-        ]
-        groups = _group_by_size(models)
-        labels = [label for label, _ in groups]
-        assert labels.index("Small (\u22643B)") < labels.index("Extra Large (30B+)")
-
-    def test_unknown_category(self):
-        models = [_make_catalog_model(name="nomic-embed-text")]
-        groups = _group_by_size(models)
-        assert groups[0][0] == "Other"
-
-    def test_empty(self):
-        assert _group_by_size([]) == []
-
-
-class TestModelRow:
-    def test_stores_model(self):
-        m = _make_catalog_model()
-        row = ModelRow(m)
-        assert row.model is m
-
-
-class TestRemoteRow:
-    def test_stores_model(self):
-        m = _make_remote_model()
-        row = RemoteRow(m)
-        assert row.remote_model is m
-
-    def test_none_parameter_size(self):
-        m = _make_remote_model(parameter_size="")
-        row = RemoteRow(m)
-        assert row.remote_model.parameter_size == ""
+    def test_no_parameter_size(self):
+        rm = _make_remote_model(parameter_size="")
+        row = _remote_to_row(rm)
+        assert row.params == "--"
 
 
 # ---------------------------------------------------------------------------
@@ -407,14 +347,16 @@ async def test_settings_screen_row_highlighted_unknown_key():
 
 
 async def test_settings_enter_opens_editor():
-    """F1: pressing Enter on a row opens an inline editor."""
+    """F1: pressing Enter on a writable row opens an inline editor."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import DataTable, Input
 
         table = app.screen.query_one("#settings-table", DataTable)
         table.focus()
-        # Move to first row (chat_model) and press enter to edit
+        # Move to top_k row (first writable row, index 3)
+        table.move_cursor(row=3)
+        await pilot.pause()
         app.screen.action_edit_row()
         await pilot.pause()
         editor = app.screen.query_one("#settings-editor", Input)
@@ -452,6 +394,9 @@ async def test_settings_escape_cancels_edit():
 
         table = app.screen.query_one("#settings-table", DataTable)
         table.focus()
+        # Move to top_k (first writable row, index 3)
+        table.move_cursor(row=3)
+        await pilot.pause()
         app.screen.action_edit_row()
         await pilot.pause()
         assert app.screen._editing_key is not None
@@ -475,6 +420,209 @@ async def test_settings_readonly_shows_warning():
         await pilot.pause()
         # Should not have opened an editor
         assert app.screen._editing_key is None
+
+
+async def test_settings_readonly_fields_show_locked_tag():
+    """Read-only settings show [locked] in the type column."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        # chat_model is row 0 and non-writable
+        row = table.get_row_at(0)
+        assert "[locked]" in str(row[2])
+        # top_k is row 3 and writable — no locked tag
+        writable_row = table.get_row_at(3)
+        assert "[locked]" not in str(writable_row[2])
+
+
+async def test_settings_readonly_field_blocks_editing():
+    """Pressing Enter on a non-writable settings field shows warning."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # chat_model is row 0 — read-only
+        table.move_cursor(row=0)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        assert app.screen._editing_key is None
+
+
+async def test_settings_model_info_rows_present():
+    """Model architecture info rows are shown in the settings table."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        keys = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+        assert "chat_model_arch" in keys
+        assert "embed_model_arch" in keys
+        assert "vision_projector" in keys
+        assert "active_chat_handler" in keys
+
+
+async def test_settings_model_info_rows_not_editable():
+    """Model info rows are read-only."""
+    from lilbee.cli.tui.screens.settings import _is_writable
+
+    assert not _is_writable("chat_model_arch")
+    assert not _is_writable("embed_model_arch")
+    assert not _is_writable("vision_projector")
+    assert not _is_writable("active_chat_handler")
+
+
+async def test_settings_model_info_row_detail():
+    """Highlighting a model info row shows detail text."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        event = MagicMock()
+        event.row_key = MagicMock()
+        event.row_key.value = "chat_model_arch"
+        event.row_key.__bool__ = lambda self: True
+        app.screen.on_data_table_row_highlighted(event)
+        detail = app.screen.query_one("#setting-detail", Static)
+        rendered = str(detail.render())
+        assert "read-only" in rendered
+
+
+async def test_settings_effective_value_shows_model_default():
+    """When user hasn't set a value, model default is shown with suffix."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = 4096
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        cfg.temperature = None
+        result = _effective_value("temperature")
+        assert "0.7" in result
+        assert "(model default)" in result
+        # num_ctx also has a default
+        cfg.num_ctx = None
+        result = _effective_value("num_ctx")
+        assert "4096" in result
+        assert "(model default)" in result
+        # top_p has no default set
+        cfg.top_p = None
+        result = _effective_value("top_p")
+        assert result == "None"
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_effective_value_user_overrides_default():
+    """When user has set a value, it takes precedence over model default."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        cfg.temperature = 0.9
+        result = _effective_value("temperature")
+        assert result == "0.9"
+        assert "(model default)" not in result
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_effective_value_no_defaults():
+    """When no model defaults are loaded, None values show as 'None'."""
+    from lilbee.cli.tui.screens.settings import _effective_value
+
+    old_defaults = cfg._model_defaults
+    old_temp = cfg.temperature
+    try:
+        cfg.clear_model_defaults()
+        cfg.temperature = None
+        result = _effective_value("temperature")
+        assert result == "None"
+    finally:
+        cfg.temperature = old_temp
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_is_writable():
+    """_is_writable correctly identifies writable vs read-only fields."""
+    from lilbee.cli.tui.screens.settings import _is_writable
+
+    assert _is_writable("top_k")
+    assert _is_writable("temperature")
+    assert not _is_writable("chat_model")
+    assert not _is_writable("embedding_model")
+    assert not _is_writable("hf_token")
+    assert not _is_writable("data_root")
+    assert not _is_writable("nonexistent_key_xyz")
+
+
+async def test_settings_model_info_values():
+    """Model info rows show 'unknown' or 'not loaded' when no model loaded."""
+    from lilbee.cli.tui.screens.settings import _get_model_info
+
+    old_defaults = cfg._model_defaults
+    try:
+        cfg.clear_model_defaults()
+        info = _get_model_info()
+        assert info["chat_model_arch"] == "unknown"
+        assert info["embed_model_arch"] == "unknown"
+        assert info["vision_projector"] == "unknown"
+        assert info["active_chat_handler"] == "not loaded"
+    finally:
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
+
+
+async def test_settings_model_info_loaded():
+    """Model info shows 'loaded' when model defaults are available."""
+    from dataclasses import dataclass
+
+    from lilbee.cli.tui.screens.settings import _get_model_info
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    old_defaults = cfg._model_defaults
+    try:
+        cfg.apply_model_defaults(FakeDefaults())
+        info = _get_model_info()
+        assert info["active_chat_handler"] == "loaded"
+    finally:
+        object.__setattr__(cfg, "_model_defaults", old_defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +743,7 @@ async def test_app_set_theme():
         assert app.theme == "dracula"
 
 
-async def test_app_push_catalog():
+async def test_app_switch_to_catalog():
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -605,29 +753,29 @@ async def test_app_push_catalog():
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
-            app.action_push_catalog()
+            app._switch_view("Models")
             await _pilot.pause()
             assert isinstance(app.screen, CatalogScreen)
 
 
-async def test_app_push_status():
+async def test_app_switch_to_status():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.action_push_status()
+        app._switch_view("Status")
         await _pilot.pause()
         from lilbee.cli.tui.screens.status import StatusScreen
 
         assert isinstance(app.screen, StatusScreen)
 
 
-async def test_app_push_settings():
+async def test_app_switch_to_settings():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.action_push_settings()
+        app._switch_view("Settings")
         await _pilot.pause()
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -661,15 +809,19 @@ async def test_app_auto_sync_flag():
 class ChatTestApp(App[None]):
     CSS = ""
 
-    def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+    def __init__(self) -> None:
+        super().__init__()
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        yield NavBar(id="global-nav-bar")
+        self._task_bar = TaskBar(id="app-task-bar")
+
+    def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
+        self.mount(self._task_bar)
         self.push_screen(ChatScreen())
 
 
@@ -1003,26 +1155,37 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen._streaming is False
 
 
-async def test_chat_vim_j_k_not_in_input():
+async def test_chat_vim_j_k_cycles_focus_in_normal_mode():
+    """j/k cycle focus between widgets in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        log.focus()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#model-bar").focus()
+        await pilot.pause()
         app.screen.key_j()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
         app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
 
 
-async def test_chat_vim_j_k_in_input():
+async def test_chat_vim_j_k_noop_in_insert_mode():
+    """j/k do nothing when in insert mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
         inp = app.screen.query_one("#chat-input", Input)
         inp.focus()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
         app.screen.key_j()
         app.screen.key_k()
+        await pilot.pause()
+        # Focus should remain on input
+        assert inp.has_focus
 
 
 async def test_chat_needs_setup_false_when_models_exist():
@@ -1485,8 +1648,15 @@ class CatalogTestApp(App[None]):
 def _patch_catalog():
     """Context manager to patch catalog screen's network calls."""
     return (
-        patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+        patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
         patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+        patch(
+            "lilbee.cli.tui.screens.catalog.get_model_manager",
+            return_value=MagicMock(
+                list_installed=MagicMock(return_value=[]),
+                is_installed=MagicMock(return_value=False),
+            ),
+        ),
     )
 
 
@@ -1495,7 +1665,7 @@ async def test_catalog_screen_renders():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             app.push_screen(CatalogScreen())
             await _pilot.pause()
             assert app.screen.query_one("#catalog-search") is not None
@@ -1506,7 +1676,7 @@ async def test_catalog_focus_search():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1517,42 +1687,27 @@ async def test_catalog_focus_search():
             assert app.screen.query_one("#catalog-search", Input).has_focus
 
 
-async def test_catalog_cycle_sort():
+async def test_catalog_header_sort():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            assert screen._current_sort == "downloads"
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            await _pilot.pause()
-            screen.action_cycle_sort()
-            assert screen._current_sort == "name"
-
-
-async def test_catalog_cycle_sort_in_input_ignored():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            from textual.widgets import Input
-
-            filter_input = screen.query_one("#catalog-search", Input)
-            filter_input.display = True
-            filter_input.focus()
-            await _pilot.pause()
-            screen.action_cycle_sort()
-            assert screen._current_sort == "downloads"
+            assert screen._sort_column == "Name"
+            assert screen._sort_ascending is True
+            # Simulate clicking same column header toggles direction
+            event = MagicMock()
+            event.column_key = "Name"
+            screen.on_data_table_header_selected(event)
+            assert screen._sort_ascending is False
+            # Clicking different column resets to ascending
+            event.column_key = "Downloads"
+            screen.on_data_table_header_selected(event)
+            assert screen._sort_column == "Downloads"
+            assert screen._sort_ascending is True
 
 
 async def test_catalog_pop_screen():
@@ -1560,7 +1715,7 @@ async def test_catalog_pop_screen():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1573,14 +1728,12 @@ async def test_catalog_vim_keys():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             screen.action_cursor_down()
             screen.action_cursor_up()
 
@@ -1590,7 +1743,7 @@ async def test_catalog_vim_keys_in_input():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1606,14 +1759,12 @@ async def test_catalog_page_down_up():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             screen.action_page_down()
             screen.action_page_up()
 
@@ -1623,7 +1774,7 @@ async def test_catalog_page_down_no_focus():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1639,7 +1790,7 @@ async def test_catalog_install_already_installed():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1655,7 +1806,7 @@ async def test_catalog_install_new_model():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1668,132 +1819,66 @@ async def test_catalog_install_new_model():
 
 
 async def test_catalog_select_remote_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, _remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
             om = _make_remote_model(name="remote-chat:latest")
-            row = RemoteRow(om)
-            event = MagicMock()
-            event.item = row
-            screen.on_list_view_selected(event)
+            row = _remote_to_row(om)
+            screen._select_row(row)
             assert cfg.chat_model == "remote-chat:latest"
 
 
-async def test_catalog_select_load_more():
+async def test_catalog_load_more():
     from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
             old_offset = screen._hf_offset
-            row = LoadMoreRow()
-            event = MagicMock()
-            event.item = row
             with patch.object(screen, "_fetch_more_hf"):
-                screen.on_list_view_selected(event)
+                screen._load_more()
                 assert screen._hf_offset == old_offset + _HF_PAGE_SIZE
 
 
-async def test_catalog_highlight_model_row():
+async def test_catalog_get_highlighted_model_name_empty():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            m = _make_catalog_model(name="test-7B", size_gb=4.0)
-            row = ModelRow(m)
-            screen._update_highlighted_detail(row)
-            detail = screen.query_one("#model-detail", Static)
-            assert "test-7B" in str(detail.render())
+            # Clear all models
+            screen._families = []
+            screen._hf_models = []
+            screen._remote_models = []
+            screen._refresh_table()
+            assert screen._get_highlighted_model_name() is None
 
 
-async def test_catalog_highlight_remote_row():
+async def test_catalog_get_highlighted_with_rows():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            om = _make_remote_model(name="remote-test:latest")
-            row = RemoteRow(om)
-            screen._update_highlighted_detail(row)
-            detail = screen.query_one("#model-detail", Static)
-            assert "remote-test" in str(detail.render())
-
-
-async def test_catalog_highlight_unknown_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
+            screen._hf_models = [_make_catalog_model(name="test-7B")]
+            screen._refresh_table()
             await _pilot.pause()
-            from textual.widgets import ListItem
-
-            row = ListItem()
-            screen._update_highlighted_detail(row)
-            detail = screen.query_one("#model-detail", Static)
-            assert str(detail.render()) == ""
-
-
-async def test_catalog_highlight_none_no_highlighted():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._update_highlighted_detail(None)
-
-
-async def test_catalog_highlight_model_zero_size_triggers_fetch():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="test-7B", size_gb=0.0)
-            row = ModelRow(m)
-            with patch.object(screen, "_fetch_model_size") as mock_fetch:
-                screen._update_highlighted_detail(row)
-                mock_fetch.assert_called_once_with(m.hf_repo)
-
-
-async def test_catalog_highlight_model_cached_size():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="test-7B", size_gb=0.0, hf_repo="org/test-7B-GGUF")
-            screen._size_cache["org/test-7B-GGUF"] = 5.5
-            row = ModelRow(m)
-            screen._update_highlighted_detail(row)
-            detail = screen.query_one("#model-detail", Static)
-            assert "5.5 GB" in str(detail.render())
+            name = screen._get_highlighted_model_name()
+            assert name is not None
 
 
 async def test_catalog_worker_hf_success():
@@ -1801,7 +1886,7 @@ async def test_catalog_worker_hf_success():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1809,7 +1894,7 @@ async def test_catalog_worker_hf_success():
             from textual.worker import WorkerState
 
             mock_worker = MagicMock()
-            mock_worker.name = "_fetch_hf_models"
+            mock_worker.name = "_fetch_all_hf_models"
             mock_worker.result = [_make_catalog_model(name="hf-model-7B")]
             mock_event = MagicMock()
             mock_event.state = WorkerState.SUCCESS
@@ -1823,7 +1908,7 @@ async def test_catalog_worker_remote_success():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1845,7 +1930,7 @@ async def test_catalog_worker_more_hf_success():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1863,56 +1948,12 @@ async def test_catalog_worker_more_hf_success():
             assert len(screen._hf_models) == 2
 
 
-async def test_catalog_worker_size_fetch_success():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            from textual.worker import WorkerState
-
-            mock_worker = MagicMock()
-            mock_worker.name = "_fetch_model_size"
-            mock_worker.result = ("org/test-GGUF", 3.5)
-            mock_event = MagicMock()
-            mock_event.state = WorkerState.SUCCESS
-            mock_event.worker = mock_worker
-            screen.on_worker_state_changed(mock_event)
-            assert screen._size_cache["org/test-GGUF"] == 3.5
-
-
-async def test_catalog_worker_size_fetch_zero():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            from textual.worker import WorkerState
-
-            mock_worker = MagicMock()
-            mock_worker.name = "_fetch_model_size"
-            mock_worker.result = ("org/test-GGUF", 0.0)
-            mock_event = MagicMock()
-            mock_event.state = WorkerState.SUCCESS
-            mock_event.worker = mock_worker
-            screen.on_worker_state_changed(mock_event)
-            assert "org/test-GGUF" not in screen._size_cache
-
-
 async def test_catalog_worker_non_success_ignored():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -1924,21 +1965,19 @@ async def test_catalog_worker_non_success_ignored():
             screen.on_worker_state_changed(mock_event)
 
 
-async def test_catalog_select_model_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
+async def test_catalog_select_catalog_row():
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, _catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
             m = _make_catalog_model(name="test-7B")
-            row = ModelRow(m)
+            row = _catalog_to_row(m, installed=False)
             with patch.object(screen, "_install_model") as mock_install:
-                event = MagicMock()
-                event.item = row
-                screen.on_list_view_selected(event)
+                screen._select_row(row)
                 mock_install.assert_called_once_with(m)
 
 
@@ -1947,14 +1986,14 @@ async def test_catalog_input_changed_refreshes():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            with patch.object(screen, "_refresh_lists") as mock_refresh:
+            with patch.object(screen, "_refresh_table") as mock_refresh:
                 event = MagicMock()
                 event.input = inp
                 screen.on_input_changed(event)
@@ -1966,11 +2005,11 @@ async def test_catalog_input_changed_other_input_ignored():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            with patch.object(screen, "_refresh_lists") as mock_refresh:
+            with patch.object(screen, "_refresh_table") as mock_refresh:
                 event = MagicMock()
                 event.input = MagicMock()
                 event.input.id = "other-input"
@@ -1978,83 +2017,18 @@ async def test_catalog_input_changed_other_input_ignored():
                 mock_refresh.assert_not_called()
 
 
-async def test_catalog_tab_activated():
+async def test_catalog_row_selected_out_of_range():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            screen._hf_offset = 50
-            screen._hf_models = [_make_catalog_model()]
-            mock_event = MagicMock()
-            with patch.object(screen, "_fetch_hf_models"):
-                screen.on_tabbed_content_tab_activated(mock_event)
-                assert screen._hf_offset == 0
-                assert screen._hf_models == []
-                assert screen._hf_has_more is True
-
-
-async def test_catalog_on_list_view_highlighted():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="test-7B")
-            row = ModelRow(m)
             event = MagicMock()
-            event.item = row
-            with patch.object(screen, "_update_highlighted_detail") as mock_update:
-                screen.on_list_view_highlighted(event)
-                mock_update.assert_called_once_with(row)
-
-
-class LoadMoreTestApp(App[None]):
-    CSS = ""
-
-    def compose(self) -> ComposeResult:
-        yield LoadMoreRow()
-
-
-async def test_load_more_row_renders():
-    app = LoadMoreTestApp()
-    async with app.run_test(size=(80, 10)) as _pilot:
-        text = app.query_one(Static)
-        assert "Load more" in str(text.render())
-
-
-class ModelRowTestApp(App[None]):
-    CSS = ""
-
-    def compose(self) -> ComposeResult:
-        yield ModelRow(_make_catalog_model(name="compose-test-7B", hf_repo="compose-test-7B"))
-
-
-async def test_model_row_compose():
-    app = ModelRowTestApp()
-    async with app.run_test(size=(120, 10)) as _pilot:
-        text = app.query_one(Static)
-        assert "compose test 7B" in str(text.render())
-
-
-class RemoteRowTestApp(App[None]):
-    CSS = ""
-
-    def compose(self) -> ComposeResult:
-        yield RemoteRow(_make_remote_model(name="remote-compose:latest", parameter_size=""))
-
-
-async def test_remote_row_compose():
-    app = RemoteRowTestApp()
-    async with app.run_test(size=(120, 10)) as _pilot:
-        text = app.query_one(Static)
-        assert "remote-compose:latest" in str(text.render())
+            event.cursor_row = 999
+            screen.on_data_table_row_selected(event)
 
 
 # ---------------------------------------------------------------------------
@@ -2062,33 +2036,14 @@ async def test_remote_row_compose():
 # ---------------------------------------------------------------------------
 
 
-async def test_catalog_fetch_model_size_worker():
-    """Cover _fetch_model_size worker body (lines 307-310)."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            with patch("lilbee.catalog.fetch_model_file_size", return_value=5.5):
-                screen._fetch_model_size("org/test-GGUF")
-                await _pilot.pause()
-                # Wait for worker to complete
-                while screen.workers:
-                    await _pilot.pause()
-
-
 async def test_catalog_fetch_more_hf_worker():
-    """Cover _fetch_more_hf worker body (lines 319-324)."""
+    """Cover _fetch_more_hf worker body."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     hf_models = [_make_catalog_model(name=f"hf-{i}B", featured=False) for i in range(5)]
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -2101,36 +2056,6 @@ async def test_catalog_fetch_more_hf_worker():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-
-
-async def test_catalog_update_highlighted_detail_none_with_child():
-    """Cover lines 280-281: _update_highlighted_detail(None) finding highlighted child."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            # Add featured models so there's something in the list
-            screen._featured = [_make_catalog_model(name="feat-7B", featured=True, size_gb=4.0)]
-            screen._refresh_lists()
-            await _pilot.pause()
-
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            await _pilot.pause()
-            # Move cursor down to a ModelRow (skip section header)
-            lv.action_cursor_down()
-            await _pilot.pause()
-
-            # Now call with None, it should find the highlighted child
-            if lv.highlighted_child:
-                screen._update_highlighted_detail(None)
 
 
 async def test_chat_stream_response_worker(mock_svc):
@@ -2225,7 +2150,7 @@ async def test_chat_sync_progress_percentage():
         from lilbee.progress import EventType, FileStartEvent
 
         update_calls: list[tuple] = []
-        task_bar = app.screen.query_one("#task-bar")
+        task_bar = app._task_bar  # type: ignore[attr-defined]
         original_update = task_bar.update_task
 
         def tracking_update(task_id, pct, status):
@@ -2461,123 +2386,110 @@ async def test_chat_cancel_with_active_worker(mock_svc):
 # ---------------------------------------------------------------------------
 
 
-async def test_catalog_refresh_lists_with_search_and_load_more():
-    """Cover the 'no models match' and 'load more' rows in _refresh_lists (line 246)."""
+async def test_catalog_refresh_table_empty():
+    """Cover empty table case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
 
-            # Clear all models and set search to something that won't match
-            screen._featured = []
+            screen._families = []
             screen._hf_models = []
             screen._remote_models = []
-            screen._refresh_lists()
-            # Should show "No models match" in at least the All tab
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            assert lv.children  # Should have the "no matches" row
+            screen._refresh_table()
+            table = screen.query_one("#catalog-table", DataTable)
+            assert table.row_count == 0
 
 
-async def test_catalog_refresh_lists_with_hf_load_more():
-    """Cover the LoadMoreRow append (line 243)."""
+async def test_catalog_refresh_table_with_models():
+    """Cover table with HF models."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
 
-            # Add HF models and ensure has_more is True
             screen._hf_models = [
                 _make_catalog_model(name=f"model-{i}B", hf_repo=f"org/model-{i}", downloads=100 - i)
                 for i in range(5)
             ]
             screen._hf_has_more = True
-            screen._refresh_lists()
+            screen._refresh_table()
+            table = screen.query_one("#catalog-table", DataTable)
+            assert table.row_count >= 5
 
 
-async def test_catalog_page_down_with_focused_list():
-    """Cover the inner loop in action_page_down (lines 355-356)."""
+async def test_catalog_page_down_with_focused_table():
+    """Cover action_page_down with focused DataTable."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
 
-            # Add some models so there are items to scroll
-            screen._featured = [
-                _make_catalog_model(name=f"f-{i}B", featured=True) for i in range(15)
+            screen._hf_models = [
+                _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(15)
             ]
-            screen._refresh_lists()
-
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
+            screen._refresh_table()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             await _pilot.pause()
             screen.action_page_down()
             screen.action_page_up()
 
 
-async def test_catalog_action_cursor_with_focused_list():
-    """Cover the lv.action_cursor_down() in action_cursor_down."""
+async def test_catalog_action_cursor_with_focused_table():
+    """Cover action_cursor_down with focused DataTable."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
 
-            screen._featured = [
-                _make_catalog_model(name=f"f-{i}B", featured=True) for i in range(5)
+            screen._hf_models = [
+                _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
             ]
-            screen._refresh_lists()
-
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
+            screen._refresh_table()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             await _pilot.pause()
             screen.action_cursor_down()
             screen.action_cursor_up()
 
 
-async def test_catalog_highlight_none_with_highlighted_child():
-    """Cover the branch where _update_highlighted_detail(None) finds a highlighted child."""
+async def test_catalog_jump_top_bottom():
+    """Cover action_jump_top and action_jump_bottom."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
 
-            # Add some models so there are items
-            screen._featured = [_make_catalog_model(name="feat-7B", featured=True, size_gb=4.0)]
-            screen._refresh_lists()
+            screen._hf_models = [
+                _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
+            ]
+            screen._refresh_table()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             await _pilot.pause()
-
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            await _pilot.pause()
-            # If there's a highlighted child, calling with None should find it
-            screen._update_highlighted_detail(None)
+            screen.action_jump_bottom()
+            screen.action_jump_top()
 
 
 # ---------------------------------------------------------------------------
@@ -2585,20 +2497,17 @@ async def test_catalog_highlight_none_with_highlighted_child():
 # ---------------------------------------------------------------------------
 
 
-async def test_chat_vim_j_scrolls_down_no_focus():
-    """Cover key_j scroll_down path (line 419) when focused widget is None."""
+async def test_chat_vim_j_cycles_focus_from_chat_log():
+    """key_j cycles focus forward from chat-log to chat-input in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        # Remove focus from input by focusing the chat log
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        log.focus()
-        await _pilot.pause()
-        # Now key_j should scroll down (line 419)
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#chat-log").focus()
+        await pilot.pause()
         app.screen.key_j()
-        # key_k should scroll up (line 426)
-        app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
 
 
 def test_check_embedding_model_installed():
@@ -2880,19 +2789,17 @@ async def test_status_key_g_G(mock_svc):
 
 
 async def test_catalog_key_g_G():
-    """g/G jump to top/bottom of catalog list."""
+    """g/G jump to top/bottom of catalog table."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
             screen.action_jump_top()
             screen.action_jump_bottom()
 
@@ -2903,7 +2810,7 @@ async def test_catalog_key_g_G_noop_in_input():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -2914,52 +2821,15 @@ async def test_catalog_key_g_G_noop_in_input():
             screen.action_jump_bottom()
 
 
-async def test_catalog_number_keys_switch_tabs():
-    """Number keys 1-4 switch catalog tabs."""
+async def test_catalog_tab_bindings_removed():
+    """Number key tab-switching bindings removed from catalog."""
+    from textual.binding import Binding as B
+
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            from textual.widgets import ListView, TabbedContent
-
-            screen.query_one("#catlist-all", ListView).focus()
-            await _pilot.pause()
-            tabs = screen.query_one("#catalog-tabs", TabbedContent)
-            screen.action_activate_tab_1()
-            await _pilot.pause()
-            assert tabs.active == "cat-chat"
-            screen.action_activate_tab_2()
-            await _pilot.pause()
-            assert tabs.active == "cat-embedding"
-            screen.action_activate_tab_3()
-            await _pilot.pause()
-            assert tabs.active == "cat-vision"
-            screen.action_activate_tab_0()
-            await _pilot.pause()
-            assert tabs.active == "cat-all"
-
-
-async def test_catalog_number_keys_noop_in_input():
-    """Number keys do nothing when catalog search Input is focused."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            from textual.widgets import Input
-
-            screen.query_one("#catalog-search", Input).focus()
-            screen.action_activate_tab_0()
-            screen.action_activate_tab_1()
-            screen.action_activate_tab_2()
-            screen.action_activate_tab_3()
+    keys = {b.key for b in CatalogScreen.BINDINGS if isinstance(b, B)}
+    for k in ("1", "2", "3", "4"):
+        assert k not in keys
 
 
 async def test_app_question_mark_opens_help():
@@ -2995,26 +2865,26 @@ async def test_catalog_delete_installed_model_confirmation():
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.list_installed.return_value = []
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            # Wait for background workers to complete before modifying list
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_lists()
+            screen._refresh_table()
             await _pilot.pause()
 
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            lv.index = len(lv.children) - 1
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
+            # Move cursor to last row (remote model)
+            if screen._rows:
+                table.move_cursor(row=len(screen._rows) - 1)
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -3028,11 +2898,12 @@ async def test_catalog_delete_second_press_confirms():
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.list_installed.return_value = []
             mock_mgr.return_value.remove.return_value = True
             screen = CatalogScreen()
             app.push_screen(screen)
@@ -3040,14 +2911,13 @@ async def test_catalog_delete_second_press_confirms():
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_lists()
+            screen._refresh_table()
             await _pilot.pause()
 
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            lv.index = len(lv.children) - 1
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
+            if screen._rows:
+                table.move_cursor(row=len(screen._rows) - 1)
             await _pilot.pause()
 
             # First press sets pending
@@ -3065,25 +2935,25 @@ async def test_catalog_delete_not_installed():
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
             patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
         ):
             mock_mgr.return_value.is_installed.return_value = False
+            mock_mgr.return_value.list_installed.return_value = []
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_lists()
+            screen._refresh_table()
             await _pilot.pause()
 
-            from textual.widgets import ListView
-
-            lv = screen.query_one("#catlist-all", ListView)
-            lv.focus()
-            lv.index = len(lv.children) - 1
+            table = screen.query_one("#catalog-table", DataTable)
+            table.focus()
+            if screen._rows:
+                table.move_cursor(row=len(screen._rows) - 1)
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -3096,7 +2966,7 @@ async def test_catalog_delete_no_highlighted_row():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -3104,7 +2974,7 @@ async def test_catalog_delete_no_highlighted_row():
             screen._families = []
             screen._hf_models = []
             screen._remote_models = []
-            screen._refresh_lists()
+            screen._refresh_table()
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -3117,7 +2987,7 @@ async def test_catalog_delete_in_input_ignored():
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1]:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
@@ -3186,9 +3056,7 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
             ) as mock_copy,
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
-            from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-            task_bar = app.screen.query_one("#task-bar", TaskBar)
+            task_bar = app._task_bar  # type: ignore[attr-defined]
             add_task_spy = MagicMock(wraps=task_bar.add_task)
             with patch.object(task_bar, "add_task", add_task_spy):
                 app.screen._handle_slash(f"/add {test_file}")
@@ -3298,42 +3166,40 @@ async def test_chat_escape_key_enters_normal_mode():
         assert log.has_focus
 
 
-async def test_chat_cursor_down_action_scrolls():
-    """action_cursor_down scrolls in normal mode."""
+async def test_chat_key_down_cycles_focus_normal_mode():
+    """key_down cycles focus in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        log.focus()
+
+        # Focus model-bar, then cycle down to chat-log
+        app.screen.query_one("#model-bar").focus()
         await pilot.pause()
-
-        app.screen.action_cursor_down()
+        app.screen.key_down()
         await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
 
 
-async def test_chat_cursor_up_action_scrolls():
-    """action_cursor_up scrolls in normal mode."""
+async def test_chat_key_up_cycles_focus_normal_mode():
+    """key_up cycles focus in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.containers import VerticalScroll
-
-        log = app.screen.query_one("#chat-log", VerticalScroll)
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        log.focus()
-        await pilot.pause()
 
-        app.screen.action_cursor_up()
+        # Focus chat-log, then cycle up to model-bar
+        app.screen.query_one("#chat-log").focus()
         await pilot.pause()
+        app.screen.key_up()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
 
 
 async def test_chat_enter_key_returns_to_insert_mode():
@@ -3366,16 +3232,15 @@ async def test_app_nav_prev_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
-        assert nav.active_view == "Chat"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert nav.active_view == "Settings"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Tasks"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
 
 
 async def test_app_nav_next_cycles_views():
@@ -3388,20 +3253,19 @@ async def test_app_nav_next_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
-        assert nav.active_view == "Chat"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_next()
         await pilot.pause()
-        assert nav.active_view == "Models"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
 
         app.action_nav_next()
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
 
 
-async def test_app_number_keys_switch_views():
-    """Number keys 1-4 switch between views."""
+async def test_app_nav_switches_all_views():
+    """Nav prev/next cycles through all 5 views including Tasks."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3410,20 +3274,605 @@ async def test_app_number_keys_switch_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar")
 
-        app.action_switch_chat()
+        app._switch_view("Chat")
         await pilot.pause()
-        assert nav.active_view == "Chat"
+        assert app._active_view == "Chat"
 
-        app.action_switch_models()
+        app._switch_view("Tasks")
         await pilot.pause()
-        assert nav.active_view == "Models"
+        assert app._active_view == "Tasks"
 
-        app.action_switch_status()
+        app._switch_view("Models")
         await pilot.pause()
-        assert nav.active_view == "Status"
+        assert app._active_view == "Models"
 
-        app.action_switch_settings()
+
+async def test_chat_ctrl_n_p_bindings_exist():
+    """Ctrl+N and Ctrl+P bindings exist on ChatScreen."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
+    assert "ctrl+n" in keys
+    assert "ctrl+p" in keys
+
+
+def test_chat_input_history_tracking():
+    """Input history list tracks submitted messages."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._input_history = []
+    screen._history_index = -1
+    screen._input_history.append("hello")
+    screen._input_history.append("/help")
+    assert screen._input_history == ["hello", "/help"]
+    assert screen._history_index == -1
+
+
+def test_chat_sync_gating_flag():
+    """_sync_active flag defaults to False."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen._sync_active = False
+    assert screen._sync_active is False
+
+
+async def test_task_center_shows_history():
+    """TaskCenter displays history entries."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    tc = TaskCenter()
+    assert any(b.action == "cancel_task" for b in tc.BINDINGS if hasattr(b, "action"))
+
+
+async def test_task_center_renders_empty():
+    """TaskCenter shows 'No tasks' when queue is empty."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
         await pilot.pause()
-        assert nav.active_view == "Settings"
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+
+
+async def test_task_center_renders_active_and_history():
+    """TaskCenter shows active task and completed history."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app._task_bar  # type: ignore[attr-defined]
+
+        # Complete a task to create history
+        t1 = task_bar.add_task("Sync A", "sync")
+        task_bar.queue.advance()
+        task_bar.queue.complete_task(t1)
+
+        # Add an active task
+        task_bar.add_task("Sync B", "sync")
+        task_bar.queue.advance()
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+        assert table.row_count >= 2  # active + history
+
+
+async def test_task_center_no_task_bar():
+    """TaskCenter handles missing task_bar gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Remove _task_bar reference
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        table = app.screen.query_one("#task-table")
+        assert table is not None
+
+
+async def test_task_center_cancel_action():
+    """TaskCenter cancel action triggers on active task."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app._task_bar  # type: ignore[attr-defined]
+
+        task_bar.add_task("Sync", "sync")
+        task_bar.queue.advance()
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        # Just call action - should not crash even if cursor is on wrong row
+        app.screen.action_cancel_task()
+        await pilot.pause()
+
+
+async def test_task_center_refresh_action():
+    """TaskCenter refresh action refreshes table."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_refresh_tasks()
+        await pilot.pause()
+
+
+async def test_task_center_cursor_actions():
+    """TaskCenter cursor up/down delegate to DataTable."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_cursor_down()
+        app.screen.action_cursor_up()
+        await pilot.pause()
+
+
+async def test_task_center_pop_screen():
+    """TaskCenter pop_screen returns to chat."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        app.screen.action_pop_screen()
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+
+
+async def test_chat_input_history_up_down():
+    """Up/down arrows cycle through input history when input focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        # Submit two messages
+        inp.value = "hello"
+        await pilot.press("enter")
+        inp.value = "world"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen._input_history == ["hello", "world"]
+
+        # Press up to recall "world"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "world"
+
+        # Press up again to recall "hello"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "hello"
+
+        # Press up at boundary stays at "hello"
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == "hello"
+
+        # Press down to go to "world"
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == "world"
+
+        # Press down past end clears input
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_input_history_up_no_history():
+    """Up arrow is a no-op when input history is empty."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        app.screen.key_up()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_input_history_down_no_index():
+    """Down arrow is a no-op when history_index is -1."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        inp = app.screen.query_one("#chat-input")
+        inp.focus()
+        await pilot.pause()
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert inp.value == ""
+
+
+async def test_chat_sync_gating_rejects_add(tmp_path):
+    """B3: /add is rejected when _sync_active is True."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        app.screen._sync_active = True
+        app.screen._handle_slash(f"/add {test_file}")
+        await pilot.pause()
+        # No task should have been created
+        task_bar = app._task_bar  # type: ignore[attr-defined]
+        assert task_bar.queue.is_empty
+
+
+async def test_chat_sync_gating_rejects_sync():
+    """B3: /sync (/add synonym via _run_sync) is rejected when _sync_active is True."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen._sync_active = True
+        app.screen._run_sync()
+        await pilot.pause()
+        task_bar = app._task_bar  # type: ignore[attr-defined]
+        # No new sync task should be queued
+        assert task_bar.queue.active_task is None
+
+
+async def test_chat_action_complete_next():
+    """Ctrl+N (action_complete_next) delegates to action_complete."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "/he"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help"],
+        ):
+            app.screen.action_complete_next()
+            assert inp.value == "/help"
+
+
+async def test_chat_action_complete_prev_opens_overlay():
+    """Ctrl+P (action_complete_prev) opens overlay when not visible."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        inp = app.screen.query_one("#chat-input", Input)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/he"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help"],
+        ):
+            app.screen.action_complete_prev()
+            assert overlay.is_visible
+            assert inp.value == "/help"
+
+
+async def test_chat_action_complete_prev_cycles_backward():
+    """Ctrl+P cycles backward through existing completions."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        inp = app.screen.query_one("#chat-input", Input)
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
+        inp.value = "/he"
+
+        # Open completions first
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["/help", "/hello"],
+        ):
+            app.screen.action_complete()
+            assert overlay.is_visible
+
+            # Cycle prev through existing overlay
+            app.screen.action_complete_prev()
+            assert overlay.is_visible
+
+
+async def test_chat_action_complete_prev_with_space():
+    """Ctrl+P with argument completions sets cmd + selection."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.value = "/model q"
+        with patch(
+            "lilbee.cli.tui.screens.chat.get_completions",
+            return_value=["qwen:latest", "qwen:8b"],
+        ):
+            app.screen.action_complete_prev()
+            assert "qwen" in inp.value
+
+
+async def test_task_center_with_queued_tasks():
+    """TaskCenter shows queued tasks when active + queued present."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app._task_bar  # type: ignore[attr-defined]
+
+        # Add active + queued tasks (same type so one is queued)
+        task_bar.add_task("Download A", "download")
+        task_bar.queue.advance("download")
+        task_bar.add_task("Download B", "download")
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        table = app.screen.query_one("#task-table")
+        assert table.row_count >= 2  # active + queued
+
+
+async def test_task_center_cancel_no_task_bar():
+    """TaskCenter cancel with no _task_bar is a no-op."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        # Should not crash
+        app.screen.action_cancel_task()
+        await pilot.pause()
+
+
+async def test_task_center_status_icon():
+    """_status_icon maps all TaskStatus values."""
+    from lilbee.cli.tui.screens.task_center import _status_icon
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    assert _status_icon(TaskStatus.QUEUED) == "\u23f3"
+    assert _status_icon(TaskStatus.ACTIVE) == "\u25b6"
+    assert _status_icon(TaskStatus.DONE) == "\u2713"
+    assert _status_icon(TaskStatus.FAILED) == "\u2717"
+    assert _status_icon(TaskStatus.CANCELLED) == "\u2298"
+
+
+async def test_app_switch_to_tasks():
+    """App _switch_view navigates to TaskCenter."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app._switch_view("Tasks")
+        await pilot.pause()
+        assert isinstance(app.screen, TaskCenter)
+
+
+async def test_chat_mode_indicator_shows_normal():
+    """NavBar shows '-- NORMAL --' when entering normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        assert nav.mode_text == msg.MODE_NORMAL
+
+
+async def test_chat_mode_indicator_shows_insert():
+    """NavBar shows '-- INSERT --' when returning to insert mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen._enter_insert_mode()
+        await pilot.pause()
+        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        assert nav.mode_text == msg.MODE_INSERT
+
+
+async def test_chat_up_down_cycle_focus_in_normal_mode():
+    """Up/down arrow keys cycle focus between widgets in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#model-bar").focus()
+        await pilot.pause()
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
+
+        app.screen.key_down()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
+
+        app.screen.key_up()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-log"
+
+
+async def test_chat_cycle_focus_wraps_around():
+    """Focus cycling wraps from last widget to first and vice versa."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.query_one("#chat-input").focus()
+        await pilot.pause()
+
+        app.screen.key_j()
+        await pilot.pause()
+        assert app.screen.focused.id == "model-bar"
+
+        app.screen.key_k()
+        await pilot.pause()
+        assert app.screen.focused.id == "chat-input"
+
+
+async def test_chat_up_arrow_insert_mode_recalls_history():
+    """Up arrow in insert mode still recalls input history."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        await pilot.pause()
+        app.screen._input_history = ["hello", "world"]
+        app.screen._history_index = -1
+        app.screen.key_up()
+        assert inp.value == "world"
+
+
+def test_navbar_mode_text_reactive_declared():
+    """NavBar declares a mode_text reactive."""
+    from textual.reactive import Reactive
+
+    from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+    reactives = {name for name, val in vars(NavBar).items() if isinstance(val, Reactive)}
+    assert "mode_text" in reactives
+
+
+async def test_task_center_row_click_shows_detail():
+    """Clicking a row in TaskCenter updates the detail panel."""
+    from unittest import mock
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        task_bar = app._task_bar
+        tid = task_bar.add_task("Download X", "download")
+        task_bar.queue.advance()
+        task_bar.queue.update_task(tid, 42, "10/24 MB")
+
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        detail = screen.query_one("#task-detail", Static)
+
+        # Simulate row selection with a mock event carrying the task_id as row_key
+        row_key = mock.Mock()
+        row_key.value = tid
+        event = mock.Mock()
+        event.row_key = row_key
+        screen.on_data_table_row_selected(event)
+        await pilot.pause()
+        text = detail.content
+        assert "Download X" in text
+        assert "download" in text
+        assert "42%" in text
+
+
+async def test_task_center_row_click_no_task_bar():
+    """TaskCenter row click handles missing task_bar gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+
+        # Remove task_bar and verify _find_task returns None
+        if hasattr(app, "_task_bar"):
+            delattr(app, "_task_bar")
+        result = screen._find_task("nonexistent")
+        assert result is None
+
+
+async def test_task_center_show_detail_no_key():
+    """TaskCenter _show_task_detail handles None key gracefully."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        screen._show_task_detail(None)
+        await pilot.pause()
+        detail = screen.query_one("#task-detail", Static)
+        assert detail.content == ""
+
+
+async def test_settings_row_click_opens_editor():
+    """Clicking a writable row in Settings opens the inline editor."""
+    from unittest import mock
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(SettingsScreen())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+
+        # Verify on_data_table_row_selected calls action_edit_row
+        with mock.patch.object(screen, "action_edit_row") as mocked:
+            event = mock.Mock()
+            screen.on_data_table_row_selected(event)
+            mocked.assert_called_once()

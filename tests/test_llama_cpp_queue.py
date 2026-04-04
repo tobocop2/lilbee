@@ -33,6 +33,7 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.models_dir = models
     cfg.embedding_model = "test-model"
     cfg.chat_model = "test-model"
+    cfg.subprocess_embed = False
     return models
 
 
@@ -292,10 +293,10 @@ class TestShutdown:
         mock_llama_cpp.Llama.return_value = mock.MagicMock()
 
         provider = LlamaCppProvider()
-        assert provider._worker.is_alive()
+        assert provider._embed_thread.is_alive()
 
         provider.shutdown()
-        assert not provider._worker.is_alive()
+        assert not provider._embed_thread.is_alive()
 
     def test_shutdown_during_batch_collection(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
@@ -328,8 +329,8 @@ class TestShutdown:
         # The worker should process "world" then see sentinel and exit
         result2 = fut.result(timeout=5)
         assert result2 == [[1.0]]
-        provider._worker.join(timeout=2)
-        assert not provider._worker.is_alive()
+        provider._embed_thread.join(timeout=2)
+        assert not provider._embed_thread.is_alive()
 
 
 class TestLockedStreamIteratorClose:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import ClassVar
 
 from textual import work
@@ -22,24 +21,33 @@ _STEP_CHAT = 1
 _STEP_EMBED = 2
 
 
-def _scan_installed_models(models_dir: Path) -> tuple[list[Path], list[Path]]:
-    """Scan for installed GGUF models, split into chat vs embedding."""
-    if not models_dir.exists():
+def _scan_installed_models() -> tuple[list[str], list[str]]:
+    """List installed models from the registry, split into chat vs embedding."""
+    try:
+        from lilbee.registry import ModelRegistry
+
+        registry = ModelRegistry(cfg.models_dir)
+        chat: list[str] = []
+        embed: list[str] = []
+        for m in registry.list_installed():
+            name = f"{m.name}:{m.tag}"
+            if m.task == "embedding":
+                embed.append(name)
+            elif m.task == "chat":
+                chat.append(name)
+            # Skip vision and other types — not relevant for setup wizard
+        return sorted(chat), sorted(embed)
+    except Exception:
         return [], []
-    all_gguf = sorted(models_dir.glob("*.gguf"))
-    embed = [p for p in all_gguf if "embed" in p.name.lower()]
-    chat = [p for p in all_gguf if "embed" not in p.name.lower()]
-    return chat, embed
 
 
 class _InstalledRow(ListItem):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, name: str) -> None:
         super().__init__()
-        self.model_path = path
+        self.model_name = name
 
     def compose(self) -> ComposeResult:
-        size_mb = self.model_path.stat().st_size / (1024 * 1024)
-        yield Static(f"  {self.model_path.stem}  ({size_mb:.0f} MB)  [installed]")
+        yield Static(f"  {self.model_name}  [installed]")
 
 
 class _CatalogRow(ListItem):
@@ -64,7 +72,7 @@ class SetupWizard(Screen[str | None]):
         self._step = _STEP_CHAT
         self._selected_chat: str | None = None
         self._selected_embed: str | None = None
-        self._chat_installed, self._embed_installed = _scan_installed_models(cfg.models_dir)
+        self._chat_installed, self._embed_installed = _scan_installed_models()
 
     def compose(self) -> ComposeResult:
         yield Static(msg.SETUP_TITLE, id="setup-title")
@@ -89,8 +97,8 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_CHAT)
             if self._chat_installed:
                 lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
-                for p in self._chat_installed:
-                    lv.append(_InstalledRow(p))
+                for name in self._chat_installed:
+                    lv.append(_InstalledRow(name))
             lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_CHAT:
                 lv.append(_CatalogRow(m))
@@ -98,8 +106,8 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_EMBED)
             if self._embed_installed:
                 lv.append(ListItem(Label(msg.SETUP_INSTALLED_LABEL)))
-                for p in self._embed_installed:
-                    lv.append(_InstalledRow(p))
+                for name in self._embed_installed:
+                    lv.append(_InstalledRow(name))
             lv.append(ListItem(Label(msg.SETUP_FEATURED_LABEL)))
             for m in FEATURED_EMBEDDING:
                 lv.append(_CatalogRow(m))
@@ -107,7 +115,7 @@ class SetupWizard(Screen[str | None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _InstalledRow):
-            self._on_model_chosen(item.model_path.stem)
+            self._on_model_chosen(item.model_name)
         elif isinstance(item, _CatalogRow):
             self._download_model(item.model)
 
@@ -122,21 +130,59 @@ class SetupWizard(Screen[str | None]):
 
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
-        """Download via catalog API with TUI-native progress (no Rich)."""
+        """Download via catalog API with TUI-native progress (no Rich).
+        
+        Runs in a worker thread to avoid blocking the UI. Progress is reported
+        via callbacks rather than tqdm to avoid multiprocessing lock issues
+        with Textual's worker threads.
+        
+        Note: disable_progress_bars() is called in catalog.py during download.
+        """
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
             from lilbee.catalog import download_model
 
+            last_update_time = 0
+            last_pct = -1
+            
             def _on_progress(downloaded: int, total: int) -> None:
-                if total > 0:
-                    pct = int(downloaded * 100 / total)
+                nonlocal last_update_time, last_pct
+                import time
+                current_time = time.time()
+                
+                # Throttle updates to every 100ms to avoid UI spam
+                if current_time - last_update_time < 0.1:
+                    return
+                    
+                try:
                     mb_done = downloaded / (1024 * 1024)
-                    mb_total = total / (1024 * 1024)
-                    self.app.call_from_thread(self._update_progress, pct)
-                    self.app.call_from_thread(
-                        self._set_status,
-                        f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
-                    )
+                    
+                    if total > 0:
+                        pct = min(int(downloaded * 100 / total), 100)
+                        
+                        # Always update status with MB downloaded (more informative than %)
+                        mb_total = total / (1024 * 1024)
+                        last_update_time = current_time
+                        
+                        # Update progress bar - but allow 0% to show if truly at start
+                        # Only throttle if we're at same percentage AND > 0%
+                        if pct == last_pct and pct > 0:
+                            return
+                        last_pct = pct
+                        
+                        self.app.call_from_thread(self._update_progress, pct)
+                        self.app.call_from_thread(
+                            self._set_status,
+                            f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
+                        )
+                    else:
+                        # Show raw MB if total is unknown
+                        self.app.call_from_thread(
+                            self._set_status,
+                            f"Downloading... {mb_done:.0f} MB",
+                        )
+                except Exception:
+                    log.debug("Progress callback failed", exc_info=True)
 
             dest = download_model(model, on_progress=_on_progress)
             self.app.call_from_thread(self._on_download_complete, dest.stem)

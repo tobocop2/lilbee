@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label, ProgressBar, Static
 
-from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus
 
 log = logging.getLogger(__name__)
 
@@ -81,37 +81,45 @@ class TaskBar(Static):
 
     def complete_task(self, task_id: str) -> None:
         """Mark task done, show brief 'done' flash, then remove."""
+        task = self._queue._tasks.get(task_id)
+        task_type = task.task_type if task else None
         self._queue.complete_task(task_id)
         self._refresh_display()
-        self.set_timer(_DONE_FLASH_SECONDS, lambda: self._remove_and_advance(task_id))
+        self.set_timer(_DONE_FLASH_SECONDS, lambda: self._remove_and_advance(task_id, task_type))
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark task failed, show briefly, then remove."""
+        task = self._queue._tasks.get(task_id)
+        task_type = task.task_type if task else None
         self._queue.fail_task(task_id, detail)
         self._refresh_display()
-        self.set_timer(_DONE_FLASH_SECONDS, lambda: self._remove_and_advance(task_id))
+        self.set_timer(_DONE_FLASH_SECONDS, lambda: self._remove_and_advance(task_id, task_type))
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel and remove a task."""
+        task = self._queue._tasks.get(task_id)
+        task_type = task.task_type if task else None
         self._queue.cancel(task_id)
         self._queue.remove_task(task_id)
-        self._try_advance()
+        self._try_advance(task_type)
         self._refresh_display()
 
-    def _remove_and_advance(self, task_id: str) -> None:
+    def _remove_and_advance(self, task_id: str, task_type: str | None) -> None:
         self._queue.remove_task(task_id)
-        self._try_advance()
+        self._try_advance(task_type)
         self._refresh_display()
 
-    def _try_advance(self) -> None:
-        """If no active task, advance the queue to the next item."""
-        task = self._queue.advance()
-        if task:
-            self._refresh_display()
+    def _try_advance(self, task_type: str | None = None) -> None:
+        """Advance the queue for a specific type, then try all other types too."""
+        if task_type:
+            self._queue.advance(task_type)
+        # Also advance any other types that may have pending tasks
+        while self._queue.advance() is not None:
+            pass
 
     def _tick_spinner(self) -> None:
-        """Advance the spinner frame and refresh if there's an active task."""
-        if self._queue.active_task is not None:
+        """Advance the spinner frame and refresh if there are active tasks."""
+        if self._queue.active_tasks:
             self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
             self._refresh_display()
 
@@ -120,13 +128,20 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             self.app.call_from_thread(self._refresh_display)
 
+    def _update_nav_bar_task_text(self, text: str) -> None:
+        """Push task status into the NavBar indicator."""
+        with contextlib.suppress(Exception):
+            nav = self.app.screen.query_one("#global-nav-bar")
+            nav.active_task_text = text  # type: ignore[attr-defined]
+
     def _refresh_display(self) -> None:
         """Update widget contents based on queue state."""
-        active = self._queue.active_task
+        active_list = self._queue.active_tasks
         queued = self._queue.queued_tasks
 
-        if not active and not queued:
+        if not active_list and not queued:
             self.display = False
+            self._update_nav_bar_task_text("")
             return
 
         self.display = True
@@ -135,16 +150,11 @@ class TaskBar(Static):
         progress_bar = self.query_one("#task-progress", ProgressBar)
         queued_label = self.query_one("#task-queued-label", Label)
 
-        if active:
-            if active.status == TaskStatus.ACTIVE:
-                icon = _SPINNER_FRAMES[self._spinner_index]
-            else:
-                icon = self._status_icon(active.status)
-            detail = f"  {active.detail}" if active.detail else ""
-            active_label.update(f" {icon} {active.name}{detail}")
-            active_label.display = True
-            progress_bar.update(total=100, progress=active.progress)
-            progress_bar.display = True
+        if active_list:
+            primary = active_list[0]
+            self._render_active_task(primary, active_label, progress_bar)
+            nav_text = self._build_nav_text(active_list)
+            self._update_nav_bar_task_text(nav_text)
         else:
             active_label.display = False
             progress_bar.display = False
@@ -156,6 +166,26 @@ class TaskBar(Static):
             queued_label.display = True
         else:
             queued_label.display = False
+
+    def _render_active_task(self, task: Task, label: Label, progress_bar: ProgressBar) -> None:
+        """Render a single active task into the label and progress bar."""
+        if task.status == TaskStatus.ACTIVE:
+            icon = _SPINNER_FRAMES[self._spinner_index]
+        else:
+            icon = self._status_icon(task.status)
+        detail = f"  {task.detail}" if task.detail else ""
+        label.update(f" {icon} {task.name}{detail}")
+        label.display = True
+        progress_bar.update(total=100, progress=task.progress)
+        progress_bar.display = True
+
+    @staticmethod
+    def _build_nav_text(active_list: list[Task]) -> str:
+        """Build a one-line summary of all active tasks for the NavBar."""
+        parts = []
+        for t in active_list:
+            parts.append(f"{t.name} {t.progress}%")
+        return "\u25b6 " + " | ".join(parts)
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:
