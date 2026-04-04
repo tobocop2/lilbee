@@ -110,6 +110,8 @@ def _build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
     """Send a page image to a vision model and return extracted text.
 
+    If the provider exposes a ``vision_ocr`` method (subprocess-isolated),
+    that path is preferred. Otherwise falls back to ``provider.chat``.
     The *timeout* parameter (seconds) caps wall-clock time for the provider
     call using ``concurrent.futures``.  ``None`` or ``0`` means no limit.
     """
@@ -117,6 +119,11 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
         from lilbee.services import get_services
 
         provider = get_services().provider
+
+        if hasattr(provider, "vision_ocr"):
+            result: str = provider.vision_ocr(png_bytes, model, _OCR_PROMPT)
+            return result
+
         messages = _build_vision_messages(_OCR_PROMPT, png_bytes)
 
         if timeout and timeout > 0:

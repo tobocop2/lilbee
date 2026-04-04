@@ -29,11 +29,11 @@ class StatusScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("", id="status-info")
         yield DataTable(id="docs-table")
         yield Footer()
-        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
         self._load_status()

@@ -192,6 +192,15 @@ class CompletionOverlay(Vertical):
         ol.highlighted = self._index
         return self._options[self._index]
 
+    def cycle_prev(self) -> str | None:
+        """Cycle to previous option and return it."""
+        if not self._options:
+            return None
+        self._index = (self._index - 1) % len(self._options)
+        ol = self.query_one("#completion-list", OptionList)
+        ol.highlighted = self._index
+        return self._options[self._index]
+
     def get_current(self) -> str | None:
         """Get the currently highlighted option."""
         if not self._options or self._index >= len(self._options):

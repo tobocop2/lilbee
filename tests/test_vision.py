@@ -19,8 +19,14 @@ def _clean_vision_module() -> None:
 
 @pytest.fixture()
 def mock_provider():
-    """Create a mock provider and inject it via Services."""
-    provider = mock.MagicMock()
+    """Create a mock provider and inject it via Services.
+
+    Uses spec_set to exclude vision_ocr — tests that need the subprocess
+    path should set it explicitly on the mock.
+    """
+    provider = mock.MagicMock(
+        spec=["chat", "embed", "list_models", "pull_model", "show_model", "shutdown"]
+    )
     store = mock.MagicMock()
     embedder = mock.MagicMock()
     reranker = mock.MagicMock()
@@ -151,6 +157,50 @@ class TestExtractPageText:
         assert content[1]["type"] == "text"
         assert content[1]["text"] == _OCR_PROMPT
         assert call_args[1]["model"] == "my-model"
+
+
+class TestExtractPageTextSubprocess:
+    """Test extract_page_text when provider has vision_ocr method."""
+
+    def test_delegates_to_vision_ocr(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.return_value = "subprocess text"
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
+        )
+        set_services(services)
+
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"png", "vision-model")
+        assert result == "subprocess text"
+        provider.vision_ocr.assert_called_once()
+        provider.chat.assert_not_called()
+
+    def test_vision_ocr_error_returns_none(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.side_effect = RuntimeError("worker died")
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
+        )
+        set_services(services)
+
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"png", "vision-model")
+        assert result is None
 
 
 class TestExtractPdfVision:

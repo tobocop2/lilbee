@@ -530,6 +530,72 @@ class TestDownloadModel:
             download_model(entry)
 
 
+class TestMakeProgressTqdm:
+    """Tests for the tqdm-compatible progress callback class."""
+
+    def test_update_fires_callback(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        calls: list[tuple[int, int]] = []
+        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
+        bar = cls(total=200)
+        bar.update(50)
+        bar.update(100)
+        assert calls == [(50, 200), (150, 200)]
+
+    def test_reset_clears_progress(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        calls: list[tuple[int, int]] = []
+        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
+        bar = cls(total=100)
+        bar.update(60)
+        bar.reset(total=200)
+        assert bar.n == 0
+        assert bar.total == 200
+
+    def test_disabled_suppresses_callback(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        calls: list[tuple[int, int]] = []
+        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
+        bar = cls(total=100, disable=True)
+        bar.update(50)
+        assert calls == []
+
+    def test_none_total_treated_as_zero(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        calls: list[tuple[int, int]] = []
+        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
+        bar = cls(total=None)
+        bar.update(50)
+        # total=0, so callback not fired (can't compute percentage)
+        assert calls == []
+
+    def test_context_manager_protocol(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        cls = _make_progress_tqdm(None)
+        with cls(total=100) as bar:
+            bar.update(10)
+        # No error means pass
+
+    def test_set_postfix_str_is_noop(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        cls = _make_progress_tqdm(None)
+        bar = cls(total=100)
+        bar.set_postfix_str("test")  # Should not raise
+
+    def test_refresh_is_noop(self) -> None:
+        from lilbee.catalog import _make_progress_tqdm
+
+        cls = _make_progress_tqdm(None)
+        bar = cls(total=100)
+        bar.refresh()  # Should not raise
+
+
 class TestResolveFilename:
     def test_exact_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_EMBEDDING[0]
@@ -1222,7 +1288,7 @@ class TestFormatSizeMb:
     def test_zero_returns_dash(self) -> None:
         from lilbee.cli.tui.screens.catalog import _format_size_mb
 
-        assert _format_size_mb(0) == "\u2014"
+        assert _format_size_mb(0) == "--"
 
     def test_mb_value(self) -> None:
         from lilbee.cli.tui.screens.catalog import _format_size_mb

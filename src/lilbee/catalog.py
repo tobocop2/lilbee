@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -119,7 +120,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
     ),
     CatalogModel(
         "Qwen3-Coder 30B A3B",
-        "Qwen/Qwen3-Coder-30B-A3B-GGUF",
+        "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
         "*Q4_K_M.gguf",
         18.0,
         32,
@@ -504,23 +505,71 @@ def find_catalog_entry(name: str) -> CatalogModel | None:
     return None
 
 
+def _start_progress_poller(
+    repo_id: str, callback: Any, expected_bytes: float
+) -> Callable[[], None]:
+    """Poll the HF cache for .incomplete files and report download progress.
+
+    Returns a stop function. hf_xet sends update(0) during downloads, so we
+    watch the actual file size on disk instead.
+    """
+    import threading
+
+    stop = threading.Event()
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    # huggingface_hub's documented cache layout: {HF_HUB_CACHE}/models--{org}--{repo}/blobs/
+    repo_dir = Path(HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+
+    def _poll() -> None:
+        while not stop.is_set():
+            try:
+                if repo_dir.exists():
+                    for p in repo_dir.iterdir():
+                        if p.name.endswith(".incomplete"):
+                            size = p.stat().st_size
+                            if size > 0 and expected_bytes > 0:
+                                callback(size, int(expected_bytes))
+                            break
+            except (OSError, ValueError):
+                pass
+            stop.wait(0.5)
+
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    return stop.set
+
+
 def _make_progress_tqdm(callback: Any) -> type:
     """Create a minimal tqdm-compatible class that routes progress to a callback.
 
-    Does NOT inherit from real tqdm — avoids multiprocessing lock issues
-    that crash in Textual worker threads. Only implements the interface
-    that huggingface_hub actually calls.
+    Does NOT inherit from real tqdm -- avoids multiprocessing lock issues
+    that crash in Textual worker threads. Implements the interface that
+    huggingface_hub actually calls: __init__, update, reset, close,
+    set_postfix_str, refresh, and context manager protocol.
     """
 
     class _CallbackProgress:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.total: int = kwargs.get("total", 0) or 0
-            self.n: int = kwargs.get("initial", 0) or 0
+            self.total: int = int(kwargs.get("total", 0) or 0)
+            self.n: int = int(kwargs.get("initial", 0) or 0)
+            self.disable: bool = bool(kwargs.get("disable", False))
 
         def update(self, n: int = 1) -> None:
             self.n += n
-            if callback and self.total > 0:
+            if not self.disable and callback and self.total > 0:
                 callback(self.n, self.total)
+
+        def reset(self, total: int | None = None) -> None:
+            self.n = 0
+            if total is not None:
+                self.total = int(total)
+
+        def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+            pass
+
+        def refresh(self) -> None:
+            pass
 
         def close(self) -> None:
             pass
@@ -550,6 +599,9 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     dest = cfg.models_dir / filename
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
+        if on_progress is not None:
+            size = dest.stat().st_size
+            on_progress(size, size)  # Report 100% immediately
     else:
         log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
         token = _hf_token()
@@ -557,14 +609,18 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         kwargs: dict[str, Any] = {
             "repo_id": entry.hf_repo,
             "filename": filename,
-            "local_dir": cfg.models_dir,
             "token": token,
+            "force_download": True,
         }
-        if on_progress is not None:
-            kwargs["tqdm_class"] = _make_progress_tqdm(on_progress)
+
+        # Poll file size for progress since hf_xet reports update(0) during download.
+        # Start a background thread that watches the .incomplete file in the HF cache.
+        stop_polling = _start_progress_poller(
+            entry.hf_repo, on_progress, entry.size_gb * 1024 * 1024 * 1024
+        ) if on_progress else None
 
         try:
-            path = hf_hub_download(**kwargs)
+            cached = Path(hf_hub_download(**kwargs))
         except GatedRepoError:
             raise PermissionError(
                 f"{entry.name} requires HuggingFace authentication. "
@@ -572,13 +628,46 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             ) from None
         except RepositoryNotFoundError:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
-        dest = Path(path)
+        finally:
+            if stop_polling:
+                stop_polling()
+
+        if on_progress:
+            on_progress(int(entry.size_gb * 1024 * 1024 * 1024), int(entry.size_gb * 1024 * 1024 * 1024))
+        dest = cached
+
+    # Register in manifest so the model is visible to the registry
+    _register_model(entry, dest)
 
     # Download mmproj file for vision models
     if entry.task == "vision":
         _download_mmproj(entry)
 
     return dest
+
+
+def _register_model(entry: CatalogModel, file_path: Path) -> None:
+    """Create a registry manifest for a downloaded model."""
+    from datetime import datetime, timezone
+
+    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    ref = ModelRef(name=entry.name, tag="latest")
+    manifest = ModelManifest(
+        name=entry.name,
+        tag="latest",
+        size_bytes=file_path.stat().st_size,
+        task=entry.task,
+        source_repo=entry.hf_repo,
+        source_filename=file_path.name,
+        downloaded_at=datetime.now(timezone.utc).isoformat(),
+    )
+    try:
+        registry.install(ref, file_path, manifest)
+        log.info("Registered %s:%s in manifest", entry.name, "latest")
+    except Exception:
+        log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
 
 
 def _download_mmproj(entry: CatalogModel) -> Path | None:
