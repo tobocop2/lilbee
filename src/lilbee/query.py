@@ -466,6 +466,25 @@ class Searcher:
         messages.append({"role": "user", "content": prompt})
         return results, messages
 
+    _NO_EMBED_WARNING = (
+        "Chat only — no document search configured. "
+        "Install an embedding model: lilbee models install nomic-embed-text\n\n"
+    )
+
+    def _direct_messages(
+        self, question: str, history: list[ChatMessage] | None = None
+    ) -> list[ChatMessage]:
+        """Build messages for direct LLM chat (no RAG context)."""
+        messages: list[ChatMessage] = [{"role": "system", "content": self._config.system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": question})
+        return messages
+
+    def _messages_for_provider(self, messages: list[ChatMessage]) -> list[dict[str, str]]:
+        """Convert ChatMessage list to provider-expected format."""
+        return [{"role": m["role"], "content": m["content"]} for m in messages]
+
     def ask_raw(
         self,
         question: str,
@@ -474,6 +493,12 @@ class Searcher:
         options: dict[str, Any] | None = None,
     ) -> AskResult:
         """Ask a question and get a structured result."""
+        if not self._embedder.embedding_available():
+            messages = self._direct_messages(question, history)
+            provider_messages = self._messages_for_provider(messages)
+            opts = options if options is not None else self._config.generation_options()
+            answer = self._provider.chat(provider_messages, options=opts or None)
+            return AskResult(answer=self._NO_EMBED_WARNING + str(answer or ""), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
             return AskResult(
@@ -481,8 +506,9 @@ class Searcher:
                 sources=[],
             )
         results, messages = rag
+        provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        answer = self._provider.chat(cast(list[dict[str, Any]], messages), options=opts or None)
+        answer = self._provider.chat(provider_messages, options=opts or None)
         return AskResult(answer=str(answer) or "", sources=results)
 
     def ask(
@@ -509,6 +535,22 @@ class Searcher:
         """Stream answer tokens with citations appended at the end."""
         from lilbee.reasoning import StreamToken, filter_reasoning
 
+        if not self._embedder.embedding_available():
+            yield StreamToken(content=self._NO_EMBED_WARNING, is_reasoning=False)
+            messages = self._direct_messages(question, history)
+            provider_messages = self._messages_for_provider(messages)
+            opts = options if options is not None else self._config.generation_options()
+            raw = self._provider.chat(provider_messages, stream=True, options=opts or None)
+            try:
+                for st in filter_reasoning(
+                    cast(Iterator[str], raw), show=self._config.show_reasoning
+                ):
+                    if st.content:
+                        yield st
+            except (ConnectionError, OSError) as exc:
+                yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+            return
+
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
             yield StreamToken(
@@ -517,10 +559,9 @@ class Searcher:
             )
             return
         results, messages = rag
+        provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw_stream = self._provider.chat(
-            cast(list[dict[str, Any]], messages), stream=True, options=opts or None
-        )
+        raw_stream = self._provider.chat(provider_messages, stream=True, options=opts or None)
         try:
             for st in filter_reasoning(
                 cast(Iterator[str], raw_stream), show=self._config.show_reasoning

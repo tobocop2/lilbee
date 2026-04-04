@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from lilbee.cli import sync as sync_mod
 from lilbee.cli import theme
-from lilbee.progress import EventType
+from lilbee.progress import (
+    EmbedEvent,
+    EventType,
+    ExtractEvent,
+    FileStartEvent,
+    SyncDoneEvent,
+)
 
 
 class TestFormatSyncSummary:
@@ -40,7 +46,7 @@ class TestSyncProgressPrinter:
     def test_file_start_event(self):
         con = MagicMock()
         callback = sync_mod._sync_progress_printer(con)
-        data = {"file": "readme.md", "total_files": 5, "current_file": 2}
+        data = FileStartEvent(file="readme.md", total_files=5, current_file=2)
 
         callback(EventType.FILE_START, data)
 
@@ -52,7 +58,7 @@ class TestSyncProgressPrinter:
     def test_done_event_with_changes(self):
         con = MagicMock()
         callback = sync_mod._sync_progress_printer(con)
-        data = {"added": 1, "updated": 0, "removed": 0, "failed": 0}
+        data = SyncDoneEvent(added=1, updated=0, removed=0, failed=0)
 
         callback(EventType.DONE, data)
 
@@ -63,7 +69,7 @@ class TestSyncProgressPrinter:
     def test_done_event_no_changes(self):
         con = MagicMock()
         callback = sync_mod._sync_progress_printer(con)
-        data = {"added": 0, "updated": 0, "removed": 0, "failed": 0}
+        data = SyncDoneEvent(added=0, updated=0, removed=0, failed=0)
 
         callback(EventType.DONE, data)
 
@@ -73,7 +79,7 @@ class TestSyncProgressPrinter:
         con = MagicMock()
         callback = sync_mod._sync_progress_printer(con)
 
-        callback(EventType.EMBED, {"whatever": 1})
+        callback(EventType.EMBED, EmbedEvent(file="x", chunk=1, total_chunks=1))
 
         con.print.assert_not_called()
 
@@ -179,7 +185,7 @@ class TestChatSyncCallback:
     def test_file_start_event(self):
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
-        data = {"file": "doc.txt", "total_files": 3, "current_file": 1}
+        data = FileStartEvent(file="doc.txt", total_files=3, current_file=1)
 
         callback(EventType.FILE_START, data)
 
@@ -190,7 +196,7 @@ class TestChatSyncCallback:
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
         status.pending = 2
-        data = {"file": "doc.txt", "total_files": 3, "current_file": 1}
+        data = FileStartEvent(file="doc.txt", total_files=3, current_file=1)
 
         callback(EventType.FILE_START, data)
 
@@ -199,7 +205,7 @@ class TestChatSyncCallback:
     def test_extract_event(self):
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
-        data = {"file": "scan.pdf", "page": 2, "total_pages": 10}
+        data = ExtractEvent(file="scan.pdf", page=2, total_pages=10)
 
         callback(EventType.EXTRACT, data)
 
@@ -211,7 +217,7 @@ class TestChatSyncCallback:
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
         status.pending = 1
-        data = {"file": "scan.pdf", "page": 1, "total_pages": 5}
+        data = ExtractEvent(file="scan.pdf", page=1, total_pages=5)
 
         callback(EventType.EXTRACT, data)
 
@@ -221,7 +227,7 @@ class TestChatSyncCallback:
         status = sync_mod.SyncStatus()
         status.text = "syncing..."
         callback = sync_mod._chat_sync_callback(status)
-        data = {"added": 2, "updated": 1, "removed": 0, "failed": 0}
+        data = SyncDoneEvent(added=2, updated=1, removed=0, failed=0)
 
         callback(EventType.DONE, data)
 
@@ -234,7 +240,7 @@ class TestChatSyncCallback:
         status = sync_mod.SyncStatus()
         status.text = "syncing..."
         callback = sync_mod._chat_sync_callback(status)
-        data = {"added": 0, "updated": 0, "removed": 0, "failed": 0}
+        data = SyncDoneEvent(added=0, updated=0, removed=0, failed=0)
 
         callback(EventType.DONE, data)
 
@@ -252,7 +258,7 @@ class TestChatSyncCallback:
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
 
-        callback(EventType.EMBED, {"whatever": True})
+        callback(EventType.EMBED, EmbedEvent(file="x", chunk=1, total_chunks=1))
 
         assert status.text == ""
 

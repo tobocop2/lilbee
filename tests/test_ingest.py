@@ -131,7 +131,7 @@ class TestSync:
         (isolated_env / "cb.txt").write_text("Callback test.")
         from lilbee.ingest import sync
 
-        events: list[tuple[str, dict]] = []
+        events: list[tuple] = []
         result = await sync(quiet=True, on_progress=lambda t, d: events.append((t, d)))
         assert "cb.txt" in result.added
         event_types = [t for t, _ in events]
@@ -139,20 +139,20 @@ class TestSync:
         assert "file_done" in event_types
         assert "done" in event_types
         file_done = next(d for t, d in events if t == "file_done")
-        assert file_done["file"] == "cb.txt"
-        assert file_done["status"] == "ok"
+        assert file_done.file == "cb.txt"
+        assert file_done.status == "ok"
 
     async def test_on_progress_callback_with_progress_bar(self, mock_extract_file, isolated_env):
         (isolated_env / "cb2.txt").write_text("Callback with progress bar.")
         from lilbee.ingest import sync
 
-        events: list[tuple[str, dict]] = []
+        events: list[tuple] = []
         result = await sync(quiet=False, on_progress=lambda t, d: events.append((t, d)))
         assert "cb2.txt" in result.added
         event_types = [t for t, _ in events]
         assert "file_done" in event_types
         file_done = next(d for t, d in events if t == "file_done")
-        assert file_done["status"] == "ok"
+        assert file_done.status == "ok"
 
     async def test_ingest_markdown_file(self, mock_extract_file, isolated_env):
         (isolated_env / "readme.md").write_text("# Title\n\nSome markdown content.")
@@ -348,6 +348,86 @@ class TestSync:
         assert "qflaky.txt" not in result.updated
 
 
+@mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())
+class TestSyncCancellation:
+    """Tests for cancel support and atomic per-file delete in sync."""
+
+    async def test_cancel_stops_file_discovery(self, mock_extract_file, isolated_env):
+        """Setting cancel before sync starts prevents any file processing."""
+        import threading
+
+        (isolated_env / "a.txt").write_text("file a")
+        (isolated_env / "b.txt").write_text("file b")
+        from lilbee.ingest import sync
+
+        cancel = threading.Event()
+        cancel.set()
+        result = await sync(quiet=True, cancel=cancel)
+        # Cancel was set before the loop, so no files should be processed
+        assert result.added == []
+        assert result.unchanged == 0
+
+    async def test_cancel_during_ingest_batch(self, mock_extract_file, isolated_env, mock_svc):
+        """Cancel set mid-batch raises CancelledError for pending files."""
+        import asyncio
+        import threading
+
+        from lilbee.ingest import ingest_batch
+
+        (isolated_env / "a.txt").write_text("file a")
+        (isolated_env / "b.txt").write_text("file b")
+
+        cancel = threading.Event()
+        cancel.set()
+
+        added = ["a.txt", "b.txt"]
+        files = [
+            ("a.txt", isolated_env / "a.txt", "text", "hash_a", False),
+            ("b.txt", isolated_env / "b.txt", "text", "hash_b", False),
+        ]
+        with pytest.raises(asyncio.CancelledError):
+            await ingest_batch(files, added, [], [], quiet=True, cancel=cancel)
+
+    async def test_atomic_delete_for_modified_file(self, mock_extract_file, isolated_env, mock_svc):
+        """Modified file: old chunks deleted in _process_one, not in sync() loop."""
+        from lilbee.ingest import sync
+
+        f = isolated_env / "doc.txt"
+        f.write_text("Version 1")
+        await sync(quiet=True)
+
+        # Reset call tracking
+        mock_svc.store.delete_by_source.reset_mock()
+
+        f.write_text("Version 2 — modified content")
+        await sync(quiet=True)
+
+        # delete_by_source should be called (from _process_one), not from the sync loop
+        mock_svc.store.delete_by_source.assert_called_with("doc.txt")
+
+    async def test_cancel_preserves_old_chunks_for_modified_file(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """If cancel is set before a modified file is processed, old chunks remain."""
+        import threading
+
+        from lilbee.ingest import sync
+
+        f = isolated_env / "doc.txt"
+        f.write_text("Version 1")
+        await sync(quiet=True)
+
+        mock_svc.store.delete_by_source.reset_mock()
+
+        f.write_text("Version 2 — modified content")
+        cancel = threading.Event()
+        cancel.set()
+        await sync(quiet=True, cancel=cancel)
+
+        # Old chunks should NOT have been deleted since cancel was set before processing
+        mock_svc.store.delete_by_source.assert_not_called()
+
+
 class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 
@@ -408,7 +488,7 @@ class TestCancellation:
             added = ["cancel.txt"]
             with pytest.raises(asyncio.CancelledError):
                 await ingest_batch(
-                    [("cancel.txt", isolated_env / "cancel.txt", "text", "abc123")],
+                    [("cancel.txt", isolated_env / "cancel.txt", "text", "abc123", False)],
                     added,
                     [],
                     [],
@@ -1180,6 +1260,11 @@ class TestChunkViaKreuzberg:
 
 
 class TestConceptIndexing:
+    @pytest.fixture(autouse=True)
+    def _mock_concepts_available(self):
+        with mock.patch("lilbee.concepts.concepts_available", return_value=True):
+            yield
+
     @mock.patch(
         "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
     )

@@ -600,6 +600,7 @@ class TestListInstalledModels:
         assert list_installed_models() == []
 
     def test_excludes_embedding_model(self, mock_svc):
+        cfg.embedding_model = "nomic-embed-text"
         mock_svc.provider.list_models.return_value = ["llama3:latest", "nomic-embed-text:latest"]
         result = list_installed_models()
         assert result == ["llama3:latest"]
@@ -1818,9 +1819,11 @@ class TestCrawlUrlsBlocking:
 
         async def _fake_crawl(url, **kwargs):
             # Call the on_progress callback to cover the closure body
+            from lilbee.progress import CrawlPageEvent, EventType
+
             cb = kwargs.get("on_progress")
             if cb:
-                cb("crawl_page", {"current": 1, "total": 1, "url": url})
+                cb(EventType.CRAWL_PAGE, CrawlPageEvent(current=1, total=1, url=url))
             return [Path("/tmp/page.md")]
 
         mock_crawl.side_effect = _fake_crawl

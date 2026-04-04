@@ -398,6 +398,7 @@ class TestGenerationOptions:
         cfg.repeat_penalty = None
         cfg.num_ctx = None
         cfg.seed = None
+        cfg.max_tokens = None
         get_services().searcher.ask_raw("q")
         assert mock_svc.provider.chat.call_args[1]["options"] is None
 

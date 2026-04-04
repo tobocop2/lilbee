@@ -137,3 +137,26 @@ class TestCouldBePartial:
         result = _collect(["hello<t"], show=False)
         content = "".join(st.content for st in result)
         assert "hello<t" in content
+
+
+class TestReasoningTruncation:
+    def test_runaway_reasoning_truncated(self):
+        """Reasoning exceeding _MAX_REASONING_CHARS is cut off."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
+        tokens = [f"<think>{long_think}</think>answer"]
+        result = _collect(tokens, show=True)
+        reasoning = "".join(st.content for st in result if st.is_reasoning)
+        assert "[reasoning truncated]" in reasoning
+        assert len(reasoning) <= _MAX_REASONING_CHARS + 100
+
+    def test_content_after_truncated_reasoning(self):
+        """Content tokens after truncated reasoning are still yielded."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 500)
+        tokens = [f"<think>{long_think}</think>", "the answer"]
+        result = _collect(tokens, show=True)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        assert "the answer" in response

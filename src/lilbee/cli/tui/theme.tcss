@@ -1,12 +1,19 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
+#global-nav-bar {
+    dock: bottom;
+    height: 1;
+    width: 100%;
+}
+
 #chat-log {
     height: 1fr;
 }
 
-#sync-bar {
+#task-bar {
     dock: bottom;
-    height: 1;
+    height: auto;
+    max-height: 5;
     padding: 0 1;
 }
 
@@ -29,10 +36,12 @@
     text-style: bold;
     padding: 0 1;
     margin: 1 0 0 0;
+    height: auto;
 }
 
 .assistant-message {
     padding: 0 1;
+    height: auto;
 }
 
 .source-citation {
@@ -61,9 +70,7 @@ TabbedContent > ContentSwitcher {
 }
 
 /* Modal screens */
-DownloadModal > Vertical,
-HelpModal > Vertical,
-SetupModal > Vertical {
+HelpModal > Vertical {
     width: 70;
     height: auto;
     max-height: 80%;
@@ -71,6 +78,42 @@ SetupModal > Vertical {
     padding: 1 2;
 }
 
-DownloadModal, HelpModal, SetupModal {
+HelpModal {
     align: center middle;
+}
+
+#edit-bar {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+}
+
+#chat-input.insert-mode {
+    border: tall $accent;
+}
+
+#chat-input.normal-mode {
+    border: tall $surface-lighten-1;
+    opacity: 0.7;
+}
+
+#chat-input:focus {
+    border: tall $accent;
+}
+
+#chat-only-banner {
+    dock: top;
+    height: 1;
+    padding: 0 1;
+    background: $warning;
+    color: $text;
+    text-style: bold;
+}
+#setup-title {
+    text-style: bold;
+    padding: 1 0;
+    text-align: center;
+}
+#setup-skip {
+    margin: 1 0 0 0;
 }

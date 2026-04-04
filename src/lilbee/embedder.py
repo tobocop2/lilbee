@@ -4,7 +4,7 @@ import logging
 import math
 
 from lilbee.config import Config
-from lilbee.progress import DetailedProgressCallback, EventType, noop_callback
+from lilbee.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 from lilbee.providers.base import LLMProvider
 
 log = logging.getLogger(__name__)
@@ -41,18 +41,22 @@ class Embedder:
             if math.isnan(v) or math.isinf(v):
                 raise ValueError(f"Embedding contains invalid value at index {i}: {v}")
 
-    def validate_model(self) -> None:
-        """Ensure the configured embedding model is available, pulling if needed."""
-        from lilbee.model_manager import get_model_manager
+    def validate_model(self) -> bool:
+        """Check if the configured embedding model is available. No side effects."""
+        return self.embedding_available()
 
+    def embedding_available(self) -> bool:
+        """Return True if the embedding model can be resolved by the active provider."""
+        model = self._config.embedding_model
+        if not model:
+            return False
         try:
-            if not get_model_manager().is_installed(self._config.embedding_model):
-                log.info("Pulling embedding model '%s'...", self._config.embedding_model)
-                self._provider.pull_model(self._config.embedding_model, on_progress=lambda _: None)
-        except (ConnectionError, OSError) as exc:
-            raise RuntimeError(
-                f"Cannot connect to embedding backend: {exc}. Is the server running?"
-            ) from exc
+            available = self._provider.list_models()
+            model_base = model.split(":")[0].lower()
+            return any(model_base in m.lower() for m in available)
+        except Exception:
+            log.debug("embedding_available check failed", exc_info=True)
+            return False
 
     def embed(self, text: str) -> list[float]:
         """Embed a single text string, return vector."""
@@ -85,7 +89,7 @@ class Embedder:
                 vectors.extend(self._provider.embed(batch))
                 on_progress(
                     EventType.EMBED,
-                    {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+                    EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
                 )
                 batch = []
                 batch_chars = 0
@@ -95,7 +99,7 @@ class Embedder:
             vectors.extend(self._provider.embed(batch))
             on_progress(
                 EventType.EMBED,
-                {"file": source, "chunk": len(vectors), "total_chunks": total_chunks},
+                EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
             )
         for vec in vectors:
             self.validate_vector(vec)

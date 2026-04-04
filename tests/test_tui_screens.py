@@ -62,6 +62,19 @@ def mock_svc():
     set_services(None)
 
 
+@pytest.fixture(autouse=True)
+def _patch_chat_setup():
+    """Patch out embedding model checks so ChatScreen mounts cleanly."""
+    with (
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch(
+            "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
+            return_value=False,
+        ),
+    ):
+        yield
+
+
 def _make_catalog_model(
     name: str = "test-7B",
     hf_repo: str = "org/test-7B-GGUF",
@@ -170,9 +183,9 @@ class TestFormatRow:
         assert "\u2605" not in row
 
     def test_contains_name(self):
-        m = _make_catalog_model(name="my-model-8B")
+        m = _make_catalog_model(name="my-model-8B", hf_repo="my-org/my-model-8B")
         row = _format_row(m)
-        assert "my-model-8B" in row
+        assert "my model 8B" in row
 
     def test_zero_size_shows_dash(self):
         m = _make_catalog_model(size_gb=0.0)
@@ -292,7 +305,7 @@ class TestGroupBySize:
     def test_unknown_category(self):
         models = [_make_catalog_model(name="nomic-embed-text")]
         groups = _group_by_size(models)
-        assert groups[0][0] == "unknown"
+        assert groups[0][0] == "Other"
 
     def test_empty(self):
         assert _group_by_size([]) == []
@@ -393,6 +406,77 @@ async def test_settings_screen_row_highlighted_unknown_key():
         app.screen.on_data_table_row_highlighted(event)
 
 
+async def test_settings_enter_opens_editor():
+    """F1: pressing Enter on a row opens an inline editor."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable, Input
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move to first row (chat_model) and press enter to edit
+        app.screen.action_edit_row()
+        await pilot.pause()
+        editor = app.screen.query_one("#settings-editor", Input)
+        assert editor is not None
+        assert app.screen._editing_key is not None
+
+
+async def test_settings_enter_saves_value():
+    """F1: submitting editor saves the value."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable, Input
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move to top_k row (row 3, index-based)
+        table.move_cursor(row=3)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        editor = app.screen.query_one("#settings-editor", Input)
+        editor.value = "20"
+        editor.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert cfg.top_k == 20
+        assert app.screen._editing_key is None
+
+
+async def test_settings_escape_cancels_edit():
+    """F1: pressing Escape cancels the edit."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        assert app.screen._editing_key is not None
+        app.screen.action_dismiss_or_back()
+        await pilot.pause()
+        assert app.screen._editing_key is None
+
+
+async def test_settings_readonly_shows_warning():
+    """F1: Enter on hf_token row shows read-only warning."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        # Move cursor to last row (hf_token)
+        table.move_cursor(row=table.row_count - 1)
+        await pilot.pause()
+        app.screen.action_edit_row()
+        await pilot.pause()
+        # Should not have opened an editor
+        assert app.screen._editing_key is None
+
+
 # ---------------------------------------------------------------------------
 # Status screen (Textual integration)
 # ---------------------------------------------------------------------------
@@ -470,8 +554,7 @@ async def test_status_screen_escape_pops():
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_mounts_chat_screen(mock_check):
+async def test_app_mounts_chat_screen():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -481,8 +564,7 @@ async def test_app_mounts_chat_screen(mock_check):
         assert isinstance(app.screen, ChatScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_title_has_model(mock_check):
+async def test_app_title_has_model():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -490,8 +572,7 @@ async def test_app_title_has_model(mock_check):
         assert "test-model:latest" in app.title
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_cycle_theme(mock_check):
+async def test_app_cycle_theme():
     from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
     app = LilbeeApp()
@@ -503,8 +584,7 @@ async def test_app_cycle_theme(mock_check):
         assert app.theme == DARK_THEMES[1]
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_set_theme(mock_check):
+async def test_app_set_theme():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -515,8 +595,7 @@ async def test_app_set_theme(mock_check):
         assert app.theme == "dracula"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_push_catalog(mock_check):
+async def test_app_push_catalog():
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -531,8 +610,7 @@ async def test_app_push_catalog(mock_check):
             assert isinstance(app.screen, CatalogScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_push_status(mock_check):
+async def test_app_push_status():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -544,8 +622,7 @@ async def test_app_push_status(mock_check):
         assert isinstance(app.screen, StatusScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_push_settings(mock_check):
+async def test_app_push_settings():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -557,8 +634,7 @@ async def test_app_push_settings(mock_check):
         assert isinstance(app.screen, SettingsScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_push_help(mock_check):
+async def test_app_push_help():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -570,8 +646,7 @@ async def test_app_push_help(mock_check):
         assert isinstance(app.screen, HelpModal)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_app_auto_sync_flag(mock_check):
+async def test_app_auto_sync_flag():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp(auto_sync=True)
@@ -595,8 +670,7 @@ class ChatTestApp(App[None]):
         self.push_screen(ChatScreen())
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_screen_renders(mock_check):
+async def test_chat_screen_renders():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -605,31 +679,27 @@ async def test_chat_screen_renders(mock_check):
         assert inp is not None
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_unknown_command(mock_check):
+async def test_chat_slash_unknown_command():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/bogus")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_version(mock_check):
+async def test_chat_slash_version():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.get_version", return_value="1.2.3"):
             app.screen._handle_slash("/version")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_model_with_arg(mock_check):
+async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/model new-model:latest")
         assert cfg.chat_model == "new-model:latest"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_model_no_arg(mock_check):
+async def test_chat_slash_model_no_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
@@ -643,8 +713,7 @@ async def test_chat_slash_model_no_arg(mock_check):
             assert isinstance(app.screen, CatalogScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_theme_with_arg(mock_check):
+async def test_chat_slash_theme_with_arg():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -652,8 +721,7 @@ async def test_chat_slash_theme_with_arg(mock_check):
         app.screen._handle_slash("/theme dracula")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_theme_no_arg(mock_check):
+async def test_chat_slash_theme_no_arg():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -661,16 +729,14 @@ async def test_chat_slash_theme_no_arg(mock_check):
         app.screen._handle_slash("/theme")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_theme_non_lilbee_app(mock_check):
+async def test_chat_slash_theme_non_lilbee_app():
     """Theme with arg on a non-LilbeeApp should just list themes."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/theme dracula")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_vision_set(mock_check):
+async def test_chat_slash_vision_set():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.settings.set_value"):
@@ -678,8 +744,7 @@ async def test_chat_slash_vision_set(mock_check):
             assert cfg.vision_model == "maternion/LightOnOCR-2:latest"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_vision_off(mock_check):
+async def test_chat_slash_vision_off():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         cfg.vision_model = "some-model"
@@ -688,15 +753,13 @@ async def test_chat_slash_vision_off(mock_check):
             assert cfg.vision_model == ""
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_vision_no_arg(mock_check):
+async def test_chat_slash_vision_no_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_vision("")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_with_match(mock_check, mock_svc):
+async def test_chat_slash_delete_with_match(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
@@ -707,8 +770,7 @@ async def test_chat_slash_delete_with_match(mock_check, mock_svc):
         mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_not_found(mock_check, mock_svc):
+async def test_chat_slash_delete_not_found(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
@@ -717,8 +779,7 @@ async def test_chat_slash_delete_not_found(mock_check, mock_svc):
         app.screen._cmd_delete("nonexistent.md")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_no_arg(mock_check, mock_svc):
+async def test_chat_slash_delete_no_arg(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
     ]
@@ -727,24 +788,21 @@ async def test_chat_slash_delete_no_arg(mock_check, mock_svc):
         app.screen._cmd_delete("")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_store_error(mock_check, mock_svc):
+async def test_chat_slash_delete_store_error(mock_svc):
     mock_svc.store.get_sources.side_effect = Exception("no store")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_delete("x")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_empty_sources(mock_check, mock_svc):
+async def test_chat_slash_delete_empty_sources(mock_svc):
     mock_svc.store.get_sources.return_value = []
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_delete("x")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_reset_confirm(mock_check):
+async def test_chat_slash_reset_confirm():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
@@ -753,61 +811,53 @@ async def test_chat_slash_reset_confirm(mock_check):
             mock_reset.assert_called_once()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_reset_no_confirm(mock_check):
+async def test_chat_slash_reset_no_confirm():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/reset")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_reset_error(mock_check):
+async def test_chat_slash_reset_error():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset", side_effect=Exception("oops")):
             app.screen._handle_slash("/reset confirm")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_valid(mock_check):
+async def test_chat_slash_set_valid():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("top_k 10")
         assert cfg.top_k == 10
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_bool(mock_check):
+async def test_chat_slash_set_bool():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("show_reasoning true")
         assert cfg.show_reasoning is True
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_nullable_none(mock_check):
+async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("temperature none")
         assert cfg.temperature is None
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_unknown_key(mock_check):
+async def test_chat_slash_set_unknown_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("bogus_key 42")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_invalid_value(mock_check):
+async def test_chat_slash_set_invalid_value():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("top_k not-a-number")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_no_value(mock_check):
+async def test_chat_slash_set_no_value():
     """Cover the branch where /set key has no value (empty string)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -818,61 +868,57 @@ async def test_chat_slash_set_no_value(mock_check):
         assert cfg.chat_model == "test-model:latest"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_empty_args(mock_check):
+async def test_chat_slash_add_empty_args():
     """Cover early return when /add has no args."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_add("")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_empty_args(mock_check):
+async def test_chat_slash_set_empty_args():
     """Cover early return when /set has no args."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_nonexistent(mock_check):
+async def test_chat_slash_add_nonexistent():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_add("/nonexistent/path/abc.txt")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_existing(mock_check, tmp_path):
+async def test_chat_slash_add_existing(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.helpers.copy_paths", return_value=["test.txt"]),
+            patch(
+                "lilbee.cli.helpers.copy_files",
+                return_value=MagicMock(copied=["test.txt"], skipped=[]),
+            ),
             patch.object(app.screen, "_run_sync"),
         ):
             app.screen._cmd_add(str(test_file))
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_error(mock_check, tmp_path):
+async def test_chat_slash_add_error(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.copy_paths", side_effect=Exception("copy failed")):
+        with patch("lilbee.cli.helpers.copy_files", side_effect=Exception("copy failed")):
             app.screen._cmd_add(str(test_file))
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_cancel(mock_check):
+async def test_chat_slash_cancel():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/cancel")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_help(mock_check):
+async def test_chat_slash_help():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/help")
@@ -882,8 +928,7 @@ async def test_chat_slash_help(mock_check):
         assert isinstance(app.screen, HelpModal)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_models(mock_check):
+async def test_chat_slash_models():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
@@ -897,8 +942,7 @@ async def test_chat_slash_models(mock_check):
             assert isinstance(app.screen, CatalogScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_status(mock_check):
+async def test_chat_slash_status():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/status")
@@ -908,8 +952,7 @@ async def test_chat_slash_status(mock_check):
         assert isinstance(app.screen, StatusScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_settings(mock_check):
+async def test_chat_slash_settings():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/settings")
@@ -919,16 +962,14 @@ async def test_chat_slash_settings(mock_check):
         assert isinstance(app.screen, SettingsScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_set_dispatch(mock_check):
+async def test_chat_slash_set_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/set top_k 10")
         assert cfg.top_k == 10
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_empty_input_ignored(mock_check):
+async def test_chat_empty_input_ignored():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -938,23 +979,20 @@ async def test_chat_empty_input_ignored(mock_check):
         await _pilot.press("enter")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_scroll_actions(mock_check):
+async def test_chat_scroll_actions():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_scroll_up()
         app.screen.action_scroll_down()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_stream_not_streaming(mock_check):
+async def test_chat_cancel_stream_not_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_cancel_stream()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_stream_while_streaming(mock_check):
+async def test_chat_cancel_stream_while_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._streaming = True
@@ -962,8 +1000,7 @@ async def test_chat_cancel_stream_while_streaming(mock_check):
         assert app.screen._streaming is False
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_vim_j_k_not_in_input(mock_check):
+async def test_chat_vim_j_k_not_in_input():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.containers import VerticalScroll
@@ -974,8 +1011,7 @@ async def test_chat_vim_j_k_not_in_input(mock_check):
         app.screen.key_k()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_vim_j_k_in_input(mock_check):
+async def test_chat_vim_j_k_in_input():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -986,26 +1022,20 @@ async def test_chat_vim_j_k_in_input(mock_check):
         app.screen.key_k()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_show_setup_modal(mock_check):
+async def test_chat_needs_setup_false_when_models_exist():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._show_setup_modal(["nomic-embed-text"])
-        await _pilot.pause()
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        assert isinstance(app.screen, SetupModal)
+        with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False):
+            assert not app.screen._needs_setup()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_refresh_model_bar(mock_check):
+async def test_chat_refresh_model_bar():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._refresh_model_bar()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_input_changed_hides_overlay(mock_check):
+async def test_chat_input_changed_hides_overlay():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1016,32 +1046,28 @@ async def test_chat_input_changed_hides_overlay(mock_check):
         await _pilot.pause()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_quit(mock_check):
+async def test_chat_slash_quit():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "exit"):
             app.screen._handle_slash("/quit")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_q(mock_check):
+async def test_chat_slash_q():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "exit"):
             app.screen._handle_slash("/q")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_exit(mock_check):
+async def test_chat_slash_exit():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "exit"):
             app.screen._handle_slash("/exit")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_h(mock_check):
+async def test_chat_slash_h():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/h")
@@ -1051,8 +1077,7 @@ async def test_chat_slash_h(mock_check):
         assert isinstance(app.screen, HelpModal)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_m(mock_check):
+async def test_chat_slash_m():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
@@ -1066,15 +1091,13 @@ async def test_chat_slash_m(mock_check):
             assert isinstance(app.screen, CatalogScreen)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_dispatch(mock_check):
+async def test_chat_slash_add_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/add /nonexistent/xyz")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_vision_dispatch(mock_check):
+async def test_chat_slash_vision_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.settings.set_value"):
@@ -1082,8 +1105,7 @@ async def test_chat_slash_vision_dispatch(mock_check):
             assert cfg.vision_model == ""
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_delete_dispatch(mock_check):
+async def test_chat_slash_delete_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/delete")
@@ -1094,8 +1116,7 @@ async def test_chat_slash_delete_dispatch(mock_check):
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_action_complete_no_options(mock_check):
+async def test_chat_action_complete_no_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1105,8 +1126,7 @@ async def test_chat_action_complete_no_options(mock_check):
         app.screen.action_complete()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_action_complete_with_options(mock_check):
+async def test_chat_action_complete_with_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1121,8 +1141,7 @@ async def test_chat_action_complete_with_options(mock_check):
             assert inp.value == "/help"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_action_complete_with_space(mock_check):
+async def test_chat_action_complete_with_space():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1137,8 +1156,7 @@ async def test_chat_action_complete_with_space(mock_check):
             assert inp.value == "/model qwen:latest"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_action_complete_cycle(mock_check):
+async def test_chat_action_complete_cycle():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1162,8 +1180,7 @@ async def test_chat_action_complete_cycle(mock_check):
                 assert "qwen:latest" in inp.value
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_action_complete_cycle_no_selection(mock_check):
+async def test_chat_action_complete_cycle_no_selection():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1179,8 +1196,7 @@ async def test_chat_action_complete_cycle_no_selection(mock_check):
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_send_message(mock_check):
+async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "_stream_response"):
@@ -1193,8 +1209,7 @@ async def test_chat_send_message(mock_check):
             assert app.screen._history[0]["role"] == "user"
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_input_submitted_wrong_input_ignored(mock_check):
+async def test_chat_input_submitted_wrong_input_ignored():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import Input
@@ -1206,8 +1221,7 @@ async def test_chat_input_submitted_wrong_input_ignored(mock_check):
         assert len(app.screen._history) == 0
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_input_changed_other_input_ignored(mock_check):
+async def test_chat_input_changed_other_input_ignored():
     """on_input_changed should only react to chat-input."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1217,15 +1231,13 @@ async def test_chat_input_changed_other_input_ignored(mock_check):
         app.screen.on_input_changed(event)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_scroll_to_bottom(mock_check):
+async def test_chat_scroll_to_bottom():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._scroll_to_bottom()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_trim_history_when_over_limit(mock_check):
+async def test_chat_trim_history_when_over_limit():
     """History is trimmed when it exceeds _MAX_HISTORY_MESSAGES."""
     from lilbee.cli.tui.screens.chat import _MAX_HISTORY_MESSAGES
 
@@ -1244,8 +1256,7 @@ async def test_chat_trim_history_when_over_limit(mock_check):
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_discover(mock_check):
+async def test_command_provider_discover():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1259,8 +1270,7 @@ async def test_command_provider_discover(mock_check):
         assert any("catalog" in str(t).lower() for t in texts)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_search(mock_check):
+async def test_command_provider_search():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1272,8 +1282,7 @@ async def test_command_provider_search(mock_check):
         assert len(hits) > 0
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_search_no_match(mock_check):
+async def test_command_provider_search_no_match():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1285,8 +1294,7 @@ async def test_command_provider_search_no_match(mock_check):
         assert len(hits) == 0
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_set_model(mock_check):
+async def test_command_provider_set_model():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1300,8 +1308,7 @@ async def test_command_provider_set_model(mock_check):
             assert "new-model:latest" in app.title
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_set_model_vision(mock_check):
+async def test_command_provider_set_model_vision():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1314,8 +1321,7 @@ async def test_command_provider_set_model_vision(mock_check):
             assert cfg.vision_model == ""
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_delete_doc(mock_check):
+async def test_command_provider_delete_doc():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1331,8 +1337,7 @@ async def test_command_provider_delete_doc(mock_check):
         store.delete_source.assert_called_once_with("notes.md")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_action_sync(mock_check):
+async def test_command_provider_action_sync():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1343,8 +1348,7 @@ async def test_command_provider_action_sync(mock_check):
         provider._action_sync()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_action_version(mock_check):
+async def test_command_provider_action_version():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1356,8 +1360,7 @@ async def test_command_provider_action_version(mock_check):
             provider._action_version()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_action_noop(mock_check):
+async def test_command_provider_action_noop():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1368,8 +1371,7 @@ async def test_command_provider_action_noop(mock_check):
         provider._action_noop()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_model_commands(mock_check):
+async def test_command_provider_model_commands():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1386,8 +1388,7 @@ async def test_command_provider_model_commands(mock_check):
             assert any("qwen:latest" in n for n in model_names)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_model_commands_error(mock_check):
+async def test_command_provider_model_commands_error():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1403,8 +1404,7 @@ async def test_command_provider_model_commands_error(mock_check):
             assert any("vision" in c[0].lower() for c in cmds)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_model_commands_vision_error(mock_check):
+async def test_command_provider_model_commands_vision_error():
     """When both list_installed_models and VISION_CATALOG fail."""
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -1422,8 +1422,7 @@ async def test_command_provider_model_commands_vision_error(mock_check):
             assert isinstance(cmds, list)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_document_commands(mock_check):
+async def test_command_provider_document_commands():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1440,8 +1439,7 @@ async def test_command_provider_document_commands(mock_check):
         assert "notes.md" in cmds[0][0]
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_document_commands_error(mock_check):
+async def test_command_provider_document_commands_error():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1455,8 +1453,7 @@ async def test_command_provider_document_commands_error(mock_check):
         assert cmds == []
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_document_commands_empty_name(mock_check):
+async def test_command_provider_document_commands_empty_name():
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -1511,6 +1508,7 @@ async def test_catalog_focus_search():
             app.push_screen(screen)
             await _pilot.pause()
             screen.action_focus_search()
+            await _pilot.pause()
             from textual.widgets import Input
 
             assert app.screen.query_one("#catalog-search", Input).has_focus
@@ -1546,7 +1544,10 @@ async def test_catalog_cycle_sort_in_input_ignored():
             await _pilot.pause()
             from textual.widgets import Input
 
-            screen.query_one("#catalog-search", Input).focus()
+            filter_input = screen.query_one("#catalog-search", Input)
+            filter_input.display = True
+            filter_input.focus()
+            await _pilot.pause()
             screen.action_cycle_sort()
             assert screen._current_sort == "downloads"
 
@@ -1577,8 +1578,8 @@ async def test_catalog_vim_keys():
 
             lv = screen.query_one("#catlist-all", ListView)
             lv.focus()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_vim_keys_in_input():
@@ -1593,8 +1594,8 @@ async def test_catalog_vim_keys_in_input():
             from textual.widgets import Input
 
             screen.query_one("#catalog-search", Input).focus()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_page_down_up():
@@ -2029,14 +2030,14 @@ class ModelRowTestApp(App[None]):
     CSS = ""
 
     def compose(self) -> ComposeResult:
-        yield ModelRow(_make_catalog_model(name="compose-test-7B"))
+        yield ModelRow(_make_catalog_model(name="compose-test-7B", hf_repo="compose-test-7B"))
 
 
 async def test_model_row_compose():
     app = ModelRowTestApp()
     async with app.run_test(size=(120, 10)) as _pilot:
         text = app.query_one(Static)
-        assert "compose-test-7B" in str(text.render())
+        assert "compose test 7B" in str(text.render())
 
 
 class RemoteRowTestApp(App[None]):
@@ -2129,8 +2130,7 @@ async def test_catalog_update_highlighted_detail_none_with_child():
                 screen._update_highlighted_detail(None)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_worker(mock_check, mock_svc):
+async def test_chat_stream_response_worker(mock_svc):
     """Cover _stream_response lines 315-336 via actual worker."""
     from dataclasses import dataclass
 
@@ -2155,8 +2155,7 @@ async def test_chat_stream_response_worker(mock_check, mock_svc):
         assert any(m["role"] == "assistant" for m in app.screen._history)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_error_worker(mock_check, mock_svc):
+async def test_chat_stream_response_error_worker(mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2171,8 +2170,7 @@ async def test_chat_stream_response_error_worker(mock_check, mock_svc):
             await _pilot.pause()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_stream_response_reasoning_worker(mock_check, mock_svc):
+async def test_chat_stream_response_reasoning_worker(mock_svc):
     """Cover the reasoning token branch in _stream_response."""
     from dataclasses import dataclass
 
@@ -2195,14 +2193,13 @@ async def test_chat_stream_response_reasoning_worker(mock_check, mock_svc):
             await _pilot.pause()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_run_sync_worker(mock_check):
+async def test_chat_run_sync_worker():
     """Cover _run_sync lines 356-376 via actual worker."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.progress import EventType
 
-        async def fake_sync(on_progress=None):
+        async def fake_sync(quiet=False, on_progress=None):
             # Call progress callback to cover lines 367-370
             if on_progress:
                 on_progress(
@@ -2218,14 +2215,46 @@ async def test_chat_run_sync_worker(mock_check):
                 await _pilot.pause()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_run_sync_error_worker(mock_check):
+async def test_chat_sync_progress_percentage():
+    """Verify sync progress reports actual percentage, not hardcoded 50%."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EventType, FileStartEvent
+
+        update_calls: list[tuple] = []
+        task_bar = app.screen.query_one("#task-bar")
+        original_update = task_bar.update_task
+
+        def tracking_update(task_id, pct, status):
+            update_calls.append((task_id, pct, status))
+            return original_update(task_id, pct, status)
+
+        async def fake_sync(quiet=False, on_progress=None):
+            if on_progress:
+                event = FileStartEvent(current_file=3, total_files=4, file="doc.md")
+                on_progress(EventType.FILE_START, event)
+            return {"added": 1}
+
+        with (
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch.object(task_bar, "update_task", tracking_update),
+        ):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        pct_values = [pct for _, pct, _ in update_calls if pct > 0]
+        assert 75 in pct_values
+
+
+async def test_chat_run_sync_error_worker():
     """Cover the sync error branch."""
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
 
-        async def failing_sync(on_progress=None):
+        async def failing_sync(quiet=False, on_progress=None):
             raise Exception("sync failed")
 
         with patch("lilbee.ingest.sync", side_effect=failing_sync):
@@ -2235,8 +2264,7 @@ async def test_chat_run_sync_error_worker(mock_check):
                 await _pilot.pause()
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_stream_with_streaming_workers(mock_check, mock_svc):
+async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
     """Cover action_cancel_stream line 350."""
     from dataclasses import dataclass
 
@@ -2268,13 +2296,12 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_check, mock_svc):
         assert app.screen._streaming is False
 
 
-@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[])
-@patch("lilbee.model_manager.get_model_manager")
-async def test_chat_check_embedding_model_async_installed(mock_get_mgr, mock_detect):
-    """Cover _check_embedding_model_async lines 61-65 (model installed)."""
+async def test_chat_needs_setup_true_pushes_wizard():
+    """Verify _needs_setup=True pushes SetupWizard on mount."""
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.setup import SetupWizard
 
-    class EmbedTestApp(App[None]):
+    class SetupTestApp(App[None]):
         CSS = ""
 
         def compose(self) -> ComposeResult:
@@ -2283,70 +2310,35 @@ async def test_chat_check_embedding_model_async_installed(mock_get_mgr, mock_det
         def on_mount(self) -> None:
             self.push_screen(ChatScreen())
 
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = True
-    mock_get_mgr.return_value = mock_mgr
-
-    app = EmbedTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        while app.screen.workers:
+    app = SetupTestApp()
+    with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=True):
+        async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
-        mock_mgr.is_installed.assert_called_with(cfg.embedding_model)
+            assert isinstance(app.screen, SetupWizard)
 
 
-@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=["test-embed"])
-@patch("lilbee.model_manager.get_model_manager")
-async def test_chat_check_embedding_model_async_remote(mock_get_mgr, mock_detect):
-    """Cover _check_embedding_model_async lines 67-70 (model in remote backend)."""
+async def test_chat_embedding_ready_false_no_sync():
+    """Verify _embedding_ready=False skips auto-sync."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
-    class EmbedTestApp(App[None]):
+    class NoSyncApp(App[None]):
         CSS = ""
 
         def compose(self) -> ComposeResult:
             yield Footer()
 
         def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
+            self.push_screen(ChatScreen(auto_sync=True))
 
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = False
-    mock_get_mgr.return_value = mock_mgr
-
-    app = EmbedTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        while app.screen.workers:
+    app = NoSyncApp()
+    with (
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as mock_sync,
+    ):
+        async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
-        mock_detect.assert_called()
-
-
-@patch("lilbee.model_manager.detect_remote_embedding_models", return_value=[])
-@patch("lilbee.model_manager.get_model_manager")
-async def test_chat_check_embedding_model_async_not_found(mock_get_mgr, mock_detect):
-    """Cover _check_embedding_model_async line 72 (shows setup modal)."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class EmbedTestApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = False
-    mock_get_mgr.return_value = mock_mgr
-
-    app = EmbedTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        while app.screen.workers:
-            await _pilot.pause()
-        await _pilot.pause()
+            mock_sync.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2354,8 +2346,7 @@ async def test_chat_check_embedding_model_async_not_found(mock_get_mgr, mock_det
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_on_input_submitted_slash(mock_check):
+async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2369,8 +2360,7 @@ async def test_chat_on_input_submitted_slash(mock_check):
             assert inp.value == ""
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_on_input_changed_visible_overlay(mock_check):
+async def test_chat_on_input_changed_visible_overlay():
     """Cover the overlay.hide() branch (line 408)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2391,8 +2381,7 @@ async def test_chat_on_input_changed_visible_overlay(mock_check):
         # The on_input_changed handler should have hidden the overlay
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_auto_sync_triggers_sync(mock_check):
+async def test_chat_auto_sync_triggers_sync():
     """Cover the auto_sync branch (line 56)."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -2412,29 +2401,26 @@ async def test_chat_auto_sync_triggers_sync(mock_check):
         assert app.screen._auto_sync is True
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_setup_modal_callback_with_name(mock_check):
-    """Cover the on_setup_complete callback when a name is chosen (lines 78-81)."""
+async def test_chat_on_setup_complete_skipped_shows_banner():
+    """Cover _on_setup_complete with 'skipped' result."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # The callback is defined inside _show_setup_modal; test it directly
-
-        with patch.object(app, "push_screen") as mock_push:
-            app.screen._show_setup_modal([])
-            # Get the callback that was passed
-            call_args = mock_push.call_args
-            callback = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("callback")
-            if callback:
-                callback("new-embed-model")
-                assert cfg.embedding_model == "new-embed-model"
-
-                # Also test with None
-                callback(None)
-                assert cfg.embedding_model == "new-embed-model"
+        app.screen._on_setup_complete("skipped")
+        await _pilot.pause()
+        banner = app.screen.query_one("#chat-only-banner")
+        assert banner.display is True
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_cancel_with_active_worker(mock_check, mock_svc):
+async def test_chat_on_setup_complete_success():
+    """Cover _on_setup_complete with successful setup."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_embedding_ready", return_value=False):
+            app.screen._on_setup_complete("done")
+            await _pilot.pause()
+
+
+async def test_chat_cancel_with_active_worker(mock_svc):
     """Cover the /cancel worker.cancel() line (line 110) with an active worker."""
     from dataclasses import dataclass
 
@@ -2541,8 +2527,8 @@ async def test_catalog_page_down_with_focused_list():
             screen.action_page_up()
 
 
-async def test_catalog_key_j_with_focused_list():
-    """Cover the lv.action_cursor_down() in key_j (lines 372-373)."""
+async def test_catalog_action_cursor_with_focused_list():
+    """Cover the lv.action_cursor_down() in action_cursor_down."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -2562,8 +2548,8 @@ async def test_catalog_key_j_with_focused_list():
             lv = screen.query_one("#catlist-all", ListView)
             lv.focus()
             await _pilot.pause()
-            screen.key_j()
-            screen.key_k()
+            screen.action_cursor_down()
+            screen.action_cursor_up()
 
 
 async def test_catalog_highlight_none_with_highlighted_child():
@@ -2596,8 +2582,7 @@ async def test_catalog_highlight_none_with_highlighted_child():
 # ---------------------------------------------------------------------------
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_vim_j_scrolls_down_no_focus(mock_check):
+async def test_chat_vim_j_scrolls_down_no_focus():
     """Cover key_j scroll_down path (line 419) when focused widget is None."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2664,8 +2649,7 @@ def test_check_embedding_model_not_found():
         # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_command_provider_vision_catalog_error(mock_check):
+async def test_command_provider_vision_catalog_error():
     """Cover the except block when VISION_CATALOG import fails (lines 91-92)."""
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -2711,24 +2695,21 @@ async def test_command_provider_vision_catalog_error(mock_check):
             models_mod.VISION_CATALOG = original_vision  # type: ignore[assignment]
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_crawl_no_args(mock_check):
+async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_crawl("")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_crawl_invalid_url(mock_check):
+async def test_chat_slash_crawl_invalid_url():
     """Cover /crawl with non-URL argument."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_crawl("not-a-url")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_crawl_valid_url(mock_check):
+async def test_chat_slash_crawl_valid_url():
     """Cover /crawl dispatching to background crawler."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2736,18 +2717,24 @@ async def test_chat_slash_crawl_valid_url(mock_check):
             app.screen._cmd_crawl("https://example.com")
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_crawl_with_flags(mock_check):
+async def test_chat_slash_crawl_with_flags():
     """Cover /crawl with --depth and --max-pages flags."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_run_crawl_background") as mock_crawl:
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
+        ):
             app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
-            mock_crawl.assert_called_once_with("https://example.com", 3, 20)
+            mock_crawl.assert_called_once()
+            call_args = mock_crawl.call_args[0]
+            assert call_args[0] == "https://example.com"
+            assert call_args[1] == 3
+            assert call_args[2] == 20
+            assert len(call_args) == 4
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_slash_add_url_routes_to_crawl(mock_check):
+async def test_chat_slash_add_url_routes_to_crawl():
     """Cover /add with a URL argument routing to _cmd_crawl."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2793,8 +2780,7 @@ class TestParseCrawlFlags:
         assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (0, 0)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_run_crawl_background_success(mock_check):
+async def test_chat_run_crawl_background_success():
     """Cover _run_crawl_background success path including progress callback."""
     from pathlib import Path
 
@@ -2811,16 +2797,627 @@ async def test_chat_run_crawl_background_success(mock_check):
             patch.object(app.screen, "_run_sync"),
         ):
             mock_crawl.side_effect = _fake_crawl
-            app.screen._run_crawl_background("https://example.com", 0, 50)
+            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
 
 
-@patch("lilbee.cli.tui.screens.chat.ChatScreen._check_embedding_model_async")
-async def test_chat_run_crawl_background_error(mock_check):
+async def test_chat_run_crawl_background_error():
     """Cover _run_crawl_background error path."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         with patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl:
             mock_crawl.side_effect = RuntimeError("network error")
-            app.screen._run_crawl_background("https://example.com", 0, 50)
+            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
+
+
+async def test_chat_key_g_scrolls_home():
+    """g scrolls to top of chat log when input not focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.containers import VerticalScroll
+
+        log_widget = app.screen.query_one("#chat-log", VerticalScroll)
+        log_widget.focus()
+        app.screen.key_g()
+        app.screen.key_G()
+
+
+async def test_chat_key_g_noop_in_input():
+    """g/G do nothing when Input is focused."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Input
+
+        app.screen.query_one("#chat-input", Input).focus()
+        # Should not raise
+        app.screen.key_g()
+        app.screen.key_G()
+
+
+async def test_chat_half_page_actions():
+    """Ctrl-D/U half-page scroll actions execute without error."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen.action_half_page_down()
+        app.screen.action_half_page_up()
+
+
+async def test_settings_key_g_G(mock_svc):
+    """g/G jump to first/last row in settings table."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#settings-table", DataTable)
+        table.focus()
+        app.screen.action_jump_bottom()
+        assert table.cursor_row == table.row_count - 1
+        app.screen.action_jump_top()
+        assert table.cursor_row == 0
+
+
+async def test_status_key_g_G(mock_svc):
+    """g/G jump to first/last row in status table."""
+    mock_svc.store.get_sources.return_value = [
+        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
+        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
+        {"source": "c.md", "chunk_count": 3, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import DataTable
+
+        table = app.screen.query_one("#docs-table", DataTable)
+        table.focus()
+        app.screen.action_jump_bottom()
+        assert table.cursor_row == table.row_count - 1
+        app.screen.action_jump_top()
+        assert table.cursor_row == 0
+
+
+async def test_catalog_key_g_G():
+    """g/G jump to top/bottom of catalog list."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
+
+
+async def test_catalog_key_g_G_noop_in_input():
+    """g/G do nothing when catalog search Input is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.action_jump_top()
+            screen.action_jump_bottom()
+
+
+async def test_catalog_number_keys_switch_tabs():
+    """Number keys 1-4 switch catalog tabs."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import ListView, TabbedContent
+
+            screen.query_one("#catlist-all", ListView).focus()
+            await _pilot.pause()
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            screen.action_activate_tab_1()
+            await _pilot.pause()
+            assert tabs.active == "cat-chat"
+            screen.action_activate_tab_2()
+            await _pilot.pause()
+            assert tabs.active == "cat-embedding"
+            screen.action_activate_tab_3()
+            await _pilot.pause()
+            assert tabs.active == "cat-vision"
+            screen.action_activate_tab_0()
+            await _pilot.pause()
+            assert tabs.active == "cat-all"
+
+
+async def test_catalog_number_keys_noop_in_input():
+    """Number keys do nothing when catalog search Input is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.action_activate_tab_0()
+            screen.action_activate_tab_1()
+            screen.action_activate_tab_2()
+            screen.action_activate_tab_3()
+
+
+async def test_app_question_mark_opens_help():
+    """? key binding is registered on LilbeeApp."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    bindings = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, B)}
+    assert "question_mark" in bindings
+
+
+async def test_chat_bindings_include_half_page():
+    """Verify Ctrl-D/U bindings are registered on ChatScreen."""
+    from textual.binding import Binding as B
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
+    assert "ctrl+d" in keys
+    assert "ctrl+u" in keys
+
+
+# ---------------------------------------------------------------------------
+# Catalog: delete model (d key)
+# ---------------------------------------------------------------------------
+
+
+async def test_catalog_delete_installed_model_confirmation():
+    """First press of d shows confirmation notification."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = True
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # Wait for background workers to complete before modifying list
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete == "test-model:latest"
+
+
+async def test_catalog_delete_second_press_confirms():
+    """Second press of d calls remove and clears pending state."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = True
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            # First press sets pending
+            screen.action_delete_model()
+            assert screen._pending_delete == "test-model:latest"
+            # Second press confirms
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_not_installed():
+    """Pressing d on a model that is not installed shows warning."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.model_manager.classify_remote_models", return_value=[]),
+            patch("lilbee.cli.tui.screens.catalog.get_model_manager") as mock_mgr,
+        ):
+            mock_mgr.return_value.is_installed.return_value = False
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            screen._remote_models = [_make_remote_model("test-model:latest")]
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            from textual.widgets import ListView
+
+            lv = screen.query_one("#catlist-all", ListView)
+            lv.focus()
+            lv.index = len(lv.children) - 1
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_no_highlighted_row():
+    """Pressing d with no highlighted row shows warning."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            screen._families = []
+            screen._hf_models = []
+            screen._remote_models = []
+            screen._refresh_lists()
+            await _pilot.pause()
+
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+async def test_catalog_delete_in_input_ignored():
+    """Pressing d while focused on search input does nothing."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            from textual.widgets import Input
+
+            screen.query_one("#catalog-search", Input).focus()
+            screen.action_delete_model()
+            assert screen._pending_delete is None
+
+
+# ---------------------------------------------------------------------------
+# Chat: /remove slash command
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_slash_remove_no_args():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._handle_slash("/remove")
+
+
+async def test_chat_slash_remove_not_installed():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = False
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_chat_slash_remove_success():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = True
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_chat_slash_remove_failed():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
+            mock_mgr.return_value.is_installed.return_value = True
+            mock_mgr.return_value.remove.return_value = False
+            app.screen._handle_slash("/remove some-model:latest")
+            await _pilot.pause()
+
+
+async def test_cmd_add_creates_task_bar_entry(tmp_path):
+    """B1: /add creates a TaskBar entry and runs copy_paths in a background worker."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        async def fake_sync(quiet=False, on_progress=None):
+            return {"added": 1}
+
+        with (
+            patch(
+                "lilbee.cli.helpers.copy_files",
+                return_value=MagicMock(copied=["doc.txt"], skipped=[]),
+            ) as mock_copy,
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+        ):
+            from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+            task_bar = app.screen.query_one("#task-bar", TaskBar)
+            add_task_spy = MagicMock(wraps=task_bar.add_task)
+            with patch.object(task_bar, "add_task", add_task_spy):
+                app.screen._handle_slash(f"/add {test_file}")
+                await _pilot.pause()
+
+                # TaskBar.add_task was called with the file name
+                add_task_spy.assert_called_once()
+                label_arg = add_task_spy.call_args[0][0]
+                assert "Add" in label_arg
+
+            while app.screen.workers:
+                await _pilot.pause()
+
+            mock_copy.assert_called_once()
+
+
+async def test_cmd_add_error_in_background(tmp_path):
+    """B1: /add error branch reports failure through TaskBar."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello")
+
+        with patch("lilbee.cli.helpers.copy_files", side_effect=RuntimeError("copy failed")):
+            app.screen._handle_slash(f"/add {test_file}")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_sync_called_with_quiet_true():
+    """B2: _run_sync_worker passes quiet=True to suppress Rich progress bar."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        sync_kwargs: list[dict] = []
+
+        async def capturing_sync(**kwargs):
+            sync_kwargs.append(kwargs)
+            return {"added": 0}
+
+        with patch("lilbee.ingest.sync", side_effect=capturing_sync):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        assert len(sync_kwargs) >= 1
+        assert sync_kwargs[0].get("quiet") is True
+
+
+async def test_chat_escape_enters_normal_mode():
+    """F3: Escape leaves insert mode and enters normal mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert app.screen._insert_mode is True
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+
+
+async def test_chat_enter_returns_to_insert_mode():
+    """F3: Enter in normal mode switches back to insert mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        # Enter normal mode first
+        app.screen._insert_mode = False
+        app.screen._update_input_style()
+        await pilot.pause()
+        # Trigger enter via the on_key handler
+        app.screen._enter_insert_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+
+
+async def test_chat_normal_mode_dims_input():
+    """F3: Input widget gets normal-mode class when in normal mode."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        assert "insert-mode" in inp.classes
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert "normal-mode" in inp.classes
+        assert "insert-mode" not in inp.classes
+
+
+async def test_chat_escape_key_enters_normal_mode():
+    """Escape key enters normal mode and focuses chat log."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        assert app.screen._insert_mode is True
+        assert inp.has_focus
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+        assert log.has_focus
+
+
+async def test_chat_cursor_down_action_scrolls():
+    """action_cursor_down scrolls in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        log.focus()
+        await pilot.pause()
+
+        app.screen.action_cursor_down()
+        await pilot.pause()
+
+
+async def test_chat_cursor_up_action_scrolls():
+    """action_cursor_up scrolls in normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        log.focus()
+        await pilot.pause()
+
+        app.screen.action_cursor_up()
+        await pilot.pause()
+
+
+async def test_chat_enter_key_returns_to_insert_mode():
+    """Enter key returns to insert mode from normal mode."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        assert app.screen._insert_mode is False
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen._insert_mode is True
+
+
+async def test_app_nav_prev_cycles_views():
+    """App-level h/left binding cycles to previous view."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+
+        app.action_nav_prev()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
+
+        app.action_nav_prev()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
+
+
+async def test_app_nav_next_cycles_views():
+    """App-level l/right binding cycles to next view."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+
+        app.action_nav_next()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
+
+        app.action_nav_next()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
+
+
+async def test_app_number_keys_switch_views():
+    """Number keys 1-4 switch between views."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        app.action_switch_chat()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+
+        app.action_switch_models()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
+
+        app.action_switch_status()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
+
+        app.action_switch_settings()
+        await pilot.pause()
+        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"

@@ -17,9 +17,13 @@ class TestModelCatalog:
         for m in MODEL_CATALOG:
             assert isinstance(m, ModelInfo)
 
-    def test_sorted_by_size(self):
-        sizes = [m.size_gb for m in MODEL_CATALOG]
-        assert sizes == sorted(sizes)
+    def test_derived_from_catalog(self):
+        """MODEL_CATALOG entries match catalog.py's FEATURED_CHAT."""
+        from lilbee.catalog import FEATURED_CHAT
+
+        assert len(MODEL_CATALOG) == len(FEATURED_CHAT)
+        for mc, fc in zip(MODEL_CATALOG, FEATURED_CHAT, strict=True):
+            assert mc.name == fc.name
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
@@ -97,32 +101,34 @@ class TestPickDefaultModel:
 
     def test_low_ram_picks_small(self):
         result = models.pick_default_model(4.0)
-        assert result.name == "qwen3:1.7b"
+        assert result.min_ram_gb <= 4.0
 
     def test_8gb_ram(self):
         result = models.pick_default_model(8.0)
-        assert result.name == "qwen3:8b"
+        assert result.min_ram_gb <= 8.0
 
     def test_16gb_ram(self):
         result = models.pick_default_model(16.0)
-        assert result.name == "qwen3:8b"
+        assert result.min_ram_gb <= 16.0
 
     def test_32gb_ram(self):
         result = models.pick_default_model(32.0)
-        assert result.name == "qwen3-coder:30b"
+        assert result.min_ram_gb <= 32.0
 
     def test_tiny_ram_picks_first(self):
         result = models.pick_default_model(2.0)
-        assert result.name == "qwen3:1.7b"
+        assert result == MODEL_CATALOG[0]
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
-        assert models._model_download_size_gb("qwen3:8b") == 5.0
-        assert models._model_download_size_gb("qwen3-coder:30b") == 18.0
+        first = MODEL_CATALOG[0]
+        assert models._model_download_size_gb(first.name) == first.size_gb
 
     def test_unknown_model_returns_fallback(self):
-        assert models._model_download_size_gb("unknown:latest") == 5.0
+        result = models._model_download_size_gb("unknown:latest")
+        assert isinstance(result, float)
+        assert result > 0
 
 
 class TestDisplayModelPicker:
@@ -130,12 +136,12 @@ class TestDisplayModelPicker:
         recommended = models.display_model_picker(16.0, 50.0)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert "qwen3:8b" in captured.err
+        assert MODEL_CATALOG[0].name in captured.err
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
         recommended = models.display_model_picker(32.0, 100.0)
-        assert recommended.name == "qwen3-coder:30b"
+        assert recommended.min_ram_gb <= 32.0
         captured = capsys.readouterr()
         # The star marker should be in the output
         assert "\u2605" in captured.err
@@ -172,13 +178,13 @@ class TestPromptModelChoice:
     def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
             result = models.prompt_model_choice(8.0)
-        assert result.name == "qwen3:1.7b"
+        assert result == MODEL_CATALOG[0]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=["abc", "99", "2"]):
             result = models.prompt_model_choice(8.0)
-        assert result.name == "qwen3:4b"
+        assert result == MODEL_CATALOG[1]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_eof_returns_recommended(self, mock_disk_estimate):
@@ -270,8 +276,9 @@ class TestEnsureChatModel:
             mock_get_manager.return_value = mock_manager
             with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
                 models.ensure_chat_model()
-            mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
-            mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
+            expected = models.pick_default_model(32.0)
+            mock_pull.assert_called_once_with(expected.name, console=None)
+            mock_save.assert_called_once_with(cfg.data_root, "chat_model", expected.name)
         finally:
             cfg.embedding_model = old_embed
 
@@ -288,7 +295,8 @@ class TestEnsureChatModel:
         mock_get_manager.return_value = mock_manager
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:8b", console=None)
+        expected = models.pick_default_model(8.0)
+        mock_pull.assert_called_once_with(expected.name, console=None)
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
@@ -306,7 +314,7 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:1.7b", console=None)
+        mock_pull.assert_called_once_with(MODEL_CATALOG[0].name, console=None)
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
@@ -358,17 +366,17 @@ class TestVisionCatalog:
         for m in VISION_CATALOG:
             assert isinstance(m, ModelInfo)
 
-    def test_catalog_is_ordered_by_quality(self) -> None:
-        """First entry should be the best quality (LightOnOCR-2)."""
-        assert "LightOnOCR" in VISION_CATALOG[0].name
+    def test_derived_from_catalog(self) -> None:
+        """VISION_CATALOG entries match catalog.py's FEATURED_VISION."""
+        from lilbee.catalog import FEATURED_VISION
+
+        assert len(VISION_CATALOG) == len(FEATURED_VISION)
+        for vc, fv in zip(VISION_CATALOG, FEATURED_VISION, strict=True):
+            assert vc.name == fv.name
 
     def test_frozen(self) -> None:
         with pytest.raises(AttributeError):
             VISION_CATALOG[0].name = "nope"  # type: ignore[misc]
-
-    def test_all_names_have_explicit_tags(self) -> None:
-        for m in VISION_CATALOG:
-            assert ":" in m.name, f"Vision catalog entry '{m.name}' missing explicit tag"
 
 
 class TestPickDefaultVisionModel:

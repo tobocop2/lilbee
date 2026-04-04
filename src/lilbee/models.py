@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2
 
-MODELS_BROWSE_URL = "https://ollama.com/library"
+MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 
 def ensure_tag(name: str) -> str:
@@ -39,23 +39,26 @@ class ModelInfo:
     description: str
 
 
-MODEL_CATALOG: tuple[ModelInfo, ...] = (
-    ModelInfo("qwen3:1.7b", 1.1, 4, "Tiny — fast on any machine"),
-    ModelInfo("qwen3:4b", 2.5, 8, "Small — good balance for 8 GB RAM"),
-    ModelInfo("mistral:7b", 4.4, 8, "Small — Mistral's fast 7B, 32K context"),
-    ModelInfo("qwen3:8b", 5.0, 8, "Medium — strong general-purpose"),
-    ModelInfo("qwen3-coder:30b", 18.0, 32, "Extra large — best quality, needs 32 GB RAM"),
-)
+def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
+    """Build a ModelInfo tuple from catalog.py's CatalogModel entries."""
+    return tuple(ModelInfo(m.name, m.size_gb, m.min_ram_gb, m.description) for m in featured)
 
 
-VISION_CATALOG: tuple[ModelInfo, ...] = (
-    ModelInfo(
-        "maternion/LightOnOCR-2:latest", 1.5, 4, "Best quality/speed — clean markdown OCR output"
-    ),
-    ModelInfo("deepseek-ocr:latest", 6.7, 8, "Excellent accuracy — plain text, no markdown"),
-    ModelInfo("minicpm-v:latest", 5.5, 8, "Good — some transcription errors, slower"),
-    ModelInfo("glm-ocr:latest", 2.2, 4, "Good accuracy — surprisingly slow despite small size"),
-)
+# Derived from catalog.py's featured lists — single source of truth
+def _build_model_catalog() -> tuple[ModelInfo, ...]:
+    from lilbee.catalog import FEATURED_CHAT
+
+    return _catalog_from_featured(FEATURED_CHAT)
+
+
+def _build_vision_catalog() -> tuple[ModelInfo, ...]:
+    from lilbee.catalog import FEATURED_VISION
+
+    return _catalog_from_featured(FEATURED_VISION)
+
+
+MODEL_CATALOG: tuple[ModelInfo, ...] = _build_model_catalog()
+VISION_CATALOG: tuple[ModelInfo, ...] = _build_vision_catalog()
 
 
 def get_system_ram_gb() -> float:
@@ -111,7 +114,7 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 def _model_download_size_gb(model: str) -> float:
     """Estimated download size for a model."""
     catalog_sizes = {m.name: m.size_gb for m in MODEL_CATALOG}
-    fallback = next((m.size_gb for m in MODEL_CATALOG if m.name == "qwen3:8b"), 5.0)
+    fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
 

@@ -10,33 +10,12 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import help_text as registry_help_text
 
 _COMMANDS_BLOCK = registry_help_text()
 
-_HELP_TEXT = f"""\
-[bold]Keys[/bold]
-
-  F1             Help (this screen)
-  F2             Model catalog
-  F3             Knowledge base status
-  F4             Settings
-  Ctrl+T         Cycle theme
-  Ctrl+C         Quit
-
-  [bold]Chat[/bold]
-  Enter          Send message
-  Escape         Cancel stream
-  j / k          Scroll (vim-style)
-  Ctrl+D / Space Page down
-  Ctrl+U         Page up
-  Tab            Accept suggestion
-
-  [bold]Commands[/bold]  (type / for suggestions)
-{_COMMANDS_BLOCK}
-
-  Press Escape or q to close.
-"""
+_HELP_TEXT = msg.HELP_TEXT_TEMPLATE.format(commands_block=_COMMANDS_BLOCK)
 
 
 class HelpModal(ModalScreen[None]):

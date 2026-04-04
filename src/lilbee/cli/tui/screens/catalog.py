@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import ClassVar
@@ -23,9 +24,21 @@ from textual.widgets import (
 )
 from textual.worker import Worker, WorkerState
 
-from lilbee.catalog import FEATURED_ALL, CatalogModel, get_catalog
+from lilbee.catalog import (
+    FEATURED_ALL,
+    CatalogModel,
+    ModelFamily,
+    ModelVariant,
+    _build_families,
+    clean_display_name,
+    get_catalog,
+    get_families,
+    quant_tier,
+)
+from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
-from lilbee.model_manager import RemoteModel
+from lilbee.model_manager import RemoteModel, get_model_manager
 
 log = logging.getLogger(__name__)
 
@@ -38,12 +51,13 @@ _TAB_TO_TASK: dict[str, str | None] = {
 }
 
 _HF_PAGE_SIZE = 25
+_HF_BROWSE_TASKS = {"chat", "All"}
 
 _SORT_CYCLE = ("downloads", "name", "size_desc", "featured")
 _SORT_LABELS = {
-    "downloads": "Downloads ↓",
+    "downloads": "Downloads \u2193",
     "name": "Name A-Z",
-    "size_desc": "Size ↓",
+    "size_desc": "Size \u2193",
     "featured": "Featured first",
 }
 
@@ -51,7 +65,7 @@ _SORT_LABELS = {
 def _parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
     match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
-    return f"{match.group(1)}B" if match else "—"
+    return f"{match.group(1)}B" if match else "\u2014"
 
 
 def _parse_param_size(name: str) -> str:
@@ -61,7 +75,7 @@ def _parse_param_size(name: str) -> str:
         return "unknown"
     size = float(match.group(1))
     if size <= 3:
-        return "Small (≤3B)"
+        return "Small (\u22643B)"
     if size <= 8:
         return "Medium (3-8B)"
     if size <= 30:
@@ -79,13 +93,51 @@ def _format_downloads(n: int) -> str:
 
 def _format_row(m: CatalogModel, cached_size: float | None = None) -> str:
     """Format a model row string."""
-    star = "★" if m.featured else " "
+    star = "\u2605" if m.featured else " "
+    display = clean_display_name(m.hf_repo)
     params = _parse_param_label(m.name)
     size_gb = cached_size if cached_size is not None else m.size_gb
-    size = f"{size_gb:.1f} GB" if size_gb > 0 else "  —   "
-    dl = f"↓{_format_downloads(m.downloads)}" if m.downloads > 0 else ""
+    size = f"{size_gb:.1f} GB" if size_gb > 0 else "  \u2014   "
+    dl = f"\u2193{_format_downloads(m.downloads)}" if m.downloads > 0 else ""
     desc = m.description[:45] if m.description else ""
-    return f" {star} {m.name:<30s} {m.task:<10s} {params:>5s} {size:>8s}  {dl:>8s}  {desc}"
+    return f" {star} {display:<30s} {m.task:<10s} {params:>5s} {size:>8s}  {dl:>8s}  {desc}"
+
+
+def _format_size_mb(size_mb: int) -> str:
+    """Format size in MB to a human-readable string."""
+    if size_mb == 0:
+        return "\u2014"
+    if size_mb >= 1024:
+        return f"{size_mb / 1024:.1f} GB"
+    return f"{size_mb} MB"
+
+
+def _format_variant_row(v: ModelVariant) -> str:
+    """Format a variant row for display inside a family group."""
+    star = "\u2605 " if v.recommended else "  "
+    quant_label = v.quant or "\u2014"
+    tier = quant_tier(v.quant)
+    tier_tag = f" [{tier}]" if tier != "\u2014" else ""
+    size = _format_size_mb(v.size_mb)
+    suffix = " \u2014 recommended" if v.recommended else ""
+    return f"  {star}{v.param_count} {quant_label} ({size}){tier_tag}{suffix}"
+
+
+def _format_family_header(f: ModelFamily) -> str:
+    """Format a family header row."""
+    return f"{f.name} \u2014 {f.description}"
+
+
+class VariantRow(ListItem):
+    """A model variant row within a family group."""
+
+    def __init__(self, variant: ModelVariant, family: ModelFamily) -> None:
+        super().__init__()
+        self.variant = variant
+        self.family = family
+
+    def compose(self) -> ComposeResult:
+        yield Static(_format_variant_row(self.variant), classes="model-row-text")
 
 
 class ModelRow(ListItem):
@@ -110,7 +162,7 @@ class RemoteRow(ListItem):
         m = self.remote_model
         size = m.parameter_size or "?"
         yield Static(
-            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           (remote)",
+            f"   {m.name:<30s} {m.task:<10s} {size:>5s}           ({m.provider})",
             classes="model-row-text",
         )
 
@@ -119,7 +171,7 @@ class LoadMoreRow(ListItem):
     """A 'Load more...' pagination row."""
 
     def compose(self) -> ComposeResult:
-        yield Static("   ↓ Load more models...", classes="model-row-text")
+        yield Static(msg.CATALOG_LOAD_MORE, classes="model-row-text")
 
 
 class CatalogScreen(Screen[None]):
@@ -129,37 +181,72 @@ class CatalogScreen(Screen[None]):
         Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("s", "cycle_sort", "Sort", show=True),
-        Binding("space", "page_down", "Page Down", show=False),
-        Binding("ctrl+d", "page_down", "½ Page Down", show=False),
-        Binding("ctrl+u", "page_up", "½ Page Up", show=False),
+        Binding("d", "delete_model", "Delete", show=True),
+        Binding("s", "cycle_sort", "Sort", show=False),
+        Binding("x", "delete_model", "Delete", show=False),
+        Binding("j", "cursor_down", "Nav", show=False),
+        Binding("k", "cursor_up", "Nav", show=False),
+        Binding("g", "jump_top", "Top", show=False),
+        Binding("G", "jump_bottom", "End", show=False),
+        Binding("space", "page_down", "PgDn", show=False),
+        Binding("ctrl+d", "page_down", "PgDn", show=False),
+        Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("1", "activate_tab_0", "1", show=False),
+        Binding("2", "activate_tab_1", "2", show=False),
+        Binding("3", "activate_tab_2", "3", show=False),
+        Binding("4", "activate_tab_3", "4", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
         self._featured: list[CatalogModel] = list(FEATURED_ALL)
+        self._families: list[ModelFamily] = get_families()
         self._hf_models: list[CatalogModel] = []
         self._remote_models: list[RemoteModel] = []
         self._hf_offset = 0
         self._hf_has_more = True
         self._current_sort = "downloads"
         self._size_cache: dict[str, float] = {}
+        self._pending_delete: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="Filter models...", id="catalog-search")
-        yield Static(f"Sort: {_SORT_LABELS[self._current_sort]}", id="sort-label")
+        yield Static(f"Sort: {_SORT_LABELS[self._current_sort]}", id="sort-label", shrink=True)
         with TabbedContent(*TASK_TABS, id="catalog-tabs"):
             for tab_label in TASK_TABS:
                 with TabPane(tab_label, id=f"cat-{tab_label.lower()}"):
                     yield ListView(id=f"catlist-{tab_label.lower()}")
+        yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         yield Footer()
+        yield NavBar(id="global-nav-bar")
 
     def on_mount(self) -> None:
+        self.query_one("#catalog-search", Input).display = False
         self._refresh_lists()
         self._fetch_hf_models()
         self._fetch_remote_models()
+
+    def action_focus_search(self) -> None:
+        """Focus the filter input - bound to / key."""
+        filter_input = self.query_one("#catalog-search", Input)
+        filter_input.display = True
+        filter_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter models when input changes."""
+        if event.input.id == "catalog-search":
+            self._refresh_lists()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Close filter on Enter."""
+        if event.input.id == "catalog-search":
+            event.input.display = False
+            tabs = self.query_one("#catalog-tabs", TabbedContent)
+            active_tab = tabs.active or "cat-all"
+            tab_name = active_tab.replace("cat-", "")
+            with contextlib.suppress(Exception):
+                self.query_one(f"#catlist-{tab_name}", ListView).focus()
 
     @work(thread=True)
     def _fetch_hf_models(self) -> list[CatalogModel]:
@@ -195,10 +282,6 @@ class CatalogScreen(Screen[None]):
                 self._size_cache[repo] = size_gb
                 self._update_highlighted_detail()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "catalog-search":
-            self._refresh_lists()
-
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self._hf_offset = 0
         self._hf_models = []
@@ -216,36 +299,49 @@ class CatalogScreen(Screen[None]):
             lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
             lv.clear()
 
-            featured = _filter_catalog(self._featured, task, search)
+            families = _filter_families(self._families, task, search)
             hf = _filter_catalog(self._hf_models, task, search)
             remote = _filter_remote(self._remote_models, task, search)
 
-            if featured:
-                lv.append(ListItem(Label("★ FEATURED", classes="section-header")))
-                for m in featured:
-                    lv.append(ModelRow(m))
+            if families:
+                lv.append(ListItem(Label(msg.CATALOG_FEATURED_HEADER, classes="section-header")))
+                for fam in families:
+                    lv.append(ListItem(Label(_format_family_header(fam), classes="section-header")))
+                    for v in fam.variants:
+                        lv.append(VariantRow(v, fam))
 
             if hf:
-                grouped = _group_by_size(sorted(hf, key=lambda x: x.downloads, reverse=True))
-                for group_label, group_models in grouped:
-                    lv.append(
-                        ListItem(Label(f"HUGGINGFACE — {group_label}", classes="section-header"))
-                    )
-                    for m in group_models:
-                        lv.append(ModelRow(m))
+                hf_families = _group_hf_by_family(
+                    sorted(hf, key=lambda x: x.downloads, reverse=True)
+                )
+                for fam in hf_families:
+                    header = msg.CATALOG_HF_HEADER.format(name=_format_family_header(fam))
+                    lv.append(ListItem(Label(header, classes="section-header")))
+                    for v in fam.variants:
+                        lv.append(VariantRow(v, fam))
 
                 if self._hf_has_more and not search:
                     lv.append(LoadMoreRow())
+            elif tab_label not in _HF_BROWSE_TASKS and not search:
+                lv.append(ListItem(Label(msg.CATALOG_HF_CHAT_ONLY)))
 
             if remote:
-                lv.append(ListItem(Label("INSTALLED (Remote)", classes="section-header")))
+                provider = remote[0].provider
+                lv.append(
+                    ListItem(
+                        Label(
+                            msg.CATALOG_INSTALLED_HEADER.format(provider=provider),
+                            classes="section-header",
+                        )
+                    )
+                )
                 for rm in remote:
                     lv.append(RemoteRow(rm))
 
-            if not featured and not remote and not hf:
-                lv.append(ListItem(Label("No models match your filters.")))
+            if not families and not remote and not hf:
+                lv.append(ListItem(Label(msg.CATALOG_NO_MATCH)))
 
-        n_featured = len(self._featured)
+        n_featured = sum(len(f.variants) for f in self._families)
         n_hf = len(self._hf_models)
         n_remote = len(self._remote_models)
         total = n_featured + n_hf + n_remote
@@ -261,12 +357,14 @@ class CatalogScreen(Screen[None]):
         if isinstance(item, LoadMoreRow):
             self._load_more()
             return
-        if isinstance(item, ModelRow):
+        if isinstance(item, VariantRow):
+            self._install_variant(item.variant, item.family)
+        elif isinstance(item, ModelRow):
             self._install_model(item.model)
         elif isinstance(item, RemoteRow):
             cfg.chat_model = item.remote_model.name
-            self.notify(f"Using {item.remote_model.name} (remote)")
-            self.app.title = f"lilbee — {item.remote_model.name}"
+            self.notify(msg.CATALOG_USING_REMOTE.format(name=item.remote_model.name))
+            self.app.title = f"lilbee \u2014 {item.remote_model.name}"
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         self._update_highlighted_detail(event.item)
@@ -276,7 +374,6 @@ class CatalogScreen(Screen[None]):
         detail = self.query_one("#model-detail", Static)
 
         if item is None:
-            # Re-update for the currently highlighted item (after size fetch)
             for tab_label in TASK_TABS:
                 lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
                 if lv.highlighted_child:
@@ -285,22 +382,30 @@ class CatalogScreen(Screen[None]):
             if item is None:
                 return
 
-        if isinstance(item, ModelRow):
+        if isinstance(item, VariantRow):
+            v = item.variant
+            fam = item.family
+            size = _format_size_mb(v.size_mb)
+            rec = " (recommended)" if v.recommended else ""
+            detail.update(
+                f"{fam.name} {v.param_count} \u2014 {fam.description}\n"
+                f"Task: {fam.task}  Quant: {v.quant}  Size: {size}{rec}  Repo: {v.hf_repo}"
+            )
+        elif isinstance(item, ModelRow):
             m = item.model
             cached = self._size_cache.get(m.hf_repo)
             size_gb = cached if cached is not None else m.size_gb
             size = f"{size_gb:.1f} GB" if size_gb > 0 else "fetching..."
             params = _parse_param_label(m.name)
             detail.update(
-                f"{m.name} — {m.description}\n"
+                f"{m.name} \u2014 {m.description}\n"
                 f"Task: {m.task}  Params: {params}  Size: {size}  Repo: {m.hf_repo}"
             )
-            # Lazy-load file size if unknown and not cached
             if m.size_gb <= 0 and m.hf_repo not in self._size_cache:
                 self._fetch_model_size(m.hf_repo)
         elif isinstance(item, RemoteRow):
             rm = item.remote_model
-            detail.update(f"{rm.name} — {rm.task}  Family: {rm.family}  {rm.parameter_size}")
+            detail.update(f"{rm.name} \u2014 {rm.task}  Family: {rm.family}  {rm.parameter_size}")
         else:
             detail.update("")
 
@@ -326,20 +431,87 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = len(new_models) >= _HF_PAGE_SIZE
         return new_models
 
-    def _install_model(self, model: CatalogModel) -> None:
-        from lilbee.model_manager import get_model_manager
+    def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
+        """Convert a variant back to a CatalogModel and trigger install."""
+        entry = CatalogModel(
+            name=f"{family.name} {variant.param_count}",
+            hf_repo=variant.hf_repo,
+            gguf_filename=variant.filename,
+            size_gb=variant.size_mb / 1024,
+            min_ram_gb=max(2.0, (variant.size_mb / 1024) * 1.5),
+            description=family.description,
+            featured=True,
+            downloads=0,
+            task=family.task,
+        )
+        self._install_model(entry)
 
-        manager = get_model_manager()
-        if manager.is_installed(model.name):
-            self.notify(f"{model.name} is already installed")
+    def _install_model(self, model: CatalogModel) -> None:
+        from lilbee.catalog import _resolve_filename
+
+        try:
+            filename = _resolve_filename(model)
+            dest = cfg.models_dir / filename
+            if dest.exists():
+                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.name))
+                return
+        except Exception:
+            pass  # Can't resolve filename -- proceed with download
+
+        self._enqueue_download(model)
+
+    def _enqueue_download(self, model: CatalogModel) -> None:
+        """Enqueue a model download in the ChatScreen's TaskBar."""
+        task_bar = getattr(self.app, "_task_bar", None)
+        if task_bar is None:
+            self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
 
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+        task_id = task_bar.add_task(f"Downloading {model.name}", "download")
+        task_bar.queue.advance()
+        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
+        self._run_download(model, task_id, task_bar)
 
-        self.app.push_screen(DownloadModal(model))
+    @work(thread=True)
+    def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
+        """Download a model in a background thread, reporting to TaskBar."""
+        import time
 
-    def action_focus_search(self) -> None:
-        self.query_one("#catalog-search", Input).focus()
+        from lilbee.catalog import download_model
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        bar: TaskBar = task_bar  # type: ignore[assignment]
+
+        try:
+            last_update = 0.0
+
+            def on_progress(downloaded: int, total: int) -> None:
+                nonlocal last_update
+                now = time.monotonic()
+                if now - last_update < 0.25:
+                    return
+                last_update = now
+                if total > 0:
+                    pct = min(int(downloaded * 100 / total), 100)
+                    mb_done = downloaded / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    self.app.call_from_thread(
+                        bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
+                    )
+
+            download_model(model, on_progress=on_progress)
+            self.app.call_from_thread(bar.complete_task, task_id)
+            self.app.call_from_thread(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
+        except PermissionError:
+            detail = msg.CATALOG_GATED_REPO.format(name=model.name)
+            log.warning("Gated repo: %s", model.hf_repo)
+            self.app.call_from_thread(bar.fail_task, task_id, detail)
+            self.app.call_from_thread(self.notify, detail, severity="warning")
+        except Exception:
+            log.warning("Download failed for %s", model.name, exc_info=True)
+            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.name)
+            self.app.call_from_thread(bar.fail_task, task_id, detail)
+            self.app.call_from_thread(self.notify, detail, severity="error")
 
     def action_pop_screen(self) -> None:
         self.app.pop_screen()
@@ -351,39 +523,136 @@ class CatalogScreen(Screen[None]):
         self._current_sort = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._refresh_lists()
 
-    def action_page_down(self) -> None:
+    def action_delete_model(self) -> None:
+        """Delete an installed model. First press asks for confirmation, second confirms."""
+        if isinstance(self.focused, Input):
+            return
+        model_name = self._get_highlighted_model_name()
+        if model_name is None:
+            self.notify(msg.CATALOG_SELECT_TO_DELETE, severity="warning")
+            return
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(model_name):
+            self.notify(msg.CATALOG_NOT_INSTALLED.format(name=model_name), severity="warning")
+            return
+
+        if self._pending_delete == model_name:
+            self._pending_delete = None
+            self._run_delete(model_name)
+        else:
+            self._pending_delete = model_name
+            self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
+
+    def _get_highlighted_model_name(self) -> str | None:
+        """Return the model name of the currently highlighted row, or None."""
         for tab_label in TASK_TABS:
             lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                for _ in range(10):
-                    lv.action_cursor_down()
-                return
+            item = lv.highlighted_child
+            if item is None:
+                continue
+            if isinstance(item, VariantRow):
+                return f"{item.family.name}:{item.variant.param_count}"
+            if isinstance(item, RemoteRow):
+                return item.remote_model.name
+            if isinstance(item, ModelRow):
+                return item.model.name
+        return None
+
+    @work(thread=True)
+    def _run_delete(self, model_name: str) -> None:
+        """Remove a model in a background thread."""
+        try:
+            removed = get_model_manager().remove(model_name)
+            if removed:
+                self.app.call_from_thread(self.notify, msg.CATALOG_DELETED.format(name=model_name))
+                self.app.call_from_thread(self._refresh_after_delete)
+            else:
+                self.app.call_from_thread(
+                    self.notify,
+                    msg.CATALOG_DELETE_FAILED.format(error=model_name),
+                    severity="error",
+                )
+        except Exception as exc:
+            log.warning("Delete failed for %s", model_name, exc_info=True)
+            self.app.call_from_thread(
+                self.notify, msg.CATALOG_DELETE_FAILED.format(error=exc), severity="error"
+            )
+
+    def _refresh_after_delete(self) -> None:
+        """Re-fetch remote models and refresh lists after deletion."""
+        self._refresh_lists()
+        self._fetch_remote_models()
+
+    def action_page_down(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            for _ in range(10):
+                lv.action_cursor_down()
 
     def action_page_up(self) -> None:
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                for _ in range(10):
-                    lv.action_cursor_up()
-                return
-
-    def key_j(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
-                lv.action_cursor_down()
-                return
-
-    def key_k(self) -> None:
-        if isinstance(self.focused, Input):
-            return
-        for tab_label in TASK_TABS:
-            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
-            if lv.has_focus:
+        lv = self._focused_list()
+        if lv:
+            for _ in range(10):
                 lv.action_cursor_up()
-                return
+
+    def _focused_list(self) -> ListView | None:
+        """Return the focused ListView, or None."""
+        if isinstance(self.focused, Input):
+            return None
+        for tab_label in TASK_TABS:
+            lv = self.query_one(f"#catlist-{tab_label.lower()}", ListView)
+            if lv.has_focus:
+                return lv
+        return None
+
+    def action_cursor_down(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.action_cursor_up()
+
+    def action_jump_top(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            lv.index = 0
+
+    def action_jump_bottom(self) -> None:
+        lv = self._focused_list()
+        if lv:
+            count = len(lv.children)
+            if count > 0:
+                lv.index = count - 1
+
+    def _activate_tab(self, index: int) -> None:
+        """Switch to tab by zero-based index."""
+        tabs = self.query_one("#catalog-tabs", TabbedContent)
+        tab_id = f"cat-{TASK_TABS[index].lower()}"
+        tabs.active = tab_id
+
+    def action_activate_tab_0(self) -> None:
+        self._activate_tab(0)
+
+    def action_activate_tab_1(self) -> None:
+        self._activate_tab(1)
+
+    def action_activate_tab_2(self) -> None:
+        self._activate_tab(2)
+
+    def action_activate_tab_3(self) -> None:
+        self._activate_tab(3)
+
+    def key_left(self) -> None:
+        """Navigate to previous view instead of switching tabs."""
+        self.app.action_nav_prev()
+
+    def key_right(self) -> None:
+        """Navigate to next view instead of switching tabs."""
+        self.app.action_nav_next()
 
 
 def _filter_catalog(
@@ -412,12 +681,64 @@ def _filter_remote(models: list[RemoteModel], task: str | None, search: str) -> 
     return filtered
 
 
+def _filter_families(
+    families: list[ModelFamily], task: str | None, search: str
+) -> list[ModelFamily]:
+    """Filter families by task and search text, preserving only matching variants."""
+    filtered: list[ModelFamily] = []
+    for fam in families:
+        if task and fam.task != task:
+            continue
+        if search:
+            matches_family = search in fam.name.lower() or search in fam.description.lower()
+            if matches_family:
+                filtered.append(fam)
+                continue
+            matching = tuple(
+                v
+                for v in fam.variants
+                if search in v.hf_repo.lower()
+                or search in v.param_count.lower()
+                or search in v.quant.lower()
+            )
+            if matching:
+                filtered.append(
+                    ModelFamily(
+                        name=fam.name,
+                        task=fam.task,
+                        description=fam.description,
+                        variants=matching,
+                    )
+                )
+        else:
+            filtered.append(fam)
+    return filtered
+
+
 def _group_by_size(models: list[CatalogModel]) -> list[tuple[str, list[CatalogModel]]]:
     """Group models by inferred parameter size."""
     groups: dict[str, list[CatalogModel]] = {}
     for m in models:
         category = _parse_param_size(m.name)
+        if category == "unknown":
+            category = "Other"
         groups.setdefault(category, []).append(m)
 
-    order = ["Small (≤3B)", "Medium (3-8B)", "Large (8-30B)", "Extra Large (30B+)", "unknown"]
+    order = ["Small (\u22643B)", "Medium (3-8B)", "Large (8-30B)", "Extra Large (30B+)", "Other"]
     return [(label, groups[label]) for label in order if label in groups]
+
+
+def _group_hf_by_family(models: list[CatalogModel]) -> list[ModelFamily]:
+    """Group HF models into families using the same logic as featured models.
+
+    Infers task from each model's task field. Groups by family name extracted
+    from the display name.
+    """
+    task_groups: dict[str, list[CatalogModel]] = {}
+    for m in models:
+        task_groups.setdefault(m.task, []).append(m)
+
+    families: list[ModelFamily] = []
+    for task, group in task_groups.items():
+        families.extend(_build_families(tuple(group), task))
+    return families

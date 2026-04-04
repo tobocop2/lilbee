@@ -41,6 +41,9 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
+ChatMessage = dict[str, str]
+
+
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""
 
@@ -50,7 +53,7 @@ class LLMProvider(Protocol):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[ChatMessage],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,

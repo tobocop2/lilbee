@@ -220,10 +220,11 @@ Two query-time effects:
 - **Cost**: depends on model and candidate count. ~200-500ms for 20 candidates with a small cross-encoder.
 
 #### Adaptive Distance Threshold
-**Always on.** When the initial cosine distance filter returns too few results, the threshold is widened step by step until enough results are found or a safety cap is reached.
+**Off by default.** When enabled, if the initial cosine distance filter returns too few results, the threshold is widened step by step until enough results are found or a safety cap is reached.
 
+- **Controlled by**: `LILBEE_ADAPTIVE_THRESHOLD` (default: `false`)
 - **Inspired by**: grantflow ([grantflow-ai/grantflow](https://github.com/grantflow-ai/grantflow)) — adaptive retrieval with recursive threshold retry
-- **Default step**: 0.2 (widens from initial `max_distance` in increments)
+- **Default step**: 0.2 (widens from initial `max_distance` in increments, configurable via `LILBEE_ADAPTIVE_THRESHOLD_STEP`)
 - **Safety cap**: 20 iterations maximum to prevent runaway loops
 - **When it helps**: novel queries or small knowledge bases where strict distance thresholds would return empty results.
 
@@ -290,7 +291,8 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_CHAT_MODEL` | `qwen3:8b` | LLM used for chat and ask | Must be installed locally or available via litellm backend |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-embed-text` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
-| `LILBEE_MAX_DISTANCE` | `0.7` | Cosine distance cutoff for vector results | Lower values are stricter — may return fewer results but higher precision |
+| `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter — may return fewer results but higher precision. Set to 1.0 to disable filtering. |
+| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Enable adaptive threshold widening | When true, automatically widens distance threshold if too few results found. Useful for ensuring minimum result count. |
 | `LILBEE_CHUNK_SIZE` | `512` | Target tokens per chunk | Changing requires `lilbee rebuild`. Smaller = more precise retrieval, larger = more context per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks | Changing requires `lilbee rebuild`. Prevents information loss at chunk boundaries |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | System prompt sent to the LLM | Override per-project for domain-specific behavior |
@@ -303,7 +305,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks returned per source document | Lower = more diverse sources. Higher = deeper coverage of a single document. |
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | How many extra candidates to retrieve for MMR | Higher = better diversity selection but slower. 3x is empirically effective. |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | Number of LLM-generated query variants | Each variant requires an embedding call. Set to 0 to disable expansion entirely for fastest search. |
-| `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | Distance filter widening increment | Smaller = more granular adaptation but more filter iterations |
+| `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | Distance filter widening increment | Only used when `LILBEE_ADAPTIVE_THRESHOLD=true`. Smaller = more granular adaptation but more filter iterations |
 | `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 score above which expansion is skipped | 90th percentile of sigmoid-normalized BM25 scores. Calibrate per-corpus. |
 | `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Min score gap (top-1 minus top-2) to skip expansion | Approximately 1 std dev of typical score spread. Ensures the match isn't ambiguous. |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Validate expansion variants for drift | Prevents hallucinated variants at the cost of potentially filtering valid creative expansions |

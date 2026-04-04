@@ -1,5 +1,6 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
+import sys
 import threading
 import tomllib
 from pathlib import Path
@@ -39,6 +40,8 @@ def save(data_root: Path, settings: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{_escape_toml_string(v)}"\n' for k, v in sorted(settings.items())]
     path.write_text("".join(lines))
+    if sys.platform != "win32":
+        path.chmod(0o600)
 
 
 def get(data_root: Path, key: str) -> str | None:
@@ -59,4 +62,21 @@ def delete_value(data_root: Path, key: str) -> None:
     with _settings_lock:
         current = load(data_root)
         current.pop(key, None)
+        save(data_root, current)
+
+
+def update_values(data_root: Path, updates: dict[str, str]) -> None:
+    """Batch update multiple keys in config.toml (single write)."""
+    with _settings_lock:
+        current = load(data_root)
+        current.update(updates)
+        save(data_root, current)
+
+
+def delete_values(data_root: Path, keys: list[str]) -> None:
+    """Batch delete multiple keys from config.toml (single write)."""
+    with _settings_lock:
+        current = load(data_root)
+        for key in keys:
+            current.pop(key, None)
         save(data_root, current)
