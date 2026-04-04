@@ -55,8 +55,22 @@ class TaskQueue:
         self._tasks: dict[str, Task] = {}
         self._queues: dict[str, list[str]] = {}
         self._active_ids: dict[str, str] = {}
-        self._on_change = on_change
+        self._on_change: list[Callable[[], None]] = []
+        if on_change:
+            self._on_change.append(on_change)
         self._history: list[Task] = []
+
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Subscribe to task queue changes. Callback is called on any queue update."""
+        with self._lock:
+            if callback not in self._on_change:
+                self._on_change.append(callback)
+
+    def unsubscribe(self, callback: Callable[[], None]) -> None:
+        """Unsubscribe from task queue changes."""
+        with self._lock:
+            if callback in self._on_change:
+                self._on_change.remove(callback)
 
     @property
     def active_task(self) -> Task | None:
@@ -119,7 +133,8 @@ class TaskQueue:
             if task:
                 task.progress = progress
                 task.detail = detail
-        self._notify()
+            # Notify while still holding lock to ensure consistency
+            self._notify()
 
     def complete_task(self, task_id: str) -> None:
         """Mark a task as done and remove it from tracking."""
@@ -201,5 +216,5 @@ class TaskQueue:
             self._queues[task_type] = [tid for tid in queue if tid != task_id]
 
     def _notify(self) -> None:
-        if self._on_change:
-            self._on_change()
+        for callback in self._on_change:
+            callback()

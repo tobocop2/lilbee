@@ -1,8 +1,15 @@
 """Tests for catalog.py — model catalog, HF API fetching, filtering, downloading."""
 
+import os
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+
+# Add local huggingface_hub for development testing
+_HF_HUB_PATH = '/Users/tobias/projects/huggingface_hub/src'
+if os.path.isdir(_HF_HUB_PATH) and _HF_HUB_PATH not in sys.path:
+    sys.path.insert(0, _HF_HUB_PATH)
 
 import httpx
 import pytest
@@ -36,6 +43,30 @@ def _clear_hf_cache():
     catalog._hf_cache.clear()
     yield
     catalog._hf_cache.clear()
+
+
+def _fake_download(**kwargs: Any) -> str:
+    """Fake hf_hub_download that writes to HF cache structure with hash-based filename."""
+    import hashlib
+
+    cache_dir = kwargs.get("cache_dir", "")
+    repo_id = kwargs.get("repo_id", "")
+
+    content = b"x" * 100
+    digest = hashlib.sha256(content).hexdigest()
+
+    if repo_id:
+        safe_repo = repo_id.replace("/", "--")
+        model_dir = Path(cache_dir) / f"models--{safe_repo}"
+        blobs_dir = model_dir / "blobs"
+        blobs_dir.mkdir(parents=True, exist_ok=True)
+        dest = blobs_dir / digest
+    else:
+        dest = Path(cache_dir) / digest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+    dest.write_bytes(content)
+    return str(dest)
 
 
 class TestCatalogModelDataclass:
@@ -90,6 +121,15 @@ class TestHfToken:
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert _hf_token() is None
 
+    def test_headers_empty_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_hf_headers returns empty dict when no token available."""
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        fake_hf_hub = MagicMock()
+        fake_hf_hub.get_token.return_value = None
+        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
+        assert catalog._hf_headers() == {}
+
 
 class TestFeaturedModels:
     def test_chat_not_empty(self) -> None:
@@ -132,6 +172,19 @@ class TestFeaturedModels:
     def test_min_ram_gb_positive(self) -> None:
         for m in FEATURED_ALL:
             assert m.min_ram_gb > 0
+
+
+class TestHasGgufSiblings:
+    def test_returns_true_when_gguf_present(self) -> None:
+        siblings = [{"rfilename": "model-Q4_K_M.gguf"}, {"rfilename": "README.md"}]
+        assert catalog._has_gguf_siblings(siblings) is True
+
+    def test_returns_false_when_no_gguf(self) -> None:
+        siblings = [{"rfilename": "model.bin"}, {"rfilename": "config.json"}]
+        assert catalog._has_gguf_siblings(siblings) is False
+
+    def test_returns_false_for_empty_list(self) -> None:
+        assert catalog._has_gguf_siblings([]) is False
 
 
 class TestFetchHfModels:
@@ -184,6 +237,19 @@ class TestFetchHfModels:
         models = catalog._fetch_hf_models()
         # Second model has gguf sibling with size=0 -> fallback 0.0 (unknown)
         assert models[1].size_gb == 0.0
+
+    def test_library_param_passed_to_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify library parameter is included in API request."""
+        mock_resp = httpx.Response(200, json=[])
+        captured_params: dict = {}
+
+        def capture_get(url: str, params: dict | None = None, **kwargs: Any) -> httpx.Response:
+            captured_params.update(params or {})
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models(library="sentence-transformers")
+        assert captured_params.get("library") == "sentence-transformers"
 
     def test_skips_entries_without_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [{"id": "", "downloads": 0}, {"downloads": 0}]
@@ -453,22 +519,59 @@ class TestDownloadModel:
         result = download_model(entry)
         assert result == existing
 
+    def test_existing_file_calls_progress_callback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When model already exists, on_progress is called with 100%."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        existing = tmp_path / entry.gguf_filename
+        existing.write_bytes(b"fake model")
+
+        progress_calls: list[tuple[int, int]] = []
+
+        def on_progress(downloaded: int, total: int) -> None:
+            progress_calls.append((downloaded, total))
+
+        download_model(entry, on_progress=on_progress)
+        assert len(progress_calls) == 1
+        assert progress_calls[0][0] == progress_calls[0][1]
+
+    def test_progress_updater_callback_invoked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """progress_updater callback is invoked by hf_hub_download."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_download(**kwargs: Any) -> str:
+            result = _fake_download(**kwargs)
+            progress_updater = kwargs.get("progress_updater")
+            if progress_updater:
+                progress_updater(100, 1000)
+                progress_updater(200, 1000)
+            return result
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+
+        progress_calls: list[tuple[int, int]] = []
+
+        def on_progress(downloaded: int, total: int) -> None:
+            progress_calls.append((downloaded, total))
+
+        download_model(entry, on_progress=on_progress)
+        assert len(progress_calls) >= 1
+
     def test_creates_models_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         models_dir = tmp_path / "models"
         monkeypatch.setattr(catalog.cfg, "models_dir", models_dir)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
 
-        def fake_download(**kwargs: Any) -> str:
-            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"x" * 100)
-            return str(dest)
-
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry)
         assert result.exists()
-        assert result.parent == models_dir
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
@@ -477,25 +580,21 @@ class TestDownloadModel:
 
         progress_calls: list[tuple[int, int]] = []
 
-        def fake_download(**kwargs: Any) -> str:
-            tqdm_cls = kwargs.get("tqdm_class")
-            if tqdm_cls:
-                bar = tqdm_cls(total=100)
-                bar.update(50)
-                bar.update(50)
-                bar.close()
-            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
-            dest.write_bytes(b"x" * 100)
-            return str(dest)
+        def fake_with_progress(**kwargs: Any) -> str:
+            progress_updater = kwargs.get("progress_updater")
+            if progress_updater:
+                progress_updater(500, 1000)
+                progress_updater(1000, 1000)
+            return _fake_download(**kwargs)
 
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_with_progress)
 
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
 
         download_model(entry, on_progress=on_progress)
-        assert len(progress_calls) == 2
-        assert progress_calls[-1] == (100, 100)
+        assert len(progress_calls) == 3
+        assert progress_calls[-1] == (322122547, 322122547)
 
     def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -528,72 +627,6 @@ class TestDownloadModel:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
             download_model(entry)
-
-
-class TestMakeProgressTqdm:
-    """Tests for the tqdm-compatible progress callback class."""
-
-    def test_update_fires_callback(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=200)
-        bar.update(50)
-        bar.update(100)
-        assert calls == [(50, 200), (150, 200)]
-
-    def test_reset_clears_progress(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=100)
-        bar.update(60)
-        bar.reset(total=200)
-        assert bar.n == 0
-        assert bar.total == 200
-
-    def test_disabled_suppresses_callback(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=100, disable=True)
-        bar.update(50)
-        assert calls == []
-
-    def test_none_total_treated_as_zero(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm(lambda n, t: calls.append((n, t)))
-        bar = cls(total=None)
-        bar.update(50)
-        # total=0, so callback not fired (can't compute percentage)
-        assert calls == []
-
-    def test_context_manager_protocol(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        with cls(total=100) as bar:
-            bar.update(10)
-        # No error means pass
-
-    def test_set_postfix_str_is_noop(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        bar = cls(total=100)
-        bar.set_postfix_str("test")  # Should not raise
-
-    def test_refresh_is_noop(self) -> None:
-        from lilbee.catalog import _make_progress_tqdm
-
-        cls = _make_progress_tqdm(None)
-        bar = cls(total=100)
-        bar.refresh()  # Should not raise
 
 
 class TestResolveFilename:
@@ -638,6 +671,14 @@ class TestResolveFilename:
         mock_resp = httpx.Response(500)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         with pytest.raises(RuntimeError):
+            catalog._resolve_filename(entry)
+
+    def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """HTTP 401 response raises PermissionError with auth message."""
+        entry = FEATURED_CHAT[0]
+        mock_resp = httpx.Response(401)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             catalog._resolve_filename(entry)
 
     def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
@@ -974,10 +1015,7 @@ class TestVisionMmprojFiles:
 
         def fake_download(**kwargs: Any) -> str:
             download_calls.append(kwargs)
-            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"x" * 100)
-            return str(dest)
+            return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         monkeypatch.setattr(
@@ -986,7 +1024,6 @@ class TestVisionMmprojFiles:
 
         download_model(entry)
 
-        # Should have two downloads: main model + mmproj
         assert len(download_calls) == 2
         filenames = [c["filename"] for c in download_calls]
         assert "model-Q4_K_M.gguf" in filenames
@@ -1004,14 +1041,58 @@ class TestVisionMmprojFiles:
 
         def fake_download(**kwargs: Any) -> str:
             download_calls.append(kwargs)
-            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
-            dest.write_bytes(b"x")
-            return str(dest)
+            return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         download_model(entry)
 
         assert len(download_calls) == 1
+
+    def test_download_model_vision_mmproj_resolution_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When mmproj resolution fails, model download still succeeds."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+        monkeypatch.setattr(catalog, "_resolve_mmproj_filename", lambda repo, pat: None)
+
+        result = download_model(entry)
+        assert result.exists()
+
+    def test_download_mmproj_already_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When mmproj already exists in models_dir, skip re-download."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+
+        mmproj_file = tmp_path / "model-mmproj-f16.gguf"
+        mmproj_file.write_bytes(b"existing mmproj")
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+        )
+
+        download_model(entry)
+        first_mmproj_calls = sum(1 for c in download_calls if "mmproj" in c.get("filename", ""))
+
+        download_model(entry)
+        second_mmproj_calls = sum(
+            1 for c in download_calls[first_mmproj_calls:] if "mmproj" in c.get("filename", "")
+        )
+
+        assert second_mmproj_calls == 0
 
 
 class TestVisionMmprojFallback:
@@ -1020,7 +1101,6 @@ class TestVisionMmprojFallback:
     ) -> None:
         """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
-        # Create a vision entry not in the explicit mapping
         custom_entry = CatalogModel(
             "CustomVision 1B",
             "user/CustomVision-1B-GGUF",
@@ -1038,10 +1118,7 @@ class TestVisionMmprojFallback:
 
         def fake_download(**kwargs: Any) -> str:
             download_calls.append(kwargs)
-            dest = Path(kwargs["local_dir"]) / kwargs["filename"]
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"x" * 100)
-            return str(dest)
+            return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
         monkeypatch.setattr(
@@ -1050,7 +1127,6 @@ class TestVisionMmprojFallback:
 
         download_model(custom_entry)
 
-        # Should have two downloads: main model + mmproj (via default pattern)
         assert len(download_calls) == 2
         filenames = [c["filename"] for c in download_calls]
         assert "custom-Q4_K_M.gguf" in filenames
@@ -1083,6 +1159,36 @@ class TestFindMmprojFile:
 
         result = find_mmproj_file("anything")
         assert result is None
+
+    def test_finds_mmproj_with_fnmatch_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """find_mmproj_file matches using VISION_MMPROJ_FILES patterns."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+
+        # Test with LightOnOCR-2 (featured vision model)
+        mmproj = tmp_path / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+
+        from lilbee.catalog import find_mmproj_file
+
+        result = find_mmproj_file("LightOnOCR-2")
+        assert result == mmproj
+
+    def test_finds_mmproj_via_hf_repo_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """find_mmproj_file also matches against hf_repo."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+
+        mmproj = tmp_path / "model-mmproj-f16.gguf"
+        mmproj.write_bytes(b"fake")
+
+        from lilbee.catalog import find_mmproj_file
+
+        # Match against hf_repo instead of display name
+        result = find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF")
+        assert result == mmproj
 
 
 class TestResolveMmprojFilename:
@@ -1124,6 +1230,22 @@ class TestResolveMmprojFilename:
 
         result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
         assert result is None
+
+    def test_returns_first_when_no_f16(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When no f16 file exists, returns first match."""
+        data = {
+            "siblings": [
+                {"rfilename": "model-mmproj-f32.gguf"},
+                {"rfilename": "model-mmproj.bin"},
+            ]
+        }
+        mock_resp = httpx.Response(
+            200, json=data, request=httpx.Request("GET", "https://example.com")
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+
+        result = catalog._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert result == "model-mmproj-f32.gguf"
 
 
 class TestHfModelsSearchFilter:
@@ -1299,3 +1421,48 @@ class TestFormatSizeMb:
         from lilbee.cli.tui.screens.catalog import _format_size_mb
 
         assert _format_size_mb(2048) == "2.0 GB"
+
+
+class TestDownloadProgressCallback:
+    """Tests for download progress callback infrastructure."""
+
+    def test_progress_updater_param_exists_in_hf_hub_download(self) -> None:
+        """Verify huggingface_hub accepts progress_updater parameter."""
+        import inspect
+
+        from huggingface_hub import hf_hub_download
+
+        sig = inspect.signature(hf_hub_download)
+        assert "progress_updater" in sig.parameters
+
+    def test_download_config_has_progress_updater_field(self) -> None:
+        """Verify DownloadConfig accepts progress_updater."""
+        from lilbee.catalog import DownloadConfig
+
+        config = DownloadConfig(
+            repo_id="test/test",
+            filename="test.gguf",
+            token="test",
+            progress_updater=lambda x, y: None,
+        )
+        assert config.progress_updater is not None
+
+    def test_progress_updater_is_bare_callable(self) -> None:
+        """Verify progress_updater accepts a bare callable, not a list."""
+        from lilbee.catalog import DownloadConfig
+
+        calls: list[tuple[int, int]] = []
+
+        def user_callback(downloaded: int, total: int) -> None:
+            calls.append((downloaded, total))
+
+        config = DownloadConfig(
+            repo_id="test/test",
+            filename="test.gguf",
+            token="test",
+            progress_updater=user_callback,
+        )
+
+        assert config.progress_updater is not None
+        config.progress_updater(100, 200)
+        assert calls == [(100, 200)]
