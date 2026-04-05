@@ -975,6 +975,51 @@ def wiki_status(
         console.print("  Lint: all clean")
 
 
+@wiki_app.command(name="prune")
+def wiki_prune(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Prune stale and orphaned wiki pages."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.services import get_services
+    from lilbee.wiki_prune import prune_wiki
+
+    report = prune_wiki(get_services().store)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_prune",
+                "records": [
+                    {
+                        "wiki_source": r.wiki_source,
+                        "action": r.action.value,
+                        "reason": r.reason,
+                    }
+                    for r in report.records
+                ],
+                "archived": report.archived_count,
+                "flagged": report.flagged_count,
+            }
+        )
+        return
+
+    if not report.records:
+        console.print("No pages pruned.")
+        return
+
+    table = Table(title="Wiki Prune Results")
+    table.add_column("Page", style=theme.ACCENT)
+    table.add_column("Action")
+    table.add_column("Reason")
+    for rec in report.records:
+        action_style = theme.ERROR if rec.action.value == "archived" else theme.WARNING
+        action_text = f"[{action_style}]{rec.action.value}[/{action_style}]"
+        table.add_row(rec.wiki_source, action_text, rec.reason)
+    console.print(table)
+
+
 def _count_md_files(directory: Path) -> int:
     """Count markdown files in a directory."""
     if not directory.exists():

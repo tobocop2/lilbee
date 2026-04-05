@@ -188,4 +188,19 @@ async def wiki_generate_route(source: str) -> dict[str, Any]:
 async def wiki_prune_route() -> dict[str, Any]:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    return {"status": "not_implemented"}
+    from lilbee.services import get_services
+    from lilbee.wiki_prune import prune_wiki
+
+    report = prune_wiki(get_services().store)
+    return {
+        "records": [
+            {
+                "wiki_source": r.wiki_source,
+                "action": r.action.value,
+                "reason": r.reason,
+            }
+            for r in report.records
+        ],
+        "archived": report.archived_count,
+        "flagged": report.flagged_count,
+    }

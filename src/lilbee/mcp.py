@@ -323,6 +323,33 @@ def lilbee_wiki_status() -> dict:
     }
 
 
+@mcp.tool()
+def lilbee_wiki_prune() -> dict:
+    """Prune stale and orphaned wiki pages.
+
+    Archives pages whose sources are all deleted or whose concept cluster
+    dropped below 3 live sources. Flags pages with >50% stale citations
+    for regeneration.
+    """
+    from lilbee.services import get_services
+    from lilbee.wiki_prune import prune_wiki
+
+    report = prune_wiki(get_services().store)
+    return {
+        "command": "wiki_prune",
+        "records": [
+            {
+                "wiki_source": r.wiki_source,
+                "action": r.action.value,
+                "reason": r.reason,
+            }
+            for r in report.records
+        ],
+        "archived": report.archived_count,
+        "flagged": report.flagged_count,
+    }
+
+
 def clean(result: SearchChunk) -> dict[str, object]:
     """Convert SearchChunk to a JSON-friendly dict."""
     return result.model_dump(exclude={"vector"}, exclude_none=True)

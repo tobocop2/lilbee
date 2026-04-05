@@ -225,11 +225,14 @@ class TestWikiEnabled:
         assert body["status"] == "not_implemented"
         assert body["source"] == "test.txt"
 
-    async def test_prune_stub(self):
+    async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
         assert resp.status_code == 201
-        assert resp.json()["status"] == "not_implemented"
+        body = resp.json()
+        assert "records" in body
+        assert body["archived"] == 0
+        assert body["flagged"] == 0
 
 
 class TestFrontmatterParsing:
