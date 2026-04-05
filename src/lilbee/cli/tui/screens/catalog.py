@@ -646,11 +646,11 @@ class CatalogScreen(Screen[None]):
 
     def key_left(self) -> None:
         """Navigate to previous view instead of switching tabs."""
-        self.app.action_nav_prev()
+        self.app.action_nav_prev()  # type: ignore[attr-defined]  # LilbeeApp method
 
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
-        self.app.action_nav_next()
+        self.app.action_nav_next()  # type: ignore[attr-defined]  # LilbeeApp method
 
 
 def _matches_search(row: TableRow, search: str) -> bool:

@@ -328,8 +328,10 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
         embed_base = cfg.embedding_model.split(":")[0]
         models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
         if exclude_vision:
-            vision_names = {m.name for m in VISION_CATALOG}
-            models = [m for m in models if m not in vision_names]
+            vision_names = {m.name.lower() for m in VISION_CATALOG}
+            models = [
+                m for m in models if not any(vn in m.split(":")[0].lower() for vn in vision_names)
+            ]
         return models
     except Exception:
         return []

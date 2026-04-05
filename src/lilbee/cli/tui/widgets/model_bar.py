@@ -41,7 +41,7 @@ def _classify_installed_models() -> tuple[list[str], list[str], list[str]]:
 
 
 def _collect_native_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add native registry models to buckets."""
+    """Add native registry models to buckets, with fallback for loose .gguf files."""
     try:
         from lilbee.registry import ModelRegistry
 
@@ -54,6 +54,14 @@ def _collect_native_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
             buckets.get(manifest.task, buckets["chat"]).append(name)
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
+    # Fallback: pick up loose .gguf files not covered by the registry
+    try:
+        for p in sorted(cfg.models_dir.glob("*.gguf")):
+            if p.is_file() and p.name not in seen and not _is_mmproj(p.name):
+                seen.add(p.name)
+                buckets["chat"].append(p.name)
+    except Exception:
+        log.debug("Could not scan models_dir for loose .gguf files", exc_info=True)
 
 
 def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
@@ -238,7 +246,7 @@ class ModelBar(Widget, can_focus=True):
             and hasattr(screen, "action_cancel_stream")
         )
         if can_cancel:
-            screen.action_cancel_stream()
+            screen.action_cancel_stream()  # type: ignore[attr-defined]  # runtime hasattr guard
 
         from lilbee.services import reset_services
 

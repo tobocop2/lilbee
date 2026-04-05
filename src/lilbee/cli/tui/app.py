@@ -60,6 +60,7 @@ class LilbeeApp(App[None]):
         self._auto_sync = auto_sync
         self._active_view = "Chat"
         self._theme_index = 0
+        self._last_quit_time: float = 0.0
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         self._task_bar = TaskBar(id="app-task-bar")
@@ -94,7 +95,7 @@ class LilbeeApp(App[None]):
         import time
 
         now = time.monotonic()
-        if hasattr(self, "_last_quit_time") and now - self._last_quit_time < 2.0:
+        if now - self._last_quit_time < 2.0:
             self._force_quit()
             return
         self._last_quit_time = now

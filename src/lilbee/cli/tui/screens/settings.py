@@ -48,7 +48,10 @@ def _get_hf_token_display() -> str:
             from huggingface_hub import get_token
 
             token = get_token() or ""
-    return "****" if token else "not set"
+    if not token:
+        return "not set"
+    visible = min(4, len(token))
+    return token[:visible] + "****"
 
 
 def _truncate(value: str) -> str:

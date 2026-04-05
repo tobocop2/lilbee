@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import ClassVar
 
 from textual import work
@@ -21,33 +22,52 @@ _STEP_CHAT = 1
 _STEP_EMBED = 2
 
 
-def _scan_installed_models() -> tuple[list[str], list[str]]:
-    """List installed models from the registry, split into chat vs embedding."""
+def _scan_installed_models(models_dir: Path | None = None) -> tuple[list[Path], list[Path]]:
+    """Scan for installed GGUF models, split into chat vs embedding.
+
+    Checks the registry first, then falls back to file scanning in models_dir.
+    """
+    target = models_dir or cfg.models_dir
+
+    # Registry-based scan
     try:
         from lilbee.registry import ModelRegistry
 
-        registry = ModelRegistry(cfg.models_dir)
-        chat: list[str] = []
-        embed: list[str] = []
+        registry = ModelRegistry(target)
+        chat: list[Path] = []
+        embed: list[Path] = []
         for m in registry.list_installed():
-            name = f"{m.name}:{m.tag}"
+            path = registry.resolve(f"{m.name}:{m.tag}")
             if m.task == "embedding":
-                embed.append(name)
+                embed.append(path)
             elif m.task == "chat":
-                chat.append(name)
-            # Skip vision and other types — not relevant for setup wizard
-        return sorted(chat), sorted(embed)
+                chat.append(path)
+        if chat or embed:
+            return sorted(chat), sorted(embed)
     except Exception:
+        pass
+
+    # Fallback: file scan
+    if not target.exists():
         return [], []
+    all_gguf = sorted(target.glob("*.gguf"))
+    embed_paths = [p for p in all_gguf if "embed" in p.name.lower()]
+    chat_paths = [p for p in all_gguf if "embed" not in p.name.lower()]
+    return chat_paths, embed_paths
 
 
 class _InstalledRow(ListItem):
-    def __init__(self, name: str) -> None:
+    def __init__(self, path: Path) -> None:
         super().__init__()
-        self.model_name = name
+        self.model_path = path
+        self.model_name = path.stem if isinstance(path, Path) else str(path)
 
     def compose(self) -> ComposeResult:
-        yield Static(f"  {self.model_name}  [installed]")
+        try:
+            size_mb = self.model_path.stat().st_size / (1024 * 1024)
+            yield Static(f"  {self.model_name}  ({size_mb:.0f} MB)  [installed]")
+        except OSError:
+            yield Static(f"  {self.model_name}  [installed]")
 
 
 class _CatalogRow(ListItem):
@@ -142,7 +162,7 @@ class SetupWizard(Screen[str | None]):
         try:
             from lilbee.catalog import download_model
 
-            last_update_time = 0
+            last_update_time: float = 0
             last_pct = -1
 
             def _on_progress(downloaded: int, total: int) -> None:
