@@ -9,14 +9,17 @@ from textual.app import ComposeResult
 from textual.content import Content
 
 from lilbee.cli.tui.pill import pill
+from lilbee.models import ModelTask
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
 
+MIDDLE_DOT = "\u00b7"
+
 _TASK_COLORS: dict[str, str] = {
-    "chat": "$primary",
-    "embedding": "$secondary",
-    "vision": "$warning",
+    ModelTask.CHAT: "$primary",
+    ModelTask.EMBEDDING: "$secondary",
+    ModelTask.VISION: "$warning",
 }
 
 
@@ -80,7 +83,7 @@ def _build_specs(params: str, quant: str, size: str) -> Content:
     parts = [p for p in (params, quant, size) if p and p != "--"]
     if not parts:
         return Content("--")
-    return Content(" \u00b7 ".join(parts))
+    return Content(f" {MIDDLE_DOT} ".join(parts))
 
 
 def _build_status(row: TableRow) -> Content | None:

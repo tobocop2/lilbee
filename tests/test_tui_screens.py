@@ -104,12 +104,6 @@ def _make_remote_model(
 ) -> RemoteModel:
     return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
 
-
-# ---------------------------------------------------------------------------
-# Pure function tests: catalog helpers
-# ---------------------------------------------------------------------------
-
-
 class TestParseParamLabel:
     def test_extracts_integer(self):
         assert _parse_param_label("qwen-8B-instruct") == "8B"
@@ -281,12 +275,6 @@ class TestRemoteToRow:
         rm = _make_remote_model(parameter_size="")
         row = _remote_to_row(rm)
         assert row.params == "--"
-
-
-# ---------------------------------------------------------------------------
-# Settings screen (Textual integration)
-# ---------------------------------------------------------------------------
-
 
 class SettingsTestApp(App[None]):
     CSS = ""
@@ -637,12 +625,6 @@ async def test_settings_model_info_loaded():
     finally:
         object.__setattr__(cfg, "_model_defaults", old_defaults)
 
-
-# ---------------------------------------------------------------------------
-# Status screen (Textual integration)
-# ---------------------------------------------------------------------------
-
-
 class StatusTestApp(App[None]):
     CSS = ""
 
@@ -708,12 +690,6 @@ async def test_status_screen_escape_pops():
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.press("escape")
-
-
-# ---------------------------------------------------------------------------
-# LilbeeApp tests
-# ---------------------------------------------------------------------------
-
 
 async def test_app_mounts_chat_screen():
     from lilbee.cli.tui.app import LilbeeApp
@@ -812,12 +788,6 @@ async def test_app_auto_sync_flag():
 
     app = LilbeeApp(auto_sync=True)
     assert app._auto_sync is True
-
-
-# ---------------------------------------------------------------------------
-# ChatScreen slash command tests
-# ---------------------------------------------------------------------------
-
 
 class ChatTestApp(App[None]):
     CSS = ""
@@ -1289,12 +1259,6 @@ async def test_chat_slash_delete_dispatch():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/delete")
 
-
-# ---------------------------------------------------------------------------
-# ChatScreen action_complete tests
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_action_complete_no_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1369,12 +1333,6 @@ async def test_chat_action_complete_cycle_no_selection():
         with patch.object(overlay, "cycle_next", return_value=None):
             app.screen.action_complete()
 
-
-# ---------------------------------------------------------------------------
-# ChatScreen on_input_submitted (non-slash = send message)
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1428,12 +1386,6 @@ async def test_chat_trim_history_when_over_limit():
         app.screen._trim_history()
         assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
         assert app.screen._history[0]["content"] == "msg-10"
-
-
-# ---------------------------------------------------------------------------
-# CommandProvider tests
-# ---------------------------------------------------------------------------
-
 
 async def test_command_provider_discover():
     from lilbee.cli.tui.app import LilbeeApp
@@ -1644,12 +1596,6 @@ async def test_command_provider_document_commands_empty_name():
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
-
-
-# ---------------------------------------------------------------------------
-# CatalogScreen tests
-# ---------------------------------------------------------------------------
-
 
 class CatalogTestApp(App[None]):
     CSS = ""
@@ -2098,12 +2044,6 @@ async def test_catalog_row_selected_out_of_range():
             event.cursor_row = 999
             screen.on_data_table_row_selected(event)
 
-
-# ---------------------------------------------------------------------------
-# Direct worker body tests (call underlying fn, not @work decorator)
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_fetch_more_hf_worker():
     """Cover _fetch_more_hf worker body."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2336,12 +2276,6 @@ async def test_chat_embedding_ready_false_no_sync():
             await _pilot.pause()
             mock_sync.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# Additional coverage: chat.py lines
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
@@ -2448,12 +2382,6 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         barrier.set()
         await _pilot.pause()
 
-
-# ---------------------------------------------------------------------------
-# Additional coverage: catalog.py worker body lines
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_refresh_table_empty():
     """Cover empty table case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2558,12 +2486,6 @@ async def test_catalog_jump_top_bottom():
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-
-
-# ---------------------------------------------------------------------------
-# Additional coverage: commands.py vision catalog exception (lines 91-92)
-# ---------------------------------------------------------------------------
-
 
 async def test_chat_vim_j_cycles_focus_from_chat_log():
     """key_j cycles focus forward from chat-log to chat-input in normal mode."""
@@ -2920,12 +2842,6 @@ async def test_chat_bindings_include_half_page():
     assert "ctrl+d" in keys
     assert "ctrl+u" in keys
 
-
-# ---------------------------------------------------------------------------
-# Catalog: delete model (d key)
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_delete_installed_model_confirmation():
     """First press of d shows confirmation notification."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -3065,12 +2981,6 @@ async def test_catalog_delete_in_input_ignored():
             screen.query_one("#catalog-search", Input).focus()
             screen.action_delete_model()
             assert screen._pending_delete is None
-
-
-# ---------------------------------------------------------------------------
-# Chat: /remove slash command
-# ---------------------------------------------------------------------------
-
 
 async def test_chat_slash_remove_no_args():
     app = ChatTestApp()

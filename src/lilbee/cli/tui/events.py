@@ -8,10 +8,12 @@ from dataclasses import dataclass
 
 from textual.message import Message
 
+from lilbee.models import ModelTask
+
 
 @dataclass
 class ModelChanged(Message):
     """Fired when the active chat, embedding, or vision model changes."""
 
-    role: str  # "chat" | "embedding" | "vision"
+    role: ModelTask
     name: str

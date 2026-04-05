@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel
 
 from lilbee.config import cfg
+from lilbee.models import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -85,91 +86,36 @@ class ModelFamily:
     variants: tuple[ModelVariant, ...]
 
 
-FEATURED_CHAT: tuple[CatalogModel, ...] = (
-    CatalogModel(
-        "Qwen3 0.6B",
-        "Qwen/Qwen3-0.6B-GGUF",
-        "*Q4_K_M.gguf",
-        0.5,
-        2,
-        "Tiny — runs on anything",
-        True,
-        0,
-        "chat",
-    ),
-    CatalogModel(
-        "Qwen3 4B",
-        "Qwen/Qwen3-4B-GGUF",
-        "*Q4_K_M.gguf",
-        2.5,
-        8,
-        "Small — good balance for 8 GB RAM",
-        True,
-        0,
-        "chat",
-    ),
-    CatalogModel(
-        "Qwen3 8B",
-        "Qwen/Qwen3-8B-GGUF",
-        "*Q4_K_M.gguf",
-        5.0,
-        8,
-        "Medium — strong general purpose",
-        True,
-        0,
-        "chat",
-    ),
-    CatalogModel(
-        "Mistral 7B Instruct",
-        "MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
-        "*Q4_K_M.gguf",
-        4.4,
-        8,
-        "Fast 7B, 32K context",
-        True,
-        0,
-        "chat",
-    ),
-    CatalogModel(
-        "Qwen3-Coder 30B A3B",
-        "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-        "*Q4_K_M.gguf",
-        18.0,
-        32,
-        "Extra large — best quality",
-        True,
-        0,
-        "chat",
-    ),
-)
+def _load_featured() -> tuple[
+    tuple[CatalogModel, ...], tuple[CatalogModel, ...], tuple[CatalogModel, ...]
+]:
+    """Load featured models from the TOML file, cached after first call."""
+    import tomllib
 
-FEATURED_EMBEDDING: tuple[CatalogModel, ...] = (
-    CatalogModel(
-        "Nomic Embed Text v1.5",
-        "nomic-ai/nomic-embed-text-v1.5-GGUF",
-        "nomic-embed-text-v1.5.Q4_K_M.gguf",
-        0.3,
-        2,
-        "Fast, high quality — default for lilbee",
-        True,
-        0,
-        "embedding",
-    ),
-)
+    toml_path = Path(__file__).parent / "featured_models.toml"
+    with open(toml_path, "rb") as f:
+        data = tomllib.load(f)
 
-FEATURED_VISION: tuple[CatalogModel, ...] = (
-    CatalogModel(
-        "LightOnOCR-2",
-        "noctrex/LightOnOCR-2-1B-GGUF",
-        "*Q4_K_M.gguf",
-        1.5,
-        4,
-        "Fast OCR — clean markdown output, small footprint",
-        True,
-        0,
-        "vision",
-    ),
-)
+    def _build(task: ModelTask) -> tuple[CatalogModel, ...]:
+        return tuple(
+            CatalogModel(
+                name=m["name"],
+                hf_repo=m["hf_repo"],
+                gguf_filename=m["gguf_filename"],
+                size_gb=m["size_gb"],
+                min_ram_gb=m["min_ram_gb"],
+                description=m["description"],
+                featured=True,
+                downloads=0,
+                task=task,
+            )
+            for m in data.get(task, [])
+        )
+
+    return _build(ModelTask.CHAT), _build(ModelTask.EMBEDDING), _build(ModelTask.VISION)
+
+
+FEATURED_CHAT, FEATURED_EMBEDDING, FEATURED_VISION = _load_featured()
 
 # Maps vision catalog entries to their mmproj (CLIP projection) filenames.
 # Vision models need both the main GGUF and the mmproj file to work.
@@ -259,9 +205,9 @@ def get_families() -> list[ModelFamily]:
     the largest marked as recommended (for multi-variant families).
     """
     return (
-        _build_families(FEATURED_CHAT, "chat")
-        + _build_families(FEATURED_EMBEDDING, "embedding")
-        + _build_families(FEATURED_VISION, "vision")
+        _build_families(FEATURED_CHAT, ModelTask.CHAT)
+        + _build_families(FEATURED_EMBEDDING, ModelTask.EMBEDDING)
+        + _build_families(FEATURED_VISION, ModelTask.VISION)
     )
 
 
@@ -463,25 +409,25 @@ def get_catalog(
 
 def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
     """Map task name to HuggingFace pipeline tag and library filter."""
-    mapping = {
-        "chat": ("text-generation", None),
-        "embedding": ("feature-extraction", "sentence-transformers"),
-        "vision": ("image-text-to-text", None),
+    mapping: dict[str, tuple[str, str | None]] = {
+        ModelTask.CHAT: ("text-generation", None),
+        ModelTask.EMBEDDING: ("feature-extraction", "sentence-transformers"),
+        ModelTask.VISION: ("image-text-to-text", None),
     }
-    return mapping.get(task or "chat", ("text-generation", None))
+    return mapping.get(task or ModelTask.CHAT, ("text-generation", None))
 
 
 _PIPELINE_TO_TASK: dict[str, str] = {
-    "text-generation": "chat",
-    "feature-extraction": "embedding",
-    "image-text-to-text": "vision",
-    "image-to-text": "vision",
+    "text-generation": ModelTask.CHAT,
+    "feature-extraction": ModelTask.EMBEDDING,
+    "image-text-to-text": ModelTask.VISION,
+    "image-to-text": ModelTask.VISION,
 }
 
 
 def _pipeline_to_task(pipeline_tag: str) -> str:
     """Map HuggingFace pipeline tag to internal task name."""
-    return _PIPELINE_TO_TASK.get(pipeline_tag, "chat")
+    return _PIPELINE_TO_TASK.get(pipeline_tag, ModelTask.CHAT)
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:
@@ -568,7 +514,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     _register_model(entry, dest)
 
     # Download mmproj file for vision models
-    if entry.task == "vision":
+    if entry.task == ModelTask.VISION:
         _download_mmproj(entry)
 
     return dest

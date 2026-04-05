@@ -30,11 +30,12 @@ from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
+from lilbee.models import ModelTask
 
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
-_ALL_TASKS = ("chat", "embedding", "vision")
+_ALL_TASKS = tuple(ModelTask)
 
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
@@ -693,9 +694,11 @@ def _group_rows_for_grid(
     """Group rows into sections for the grid view."""
     recommended = [r for r in rows if r.featured]
     installed = [r for r in rows if r.installed and not r.featured]
-    chat = [r for r in rows if r.task == "chat" and not r.featured and not r.installed]
-    embedding = [r for r in rows if r.task == "embedding" and not r.featured and not r.installed]
-    vision = [r for r in rows if r.task == "vision" and not r.featured and not r.installed]
+    chat = [r for r in rows if r.task == ModelTask.CHAT and not r.featured and not r.installed]
+    embedding = [
+        r for r in rows if r.task == ModelTask.EMBEDDING and not r.featured and not r.installed
+    ]
+    vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
     return [
         ("Recommended", recommended),
         ("Installed", installed),

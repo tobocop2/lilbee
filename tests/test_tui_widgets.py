@@ -44,12 +44,6 @@ def _make_model(
         task=task,
     )
 
-
-# ---------------------------------------------------------------------------
-# message.py
-# ---------------------------------------------------------------------------
-
-
 class _MsgApp(App):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -175,12 +169,6 @@ class TestAssistantMessageAsync:
             await am.rebuild_content_widget(use_markdown=False)
             assert am._content_widget is None
 
-
-# ---------------------------------------------------------------------------
-# help_modal.py
-# ---------------------------------------------------------------------------
-
-
 class _HelpApp(App):
     def compose(self) -> ComposeResult:
         yield Static("bg")
@@ -212,12 +200,6 @@ class TestHelpModal:
             app.screen.action_close()
             await pilot.pause()
             assert len(app.screen_stack) == 1
-
-
-# ---------------------------------------------------------------------------
-# task_bar.py
-# ---------------------------------------------------------------------------
-
 
 class _TaskBarApp(App):
     def compose(self) -> ComposeResult:
@@ -347,12 +329,6 @@ class TestTaskBar:
             bar = app.query_one(TaskBar)
             app._task_bar = bar  # type: ignore[attr-defined]
             assert getattr(app, "_task_bar", None) is bar
-
-
-# ---------------------------------------------------------------------------
-# model_bar.py
-# ---------------------------------------------------------------------------
-
 
 class _ModelBarApp(App):
     def compose(self) -> ComposeResult:
@@ -583,12 +559,6 @@ class TestClassifyInstalledModels:
 
         assert "custom-model.gguf" in chat
 
-
-# ---------------------------------------------------------------------------
-# suggester.py
-# ---------------------------------------------------------------------------
-
-
 class TestSlashSuggester:
     async def test_empty_returns_none(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
@@ -739,12 +709,6 @@ class TestSlashSuggester:
         s = SlashSuggester(use_cache=False)
         with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
             assert s._get_document_names() == []
-
-
-# ---------------------------------------------------------------------------
-# autocomplete.py — pure functions
-# ---------------------------------------------------------------------------
-
 
 class TestGetCompletions:
     def test_non_slash_returns_empty(self) -> None:
@@ -964,12 +928,6 @@ class TestPathOptions:
         r = _path_options(str(tmp_path) + "/")
         assert len(r) == 20
 
-
-# ---------------------------------------------------------------------------
-# autocomplete.py — CompletionOverlay widget
-# ---------------------------------------------------------------------------
-
-
 class _OverlayApp(App):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1065,12 +1023,6 @@ class TestCompletionOverlay:
             many = [f"/opt{i}" for i in range(20)]
             overlay.show_completions(many)
             assert len(overlay._options) == _MAX_VISIBLE
-
-
-# ---------------------------------------------------------------------------
-# task_queue.py (unit tests for queue logic)
-# ---------------------------------------------------------------------------
-
 
 class TestTaskQueue:
     def test_enqueue_and_advance(self) -> None:
@@ -1305,12 +1257,6 @@ class TestTaskQueue:
         assert len(q.active_tasks) == 1
         assert q.active_tasks[0].task_id == t2
 
-
-# ---------------------------------------------------------------------------
-# CompletionOverlay.cycle_prev
-# ---------------------------------------------------------------------------
-
-
 class TestCompletionOverlayCyclePrev:
     async def test_cycle_prev_wraps(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1331,12 +1277,6 @@ class TestCompletionOverlayCyclePrev:
             await pilot.pause()
             overlay = app.query_one(CompletionOverlay)
             assert overlay.cycle_prev() is None
-
-
-# ---------------------------------------------------------------------------
-# setup_modal.py
-# ---------------------------------------------------------------------------
-
 
 class _SetupApp(App):
     def compose(self) -> ComposeResult:
@@ -1407,12 +1347,6 @@ class TestSetupWizard:
         children = list(row.compose())
         assert len(children) == 1
 
-
-# ---------------------------------------------------------------------------
-# catalog.py screen — HF grouping, empty tabs, size grouping
-# ---------------------------------------------------------------------------
-
-
 class TestAllTasksFetched:
     def test_all_tasks_constant(self) -> None:
         from lilbee.cli.tui.screens.catalog import _ALL_TASKS
@@ -1437,12 +1371,6 @@ class TestMatchesSearchWidget:
         row = _catalog_to_row(m, installed=False)
         assert _matches_search(row, "llama") is False
 
-
-# ---------------------------------------------------------------------------
-# command_registry.py — /login command
-# ---------------------------------------------------------------------------
-
-
 class TestLoginCommandRegistered:
     def test_login_in_registry(self) -> None:
         from lilbee.cli.tui.command_registry import COMMANDS, build_dispatch_dict
@@ -1451,12 +1379,6 @@ class TestLoginCommandRegistered:
         assert "/login" in names
         dispatch = build_dispatch_dict()
         assert dispatch["/login"] == "_cmd_login"
-
-
-# ---------------------------------------------------------------------------
-# settings.py — HF token field
-# ---------------------------------------------------------------------------
-
 
 class TestSettingsHfToken:
     def test_get_hf_token_display_not_set(self, monkeypatch) -> None:
@@ -1476,12 +1398,6 @@ class TestSettingsHfToken:
         assert result.startswith("hf_a")
         assert result.endswith("mnop")
         assert "..." in result
-
-
-# ---------------------------------------------------------------------------
-# __init__.py — Ctrl-C clean shutdown
-# ---------------------------------------------------------------------------
-
 
 class TestRunTuiKeyboardInterrupt:
     def test_keyboard_interrupt_does_not_raise(self) -> None:
@@ -1507,12 +1423,6 @@ class TestRunTuiKeyboardInterrupt:
                 run_tui()
                 mock_shutdown.assert_called_once()
                 mock_reset.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# nav_bar.py — global docked navigation bar
-# ---------------------------------------------------------------------------
-
 
 class _NavBarApp(App):
     def compose(self) -> ComposeResult:
@@ -1730,12 +1640,6 @@ class TestNavBarClickSupport:
             # App has no _switch_view -- should not raise
             bar.on_click(mock.Mock(x=0, y=0))
 
-
-# ---------------------------------------------------------------------------
-# app.py — global NavBar composition and key bindings
-# ---------------------------------------------------------------------------
-
-
 class TestLilbeeAppGlobalNavBar:
     async def test_screen_composes_global_nav_bar(self) -> None:
         cfg.chat_model = "test-model"
@@ -1769,12 +1673,6 @@ class TestLilbeeAppGlobalNavBar:
                 await pilot.pause()
             nav = app.screen.query_one("#global-nav-bar")
             assert nav.active_view == "Chat"
-
-
-# ---------------------------------------------------------------------------
-# pill.py
-# ---------------------------------------------------------------------------
-
 
 class TestPill:
     def test_pill_from_string(self) -> None:
@@ -1811,28 +1709,18 @@ class TestPill:
         result = pill("ok", "$success", "$text")
         assert isinstance(result, Content)
 
-
-# ---------------------------------------------------------------------------
-# events.py
-# ---------------------------------------------------------------------------
-
-
 class TestEvents:
     def test_model_changed_is_message(self) -> None:
         from textual.message import Message
 
         from lilbee.cli.tui.events import ModelChanged
 
-        msg = ModelChanged("chat", "qwen3:8b")
+        from lilbee.models import ModelTask
+
+        msg = ModelChanged(ModelTask.CHAT, "qwen3:8b")
         assert isinstance(msg, Message)
-        assert msg.role == "chat"
+        assert msg.role == ModelTask.CHAT
         assert msg.name == "qwen3:8b"
-
-
-# ---------------------------------------------------------------------------
-# grid_select.py
-# ---------------------------------------------------------------------------
-
 
 class _GridApp(App):
     def compose(self) -> ComposeResult:
@@ -1928,12 +1816,6 @@ class TestGridSelect:
             await pilot.pause()
             assert len(messages) == 1
             assert messages[0].widget is gs.children[0]
-
-
-# ---------------------------------------------------------------------------
-# model_card.py
-# ---------------------------------------------------------------------------
-
 
 class TestModelCard:
     def test_card_has_row_property(self) -> None:
