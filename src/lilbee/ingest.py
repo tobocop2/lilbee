@@ -64,6 +64,7 @@ class ChunkRecord(TypedDict):
 
     source: str
     content_type: str
+    chunk_type: str
     page_start: int
     page_end: int
     line_start: int
@@ -277,6 +278,7 @@ async def _vision_fallback(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type="raw",
             page_start=page_num,
             page_end=page_num,
             line_start=0,
@@ -379,6 +381,7 @@ async def ingest_document(
         ChunkRecord(
             source=source_name,
             content_type=content_type,
+            chunk_type="raw",
             page_start=chunk.metadata.get("first_page") or 0,
             page_end=chunk.metadata.get("last_page") or 0,
             line_start=0,
@@ -411,6 +414,7 @@ def ingest_code_sync(
         ChunkRecord(
             source=source_name,
             content_type="code",
+            chunk_type="raw",
             page_start=0,
             page_end=0,
             line_start=cc.line_start,
@@ -449,6 +453,7 @@ async def ingest_markdown(
         ChunkRecord(
             source=source_name,
             content_type="text",
+            chunk_type="raw",
             page_start=0,
             page_end=0,
             line_start=0,

@@ -11,7 +11,7 @@ import lancedb
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field
 
-from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, Config, cfg
+from lilbee.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
 from lilbee.security import validate_path_within
 
@@ -34,6 +34,7 @@ class SearchChunk(BaseModel):
 
     source: str
     content_type: str
+    chunk_type: str = "raw"
     page_start: int
     page_end: int
     line_start: int
@@ -104,6 +105,24 @@ class SourceRecord(TypedDict):
     file_hash: str
     ingested_at: str
     chunk_count: int
+    source_type: str
+
+
+class CitationRecord(TypedDict):
+    """A citation linking a wiki chunk to a specific source location."""
+
+    wiki_source: str
+    wiki_chunk_index: int
+    citation_key: str
+    claim_type: str
+    source_filename: str
+    source_hash: str
+    page_start: int
+    page_end: int
+    line_start: int
+    line_end: int
+    excerpt: str
+    created_at: str
 
 
 def _sources_schema() -> pa.Schema:
@@ -113,6 +132,26 @@ def _sources_schema() -> pa.Schema:
             pa.field("file_hash", pa.utf8()),
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
+            pa.field("source_type", pa.utf8()),
+        ]
+    )
+
+
+def _citations_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("wiki_source", pa.utf8()),
+            pa.field("wiki_chunk_index", pa.int32()),
+            pa.field("citation_key", pa.utf8()),
+            pa.field("claim_type", pa.utf8()),
+            pa.field("source_filename", pa.utf8()),
+            pa.field("source_hash", pa.utf8()),
+            pa.field("page_start", pa.int32()),
+            pa.field("page_end", pa.int32()),
+            pa.field("line_start", pa.int32()),
+            pa.field("line_end", pa.int32()),
+            pa.field("excerpt", pa.utf8()),
+            pa.field("created_at", pa.utf8()),
         ]
     )
 
@@ -196,6 +235,7 @@ class Store:
             [
                 pa.field("source", pa.utf8()),
                 pa.field("content_type", pa.utf8()),
+                pa.field("chunk_type", pa.utf8()),
                 pa.field("page_start", pa.int32()),
                 pa.field("page_end", pa.int32()),
                 pa.field("line_start", pa.int32()),
@@ -376,7 +416,13 @@ class Store:
         result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
         return result
 
-    def upsert_source(self, filename: str, file_hash: str, chunk_count: int) -> None:
+    def upsert_source(
+        self,
+        filename: str,
+        file_hash: str,
+        chunk_count: int,
+        source_type: str = "document",
+    ) -> None:
         """Add or update a source file tracking record."""
         with write_lock():
             db = self.get_db()
@@ -389,6 +435,7 @@ class Store:
                         "file_hash": file_hash,
                         "ingested_at": datetime.now(UTC).isoformat(),
                         "chunk_count": chunk_count,
+                        "source_type": source_type,
                     }
                 ]
             )
@@ -446,6 +493,43 @@ class Store:
             table = self.open_table(name)
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
+
+    def add_citations(self, records: list[CitationRecord]) -> int:
+        """Add citation records to the store. Returns count added."""
+        if not records:
+            return 0
+        with write_lock():
+            db = self.get_db()
+            table = ensure_table(db, CITATIONS_TABLE, _citations_schema())
+            table.add(records)
+        return len(records)
+
+    def get_citations_for_wiki(self, wiki_source: str) -> list[CitationRecord]:
+        """Get all citations for a wiki page."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(wiki_source)
+        rows: list[CitationRecord] = table.search().where(f"wiki_source = '{escaped}'").to_list()
+        return rows
+
+    def get_citations_for_source(self, source_filename: str) -> list[CitationRecord]:
+        """Get all citations that reference a source document (reverse lookup)."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source_filename)
+        rows: list[CitationRecord] = (
+            table.search().where(f"source_filename = '{escaped}'").to_list()
+        )
+        return rows
+
+    def delete_citations_for_wiki(self, wiki_source: str) -> None:
+        """Delete all citations for a wiki page (used before regeneration)."""
+        self._clear_table(
+            CITATIONS_TABLE,
+            f"wiki_source = '{escape_sql_string(wiki_source)}'",
+        )
 
     def close(self) -> None:
         """Release the database connection and reset state."""

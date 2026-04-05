@@ -31,6 +31,7 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
+CITATIONS_TABLE = "_citations"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
@@ -176,6 +177,13 @@ class Config(BaseSettings):
 
     # Seconds between periodic syncs during crawl (0 = sync only at end).
     crawl_sync_interval: int = Field(default=30, ge=0)
+
+    # Wiki layer — LLM-maintained synthesis pages with citation provenance.
+    # Requires optional ``wiki`` extra: ``pip install lilbee[wiki]``.
+    wiki: bool = False
+    wiki_dir: str = "wiki"
+    wiki_prune_raw: bool = False
+    wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search

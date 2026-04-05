@@ -79,6 +79,7 @@ class TestStoreRoundTrip:
                 {
                     "source": "test.pdf",
                     "content_type": "pdf",
+                    "chunk_type": "raw",
                     "page_start": 1,
                     "page_end": 1,
                     "line_start": 0,
@@ -104,6 +105,7 @@ class TestStoreRoundTrip:
                 {
                     "source": "delete_me.pdf",
                     "content_type": "pdf",
+                    "chunk_type": "raw",
                     "page_start": 1,
                     "page_end": 1,
                     "line_start": 0,
@@ -131,6 +133,7 @@ class TestStoreOperations:
                 {
                     "source": "test.pdf",
                     "content_type": "pdf",
+                    "chunk_type": "raw",
                     "page_start": 1,
                     "page_end": 1,
                     "line_start": 0,
@@ -161,6 +164,7 @@ class TestStoreOperations:
                 {
                     "source": "test.pdf",
                     "content_type": "pdf",
+                    "chunk_type": "raw",
                     "page_start": 1,
                     "page_end": 1,
                     "line_start": 0,
@@ -185,6 +189,7 @@ class TestStoreOperations:
                 {
                     "source": "remove_me.txt",
                     "content_type": "text",
+                    "chunk_type": "raw",
                     "page_start": 0,
                     "page_end": 0,
                     "line_start": 0,
@@ -206,6 +211,7 @@ class TestStoreOperations:
                 {
                     "source": "it's_a_file.txt",
                     "content_type": "text",
+                    "chunk_type": "raw",
                     "page_start": 0,
                     "page_end": 0,
                     "line_start": 0,
@@ -261,6 +267,7 @@ class TestStoreOperations:
                     {
                         "source": "test.pdf",
                         "content_type": "pdf",
+                        "chunk_type": "raw",
                         "page_start": 1,
                         "page_end": 1,
                         "line_start": 0,
@@ -281,6 +288,7 @@ class TestGetChunksBySource:
                 {
                     "source": "doc.txt",
                     "content_type": "text",
+                    "chunk_type": "raw",
                     "page_start": 0,
                     "page_end": 0,
                     "line_start": 0,
@@ -305,6 +313,7 @@ class TestGetChunksBySource:
                 {
                     "source": "a.txt",
                     "content_type": "text",
+                    "chunk_type": "raw",
                     "page_start": 0,
                     "page_end": 0,
                     "line_start": 0,
@@ -316,6 +325,7 @@ class TestGetChunksBySource:
                 {
                     "source": "b.txt",
                     "content_type": "text",
+                    "chunk_type": "raw",
                     "page_start": 0,
                     "page_end": 0,
                     "line_start": 0,

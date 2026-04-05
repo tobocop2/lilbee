@@ -6,6 +6,7 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.store import (
+    CitationRecord,
     SearchChunk,
     Store,
     _cosine_sim,
@@ -26,13 +27,14 @@ def store(test_config):
     return Store(test_config)
 
 
-def _make_records(n=3, dim=None):
+def _make_records(n=3, dim=None, chunk_type="raw"):
     if dim is None:
         dim = cfg.embedding_dim
     return [
         {
             "source": f"doc{i}.md",
             "content_type": "text",
+            "chunk_type": chunk_type,
             "page_start": 0,
             "page_end": 0,
             "line_start": 0,
@@ -396,3 +398,130 @@ class TestEscapeSqlString:
         # No lone single quote remains (all are doubled)
         stripped = escaped.replace("''", "")
         assert "'" not in stripped
+
+
+class TestChunkTypeField:
+    def test_chunk_type_stored_and_retrieved(self, store):
+        records = _make_records(n=1, chunk_type="wiki")
+        store.add_chunks(records)
+        results = store.get_chunks_by_source("doc0.md")
+        assert len(results) == 1
+        assert results[0].chunk_type == "wiki"
+
+    def test_chunk_type_defaults_to_raw(self, store):
+        records = _make_records(n=1)
+        store.add_chunks(records)
+        results = store.get_chunks_by_source("doc0.md")
+        assert results[0].chunk_type == "raw"
+
+    def test_search_chunk_default_is_raw(self):
+        chunk = SearchChunk(
+            source="a.md",
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="text",
+            chunk_index=0,
+            vector=[0.1],
+        )
+        assert chunk.chunk_type == "raw"
+
+
+class TestSourceTypeField:
+    def test_source_type_defaults_to_document(self, store):
+        store.upsert_source("a.md", "hash123", 5)
+        sources = store.get_sources()
+        assert len(sources) == 1
+        assert sources[0]["source_type"] == "document"
+
+    def test_source_type_wiki(self, store):
+        store.upsert_source("wiki/summary.md", "hash456", 3, source_type="wiki")
+        sources = store.get_sources()
+        assert len(sources) == 1
+        assert sources[0]["source_type"] == "wiki"
+
+
+def _make_citation(**overrides) -> CitationRecord:
+    defaults: CitationRecord = {
+        "wiki_source": "wiki/summaries/doc.md",
+        "wiki_chunk_index": 0,
+        "citation_key": "src1",
+        "claim_type": "fact",
+        "source_filename": "documents/source.pdf",
+        "source_hash": "abc123",
+        "page_start": 1,
+        "page_end": 1,
+        "line_start": 0,
+        "line_end": 0,
+        "excerpt": "Python supports gradual typing.",
+        "created_at": "2026-04-04T00:00:00+00:00",
+    }
+    defaults.update(overrides)  # type: ignore[typeddict-item]
+    return defaults
+
+
+class TestCitationCrud:
+    def test_add_and_retrieve_citations(self, store):
+        citations = [_make_citation(), _make_citation(citation_key="src2", excerpt="PEP 695")]
+        count = store.add_citations(citations)
+        assert count == 2
+        results = store.get_citations_for_wiki("wiki/summaries/doc.md")
+        assert len(results) == 2
+
+    def test_add_empty_list_returns_zero(self, store):
+        assert store.add_citations([]) == 0
+
+    def test_get_citations_for_nonexistent_wiki(self, store):
+        assert store.get_citations_for_wiki("nonexistent.md") == []
+
+    def test_get_citations_for_source_reverse_lookup(self, store):
+        store.add_citations(
+            [
+                _make_citation(wiki_source="wiki/a.md", source_filename="docs/paper.pdf"),
+                _make_citation(wiki_source="wiki/b.md", source_filename="docs/paper.pdf"),
+                _make_citation(wiki_source="wiki/c.md", source_filename="docs/other.txt"),
+            ]
+        )
+        results = store.get_citations_for_source("docs/paper.pdf")
+        assert len(results) == 2
+        wiki_sources = {r["wiki_source"] for r in results}
+        assert wiki_sources == {"wiki/a.md", "wiki/b.md"}
+
+    def test_get_citations_for_nonexistent_source(self, store):
+        assert store.get_citations_for_source("nonexistent.pdf") == []
+
+    def test_delete_citations_for_wiki(self, store):
+        store.add_citations(
+            [
+                _make_citation(wiki_source="wiki/a.md"),
+                _make_citation(wiki_source="wiki/b.md"),
+            ]
+        )
+        store.delete_citations_for_wiki("wiki/a.md")
+        assert store.get_citations_for_wiki("wiki/a.md") == []
+        assert len(store.get_citations_for_wiki("wiki/b.md")) == 1
+
+    def test_delete_citations_nonexistent_wiki_is_noop(self, store):
+        store.delete_citations_for_wiki("nonexistent.md")
+
+    def test_citation_claim_types(self, store):
+        store.add_citations(
+            [
+                _make_citation(claim_type="fact", excerpt="Real excerpt"),
+                _make_citation(citation_key="src2", claim_type="inference", excerpt=""),
+            ]
+        )
+        results = store.get_citations_for_wiki("wiki/summaries/doc.md")
+        facts = [r for r in results if r["claim_type"] == "fact"]
+        inferences = [r for r in results if r["claim_type"] == "inference"]
+        assert len(facts) == 1
+        assert facts[0]["excerpt"] == "Real excerpt"
+        assert len(inferences) == 1
+        assert inferences[0]["excerpt"] == ""
+
+    def test_drop_all_includes_citations(self, store):
+        store.add_citations([_make_citation()])
+        store.drop_all()
+        assert store.get_citations_for_wiki("wiki/summaries/doc.md") == []
