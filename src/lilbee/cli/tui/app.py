@@ -8,9 +8,11 @@ from typing import ClassVar
 
 from textual.app import App
 from textual.binding import Binding, BindingType
+from textual.signal import Signal
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.events import ModelChanged
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
@@ -59,6 +61,12 @@ class LilbeeApp(App[None]):
         self._auto_sync = auto_sync
         self._active_view = "Chat"
         self._theme_index = 0
+        self.settings_changed_signal: Signal[tuple[str, object]] = Signal(
+            self, "settings_changed"
+        )
+        self.model_changed_signal: Signal[ModelChanged] = Signal(
+            self, "model_changed"
+        )
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         self._task_bar = TaskBar(id="app-task-bar")

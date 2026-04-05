@@ -17,19 +17,10 @@
     padding: 0 1;
 }
 
-#model-detail, #setting-detail {
+#setting-detail {
     height: 6;
     padding: 1;
     border-top: solid $surface-lighten-2;
-}
-
-#catalog-search {
-    dock: top;
-    margin: 0 1;
-}
-
-.model-row-text {
-    padding: 0 1;
 }
 
 .user-message {

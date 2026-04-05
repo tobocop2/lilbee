@@ -529,7 +529,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
 
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = _resolve_filename(entry)
+    filename = resolve_filename(entry)
     dest = cfg.models_dir / filename
     if dest.exists():
         log.info("Model already downloaded: %s", dest)
@@ -689,7 +689,7 @@ def find_mmproj_file(model_name: str) -> Path | None:
 _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3_K_M")
 
 
-def _resolve_filename(entry: CatalogModel) -> str:
+def resolve_filename(entry: CatalogModel) -> str:
     """Resolve a GGUF filename pattern to the best concrete filename.
 
     For exact filenames, return as-is. For wildcards, query the HF API

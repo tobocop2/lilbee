@@ -1,4 +1,4 @@
-"""Catalog screen -- browse and install models via a single DataTable."""
+"""Catalog screen -- browse and install models via grid or list view."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 from textual.worker import Worker, WorkerState
@@ -24,6 +25,8 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.grid_select import GridSelect
+from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
@@ -40,21 +43,6 @@ def _parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
     match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
     return f"{match.group(1)}B" if match else "--"
-
-
-def _parse_param_size(name: str) -> str:
-    """Extract parameter size category from model name."""
-    match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
-    if not match:
-        return "unknown"
-    size = float(match.group(1))
-    if size <= 3:
-        return "Small (<=3B)"
-    if size <= 8:
-        return "Medium (3-8B)"
-    if size <= 30:
-        return "Large (8-30B)"
-    return "Extra Large (30B+)"
 
 
 def _format_downloads(n: int) -> str:
@@ -191,11 +179,14 @@ def _param_sort_value(params: str) -> float:
 
 
 class CatalogScreen(Screen[None]):
-    """Model catalog with a single sortable DataTable."""
+    """Model catalog with grid (default) and list views."""
+
+    CSS_PATH = "catalog.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "pop_screen", "Back", show=True),
         Binding("escape", "pop_screen", "Back", show=False),
+        Binding("v", "toggle_view", "View", show=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("d", "delete_model", "Delete", show=True),
         Binding("x", "delete_model", "Delete", show=False),
@@ -220,11 +211,14 @@ class CatalogScreen(Screen[None]):
         self._sort_ascending: bool = True
         self._pending_delete: str | None = None
         self._installed_names: set[str] = set()
+        self._grid_view: bool = True
+        self._hf_fetched: bool = False
 
     def compose(self) -> ComposeResult:
         yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("", id="sort-label", shrink=True)
+        yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
@@ -236,8 +230,8 @@ class CatalogScreen(Screen[None]):
         for col in COLUMNS:
             table.add_column(col, key=col)
         self._fetch_installed_names()
-        self._refresh_table()
-        self._fetch_all_hf_models()
+        self.add_class("-grid-view")
+        self._refresh_grid()
         self._fetch_remote_models()
 
     def _fetch_installed_names(self) -> None:
@@ -253,6 +247,24 @@ class CatalogScreen(Screen[None]):
                 if m.source_repo and m.source_filename:
                     self._installed_names.add(f"{m.source_repo}/{m.source_filename}")
 
+    def action_toggle_view(self) -> None:
+        """Toggle between grid and list view."""
+        if self._grid_view:
+            self._grid_view = False
+            self.remove_class("-grid-view")
+            self.add_class("-list-view")
+            if not self._hf_fetched:
+                self._hf_fetched = True
+                self._fetch_all_hf_models()
+            self._refresh_table()
+            with contextlib.suppress(Exception):
+                self.query_one("#catalog-table", DataTable).focus()
+        else:
+            self._grid_view = True
+            self.remove_class("-list-view")
+            self.add_class("-grid-view")
+            self._refresh_grid()
+
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
         filter_input = self.query_one("#catalog-search", Input)
@@ -262,7 +274,7 @@ class CatalogScreen(Screen[None]):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models when input changes."""
         if event.input.id == "catalog-search":
-            self._refresh_table()
+            self._refresh_view()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Close filter on Enter."""
@@ -271,9 +283,8 @@ class CatalogScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 self.query_one("#catalog-table", DataTable).focus()
 
-    @work(thread=True)
-    def _fetch_all_hf_models(self) -> list[CatalogModel]:
-        """Fetch HF models for all task types and merge results."""
+    def _fetch_hf_page(self) -> list[CatalogModel]:
+        """Fetch one page of HF models for all task types (runs in worker thread)."""
         all_models: list[CatalogModel] = []
         seen_repos: set[str] = set()
         for task in _ALL_TASKS:
@@ -289,6 +300,11 @@ class CatalogScreen(Screen[None]):
                     all_models.append(m)
         self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
         return all_models
+
+    @work(thread=True)
+    def _fetch_all_hf_models(self) -> list[CatalogModel]:
+        """Fetch HF models for all task types (replaces current list)."""
+        return self._fetch_hf_page()
 
     @work(thread=True)
     def _fetch_remote_models(self) -> list[RemoteModel]:
@@ -298,22 +314,8 @@ class CatalogScreen(Screen[None]):
 
     @work(thread=True)
     def _fetch_more_hf(self) -> list[CatalogModel]:
-        """Fetch next page of HF models for all task types."""
-        all_models: list[CatalogModel] = []
-        seen_repos: set[str] = set()
-        for task in _ALL_TASKS:
-            result = get_catalog(
-                task=task,
-                featured=False,
-                limit=_HF_PAGE_SIZE,
-                offset=self._hf_offset,
-            )
-            for m in result.models:
-                if not m.featured and m.hf_repo not in seen_repos:
-                    seen_repos.add(m.hf_repo)
-                    all_models.append(m)
-        self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
-        return all_models
+        """Fetch next page of HF models for all task types (extends current list)."""
+        return self._fetch_hf_page()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
@@ -321,13 +323,13 @@ class CatalogScreen(Screen[None]):
         result = event.worker.result
         if event.worker.name == "_fetch_all_hf_models" and isinstance(result, list):
             self._hf_models = result
-            self._refresh_table()
+            self._refresh_view()
         elif event.worker.name == "_fetch_more_hf" and isinstance(result, list):
             self._hf_models.extend(result)
-            self._refresh_table()
+            self._refresh_view()
         elif event.worker.name == "_fetch_remote_models" and isinstance(result, list):
             self._remote_models = result
-            self._refresh_table()
+            self._refresh_view()
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
@@ -390,6 +392,38 @@ class CatalogScreen(Screen[None]):
             key=lambda r: (not r.featured, key_fn(r)),
             reverse=not self._sort_ascending,
         )
+
+    def _refresh_view(self) -> None:
+        """Refresh the active view (grid or list)."""
+        if self._grid_view:
+            self._refresh_grid()
+        else:
+            self._refresh_table()
+
+    def _refresh_grid(self) -> None:
+        """Rebuild the grid view from local-only data sources."""
+        search = self._get_search_text()
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.remove_children()
+        family_rows = self._build_family_rows(search)
+        remote_rows = self._build_remote_rows(search)
+        hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
+        all_rows = family_rows + remote_rows + hf_rows
+        widgets_to_mount: list[Static | GridSelect] = []
+        for heading, rows in _group_rows_for_grid(all_rows):
+            if not rows:
+                continue
+            widgets_to_mount.append(Static(heading, classes="section-heading"))
+            cards = [ModelCard(row) for row in rows]
+            grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
+            widgets_to_mount.append(grid)
+        container.mount_all(widgets_to_mount)
+
+    @on(GridSelect.Selected)
+    def _on_grid_selected(self, event: GridSelect.Selected) -> None:
+        """Handle model selection from the grid view."""
+        if isinstance(event.widget, ModelCard):
+            self._select_row(event.widget.row)
 
     def _refresh_table(self) -> None:
         """Rebuild the DataTable from current data."""
@@ -465,16 +499,16 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
-        from lilbee.catalog import _resolve_filename
+        from lilbee.catalog import resolve_filename
 
         try:
-            filename = _resolve_filename(model)
+            filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
                 self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.name))
                 return
         except Exception:
-            pass  # Can't resolve filename -- proceed with download
+            log.debug("Could not resolve filename", exc_info=True)
 
         self._enqueue_download(model)
 
@@ -510,9 +544,7 @@ class CatalogScreen(Screen[None]):
                     )
                 else:
                     # Total unknown - just show MB downloaded
-                    self._safe_call(
-                        bar.update_task, task_id, 0, f"{mb_done:.0f} MB"
-                    )
+                    self._safe_call(bar.update_task, task_id, 0, f"{mb_done:.0f} MB")
 
             download_model(model, on_progress=on_progress)
             self._safe_call(bar.complete_task, task_id)
@@ -604,43 +636,43 @@ class CatalogScreen(Screen[None]):
             )
 
     def _refresh_after_delete(self) -> None:
-        """Re-fetch remote models and refresh table after deletion."""
+        """Re-fetch remote models and refresh after deletion."""
         self._fetch_installed_names()
-        self._refresh_table()
+        self._refresh_view()
         self._fetch_remote_models()
 
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         self.query_one("#catalog-table", DataTable).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         self.query_one("#catalog-table", DataTable).action_cursor_up()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         table.move_cursor(row=0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         if self._rows:
@@ -653,6 +685,24 @@ class CatalogScreen(Screen[None]):
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
         self.app.action_nav_next()
+
+
+def _group_rows_for_grid(
+    rows: list[TableRow],
+) -> list[tuple[str, list[TableRow]]]:
+    """Group rows into sections for the grid view."""
+    recommended = [r for r in rows if r.featured]
+    installed = [r for r in rows if r.installed and not r.featured]
+    chat = [r for r in rows if r.task == "chat" and not r.featured and not r.installed]
+    embedding = [r for r in rows if r.task == "embedding" and not r.featured and not r.installed]
+    vision = [r for r in rows if r.task == "vision" and not r.featured and not r.installed]
+    return [
+        ("Recommended", recommended),
+        ("Installed", installed),
+        ("Chat", chat),
+        ("Embedding", embedding),
+        ("Vision", vision),
+    ]
 
 
 def _matches_search(row: TableRow, search: str) -> bool:

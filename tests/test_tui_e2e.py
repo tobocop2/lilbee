@@ -408,7 +408,7 @@ class TestDownloadProgress:
         (cfg.models_dir / "test.gguf").write_bytes(b"\0" * 100)
 
         with (
-            mock.patch("lilbee.catalog._resolve_filename", return_value="test.gguf"),
+            mock.patch("lilbee.catalog.resolve_filename", return_value="test.gguf"),
             mock.patch("lilbee.catalog.hf_hub_download", side_effect=fake_download),
             mock.patch("lilbee.catalog._register_model"),
         ):
@@ -450,7 +450,9 @@ class TestTaskCenter:
 
             # Should have at least one collapsible
             collapsibles = app.screen.query(Collapsible)
-            assert len(collapsibles) >= 1, f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+            assert len(collapsibles) >= 1, (
+                f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+            )
 
     async def test_task_center_renders_empty_state(self, _mock_resolve):
         """Task Center shows 'All quiet' when no tasks."""
@@ -468,7 +470,9 @@ class TestTaskCenter:
             # The task-list VerticalScroll should have children
             task_list = app.screen.query_one("#task-list")
             # Should have at least one child (the empty state Static)
-            assert len(task_list.children) >= 1, f"Expected at least 1 child, got {len(task_list.children)}"
+            assert len(task_list.children) >= 1, (
+                f"Expected at least 1 child, got {len(task_list.children)}"
+            )
 
 
 class TestDownloadProgress:
