@@ -13,6 +13,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
+from textual.events import Click
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 from textual.worker import Worker, WorkerState
@@ -155,7 +156,7 @@ def _row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:
-        parts.append("*")
+        parts.append("\u2605")
     parts.append(row.name)
     if row.installed:
         parts.append("[installed]")
@@ -419,6 +420,19 @@ class CatalogScreen(Screen[None]):
             cards = [ModelCard(row) for row in rows]
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
+        if not self._hf_fetched:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_BROWSE_MORE,
+                    classes="grid-cta browse-more-hf",
+                )
+            )
+        widgets_to_mount.append(
+            Static(
+                msg.CATALOG_VIEW_TOGGLE_GRID,
+                classes="grid-cta view-toggle-cta",
+            )
+        )
         container.mount_all(widgets_to_mount)
 
     def _filter_grid(self) -> None:
@@ -436,6 +450,13 @@ class CatalogScreen(Screen[None]):
                 has_visible = any(c.display for c in grid.children)
                 child.display = has_visible
                 grid.display = has_visible
+
+    @on(Click, ".browse-more-hf")
+    def _on_browse_more_clicked(self) -> None:
+        """Fetch all models when the browse-more card is clicked."""
+        if not self._hf_fetched:
+            self._hf_fetched = True
+            self._fetch_all_hf_models()
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
@@ -735,7 +756,7 @@ def _group_rows_for_grid(
     ]
     vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
     return [
-        ("Recommended", recommended),
+        ("Our picks", recommended),
         ("Installed", installed),
         ("Chat", chat),
         ("Embedding", embedding),

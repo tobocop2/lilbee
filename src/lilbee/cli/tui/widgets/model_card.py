@@ -39,6 +39,10 @@ class ModelCard(containers.VerticalGroup):
         bg = _TASK_COLORS.get(row.task, "$primary")
         with containers.Grid(id="card-header"):
             yield widgets.Label(row.name, id="card-name")
+            if row.featured:
+                yield widgets.Label(
+                    pill("pick", "$warning", "$text"), id="card-pick"
+                )
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
         specs = _build_specs(row.params, row.quant, row.size)
         yield widgets.Label(specs, id="card-info")

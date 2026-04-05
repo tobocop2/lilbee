@@ -188,6 +188,9 @@ class ChatScreen(Screen[None]):
 
     def key_f5(self) -> None:
         """Open the setup wizard."""
+        self._cmd_setup("")
+
+    def _cmd_setup(self, _args: str) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)

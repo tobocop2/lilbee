@@ -71,8 +71,8 @@ ModelCard {
     }
 
     #card-header {
-        grid-size: 2 1;
-        grid-columns: 1fr auto;
+        grid-size: 3 1;
+        grid-columns: 1fr auto auto;
         height: auto;
     }
 
@@ -80,6 +80,11 @@ ModelCard {
         text-style: bold;
         text-wrap: nowrap;
         text-overflow: ellipsis;
+    }
+
+    #card-pick {
+        width: auto;
+        margin: 0 1 0 0;
     }
 
     #card-task {
@@ -95,4 +100,22 @@ ModelCard {
     #card-status {
         text-style: dim;
     }
+}
+
+.grid-cta {
+    text-align: center;
+    text-style: bold;
+    padding: 1 2;
+    margin: 1 2;
+    border: tall $surface-lighten-2;
+    color: $text;
+}
+
+.browse-more-hf {
+    color: $primary;
+}
+
+.browse-more-hf:hover {
+    background: $panel;
+    border: tall $primary;
 }

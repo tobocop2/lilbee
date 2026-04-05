@@ -217,7 +217,7 @@ class TestNavBarPresence:
             assert nav is not None
 
             # Cycle through all views
-            for view in ["Models", "Status", "Settings", "Tasks"]:
+            for view in ["Catalog", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
                 nav = app.query_one("#global-nav-bar")
@@ -254,7 +254,7 @@ class TestViewCycling:
             await pilot.pause()
             assert app.active_view == "Chat"
 
-            expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
+            expected = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
             for view in expected:
                 app.action_nav_next()
                 await pilot.pause()
@@ -488,9 +488,9 @@ class TestScreenTransitions:
                 await pilot.pause()
                 assert app.active_view == "Chat"
 
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
-                assert app.active_view == "Models"
+                assert app.active_view == "Catalog"
 
                 app.switch_view("Settings")
                 await pilot.pause()
@@ -504,7 +504,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
                 for view in expected:
                     app.action_nav_next()
                     await pilot.pause()
@@ -518,9 +518,9 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
-                assert app.active_view == "Models"
+                assert app.active_view == "Catalog"
 
                 await pilot.press("q")
                 await pilot.pause()
@@ -537,7 +537,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 app.switch_view("Tasks")
                 await pilot.pause()
@@ -552,7 +552,7 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                full_cycle = ["Models", "Status", "Settings", "Tasks", "Chat"]
+                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
                 for view in full_cycle:
                     app.action_nav_next()
                     await pilot.pause()
@@ -567,7 +567,7 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                backward_cycle = ["Tasks", "Settings", "Status", "Models", "Chat"]
+                backward_cycle = ["Tasks", "Settings", "Status", "Catalog", "Chat"]
                 for view in backward_cycle:
                     app.action_nav_prev()
                     await pilot.pause()
@@ -581,7 +581,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                sequence = ["Models", "Status", "Settings", "Models", "Status"]
+                sequence = ["Catalog", "Status", "Settings", "Catalog", "Status"]
                 for view in sequence:
                     app.switch_view(view)
                     await pilot.pause()
@@ -596,7 +596,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                for view in ["Chat", "Models", "Status", "Settings", "Tasks"]:
+                for view in ["Chat", "Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
                     await pilot.pause()
                     assert app.active_view == view
@@ -618,7 +618,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 await pilot.press("q")
                 await pilot.pause()
@@ -682,7 +682,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                for view in ["Models", "Status", "Settings", "Tasks"]:
+                for view in ["Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
                     await pilot.pause()
                     app.screen.action_go_back()
@@ -981,7 +981,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 grids = app.screen.query(GridSelect)
                 assert len(grids) > 0
@@ -995,7 +995,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 assert app.screen.has_class("-grid-view")
@@ -1019,7 +1019,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 all_cards = app.screen.query(ModelCard)
@@ -1048,7 +1048,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_focus_search()
@@ -1070,7 +1070,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 cards = app.screen.query(ModelCard)
                 assert len(cards) == 2
@@ -1085,7 +1085,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_toggle_view()
@@ -1111,7 +1111,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_toggle_view()
@@ -1135,7 +1135,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_toggle_view()
@@ -1154,7 +1154,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_toggle_view()
@@ -1198,7 +1198,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
 
                 app.screen.action_toggle_view()
@@ -1223,7 +1223,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 app.screen.action_toggle_view()
                 await pilot.pause()
@@ -1239,7 +1239,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 await pilot.press("q")
                 await pilot.pause()
@@ -1253,7 +1253,7 @@ class TestCatalogInteractions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.switch_view("Models")
+                app.switch_view("Catalog")
                 await pilot.pause()
                 # These actions should be no-ops or safe in grid mode
                 app.screen.action_cursor_down()
@@ -2150,3 +2150,184 @@ class TestGridSelectWidget:
             app.query_one("#other-input", Input).focus()
             await pilot.pause()
             assert grid.highlighted is None
+
+
+class TestCatalogViewToggle:
+    """Test view toggle CTA and grid/table switching."""
+
+    async def test_view_toggle_cta_exists(self, _mock_resolve):
+        """Grid view shows a .view-toggle-cta Static."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                ctas = app.screen.query(".view-toggle-cta")
+                assert len(ctas) >= 1
+
+    async def test_our_picks_heading_in_grid(self, _mock_resolve):
+        """Grid view shows 'Our picks' section heading."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                headings = app.screen.query(".section-heading")
+                texts = [str(h.render()) for h in headings]
+                assert "Our picks" in texts
+
+
+class TestCatalogPickBadge:
+    """Test that featured cards show the pick badge."""
+
+    async def test_featured_card_has_pick_label(self, _mock_resolve):
+        """Featured ModelCard should render #card-pick."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                cards = app.screen.query(ModelCard)
+                featured = [c for c in cards if c.row.featured]
+                assert len(featured) > 0
+                pick = featured[0].query("#card-pick")
+                assert len(pick) == 1
+
+
+class TestCatalogLazyLoad:
+    """Test browse-more card for lazy HF loading."""
+
+    async def test_browse_more_card_exists(self, _mock_resolve):
+        """.browse-more-hf card appears before HF fetch."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                cards = app.screen.query(".browse-more-hf")
+                assert len(cards) >= 1
+
+
+class TestSetupWizardGrid:
+    """Test setup wizard uses GridSelect + ModelCard."""
+
+    async def test_setup_uses_grid_select(self, _mock_resolve):
+        """SetupWizard mounts GridSelect, not ListView."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                grids = app.screen.query(GridSelect)
+                assert len(grids) >= 1
+
+    async def test_setup_step1_shows_chat_picks(self, _mock_resolve):
+        """Step 1 shows 'Our picks' heading for chat models."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                headings = app.screen.query(".section-heading")
+                texts = [str(h.render()) for h in headings]
+                assert "Our picks" in texts
+
+    async def test_setup_browse_catalog_button(self, _mock_resolve):
+        """Browse catalog button exists in setup wizard."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                btn = app.screen.query_one("#setup-browse")
+                assert btn is not None
+
+    async def test_cmd_setup_opens_wizard(self, _mock_resolve):
+        """/setup command opens the setup wizard."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.screen._handle_slash("/setup")
+                await pilot.pause()
+                assert isinstance(app.screen, SetupWizard)
+
+    async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
+        """Switching from catalog grid to status and back."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                assert isinstance(app.screen, CatalogScreen)
+
+                app.switch_view("Status")
+                await pilot.pause()
+                assert app.active_view == "Status"
+
+                app.switch_view("Catalog")
+                await pilot.pause()
+                assert isinstance(app.screen, CatalogScreen)
+
+    async def test_setup_browse_switches_to_catalog(self, _mock_resolve):
+        """Browse catalog button in setup dismisses and navigates
+        to catalog view."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                with mock.patch(
+                    "lilbee.cli.tui.screens.setup._scan_installed_models",
+                    return_value=([], []),
+                ):
+                    app.push_screen(SetupWizard())
+                    await pilot.pause()
+                    btn = app.screen.query_one("#setup-browse")
+                    btn.press()
+                    await pilot.pause()
+                    await pilot.pause()
+                    assert not isinstance(app.screen, SetupWizard)

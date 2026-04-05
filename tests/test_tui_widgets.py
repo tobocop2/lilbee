@@ -1357,22 +1357,25 @@ class TestSetupWizard:
         assert chat == []
         assert embed == []
 
-    def test_installed_row_compose(self, tmp_path) -> None:
-        from lilbee.cli.tui.screens.setup import _InstalledRow
+    def test_installed_name_to_row(self) -> None:
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
 
-        model_file = tmp_path / "test.gguf"
-        model_file.write_bytes(b"x" * 1024)
-        row = _InstalledRow(model_file)
-        children = list(row.compose())
-        assert len(children) == 1
+        row = _installed_name_to_row("test-model:latest", "chat")
+        assert row.name == "test-model:latest"
+        assert row.task == "chat"
+        assert row.installed is True
+        assert row.featured is False
 
-    def test_catalog_row_compose(self) -> None:
-        from lilbee.cli.tui.screens.setup import _CatalogRow
+    def test_model_card_from_table_row(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
 
-        model = _make_model("Test", task="chat")
-        row = _CatalogRow(model)
-        children = list(row.compose())
-        assert len(children) == 1
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = _catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.row is row
+        assert card.row.featured is True
+        assert card.row.task == "chat"
 
 
 class TestAllTasksFetched:
@@ -1469,10 +1472,10 @@ class TestNavBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
-            bar.active_view = "Models"
+            bar.active_view = "Catalog"
             await pilot.pause()
             # Just verify it doesn't crash and updates
-            assert bar.active_view == "Models"
+            assert bar.active_view == "Catalog"
 
     async def test_all_views_shown_in_display(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import NavBar
@@ -1589,12 +1592,12 @@ class TestNavBarClickSupport:
 
         assert _view_at_x(0) == "Chat"
 
-    def test_view_at_x_returns_models(self) -> None:
+    def test_view_at_x_returns_catalog(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
 
         regions = _view_regions()
-        models_start = regions[1][0]
-        assert _view_at_x(models_start) == "Models"
+        catalog_start = regions[1][0]
+        assert _view_at_x(catalog_start) == "Catalog"
 
     def test_view_at_x_returns_last_view(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
@@ -1627,7 +1630,7 @@ class TestNavBarClickSupport:
             models_x = regions[1][0] + 1
             with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
                 bar.on_click(mock.Mock(x=models_x, y=0))
-            app.switch_view.assert_called_once_with("Models")
+            app.switch_view.assert_called_once_with("Catalog")
 
     async def test_click_outside_views_does_nothing(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions

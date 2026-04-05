@@ -216,7 +216,7 @@ class TestChatScreenAsync:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.switch_view("Models")
+            app.switch_view("Catalog")
             await pilot.pause()
             assert len(app.screen_stack) > 1
 

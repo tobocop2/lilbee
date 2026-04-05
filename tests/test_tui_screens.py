@@ -147,12 +147,12 @@ class TestRowDisplayName:
     def test_featured_star(self):
         row = _catalog_to_row(_make_catalog_model(featured=True), installed=False)
         name = _row_display_name(row)
-        assert name.startswith("*")
+        assert name.startswith("\u2605")
 
     def test_not_featured(self):
         row = _catalog_to_row(_make_catalog_model(featured=False), installed=False)
         name = _row_display_name(row)
-        assert not name.startswith("*")
+        assert not name.startswith("\u2605")
 
     def test_installed_tag(self):
         row = _catalog_to_row(_make_catalog_model(), installed=True)
@@ -759,7 +759,7 @@ async def test_app_switch_to_catalog():
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
-            app.switch_view("Models")
+            app.switch_view("Catalog")
             await _pilot.pause()
             assert isinstance(app.screen, CatalogScreen)
 
@@ -3188,7 +3188,7 @@ async def test_app_nav_next_cycles_views():
 
         app.action_nav_next()
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Models"
+        assert app.query_one("#global-nav-bar").active_view == "Catalog"
 
         app.action_nav_next()
         await pilot.pause()
@@ -3214,9 +3214,9 @@ async def test_app_nav_switches_all_views():
         await pilot.pause()
         assert app.active_view == "Tasks"
 
-        app.switch_view("Models")
+        app.switch_view("Catalog")
         await pilot.pause()
-        assert app.active_view == "Models"
+        assert app.active_view == "Catalog"
 
 
 async def test_chat_ctrl_n_p_bindings_exist():

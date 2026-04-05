@@ -38,7 +38,7 @@ DARK_THEMES = (
 
 MODES: dict[str, str] = {
     "Chat": "lilbee.cli.tui.screens.chat.ChatScreen",
-    "Models": "lilbee.cli.tui.screens.catalog.CatalogScreen",
+    "Catalog": "lilbee.cli.tui.screens.catalog.CatalogScreen",
     "Status": "lilbee.cli.tui.screens.status.StatusScreen",
     "Settings": "lilbee.cli.tui.screens.settings.SettingsScreen",
     "Tasks": "lilbee.cli.tui.screens.task_center.TaskCenter",
