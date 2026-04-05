@@ -39,8 +39,7 @@ dependencies = [
     "uvicorn>=0.30",
     "httpx",
     "llama-cpp-python",
-    "huggingface_hub",  # TODO: remove path override after PR merges
-    # "huggingface_hub",
+    "huggingface_hub",
     "psutil>=5.9",
     "pydantic-settings>=2.13.1",
 ]
@@ -58,9 +57,6 @@ Issues = "https://github.com/tobocop2/lilbee/issues"
 
 [project.scripts]
 lilbee = "lilbee.launcher:main"
-
-[tool.uv.sources]
-huggingface_hub = { path = "../huggingface_hub", editable = true }
 
 [build-system]
 requires = ["hatchling"]
