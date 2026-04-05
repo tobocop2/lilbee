@@ -1,9 +1,9 @@
 """Wiki page generation — LLM-driven synthesis with citation provenance.
 
-Generates summary pages (1:1 with sources) from raw chunks. Each page
-carries inline citations ([^srcN]) for facts and [*inference*] markers
-for LLM synthesis. The _citations table is the source of truth;
-markdown footnotes are rendered from it.
+Generates summary pages (1:1 with sources) and synthesis pages (cross-source,
+concept-graph-driven) from raw chunks. Each page carries inline citations
+([^srcN]) for facts and [*inference*] markers for LLM synthesis. The
+_citations table is the source of truth; markdown footnotes are rendered from it.
 """
 
 from __future__ import annotations
@@ -60,6 +60,35 @@ Wiki summary:
 {wiki_text}
 
 Respond with ONLY a number between 0.0 and 1.0. Nothing else."""
+
+_SYNTHESIS_PROMPT = """\
+You are a knowledge compiler. Given source chunks from MULTIPLE documents about \
+related concepts, write a synthesis wiki page in markdown that connects ideas \
+across sources.
+
+Rules:
+1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.
+2. Cite the EXACT text from the source that supports each claim by quoting it.
+3. For connections, interpretations, or patterns you identify across sources, \
+mark with [*inference*].
+4. Use blockquotes (>) for directly cited facts.
+5. Reference each source by its filename when drawing connections.
+6. End with a citation block in this format:
+
+---
+<!-- citations (auto-generated from _citations table -- do not edit) -->
+[^src1]: {{source_name}}, excerpt: "exact quoted text"
+[^src2]: {{source_name}}, excerpt: "exact quoted text"
+
+Topic: {topic}
+
+Sources:
+{source_list}
+
+Chunks:
+{chunks_text}
+
+Write the synthesis page now. Start with a heading."""
 
 
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
@@ -280,3 +309,248 @@ def generate_summary_page(
         len(verified),
     )
     return page_path
+
+
+def _resolve_multi_source_citations(
+    parsed_citations: list[ParsedCitation],
+    source_names: list[str],
+    source_hashes: dict[str, str],
+    chunks_by_source: dict[str, list[SearchChunk]],
+) -> list[CitationRecord]:
+    """Resolve citations from a synthesis page that cites multiple sources.
+
+    Each citation's source_ref is matched against the source list to
+    determine which source document it references.
+    """
+    records: list[CitationRecord] = []
+    now = datetime.now(UTC).isoformat()
+
+    all_chunks = [c for cs in chunks_by_source.values() for c in cs]
+
+    for parsed in parsed_citations:
+        excerpt = _extract_excerpt(parsed.source_ref)
+
+        matched_source = _match_citation_source(parsed.source_ref, source_names)
+        if not matched_source:
+            matched_source = _find_excerpt_source(excerpt, chunks_by_source)
+        if not matched_source and source_names:
+            matched_source = source_names[0]
+
+        page_start, page_end, line_start, line_end = 0, 0, 0, 0
+        if excerpt:
+            search_chunks = chunks_by_source.get(matched_source, all_chunks)
+            for chunk in search_chunks:
+                if excerpt in chunk.chunk:
+                    page_start = chunk.page_start
+                    page_end = chunk.page_end
+                    line_start = chunk.line_start
+                    line_end = chunk.line_end
+                    break
+
+        records.append(
+            CitationRecord(
+                wiki_source="",
+                wiki_chunk_index=0,
+                citation_key=parsed.citation_key,
+                claim_type="fact" if excerpt else "inference",
+                source_filename=matched_source,
+                source_hash=source_hashes.get(matched_source, ""),
+                page_start=page_start,
+                page_end=page_end,
+                line_start=line_start,
+                line_end=line_end,
+                excerpt=excerpt,
+                created_at=now,
+            )
+        )
+    return records
+
+
+def _match_citation_source(source_ref: str, source_names: list[str]) -> str:
+    """Find which source a citation references by matching filenames in the ref."""
+    for name in source_names:
+        if name in source_ref:
+            return name
+    return ""
+
+
+def _find_excerpt_source(excerpt: str, chunks_by_source: dict[str, list[SearchChunk]]) -> str:
+    """Find which source contains a given excerpt by searching chunks."""
+    if not excerpt:
+        return ""
+    for source, chunks in chunks_by_source.items():
+        for chunk in chunks:
+            if excerpt in chunk.chunk:
+                return source
+    return ""
+
+
+def _make_slug(label: str) -> str:
+    """Turn a concept label into a filesystem-safe slug."""
+    return label.lower().replace(" ", "-").replace("/", "--")
+
+
+def _generate_synthesis_page(
+    topic: str,
+    source_names: list[str],
+    chunks_by_source: dict[str, list[SearchChunk]],
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> Path | None:
+    """Generate a single synthesis page for a concept cluster.
+
+    Returns the path to the generated page, or None on failure.
+    """
+    wiki_root = config.data_root / config.wiki_dir
+
+    all_chunks = [c for cs in chunks_by_source.values() for c in cs]
+    if not all_chunks:
+        log.warning("No chunks for synthesis topic %r, skipping", topic)
+        return None
+
+    chunks_text = _chunks_to_text(all_chunks)
+    source_list = "\n".join(f"- {name}" for name in sorted(source_names))
+
+    prompt = _SYNTHESIS_PROMPT.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    try:
+        response = provider.chat(messages, stream=False)
+        wiki_text = cast(str, response).strip()
+    except Exception:
+        log.warning("LLM failed to generate synthesis page for %r", topic, exc_info=True)
+        return None
+
+    if not wiki_text:
+        return None
+
+    parsed_citations = parse_wiki_citations(wiki_text)
+
+    source_hashes: dict[str, str] = {}
+    for name in source_names:
+        source_path = config.documents_dir / name
+        if source_path.exists():
+            source_hashes[name] = _file_hash(source_path)
+
+    citation_records = _resolve_multi_source_citations(
+        parsed_citations, source_names, source_hashes, chunks_by_source
+    )
+
+    all_chunk_text = " ".join(c.chunk for c in all_chunks)
+    verified = []
+    for rec in citation_records:
+        if rec["claim_type"] == "inference" or not rec["excerpt"]:
+            verified.append(rec)
+            continue
+        if rec["excerpt"] in all_chunk_text:
+            verified.append(rec)
+        else:
+            log.debug("Citation %s excerpt not found in sources, dropping", rec["citation_key"])
+
+    if not verified:
+        log.warning("No valid citations for synthesis topic %r, skipping", topic)
+        return None
+
+    faith_prompt = _FAITHFULNESS_PROMPT.format(chunks_text=chunks_text, wiki_text=wiki_text)
+    faith_messages: list[dict[str, Any]] = [{"role": "user", "content": faith_prompt}]
+    try:
+        faith_response = provider.chat(faith_messages, stream=False)
+        score = _parse_faithfulness_score(cast(str, faith_response))
+    except Exception:
+        log.warning("Faithfulness check failed for %r, using 0.0", topic, exc_info=True)
+        score = 0.0
+
+    threshold = config.wiki_faithfulness_threshold
+    if score >= threshold:
+        subdir = "concepts"
+    else:
+        subdir = "drafts"
+        log.info(
+            "Synthesis page %r scored %.2f (< %.2f), sending to drafts",
+            topic,
+            score,
+            threshold,
+        )
+
+    slug = _make_slug(topic)
+    page_dir = wiki_root / subdir
+    page_dir.mkdir(parents=True, exist_ok=True)
+    page_path = page_dir / f"{slug}.md"
+
+    sources_yaml = ", ".join(sorted(source_names))
+    frontmatter = (
+        f"---\n"
+        f"generated_by: {config.chat_model}\n"
+        f"generated_at: {datetime.now(UTC).isoformat()}\n"
+        f"sources: [{sources_yaml}]\n"
+        f"faithfulness_score: {score:.2f}\n"
+        f"---\n\n"
+    )
+
+    citation_block = render_citation_block(verified)
+    full_content = frontmatter + wiki_text
+    if citation_block:
+        full_content += "\n\n" + citation_block
+
+    page_path.write_text(full_content, encoding="utf-8")
+
+    wiki_source = f"{config.wiki_dir}/{subdir}/{slug}.md"
+    for rec in verified:
+        rec["wiki_source"] = wiki_source
+    store.add_citations(verified)
+
+    log.info(
+        "Generated synthesis page %r -> %s (score=%.2f, citations=%d, sources=%d)",
+        topic,
+        subdir,
+        score,
+        len(verified),
+        len(source_names),
+    )
+    return page_path
+
+
+def generate_synthesis_pages(
+    provider: LLMProvider,
+    store: Store,
+    config: Config | None = None,
+) -> list[Path]:
+    """Generate synthesis pages for concept clusters spanning 3+ sources.
+
+    Reads the concept graph to find qualifying clusters, gathers chunks
+    from all cluster sources, and generates a synthesis page for each.
+    Returns paths to all generated pages (concepts/ or drafts/).
+    """
+    from lilbee.concepts import ConceptGraph
+
+    if config is None:
+        config = cfg
+
+    graph = ConceptGraph(config, store)
+    cluster_sources = graph.get_cluster_sources(min_sources=3)
+    if not cluster_sources:
+        log.info("No concept clusters span 3+ sources, skipping synthesis")
+        return []
+
+    pages: list[Path] = []
+    for cluster_id, sources in cluster_sources.items():
+        topic = graph.get_cluster_label(cluster_id)
+        source_names = sorted(sources)
+
+        chunks_by_source: dict[str, list[SearchChunk]] = {}
+        for name in source_names:
+            chunks = store.get_chunks_by_source(name)
+            if chunks:
+                chunks_by_source[name] = chunks
+
+        if len(chunks_by_source) < 3:
+            continue
+
+        page = _generate_synthesis_page(
+            topic, source_names, chunks_by_source, provider, store, config
+        )
+        if page is not None:
+            pages.append(page)
+
+    log.info("Generated %d synthesis pages", len(pages))
+    return pages
