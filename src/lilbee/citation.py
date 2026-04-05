@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from lilbee.store import CitationRecord
+
 # Pattern for inline citation anchors: [^src1], [^src2], etc.
 _CITE_RE = re.compile(r"\[\^(src\d+)\]")
 
@@ -38,24 +40,6 @@ class ParsedCitation:
     citation_key: str  # e.g. "src1"
     source_ref: str  # human-readable ref, e.g. "python-docs/typing.md, lines 12-45"
     line_number: int  # 1-based line number in the markdown
-
-
-@dataclass(frozen=True)
-class CitationRecord:
-    """A row from the _citations table.
-
-    Defined here until store.py gains the _citations table in a later phase.
-    """
-
-    wiki_source: str
-    citation_key: str
-    source_filename: str
-    source_hash: str
-    excerpt: str
-    page_start: int = 0
-    page_end: int = 0
-    line_start: int = 0
-    line_end: int = 0
 
 
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
@@ -90,7 +74,7 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
     """
     lines = [_CITATION_BLOCK_SEP, _CITATION_BLOCK_COMMENT]
     for rec in citations:
-        lines.append(f"[^{rec.citation_key}]: {_format_source_ref(rec)}")
+        lines.append(f"[^{rec['citation_key']}]: {_format_source_ref(rec)}")
     return "\n".join(lines) + "\n"
 
 
@@ -101,9 +85,9 @@ def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatu
     by comparing ``citation.source_hash`` against the current file hash and
     checking file presence.
     """
-    if not citation.excerpt:
+    if not citation["excerpt"]:
         return CitationStatus.EXCERPT_MISSING
-    if _normalize(citation.excerpt) in _normalize(source_text):
+    if _normalize(citation["excerpt"]) in _normalize(source_text):
         return CitationStatus.VALID
     return CitationStatus.EXCERPT_MISSING
 
@@ -172,14 +156,14 @@ def _is_content_line(stripped: str) -> bool:
 
 def _format_source_ref(rec: CitationRecord) -> str:
     """Format a CitationRecord into a human-readable footnote reference."""
-    ref = rec.source_filename
-    if rec.page_start or rec.page_end:
-        if rec.page_start == rec.page_end:
-            ref += f", page {rec.page_start}"
+    ref = rec["source_filename"]
+    if rec["page_start"] or rec["page_end"]:
+        if rec["page_start"] == rec["page_end"]:
+            ref += f", page {rec['page_start']}"
         else:
-            ref += f", pages {rec.page_start}-{rec.page_end}"
-    elif rec.line_start or rec.line_end:
-        ref += f", lines {rec.line_start}-{rec.line_end}"
+            ref += f", pages {rec['page_start']}-{rec['page_end']}"
+    elif rec["line_start"] or rec["line_end"]:
+        ref += f", lines {rec['line_start']}-{rec['line_end']}"
     return ref
 
 

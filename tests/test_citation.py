@@ -3,7 +3,6 @@
 import pytest
 
 from lilbee.citation import (
-    CitationRecord,
     CitationStatus,
     ParsedCitation,
     find_unmarked_claims,
@@ -11,6 +10,28 @@ from lilbee.citation import (
     render_citation_block,
     verify_citation,
 )
+from lilbee.store import CitationRecord
+
+
+def _citation_record(**overrides: object) -> CitationRecord:
+    """Build a CitationRecord dict with sensible defaults."""
+    defaults: CitationRecord = {
+        "wiki_source": "page.md",
+        "wiki_chunk_index": 0,
+        "citation_key": "src1",
+        "claim_type": "fact",
+        "source_filename": "doc.md",
+        "source_hash": "abc",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "excerpt": "",
+        "created_at": "2026-01-01",
+    }
+    defaults.update(overrides)  # type: ignore[typeddict-item]
+    return defaults
+
 
 SAMPLE_WIKI_PAGE = """\
 ---
@@ -75,9 +96,8 @@ class TestParseWikiCitations:
 class TestRenderCitationBlock:
     def test_renders_with_lines(self):
         records = [
-            CitationRecord(
+            _citation_record(
                 wiki_source="wiki/summaries/typing.md",
-                citation_key="src1",
                 source_filename="python-docs/typing.md",
                 source_hash="abc123",
                 excerpt="some text",
@@ -92,9 +112,8 @@ class TestRenderCitationBlock:
 
     def test_renders_with_pages(self):
         records = [
-            CitationRecord(
+            _citation_record(
                 wiki_source="wiki/summaries/manual.md",
-                citation_key="src1",
                 source_filename="mypy-manual.pdf",
                 source_hash="def456",
                 excerpt="some text",
@@ -107,11 +126,9 @@ class TestRenderCitationBlock:
 
     def test_renders_page_range(self):
         records = [
-            CitationRecord(
+            _citation_record(
                 wiki_source="wiki/summaries/manual.md",
-                citation_key="src1",
                 source_filename="manual.pdf",
-                source_hash="abc",
                 excerpt="text",
                 page_start=2,
                 page_end=5,
@@ -122,11 +139,9 @@ class TestRenderCitationBlock:
 
     def test_renders_filename_only_when_no_location(self):
         records = [
-            CitationRecord(
+            _citation_record(
                 wiki_source="wiki/summaries/notes.md",
-                citation_key="src1",
                 source_filename="notes.txt",
-                source_hash="abc",
                 excerpt="text",
             ),
         ]
@@ -135,17 +150,14 @@ class TestRenderCitationBlock:
 
     def test_renders_multiple_citations(self):
         records = [
-            CitationRecord(
-                wiki_source="page.md",
-                citation_key="src1",
+            _citation_record(
                 source_filename="a.md",
                 source_hash="h1",
                 excerpt="t1",
                 line_start=1,
                 line_end=10,
             ),
-            CitationRecord(
-                wiki_source="page.md",
+            _citation_record(
                 citation_key="src2",
                 source_filename="b.pdf",
                 source_hash="h2",
@@ -166,54 +178,24 @@ class TestRenderCitationBlock:
 
 class TestVerifyCitation:
     def test_valid_when_excerpt_found(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="gradual typing",
-        )
+        rec = _citation_record(excerpt="gradual typing")
         assert verify_citation(rec, "Python supports gradual typing.") == CitationStatus.VALID
 
     def test_excerpt_missing_when_not_found(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="something completely different",
-        )
+        rec = _citation_record(excerpt="something completely different")
         status = verify_citation(rec, "Python supports gradual typing.")
         assert status == CitationStatus.EXCERPT_MISSING
 
     def test_excerpt_missing_when_empty_excerpt(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="",
-        )
+        rec = _citation_record(excerpt="")
         assert verify_citation(rec, "any text") == CitationStatus.EXCERPT_MISSING
 
     def test_whitespace_normalized_for_matching(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="gradual\n  typing",
-        )
+        rec = _citation_record(excerpt="gradual\n  typing")
         assert verify_citation(rec, "supports gradual typing here") == CitationStatus.VALID
 
     def test_case_insensitive_matching(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="Gradual Typing",
-        )
+        rec = _citation_record(excerpt="Gradual Typing")
         assert verify_citation(rec, "gradual typing module") == CitationStatus.VALID
 
 
@@ -313,27 +295,21 @@ class TestParsedCitationDataclass:
             pc.citation_key = "src2"  # type: ignore[misc]
 
 
-class TestCitationRecordDataclass:
-    def test_defaults(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="text",
-        )
-        assert rec.page_start == 0
-        assert rec.page_end == 0
-        assert rec.line_start == 0
-        assert rec.line_end == 0
-
-    def test_frozen(self):
-        rec = CitationRecord(
-            wiki_source="page.md",
-            citation_key="src1",
-            source_filename="doc.md",
-            source_hash="abc",
-            excerpt="text",
-        )
-        with pytest.raises(AttributeError):
-            rec.excerpt = "new"  # type: ignore[misc]
+class TestCitationRecordTypedDict:
+    def test_required_fields(self):
+        rec: CitationRecord = {
+            "wiki_source": "page.md",
+            "wiki_chunk_index": 0,
+            "citation_key": "src1",
+            "claim_type": "fact",
+            "source_filename": "doc.md",
+            "source_hash": "abc",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "excerpt": "text",
+            "created_at": "2026-01-01",
+        }
+        assert rec["page_start"] == 0
+        assert rec["citation_key"] == "src1"
