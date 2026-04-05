@@ -212,13 +212,14 @@ class TestChatScreenAsync:
     async def test_catalog_push(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app.switch_view("Models")
             await pilot.pause()
-            assert len(app.screen_stack) > 1
+            assert isinstance(app.screen, CatalogScreen)
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_slash_help(self, mock_catalog: mock.MagicMock) -> None:
@@ -327,7 +328,7 @@ class TestCatalogScreenAsync:
             catalog = CatalogScreen()
             app.push_screen(catalog)
             await pilot.pause()
-            catalog.action_pop_screen()
+            catalog.action_go_back()
             await pilot.pause()
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)

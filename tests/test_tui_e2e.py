@@ -60,7 +60,12 @@ def _mock_services():
 class ChatTestApp(App[None]):
     """Minimal app that pushes ChatScreen for testing."""
 
+    active_view = "Chat"
+
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="global-nav-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -210,14 +215,14 @@ class TestNavBarPresence:
             await pilot.pause()
 
             # Chat screen
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav is not None
 
             # Cycle through all views
             for view in ["Models", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
-                nav = app.screen.query_one("#global-nav-bar")
+                nav = app.query_one("#global-nav-bar")
                 assert nav is not None, f"NavBar missing on {view} screen"
 
 
@@ -226,7 +231,7 @@ class TestModeIndicator:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             # Insert mode is default
             assert "INSERT" in nav.mode_text
 
@@ -236,7 +241,7 @@ class TestModeIndicator:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert "NORMAL" in nav.mode_text
 
 

@@ -44,10 +44,7 @@ class NavBar(Widget):
         self._refresh_display()
 
     def on_mount(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.active_view = self.app.active_view
+        self.active_view = getattr(self.app, "active_view", "Chat")
         self._refresh_display()
 
     def _refresh_display(self) -> None:
@@ -72,11 +69,10 @@ class NavBar(Widget):
 
     def on_click(self, event: Click) -> None:
         """Switch view when a view name in the bar is clicked."""
-        from lilbee.cli.tui.app import LilbeeApp
-
         view = _view_at_x(event.x)
-        if view is not None and isinstance(self.app, LilbeeApp):
-            self.app.switch_view(view)
+        switch = getattr(self.app, "switch_view", None)
+        if view is not None and switch is not None:
+            switch(view)
 
 
 def _view_regions() -> list[tuple[int, int, str]]:

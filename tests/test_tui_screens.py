@@ -809,6 +809,7 @@ async def test_app_auto_sync_flag():
 
 class ChatTestApp(App[None]):
     CSS = ""
+    active_view = "Chat"
 
     def __init__(self) -> None:
         super().__init__()
@@ -817,6 +818,9 @@ class ChatTestApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="global-nav-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1691,7 +1695,7 @@ async def test_catalog_pop_screen():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            screen.action_pop_screen()
+            screen.action_go_back()
             await _pilot.pause()
 
 
@@ -2210,12 +2214,13 @@ async def test_chat_embedding_ready_false_no_sync():
 
     class NoSyncApp(App[None]):
         CSS = ""
+        _auto_sync = True
 
         def compose(self) -> ComposeResult:
             yield Footer()
 
         def on_mount(self) -> None:
-            self.push_screen(ChatScreen(auto_sync=True))
+            self.push_screen(ChatScreen())
 
     app = NoSyncApp()
     with (
@@ -2269,12 +2274,13 @@ async def test_chat_auto_sync_triggers_sync():
 
     class AutoSyncApp(App[None]):
         CSS = ""
+        _auto_sync = True
 
         def compose(self) -> ComposeResult:
             yield Footer()
 
         def on_mount(self) -> None:
-            self.push_screen(ChatScreen(auto_sync=True))
+            self.push_screen(ChatScreen())
 
     app = AutoSyncApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3160,15 +3166,15 @@ async def test_app_nav_prev_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+        assert app.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Tasks"
+        assert app.query_one("#global-nav-bar").active_view == "Tasks"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Settings"
+        assert app.query_one("#global-nav-bar").active_view == "Settings"
 
 
 async def test_app_nav_next_cycles_views():
@@ -3181,15 +3187,15 @@ async def test_app_nav_next_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Chat"
+        assert app.query_one("#global-nav-bar").active_view == "Chat"
 
         app.action_nav_next()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Models"
+        assert app.query_one("#global-nav-bar").active_view == "Models"
 
         app.action_nav_next()
         await pilot.pause()
-        assert app.screen.query_one("#global-nav-bar").active_view == "Status"
+        assert app.query_one("#global-nav-bar").active_view == "Status"
 
 
 async def test_app_nav_switches_all_views():
@@ -3352,7 +3358,7 @@ async def test_task_center_pop_screen():
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(TaskCenter())
         await pilot.pause()
-        app.screen.action_pop_screen()
+        app.screen.action_go_back()
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
@@ -3587,7 +3593,7 @@ async def test_chat_mode_indicator_shows_normal():
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        nav = app.query_one("#global-nav-bar", NavBar)
         assert nav.mode_text == msg.MODE_NORMAL
 
 
@@ -3605,7 +3611,7 @@ async def test_chat_mode_indicator_shows_insert():
         await pilot.pause()
         app.screen._enter_insert_mode()
         await pilot.pause()
-        nav = app.screen.query_one("#global-nav-bar", NavBar)
+        nav = app.query_one("#global-nav-bar", NavBar)
         assert nav.mode_text == msg.MODE_INSERT
 
 

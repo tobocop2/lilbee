@@ -18,7 +18,6 @@ from lilbee import settings
 from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -120,8 +119,8 @@ class SettingsScreen(Screen[None]):
     CSS_PATH = "settings.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "pop_screen", "Back", show=False),
+        Binding("q", "go_back", "Back", show=True),
+        Binding("escape", "go_back", "Back", show=False),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -129,7 +128,6 @@ class SettingsScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Input(
             placeholder="Filter settings...",
@@ -247,8 +245,13 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh help for %s", key, exc_info=True)
 
-    def action_pop_screen(self) -> None:
-        self.app.pop_screen()
+    def action_go_back(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+            self.app.switch_view("Chat")
+        else:
+            self.app.pop_screen()
 
     def action_scroll_down(self) -> None:
         self.query_one("#settings-scroll", VerticalScroll).scroll_down()

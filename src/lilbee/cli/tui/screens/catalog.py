@@ -28,7 +28,6 @@ from lilbee.catalog import (
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
@@ -186,8 +185,8 @@ class CatalogScreen(Screen[None]):
     CSS_PATH = "catalog.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "pop_screen", "Back", show=False),
+        Binding("q", "go_back", "Back", show=True),
+        Binding("escape", "go_back", "Back", show=False),
         Binding("v", "toggle_view", "View", show=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("d", "delete_model", "Delete", show=True),
@@ -217,7 +216,6 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
@@ -598,8 +596,13 @@ class CatalogScreen(Screen[None]):
                 exc_info=True,
             )
 
-    def action_pop_screen(self) -> None:
-        self.app.pop_screen()
+    def action_go_back(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+            self.app.switch_view("Chat")
+        else:
+            self.app.pop_screen()
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""

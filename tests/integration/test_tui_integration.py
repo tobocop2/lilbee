@@ -558,7 +558,7 @@ class TestCatalogKeybindings:
                 screen = CatalogScreen()
                 app.push_screen(screen)
                 await pilot.pause()
-                screen.action_pop_screen()
+                screen.action_go_back()
                 await pilot.pause()
                 assert not isinstance(app.screen, CatalogScreen)
 
@@ -610,7 +610,7 @@ class TestStatusKeybindings:
                 screen = StatusScreen()
                 app.push_screen(screen)
                 await pilot.pause()
-                screen.action_pop_screen()
+                screen.action_go_back()
                 await pilot.pause()
                 assert not isinstance(app.screen, StatusScreen)
 
@@ -640,7 +640,7 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.action_pop_screen()
+            screen.action_go_back()
             await pilot.pause()
             assert not isinstance(app.screen, SettingsScreen)
 

@@ -7,8 +7,9 @@ import logging
 from pathlib import Path
 from typing import ClassVar
 
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.screen import Screen
 from textual.signal import Signal
 
 from lilbee.cli.tui import messages as msg
@@ -37,6 +38,36 @@ DARK_THEMES = (
 )
 
 
+def _get_chat_screen() -> Screen:
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    return ChatScreen()
+
+
+def _get_catalog_screen() -> Screen:
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    return CatalogScreen()
+
+
+def _get_status_screen() -> Screen:
+    from lilbee.cli.tui.screens.status import StatusScreen
+
+    return StatusScreen()
+
+
+def _get_settings_screen() -> Screen:
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    return SettingsScreen()
+
+
+def _get_tasks_screen() -> Screen:
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    return TaskCenter()
+
+
 class LilbeeApp(App[None]):
     """Full-screen TUI for lilbee knowledge base."""
 
@@ -44,6 +75,22 @@ class LilbeeApp(App[None]):
     CSS_PATH = Path(__file__).parent / "app.tcss"
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
+
+    MODES = {  # noqa: RUF012
+        "chat": _get_chat_screen,
+        "models": _get_catalog_screen,
+        "status": _get_status_screen,
+        "settings": _get_settings_screen,
+        "tasks": _get_tasks_screen,
+    }
+
+    _MODE_FOR_VIEW: ClassVar[dict[str, str]] = {
+        "Chat": "chat",
+        "Models": "models",
+        "Status": "status",
+        "Settings": "settings",
+        "Tasks": "tasks",
+    }
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("question_mark", "push_help", "? help", show=True),
@@ -69,14 +116,14 @@ class LilbeeApp(App[None]):
 
         self.task_bar = TaskBar(id="app-task-bar")
 
+    def compose(self) -> ComposeResult:
+        yield NavBar(id="global-nav-bar")
+
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
         self.mount(self.task_bar)
-
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        self.push_screen(ChatScreen(auto_sync=self._auto_sync))
+        self.switch_mode("chat")
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
@@ -127,51 +174,22 @@ class LilbeeApp(App[None]):
             reset_services()
         os._exit(1)
 
-    def _pop_to_chat(self) -> None:
-        """Pop overlay screens until the Chat screen is on top."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        while len(self.screen_stack) > 1 and not isinstance(self.screen, ChatScreen):
-            self.pop_screen()
-
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view, popping any overlay screens first."""
-        self._pop_to_chat()
-
-        screen_cls = self._resolve_screen(view_name)
-        if screen_cls is not None:
-            self.push_screen(screen_cls())
-        elif view_name == "Chat":
-            from textual.widgets import Input
-
-            self.call_later(lambda: self.screen.query_one("#chat-input", Input).focus())
-
+        """Switch to a named view using Textual modes."""
+        mode_name = self._MODE_FOR_VIEW.get(view_name)
+        if mode_name is None:
+            return
+        self.switch_mode(mode_name)
         self.active_view = view_name
-        self.call_after_refresh(self._update_nav, view_name)
+        self._update_nav(view_name)
 
     def _update_nav(self, view_name: str) -> None:
-        """Update the NavBar after the new screen has mounted."""
+        """Update the app-level NavBar after a mode switch."""
         try:
-            nav = self.screen.query_one("#global-nav-bar", NavBar)
+            nav = self.query_one("#global-nav-bar", NavBar)
             nav.active_view = view_name
         except Exception:
             log.debug("NavBar update failed", exc_info=True)
-
-    @staticmethod
-    def _resolve_screen(view_name: str) -> type | None:
-        """Return the Screen class for a view name, or None for Chat."""
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-        from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.cli.tui.screens.task_center import TaskCenter
-
-        view_map: dict[str, type] = {
-            "Models": CatalogScreen,
-            "Status": StatusScreen,
-            "Settings": SettingsScreen,
-            "Tasks": TaskCenter,
-        }
-        return view_map.get(view_name)
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal

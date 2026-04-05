@@ -14,7 +14,6 @@ from textual.screen import Screen
 from textual.widgets import Collapsible, DataTable, Footer, Header, Static
 
 from lilbee.cli.tui.pill import pill
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_info import ModelArchInfo, get_model_architecture
 from lilbee.store import SourceRecord
@@ -85,8 +84,8 @@ class StatusScreen(Screen[None]):
     CSS_PATH = "status.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "pop_screen", "Back", show=False),
+        Binding("q", "go_back", "Back", show=True),
+        Binding("escape", "go_back", "Back", show=False),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),
@@ -94,7 +93,6 @@ class StatusScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield Header()
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
@@ -150,8 +148,13 @@ class StatusScreen(Screen[None]):
         """Populate the storage section."""
         self.query_one("#storage-info", Static).update(_build_storage_content(doc_count))
 
-    def action_pop_screen(self) -> None:
-        self.app.pop_screen()
+    def action_go_back(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+            self.app.switch_view("Chat")
+        else:
+            self.app.pop_screen()
 
     def action_cursor_down(self) -> None:
         self.query_one("#docs-table", DataTable).action_cursor_down()

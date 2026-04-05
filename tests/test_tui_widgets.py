@@ -1670,7 +1670,7 @@ class TestLilbeeAppGlobalNavBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav is not None
 
     async def test_nav_bar_default_is_chat(self) -> None:
@@ -1686,7 +1686,7 @@ class TestLilbeeAppGlobalNavBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav.active_view == "Chat"
 
 
