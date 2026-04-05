@@ -267,3 +267,58 @@ class LintIssue(BaseModel):
     citation_key: str = ""
     status: str = "valid"
     message: str = ""
+
+
+class WikiPageDetail(BaseModel):
+    """Full content of a single wiki page."""
+
+    slug: str
+    title: str = ""
+    content: str = ""
+
+
+class WikiCitationsResult(BaseModel):
+    """Citations attached to a single wiki page."""
+
+    slug: str
+    citations: list[dict[str, Any]] = []
+
+
+class WikiLintResult(BaseModel):
+    """Result of a full wiki lint run."""
+
+    issues: list[dict[str, str]] = []
+    errors: int = 0
+    warnings: int = 0
+
+
+class WikiLintStatusResult(BaseModel):
+    """Status of a lint task (stub)."""
+
+    task_id: str
+    status: str = "not_implemented"
+    issues: list[dict[str, str]] = []
+
+
+class WikiGenerateResult(BaseModel):
+    """Result of wiki page generation."""
+
+    status: str
+    source: str
+    path: str = ""
+
+
+class WikiPruneRecordResponse(BaseModel):
+    """A single pruning action."""
+
+    wiki_source: str
+    action: str
+    reason: str
+
+
+class WikiPruneResult(BaseModel):
+    """Result of wiki pruning."""
+
+    records: list[WikiPruneRecordResponse] = []
+    archived: int = 0
+    flagged: int = 0

@@ -10,10 +10,23 @@ from litestar import get, post
 from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
+from lilbee import services as svc_mod
 from lilbee.config import cfg
 from lilbee.security import validate_path_within
-from lilbee.server.models import WikiPageSummary
-from lilbee.wiki.index import parse_source_count
+from lilbee.server.models import (
+    WikiCitationsResult,
+    WikiGenerateResult,
+    WikiLintResult,
+    WikiLintStatusResult,
+    WikiPageDetail,
+    WikiPageSummary,
+    WikiPruneRecordResponse,
+    WikiPruneResult,
+)
+from lilbee.wiki import gen as gen_mod
+from lilbee.wiki import lint as lint_mod
+from lilbee.wiki import prune as prune_mod
+from lilbee.wiki.index import parse_source_count, update_wiki_index
 from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
 
 
@@ -94,8 +107,6 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 
     index_path = root / "index.md"
     if index_path.is_file():
-        from lilbee.wiki.index import update_wiki_index
-
         update_wiki_index()
 
     pages: list[WikiPageSummary] = []
@@ -124,21 +135,19 @@ async def wiki_citations_reverse_route(
     _require_wiki()
     if not source:
         return []
-    from lilbee.services import get_services
-
-    records = get_services().store.get_citations_for_source(source)
+    records = svc_mod.get_services().store.get_citations_for_source(source)
     return [dict(r) for r in records]
 
 
 @get("/api/wiki/lint/{task_id:str}")
-async def wiki_lint_status_route(task_id: str) -> dict[str, Any]:
+async def wiki_lint_status_route(task_id: str) -> WikiLintStatusResult:
     """Poll lint task status by task ID."""
     _require_wiki()
-    return {"task_id": task_id, "status": "not_implemented", "issues": []}
+    return WikiLintStatusResult(task_id=task_id)
 
 
 @get("/api/wiki/{slug:path}")
-async def wiki_read_route(slug: str) -> dict[str, Any]:
+async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()
     slug = slug.lstrip("/")
@@ -150,74 +159,63 @@ async def wiki_read_route(slug: str) -> dict[str, Any]:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
     text = path.read_text(encoding="utf-8")
     fm = parse_frontmatter(text)
-    return {
-        "slug": slug,
-        "title": fm.get("title", path.stem.replace("-", " ").title()),
-        "content": text,
-    }
+    return WikiPageDetail(
+        slug=slug,
+        title=fm.get("title", path.stem.replace("-", " ").title()),
+        content=text,
+    )
 
 
-def _citations_for_slug(slug: str) -> dict[str, Any]:
+def _citations_for_slug(slug: str) -> WikiCitationsResult:
     """Return citation chain for a wiki page."""
     path = _find_page(slug)
     if path is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
-    from lilbee.services import get_services
-
     wiki_source = f"{cfg.wiki_dir}/{slug}.md"
-    records = get_services().store.get_citations_for_wiki(wiki_source)
-    return {"slug": slug, "citations": [dict(r) for r in records]}
+    records = svc_mod.get_services().store.get_citations_for_wiki(wiki_source)
+    return WikiCitationsResult(slug=slug, citations=[dict(r) for r in records])
 
 
 @post("/api/wiki/lint")
-async def wiki_lint_route() -> dict[str, Any]:
+async def wiki_lint_route() -> WikiLintResult:
     """Trigger a full wiki lint."""
     _require_wiki()
-    from lilbee.services import get_services
-    from lilbee.wiki.lint import lint_all
-
-    report = lint_all(get_services().store)
-    return {
-        "issues": [i.to_dict() for i in report.issues],
-        "errors": report.error_count,
-        "warnings": report.warning_count,
-    }
+    report = lint_mod.lint_all(svc_mod.get_services().store)
+    return WikiLintResult(
+        issues=[i.to_dict() for i in report.issues],
+        errors=report.error_count,
+        warnings=report.warning_count,
+    )
 
 
 @post("/api/wiki/generate/{source:path}")
-async def wiki_generate_route(source: str) -> dict[str, Any]:
+async def wiki_generate_route(source: str) -> WikiGenerateResult:
     """Trigger wiki generation for a source document."""
     _require_wiki()
     source = source.lstrip("/")
-
-    from lilbee.security import validate_path_within
 
     try:
         validate_path_within(cfg.documents_dir / source, cfg.documents_dir)
     except ValueError:
         raise NotFoundException(detail=f"invalid source path: {source}") from None
 
-    from lilbee.services import get_services
-    from lilbee.wiki.gen import generate_summary_page
-
-    svc = get_services()
+    svc = svc_mod.get_services()
     chunks = svc.store.get_chunks_by_source(source)
-    result = generate_summary_page(source, chunks, svc.provider, svc.store)
+    result = gen_mod.generate_summary_page(source, chunks, svc.provider, svc.store)
     if result is None:
-        return {"status": "failed", "source": source}
-    return {"status": "generated", "source": source, "path": str(result)}
+        return WikiGenerateResult(status="failed", source=source)
+    return WikiGenerateResult(status="generated", source=source, path=str(result))
 
 
 @post("/api/wiki/prune")
-async def wiki_prune_route() -> dict[str, Any]:
+async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    from lilbee.services import get_services
-    from lilbee.wiki.prune import prune_wiki
-
-    report = prune_wiki(get_services().store)
-    return {
-        "records": [r.to_dict() for r in report.records],
-        "archived": report.archived_count,
-        "flagged": report.flagged_count,
-    }
+    report = prune_mod.prune_wiki(svc_mod.get_services().store)
+    return WikiPruneResult(
+        records=[
+            WikiPruneRecordResponse(**r.to_dict()) for r in report.records
+        ],
+        archived=report.archived_count,
+        flagged=report.flagged_count,
+    )

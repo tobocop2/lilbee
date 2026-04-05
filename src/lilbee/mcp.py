@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -19,7 +19,7 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 
 
 @mcp.tool()
-def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
+def lilbee_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search the knowledge base for relevant document chunks.
 
     Returns chunks sorted by relevance. No LLM call — uses pre-computed embeddings.
@@ -31,7 +31,7 @@ def lilbee_search(query: str, top_k: int = 5) -> list[dict]:
 
 
 @mcp.tool()
-def lilbee_status() -> dict:
+def lilbee_status() -> dict[str, Any]:
     """Show indexed documents, configuration, and chunk counts."""
     from lilbee.services import get_services
 
@@ -53,7 +53,7 @@ def lilbee_status() -> dict:
 
 
 @mcp.tool()
-async def lilbee_sync() -> dict:
+async def lilbee_sync() -> dict[str, Any]:
     """Sync documents directory with the vector store."""
     from lilbee.ingest import sync
 
@@ -65,7 +65,7 @@ async def lilbee_add(
     paths: list[str],
     force: bool = False,
     vision_model: str = "",
-) -> dict:
+) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base and sync.
 
     Copies the given paths into the documents directory, then ingests them.
@@ -134,7 +134,7 @@ def lilbee_crawl(
     url: str,
     depth: int = 0,
     max_pages: int = 50,
-) -> dict:
+) -> dict[str, Any]:
     """Crawl a web page and add it to the knowledge base (non-blocking).
 
     Launches the crawl as a background task and returns immediately with a
@@ -159,7 +159,7 @@ def lilbee_crawl(
 
 
 @mcp.tool()
-def lilbee_crawl_status(task_id: str) -> dict:
+def lilbee_crawl_status(task_id: str) -> dict[str, Any]:
     """Check the status of a running crawl task.
 
     Returns the current state including status, pages crawled, and any error.
@@ -184,7 +184,7 @@ def lilbee_crawl_status(task_id: str) -> dict:
 
 
 @mcp.tool()
-def lilbee_init(path: str = "") -> dict:
+def lilbee_init(path: str = "") -> dict[str, Any]:
     """Initialize a local .lilbee/ knowledge base in a directory.
 
     Creates .lilbee/ with documents/, data/, and .gitignore.
@@ -206,7 +206,7 @@ def lilbee_init(path: str = "") -> dict:
 
 
 @mcp.tool()
-def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
+def lilbee_remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name.
 
     Args:
@@ -222,7 +222,7 @@ def lilbee_remove(names: list[str], delete_files: bool = False) -> dict:
 
 
 @mcp.tool()
-def lilbee_list_documents() -> dict:
+def lilbee_list_documents() -> dict[str, Any]:
     """List all indexed documents with their chunk counts."""
     from lilbee.services import get_services
 
@@ -236,7 +236,7 @@ def lilbee_list_documents() -> dict:
 
 
 @mcp.tool()
-def lilbee_reset() -> dict:
+def lilbee_reset() -> dict[str, Any]:
     """Delete all documents and data (full factory reset).
 
     WARNING: This permanently removes all indexed documents and vector data.
@@ -247,7 +247,7 @@ def lilbee_reset() -> dict:
 
 
 @mcp.tool()
-def lilbee_wiki_lint(wiki_source: str = "") -> dict:
+def lilbee_wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages for citation staleness, missing sources, and unmarked claims.
 
     If wiki_source is provided, lint only that page. Otherwise, lint all wiki pages.
@@ -272,7 +272,7 @@ def lilbee_wiki_lint(wiki_source: str = "") -> dict:
 
 
 @mcp.tool()
-def lilbee_wiki_citations(wiki_source: str) -> dict:
+def lilbee_wiki_citations(wiki_source: str) -> dict[str, Any]:
     """Get all citations for a wiki page.
 
     Args:
@@ -290,7 +290,7 @@ def lilbee_wiki_citations(wiki_source: str) -> dict:
 
 
 @mcp.tool()
-def lilbee_wiki_status() -> dict:
+def lilbee_wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
 
@@ -317,7 +317,7 @@ def lilbee_wiki_status() -> dict:
 
 
 @mcp.tool()
-def lilbee_wiki_prune() -> dict:
+def lilbee_wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
 
     Archives pages whose sources are all deleted or whose concept cluster
