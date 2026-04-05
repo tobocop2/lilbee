@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.config import cfg
-from lilbee.wiki_index import (
+from lilbee.wiki.index import (
     _parse_source_count,
     _parse_title,
     append_wiki_log,

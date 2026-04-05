@@ -256,7 +256,7 @@ def lilbee_wiki_lint(wiki_source: str = "") -> dict:
         wiki_source: Path like "wiki/summaries/doc.md". Empty = lint all.
     """
     from lilbee.services import get_services
-    from lilbee.wiki_lint import lint_all, lint_wiki_page
+    from lilbee.wiki.lint import lint_all, lint_wiki_page
 
     store = get_services().store
     if wiki_source:
@@ -299,7 +299,7 @@ def lilbee_wiki_citations(wiki_source: str) -> dict:
 @mcp.tool()
 def lilbee_wiki_status() -> dict:
     """Show wiki layer status: page counts, recent lint issues."""
-    from lilbee.wiki_lint import lint_all
+    from lilbee.wiki.lint import lint_all
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     if not wiki_root.exists():
@@ -332,7 +332,7 @@ def lilbee_wiki_prune() -> dict:
     for regeneration.
     """
     from lilbee.services import get_services
-    from lilbee.wiki_prune import prune_wiki
+    from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)
     return {

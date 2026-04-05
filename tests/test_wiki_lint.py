@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.store import CitationRecord, Store
-from lilbee.wiki_lint import (
+from lilbee.wiki.lint import (
     IssueSeverity,
     LintIssue,
     LintReport,

@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from lilbee.citation import (
+from lilbee.config import Config, cfg
+from lilbee.store import CitationRecord, Store
+from lilbee.wiki.citation import (
     CitationStatus,
     find_unmarked_claims,
     verify_citation,
 )
-from lilbee.config import Config, cfg
-from lilbee.store import CitationRecord, Store
 
 log = logging.getLogger(__name__)
 

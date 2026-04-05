@@ -844,8 +844,8 @@ def wiki_lint(
     """Lint wiki pages for stale citations, missing sources, and unmarked claims."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.services import get_services
-    from lilbee.wiki_lint import lint_all as _lint_all
-    from lilbee.wiki_lint import lint_wiki_page
+    from lilbee.wiki.lint import lint_all as _lint_all
+    from lilbee.wiki.lint import lint_wiki_page
 
     store = get_services().store
     if wiki_source:
@@ -944,7 +944,7 @@ def wiki_status(
     drafts = _count_md_files(wiki_root / "drafts")
 
     from lilbee.services import get_services
-    from lilbee.wiki_lint import lint_all as _lint_all
+    from lilbee.wiki.lint import lint_all as _lint_all
 
     report = _lint_all(get_services().store)
 
@@ -983,7 +983,7 @@ def wiki_prune(
     """Prune stale and orphaned wiki pages."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.services import get_services
-    from lilbee.wiki_prune import prune_wiki
+    from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)
 

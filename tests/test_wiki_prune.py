@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.config import cfg
 from lilbee.store import CitationRecord, Store
-from lilbee.wiki_prune import (
+from lilbee.wiki.prune import (
     PruneAction,
     PruneRecord,
     PruneReport,

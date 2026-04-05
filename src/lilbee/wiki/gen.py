@@ -15,10 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from lilbee.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 from lilbee.config import Config, cfg
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
+from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 
 log = logging.getLogger(__name__)
 
@@ -367,7 +367,7 @@ def generate_summary_page(
         len(verified),
     )
 
-    from lilbee.wiki_index import append_wiki_log, update_wiki_index
+    from lilbee.wiki.index import append_wiki_log, update_wiki_index
 
     update_wiki_index(config)
     append_wiki_log("generated", f"summary page for {source_name} -> {subdir}/{slug}.md", config)
@@ -581,7 +581,7 @@ def _generate_synthesis_page(
         len(source_names),
     )
 
-    from lilbee.wiki_index import append_wiki_log, update_wiki_index
+    from lilbee.wiki.index import append_wiki_log, update_wiki_index
 
     update_wiki_index(config)
     append_wiki_log("generated", f"synthesis page for {topic!r} -> {subdir}/{slug}.md", config)

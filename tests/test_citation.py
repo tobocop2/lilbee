@@ -2,7 +2,7 @@
 
 import pytest
 
-from lilbee.citation import (
+from lilbee.wiki.citation import (
     CitationStatus,
     ParsedCitation,
     find_unmarked_claims,

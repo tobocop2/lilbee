@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.citation import ParsedCitation
+from lilbee.wiki.citation import ParsedCitation
 from lilbee.config import cfg
 from lilbee.store import SearchChunk, Store
-from lilbee.wiki_gen import (
+from lilbee.wiki.gen import (
     _chunks_to_text,
     _content_change_ratio,
     _diff_summary,

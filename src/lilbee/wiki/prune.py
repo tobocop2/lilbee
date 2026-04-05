@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lilbee.config import Config, cfg
 from lilbee.store import Store
-from lilbee.wiki_lint import IssueSeverity, lint_wiki_page
+from lilbee.wiki.lint import IssueSeverity, lint_wiki_page
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def prune_wiki(
             report.flagged_count,
         )
 
-        from lilbee.wiki_index import append_wiki_log, update_wiki_index
+        from lilbee.wiki.index import append_wiki_log, update_wiki_index
 
         update_wiki_index(config)
         for rec in report.records:

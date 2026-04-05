@@ -111,7 +111,7 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 
     index_path = root / "index.md"
     if index_path.is_file():
-        from lilbee.wiki_index import update_wiki_index
+        from lilbee.wiki.index import update_wiki_index
 
         update_wiki_index()
 
@@ -200,7 +200,7 @@ async def wiki_prune_route() -> dict[str, Any]:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
     from lilbee.services import get_services
-    from lilbee.wiki_prune import prune_wiki
+    from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)
     return {
