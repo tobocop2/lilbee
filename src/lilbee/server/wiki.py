@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,7 @@ def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
     page_type = _page_type_from_path(path, wiki_root)
     source_count = parse_source_count(text)
     raw_at = fm.get("generated_at", "")
-    created_at = str(raw_at) if not hasattr(raw_at, "isoformat") else raw_at.isoformat()
+    created_at = raw_at.isoformat() if isinstance(raw_at, (datetime, date)) else str(raw_at)
     return WikiPageSummary(
         slug=slug,
         title=title,

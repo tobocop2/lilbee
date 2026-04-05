@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol, runtime_checkable
 
 from textual.app import App
 from textual.binding import Binding, BindingType
@@ -17,9 +17,20 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
+
+@runtime_checkable
+class StreamingScreen(Protocol):
+    """Screen that supports streaming cancellation."""
+
+    _streaming: bool
+
+    def action_cancel_stream(self) -> None: ...
+
+
 _READY_FILE = "lilbee-splash-ready"
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
+_DOUBLE_QUIT_TIMEOUT_S = 2.0  # seconds window for double Ctrl+C force-quit
 DARK_THEMES = (
     "monokai",
     "dracula",
@@ -95,7 +106,7 @@ class LilbeeApp(App[None]):
         import time
 
         now = time.monotonic()
-        if now - self._last_quit_time < 2.0:
+        if now - self._last_quit_time < _DOUBLE_QUIT_TIMEOUT_S:
             self._force_quit()
             return
         self._last_quit_time = now
@@ -108,8 +119,8 @@ class LilbeeApp(App[None]):
                 self.notify(msg.APP_CANCELLED)
                 return
         screen = self.screen
-        if hasattr(screen, "_streaming") and screen._streaming:
-            screen.action_cancel_stream()  # type: ignore[attr-defined]
+        if isinstance(screen, StreamingScreen) and screen._streaming:
+            screen.action_cancel_stream()
             return
         self.exit()
 

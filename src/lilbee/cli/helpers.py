@@ -259,7 +259,8 @@ def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
     from lilbee.ingest import SyncResult
 
-    assert isinstance(result, SyncResult)
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     return {"command": "sync", **result.model_dump()}
 
 

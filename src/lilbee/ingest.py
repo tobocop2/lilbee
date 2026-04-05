@@ -63,9 +63,9 @@ class FileToProcess(NamedTuple):
 _MIN_MEANINGFUL_CHARS = 50
 
 
-def _has_meaningful_text(result: Any) -> bool:
+def _has_meaningful_text(result: ExtractionResult) -> bool:
     """Check if extraction produced meaningful text."""
-    if hasattr(result, "chunks") and result.chunks:
+    if result.chunks:
         total = sum(len(c.content.strip()) for c in result.chunks)
         return total > _MIN_MEANINGFUL_CHARS
     return False
@@ -595,7 +595,8 @@ async def sync(
             break
 
         content_type = classify_file(path)
-        assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
+        if content_type is None:
+            raise ValueError(f"Unsupported file: {name}")
 
         current_hash = file_hash(path)
         old_hash = existing_sources.get(name)

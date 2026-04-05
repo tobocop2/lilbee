@@ -159,7 +159,10 @@ def _citations_schema() -> pa.Schema:
 def _table_names(db: lancedb.DBConnection) -> list[str]:
     """Get list of table names, handling the ListTablesResponse object."""
     result = db.list_tables()
-    return result.tables if hasattr(result, "tables") else list(result)
+    try:
+        return result.tables  # type: ignore[no-any-return, union-attr]
+    except AttributeError:
+        return list(result)  # type: ignore[arg-type]
 
 
 def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:

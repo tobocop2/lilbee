@@ -230,6 +230,10 @@ class Config(BaseSettings):
     wiki_prune_raw: bool = False
     wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    # Fraction of citations that must be stale before a wiki page is flagged
+    # for regeneration during pruning. 0.5 = flag when >50% are stale.
+    wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
     # Maximum fraction of content that may change before a regeneration is
     # flagged for human review instead of overwriting the existing page.
     # 0.3 = 30% of lines changed triggers the drift guard.

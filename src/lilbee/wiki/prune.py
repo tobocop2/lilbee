@@ -22,8 +22,6 @@ from lilbee.wiki.lint import IssueSeverity, lint_wiki_page
 
 log = logging.getLogger(__name__)
 
-STALE_CITATION_THRESHOLD = 0.5
-
 
 class PruneAction(Enum):
     """What happened to a wiki page during pruning."""
@@ -136,7 +134,7 @@ def _check_stale_majority(
         if i.severity == IssueSeverity.WARNING
         and ("stale hash" in i.message.lower() or "excerpt not found" in i.message.lower())
     )
-    return stale_count / len(citations) > STALE_CITATION_THRESHOLD
+    return stale_count / len(citations) > config.wiki_stale_citation_threshold
 
 
 def _archive_and_record(

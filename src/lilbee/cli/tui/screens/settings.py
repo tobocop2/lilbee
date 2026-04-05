@@ -18,6 +18,7 @@ from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 _MAX_VALUE_LEN = 60
+_TOKEN_VISIBLE_CHARS = 4  # number of leading characters shown in masked tokens
 _HF_TOKEN_KEY = "hf_token"
 _LOCKED_TAG = "[locked]"
 _READONLY_FIELDS = frozenset(
@@ -38,6 +39,14 @@ _MODEL_INFO_KEYS = (
 )
 
 
+def mask_token(token: str) -> str:
+    """Mask a secret token, showing only the first few characters."""
+    if not token:
+        return "not set"
+    visible = min(_TOKEN_VISIBLE_CHARS, len(token))
+    return token[:visible] + "****"
+
+
 def _get_hf_token_display() -> str:
     """Get a masked display of the HuggingFace token, or 'not set'."""
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or ""
@@ -48,10 +57,7 @@ def _get_hf_token_display() -> str:
             from huggingface_hub import get_token
 
             token = get_token() or ""
-    if not token:
-        return "not set"
-    visible = min(4, len(token))
-    return token[:visible] + "****"
+    return mask_token(token)
 
 
 def _truncate(value: str) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual.app import ComposeResult
 from textual.events import Click
 from textual.reactive import reactive
@@ -9,6 +11,9 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.app import LilbeeApp
 
 _VIEWS = msg.NAV_VIEWS
 
@@ -43,9 +48,10 @@ class NavBar(Widget):
     def watch_mode_text(self, value: str) -> None:
         self._refresh_display()
 
+    app: LilbeeApp  # type: ignore[assignment]  # narrowed from App
+
     def on_mount(self) -> None:
-        if hasattr(self.app, "_active_view"):
-            self.active_view = self.app._active_view  # type: ignore[union-attr]
+        self.active_view = self.app._active_view
         self._refresh_display()
 
     def _refresh_display(self) -> None:
@@ -71,8 +77,8 @@ class NavBar(Widget):
     def on_click(self, event: Click) -> None:
         """Switch view when a view name in the bar is clicked."""
         view = _view_at_x(event.x)
-        if view is not None and hasattr(self.app, "_switch_view"):
-            self.app._switch_view(view)  # type: ignore[attr-defined]
+        if view is not None:
+            self.app._switch_view(view)
 
 
 def _view_regions() -> list[tuple[int, int, str]]:

@@ -533,7 +533,7 @@ class CatalogScreen(Screen[None]):
         except Exception:
             log.debug(
                 "_safe_call failed for %s",
-                fn.__name__ if hasattr(fn, "__name__") else fn,
+                getattr(fn, "__name__", repr(fn)),
                 exc_info=True,
             )
 
