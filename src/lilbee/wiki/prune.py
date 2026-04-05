@@ -40,6 +40,14 @@ class PruneRecord:
     action: PruneAction
     reason: str
 
+    def to_dict(self) -> dict[str, str]:
+        """Serialize to a plain dict suitable for JSON output."""
+        return {
+            "wiki_source": self.wiki_source,
+            "action": self.action.value,
+            "reason": self.reason,
+        }
+
 
 @dataclass
 class PruneReport:
@@ -131,6 +139,18 @@ def _check_stale_majority(
     return stale_count / len(citations) > STALE_CITATION_THRESHOLD
 
 
+def _archive_and_record(
+    wiki_source: str,
+    wiki_root: Path,
+    store: Store,
+    config: Config,
+    reason: str,
+) -> PruneRecord:
+    """Archive a wiki page and return a PruneRecord for the action."""
+    _archive_page(wiki_source, wiki_root, store, config)
+    return PruneRecord(wiki_source=wiki_source, action=PruneAction.ARCHIVED, reason=reason)
+
+
 def prune_wiki(
     store: Store,
     config: Config | None = None,
@@ -157,23 +177,21 @@ def prune_wiki(
             wiki_source = f"{config.wiki_dir}/{relative}"
 
             if _check_all_sources_deleted(wiki_source, store, config.documents_dir):
-                _archive_page(wiki_source, wiki_root, store, config)
                 report.records.append(
-                    PruneRecord(
-                        wiki_source=wiki_source,
-                        action=PruneAction.ARCHIVED,
-                        reason="all cited sources deleted",
+                    _archive_and_record(
+                        wiki_source, wiki_root, store, config, "all cited sources deleted"
                     )
                 )
                 continue
 
             if _check_cluster_below_threshold(wiki_source, store, config.documents_dir):
-                _archive_page(wiki_source, wiki_root, store, config)
                 report.records.append(
-                    PruneRecord(
-                        wiki_source=wiki_source,
-                        action=PruneAction.ARCHIVED,
-                        reason="concept cluster below 3 live sources",
+                    _archive_and_record(
+                        wiki_source,
+                        wiki_root,
+                        store,
+                        config,
+                        "concept cluster below 3 live sources",
                     )
                 )
                 continue

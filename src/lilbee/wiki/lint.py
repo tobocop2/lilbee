@@ -14,6 +14,7 @@ from pathlib import Path
 
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
+from lilbee.security import validate_path_within
 from lilbee.store import CitationRecord, Store
 from lilbee.wiki.citation import (
     CitationStatus,
@@ -39,6 +40,14 @@ class LintIssue:
     wiki_source: str
     severity: IssueSeverity
     message: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Serialize to a plain dict suitable for JSON output."""
+        return {
+            "wiki_source": self.wiki_source,
+            "severity": self.severity.value,
+            "message": self.message,
+        }
 
 
 @dataclass
@@ -66,6 +75,15 @@ def _lint_citation(
     """
     source_path = documents_dir / rec["source_filename"]
     wiki_source = rec["wiki_source"]
+
+    try:
+        validate_path_within(source_path, documents_dir)
+    except ValueError:
+        return LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.ERROR,
+            message=f"Source path escapes documents dir: {rec['source_filename']}",
+        )
 
     if not source_path.exists():
         return LintIssue(

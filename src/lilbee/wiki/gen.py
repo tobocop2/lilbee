@@ -137,6 +137,46 @@ def _extract_excerpt(source_ref: str) -> str:
     return source_ref[start:end].strip()
 
 
+def _find_excerpt_location(
+    excerpt: str,
+    chunks: list[SearchChunk],
+) -> tuple[int, int, int, int]:
+    """Find page/line location of an excerpt within chunks."""
+    if excerpt:
+        for chunk in chunks:
+            if excerpt in chunk.chunk:
+                return chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end
+    return 0, 0, 0, 0
+
+
+def _build_citation_record(
+    citation_key: str,
+    excerpt: str,
+    source_filename: str,
+    source_hash: str,
+    page_start: int,
+    page_end: int,
+    line_start: int,
+    line_end: int,
+    created_at: str,
+) -> CitationRecord:
+    """Build a single CitationRecord with consistent defaults."""
+    return CitationRecord(
+        wiki_source="",  # filled by caller
+        wiki_chunk_index=0,
+        citation_key=citation_key,
+        claim_type="fact" if excerpt else "inference",
+        source_filename=source_filename,
+        source_hash=source_hash,
+        page_start=page_start,
+        page_end=page_end,
+        line_start=line_start,
+        line_end=line_end,
+        excerpt=excerpt,
+        created_at=created_at,
+    )
+
+
 def _resolve_citations(
     parsed_citations: list[ParsedCitation],
     source_name: str,
@@ -152,33 +192,19 @@ def _resolve_citations(
     now = datetime.now(UTC).isoformat()
 
     for parsed in parsed_citations:
-        citation_key = parsed.citation_key
         excerpt = _extract_excerpt(parsed.source_ref)
-
-        page_start, page_end, line_start, line_end = 0, 0, 0, 0
-        if excerpt:
-            for chunk in chunks:
-                if excerpt in chunk.chunk:
-                    page_start = chunk.page_start
-                    page_end = chunk.page_end
-                    line_start = chunk.line_start
-                    line_end = chunk.line_end
-                    break
-
+        page_start, page_end, line_start, line_end = _find_excerpt_location(excerpt, chunks)
         records.append(
-            CitationRecord(
-                wiki_source="",  # filled by caller
-                wiki_chunk_index=0,
-                citation_key=citation_key,
-                claim_type="fact" if excerpt else "inference",
-                source_filename=source_name,
-                source_hash=source_hash,
-                page_start=page_start,
-                page_end=page_end,
-                line_start=line_start,
-                line_end=line_end,
-                excerpt=excerpt,
-                created_at=now,
+            _build_citation_record(
+                parsed.citation_key,
+                excerpt,
+                source_name,
+                source_hash,
+                page_start,
+                page_end,
+                line_start,
+                line_end,
+                now,
             )
         )
     return records
@@ -325,35 +351,26 @@ def _assemble_content(
     return full
 
 
-def _persist_page(
+def _persist_and_finalize(
     content: str,
     wiki_root: Path,
     subdir: str,
     slug: str,
     wiki_source: str,
     verified: list[CitationRecord],
+    page_type: str,
+    label: str,
+    source_names: list[str],
     store: Store,
-    drift_threshold: float,
+    config: Config,
 ) -> Path:
-    """Write the page to disk and persist citations to the store."""
-    page_path = _write_page(wiki_root, subdir, slug, content, drift_threshold)
+    """Write page to disk, persist citations, update index and log."""
+    page_path = _write_page(wiki_root, subdir, slug, content, config.wiki_drift_threshold)
     for rec in verified:
         rec["wiki_source"] = wiki_source
     store.delete_citations_for_wiki(wiki_source)
     store.add_citations(verified)
-    return page_path
 
-
-def _post_generate(
-    page_type: str,
-    label: str,
-    subdir: str,
-    slug: str,
-    source_names: list[str],
-    config: Config,
-    store: Store,
-) -> None:
-    """Prune raw chunks if configured, update index and log."""
     if config.wiki_prune_raw:
         for name in source_names:
             store.delete_by_source(name)
@@ -362,6 +379,7 @@ def _post_generate(
 
     update_wiki_index(config)
     append_wiki_log("generated", f"{page_type} page for {label} -> {subdir}/{slug}.md", config)
+    return page_path
 
 
 def _generate_page(
@@ -407,18 +425,20 @@ def _generate_page(
 
     wiki_root = config.data_root / config.wiki_dir
     wiki_source = f"{config.wiki_dir}/{subdir}/{slug}.md"
-    page_path = _persist_page(
+    page_path = _persist_and_finalize(
         full_content,
         wiki_root,
         subdir,
         slug,
         wiki_source,
         verified,
+        page_type,
+        label,
+        source_names,
         store,
-        config.wiki_drift_threshold,
+        config,
     )
 
-    _post_generate(page_type, label, subdir, slug, source_names, config, store)
     log.info(
         "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",
         label,
@@ -498,31 +518,19 @@ def _resolve_multi_source_citations(
         if not matched_source and source_names:
             matched_source = source_names[0]
 
-        page_start, page_end, line_start, line_end = 0, 0, 0, 0
-        if excerpt:
-            search_chunks = chunks_by_source.get(matched_source, all_chunks)
-            for chunk in search_chunks:
-                if excerpt in chunk.chunk:
-                    page_start = chunk.page_start
-                    page_end = chunk.page_end
-                    line_start = chunk.line_start
-                    line_end = chunk.line_end
-                    break
-
+        search_chunks = chunks_by_source.get(matched_source, all_chunks)
+        page_start, page_end, line_start, line_end = _find_excerpt_location(excerpt, search_chunks)
         records.append(
-            CitationRecord(
-                wiki_source="",
-                wiki_chunk_index=0,
-                citation_key=parsed.citation_key,
-                claim_type="fact" if excerpt else "inference",
-                source_filename=matched_source,
-                source_hash=source_hashes.get(matched_source, ""),
-                page_start=page_start,
-                page_end=page_end,
-                line_start=line_start,
-                line_end=line_end,
-                excerpt=excerpt,
-                created_at=now,
+            _build_citation_record(
+                parsed.citation_key,
+                excerpt,
+                matched_source,
+                source_hashes.get(matched_source, ""),
+                page_start,
+                page_end,
+                line_start,
+                line_end,
+                now,
             )
         )
     return records
@@ -595,6 +603,28 @@ def _generate_synthesis_page(
     )
 
 
+def _generate_for_cluster(
+    cluster_id: int,
+    label: str,
+    sources: set[str],
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+) -> Path | None:
+    """Gather chunks for a cluster and generate a synthesis page."""
+    source_names = sorted(sources)
+    chunks_by_source: dict[str, list[SearchChunk]] = {}
+    for name in source_names:
+        chunks = store.get_chunks_by_source(name)
+        if chunks:
+            chunks_by_source[name] = chunks
+
+    if len(chunks_by_source) < 3:
+        return None
+
+    return _generate_synthesis_page(label, source_names, chunks_by_source, provider, store, config)
+
+
 def generate_synthesis_pages(
     provider: LLMProvider,
     store: Store,
@@ -620,20 +650,7 @@ def generate_synthesis_pages(
     pages: list[Path] = []
     for cluster_id, sources in cluster_sources.items():
         topic = graph.get_cluster_label(cluster_id)
-        source_names = sorted(sources)
-
-        chunks_by_source: dict[str, list[SearchChunk]] = {}
-        for name in source_names:
-            chunks = store.get_chunks_by_source(name)
-            if chunks:
-                chunks_by_source[name] = chunks
-
-        if len(chunks_by_source) < 3:
-            continue
-
-        page = _generate_synthesis_page(
-            topic, source_names, chunks_by_source, provider, store, config
-        )
+        page = _generate_for_cluster(cluster_id, topic, sources, provider, store, config)
         if page is not None:
             pages.append(page)
 

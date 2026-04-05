@@ -266,14 +266,7 @@ def lilbee_wiki_lint(wiki_source: str = "") -> dict:
         issues = report.issues
     return {
         "command": "wiki_lint",
-        "issues": [
-            {
-                "wiki_source": i.wiki_source,
-                "severity": i.severity.value,
-                "message": i.message,
-            }
-            for i in issues
-        ],
+        "issues": [i.to_dict() for i in issues],
         "total": len(issues),
     }
 
@@ -337,14 +330,7 @@ def lilbee_wiki_prune() -> dict:
     report = prune_wiki(get_services().store)
     return {
         "command": "wiki_prune",
-        "records": [
-            {
-                "wiki_source": r.wiki_source,
-                "action": r.action.value,
-                "reason": r.reason,
-            }
-            for r in report.records
-        ],
+        "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
     }

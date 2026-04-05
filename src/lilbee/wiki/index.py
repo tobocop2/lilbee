@@ -33,7 +33,7 @@ def _parse_title(text: str) -> str:
     return ""
 
 
-def _parse_source_count(text: str) -> int:
+def parse_source_count(text: str) -> int:
     """Count sources from frontmatter sources field."""
     sources = parse_frontmatter(text).get("sources")
     if isinstance(sources, list):
@@ -63,7 +63,7 @@ def update_wiki_index(config: Config | None = None) -> Path:
         for md_path in sorted(subdir_path.glob("*.md")):
             text = md_path.read_text(encoding="utf-8")
             title = _parse_title(text) or md_path.stem.replace("-", " ").title()
-            source_count = _parse_source_count(text)
+            source_count = parse_source_count(text)
             rel = f"{subdir}/{md_path.stem}"
             lines.append(f"- [{title}]({rel}.md) | {page_type} | {source_count} sources")
 

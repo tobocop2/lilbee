@@ -9,9 +9,9 @@ import pytest
 from conftest import write_wiki_page
 from lilbee.config import cfg
 from lilbee.wiki.index import (
-    _parse_source_count,
     _parse_title,
     append_wiki_log,
+    parse_source_count,
     update_wiki_index,
 )
 
@@ -64,22 +64,22 @@ class TestParseTitle:
 
 class TestParseSourceCount:
     def test_single_source(self):
-        assert _parse_source_count("---\nsources: [doc.md]\n---\n") == 1
+        assert parse_source_count("---\nsources: [doc.md]\n---\n") == 1
 
     def test_multiple_sources(self):
-        assert _parse_source_count("---\nsources: [a.md, b.md, c.md]\n---\n") == 3
+        assert parse_source_count("---\nsources: [a.md, b.md, c.md]\n---\n") == 3
 
     def test_no_sources_field(self):
-        assert _parse_source_count("---\ntitle: Hello\n---\n") == 0
+        assert parse_source_count("---\ntitle: Hello\n---\n") == 0
 
     def test_empty_sources(self):
-        assert _parse_source_count("---\nsources: []\n---\n") == 0
+        assert parse_source_count("---\nsources: []\n---\n") == 0
 
     def test_no_frontmatter(self):
-        assert _parse_source_count("Just text, no frontmatter") == 0
+        assert parse_source_count("Just text, no frontmatter") == 0
 
     def test_string_sources_comma_separated(self):
-        assert _parse_source_count('---\nsources: "a.md, b.md"\n---\n') == 2
+        assert parse_source_count('---\nsources: "a.md, b.md"\n---\n') == 2
 
 
 class TestUpdateWikiIndex:

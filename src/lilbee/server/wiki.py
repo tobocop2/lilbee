@@ -12,6 +12,7 @@ from litestar.params import Parameter
 from lilbee.config import cfg
 from lilbee.security import validate_path_within
 from lilbee.server.models import WikiPageSummary
+from lilbee.wiki.index import parse_source_count
 from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
 
 
@@ -68,13 +69,7 @@ def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
     slug = _slug_from_path(path, wiki_root)
     title = fm.get("title", path.stem.replace("-", " ").title())
     page_type = _page_type_from_path(path, wiki_root)
-    sources = fm.get("sources")
-    if isinstance(sources, list):
-        source_count = len(sources)
-    elif isinstance(sources, str):
-        source_count = len([s for s in sources.split(",") if s.strip()])
-    else:
-        source_count = 0
+    source_count = parse_source_count(text)
     raw_at = fm.get("generated_at", "")
     created_at = str(raw_at) if not hasattr(raw_at, "isoformat") else raw_at.isoformat()
     return WikiPageSummary(
@@ -182,14 +177,7 @@ async def wiki_lint_route() -> dict[str, Any]:
 
     report = lint_all(get_services().store)
     return {
-        "issues": [
-            {
-                "wiki_source": i.wiki_source,
-                "severity": i.severity.value,
-                "message": i.message,
-            }
-            for i in report.issues
-        ],
+        "issues": [i.to_dict() for i in report.issues],
         "errors": report.error_count,
         "warnings": report.warning_count,
     }
@@ -221,14 +209,7 @@ async def wiki_prune_route() -> dict[str, Any]:
 
     report = prune_wiki(get_services().store)
     return {
-        "records": [
-            {
-                "wiki_source": r.wiki_source,
-                "action": r.action.value,
-                "reason": r.reason,
-            }
-            for r in report.records
-        ],
+        "records": [r.to_dict() for r in report.records],
         "archived": report.archived_count,
         "flagged": report.flagged_count,
     }

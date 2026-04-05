@@ -854,14 +854,7 @@ def wiki_lint(
         json_output(
             {
                 "command": "wiki_lint",
-                "issues": [
-                    {
-                        "wiki_source": i.wiki_source,
-                        "severity": i.severity.value,
-                        "message": i.message,
-                    }
-                    for i in issues
-                ],
+                "issues": [i.to_dict() for i in issues],
                 "total": len(issues),
             }
         )
@@ -987,14 +980,7 @@ def wiki_prune(
         json_output(
             {
                 "command": "wiki_prune",
-                "records": [
-                    {
-                        "wiki_source": r.wiki_source,
-                        "action": r.action.value,
-                        "reason": r.reason,
-                    }
-                    for r in report.records
-                ],
+                "records": [r.to_dict() for r in report.records],
                 "archived": report.archived_count,
                 "flagged": report.flagged_count,
             }
