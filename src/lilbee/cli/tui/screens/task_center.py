@@ -13,7 +13,6 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskStatus
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -49,8 +48,8 @@ class TaskCenter(Screen[None]):
     app: LilbeeApp
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "pop_screen", "Back", show=False),
+        Binding("q", "go_back", "Back", show=True),
+        Binding("escape", "go_back", "Back", show=False),
         Binding("r", "refresh_tasks", "Refresh", show=True),
         Binding("c", "cancel_task", "Cancel", show=True),
         Binding("j", "cursor_down", "Down", show=False),
@@ -58,16 +57,20 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield Header()
         yield Static("Background Tasks", id="task-center-title")
         yield DataTable(id="task-table", cursor_type="row")
         yield Static("", id="task-detail")
         yield Footer()
 
-    def action_pop_screen(self) -> None:
-        """Go back to the previous screen."""
-        self.app.pop_screen()
+    def action_go_back(self) -> None:
+        """Go back to the Chat screen."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Chat")
+        else:
+            self.app.pop_screen()
 
     def on_mount(self) -> None:
         table = self.query_one("#task-table", DataTable)

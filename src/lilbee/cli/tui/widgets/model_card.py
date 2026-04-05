@@ -26,26 +26,6 @@ _TASK_COLORS: dict[str, str] = {
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
-    DEFAULT_CSS = """
-    ModelCard {
-        height: auto;
-        min-height: 3;
-        border: tall transparent;
-        padding: 0 1;
-
-        &:hover { background: $panel; }
-        &.-highlight { border: tall $primary; background: $panel; }
-
-        HorizontalGroup {
-            height: auto;
-        }
-        #card-name { text-style: bold; width: 1fr; }
-        #card-task { width: auto; }
-        #card-info { color: $text-muted; }
-        #card-status { color: $text-muted; }
-    }
-    """
-
     def __init__(self, row: TableRow) -> None:
         self._row = row
         super().__init__()
@@ -57,7 +37,7 @@ class ModelCard(containers.VerticalGroup):
     def compose(self) -> ComposeResult:
         row = self._row
         bg = _TASK_COLORS.get(row.task, "$primary")
-        with containers.HorizontalGroup():
+        with containers.Grid(id="card-header"):
             yield widgets.Label(row.name, id="card-name")
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
         specs = _build_specs(row.params, row.quant, row.size)

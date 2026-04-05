@@ -109,7 +109,6 @@ class ChatScreen(Screen[None]):
         return bar
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
@@ -218,7 +217,7 @@ class ChatScreen(Screen[None]):
     def _update_mode_indicator(self) -> None:
         """Update the NavBar mode text to reflect the current mode."""
         try:
-            nav = self.query_one("#global-nav-bar", NavBar)
+            nav = self.app.query_one("#global-nav-bar", NavBar)
             nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
         except Exception:
             pass
@@ -230,23 +229,18 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
-            inp.focus()
-            inp.insert_text_at_cursor(event.character)
-            event.prevent_default()
-            event.stop()
-            return
         if self._insert_mode:
+            if not inp.has_focus and event.is_printable and event.character:
+                inp.focus()
+                inp.insert_text_at_cursor(event.character)
+                event.prevent_default()
+                event.stop()
             return
-        if event.key == "enter":
+        if event.key == "enter" or (event.character and event.character in "iao"):
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
             return
-        if event.character and event.character.isprintable() and len(event.key) == 1:
-            if event.character in "jkgG":
-                return
-            self._enter_insert_mode()
 
     @on(Input.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: Input.Submitted) -> None:

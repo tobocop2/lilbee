@@ -44,10 +44,7 @@ class NavBar(Widget):
         self._refresh_display()
 
     def on_mount(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.active_view = self.app.active_view
+        self.active_view = getattr(self.app, "active_view", "Chat")
         self._refresh_display()
 
     def _refresh_display(self) -> None:
