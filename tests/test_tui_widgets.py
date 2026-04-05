@@ -1095,6 +1095,21 @@ class TestTaskQueue:
         assert task.name == "B"
         assert len(q.active_tasks) == 2
 
+    def test_get_task_returns_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.name == "A"
+
+    def test_get_task_returns_none_for_unknown(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.get_task("nonexistent") is None
+
     def test_fail_task(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
@@ -1102,7 +1117,7 @@ class TestTaskQueue:
         tid = q.enqueue(lambda: None, "A", "download")
         q.advance()
         q.fail_task(tid, "oops")
-        task = q._tasks.get(tid)
+        task = q.get_task(tid)
         assert task is not None
         assert task.status == TaskStatus.FAILED
 
