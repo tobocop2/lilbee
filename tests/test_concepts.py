@@ -568,6 +568,32 @@ class TestGetClusterSources:
         assert result[0] == {"a.md", "b.md", "c.md"}
         assert 1 not in result
 
+    def test_skips_orphan_concepts(self, cg, mock_svc):
+        """Chunk-concepts referencing concepts not in any cluster are ignored."""
+        nodes_table = MagicMock()
+        nodes_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 3},
+        ]
+        cc_table = MagicMock()
+        cc_table.to_arrow.return_value.to_pylist.return_value = [
+            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
+            {"chunk_source": "b.md", "chunk_index": 0, "concept": "orphan_concept"},
+        ]
+
+        def open_table(name):
+            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+
+            if name == CONCEPT_NODES_TABLE:
+                return nodes_table
+            if name == CHUNK_CONCEPTS_TABLE:
+                return cc_table
+            return None
+
+        mock_svc.store.open_table.side_effect = open_table
+        result = cg.get_cluster_sources(min_sources=1)
+        assert 0 in result
+        assert result[0] == {"a.md"}
+
     def test_returns_empty_when_no_tables(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = None
         assert cg.get_cluster_sources() == {}

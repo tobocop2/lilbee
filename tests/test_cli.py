@@ -2161,3 +2161,49 @@ class TestWikiStatus:
         cfg.wiki_dir = "wiki"
         result = runner.invoke(app, ["wiki", "status"])
         assert result.exit_code == 0
+
+
+class TestWikiPrune:
+    def test_prune_no_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneReport
+
+            mock_prune.return_value = PruneReport()
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0
+        assert "No pages pruned" in result.output
+
+    def test_prune_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneReport
+
+            mock_prune.return_value = PruneReport()
+            result = runner.invoke(app, ["--json", "wiki", "prune"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_prune"
+        assert data["archived"] == 0
+
+    def test_prune_with_records(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+            report = PruneReport()
+            report.records = [
+                PruneRecord(
+                    wiki_source="wiki/summaries/old.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="all sources deleted",
+                ),
+            ]
+            mock_prune.return_value = report
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0
+        assert "old.md" in result.output

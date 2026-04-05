@@ -18,7 +18,7 @@ class TestSubdirToType:
 
 class TestParseFrontmatter:
     def test_valid_frontmatter(self):
-        text = "---\ntitle: Hello\ngenerated_at: 2026-01-01\n---\nBody"
+        text = "---\ntitle: Hello\ngenerated_at: '2026-01-01'\n---\nBody"
         result = parse_frontmatter(text)
         assert result["title"] == "Hello"
         assert result["generated_at"] == "2026-01-01"
@@ -32,15 +32,21 @@ class TestParseFrontmatter:
     def test_multiple_sources(self):
         text = "---\nsources: [a.txt, b.txt, c.txt]\n---\n"
         result = parse_frontmatter(text)
-        assert result["sources"] == "[a.txt, b.txt, c.txt]"
+        assert result["sources"] == ["a.txt", "b.txt", "c.txt"]
 
     def test_empty_string(self):
         assert parse_frontmatter("") == {}
 
-    def test_line_without_colon_skipped(self):
-        text = "---\ntitle: Test\nno-colon-here\n---\nBody"
+    def test_invalid_yaml_returns_empty(self):
+        text = "---\n: [unbalanced\n---\nBody"
+        assert parse_frontmatter(text) == {}
+
+    def test_bare_date_parsed_as_date_object(self):
+        text = "---\ngenerated_at: 2026-01-01\n---\n"
         result = parse_frontmatter(text)
-        assert result == {"title": "Test"}
+        import datetime
+
+        assert isinstance(result["generated_at"], datetime.date)
 
 
 class TestMakeSlug:

@@ -127,7 +127,7 @@ class TestWikiEnabled:
         assert pages[0]["title"] == "Test Page"
         assert pages[0]["page_type"] == "summary"
         assert pages[0]["source_count"] == 1
-        assert pages[0]["created_at"] == "2026-04-04T12:00:00Z"
+        assert pages[0]["created_at"] == "2026-04-04T12:00:00+00:00"
 
     async def test_list_multiple_subdirs(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
@@ -141,6 +141,34 @@ class TestWikiEnabled:
         slugs = {p["slug"] for p in pages}
         assert "summaries/doc-a" in slugs
         assert "concepts/typing" in slugs
+
+    async def test_list_regenerates_index(self, isolated_env: Path):
+        """When wiki/index.md exists, listing regenerates it."""
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "test-doc")
+        # Create an index.md so the regeneration path triggers
+        (wiki_root / "index.md").write_text("# Wiki Index\n", encoding="utf-8")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        # index.md should be refreshed with actual entries
+        index_text = (wiki_root / "index.md").read_text(encoding="utf-8")
+        assert "test-doc" in index_text
+
+    async def test_list_string_sources(self, isolated_env: Path):
+        """Pages with sources as a comma-separated string still count correctly."""
+        wiki_root = isolated_env / "wiki"
+        content = (
+            '---\ntitle: StringSrc\nsources: "a.md, b.md"\n'
+            "faithfulness_score: 0.9\n---\n# StringSrc\n"
+        )
+        _make_wiki_page(wiki_root, "summaries", "string-src", content=content)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki", headers=_h())
+        assert resp.status_code == 200
+        pages = resp.json()
+        assert len(pages) == 1
+        assert pages[0]["source_count"] == 2
 
     async def test_read_existing_page(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
@@ -262,6 +290,22 @@ class TestWikiEnabled:
         assert body["source"] == "test.txt"
         assert body["status"] == "failed"
 
+    async def test_generate_success(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.wiki import gen as gen_mod
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        page_path = isolated_env / "wiki" / "summaries" / "test.md"
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "generated"
+        assert body["source"] == "test.txt"
+        assert "path" in body
+
     async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())
@@ -276,7 +320,7 @@ class TestFrontmatterParsing:
     def test_valid_frontmatter(self):
         from lilbee.wiki.shared import parse_frontmatter
 
-        text = "---\ntitle: Hello\ngenerated_at: 2026-01-01\n---\nBody"
+        text = "---\ntitle: Hello\ngenerated_at: '2026-01-01'\n---\nBody"
         result = parse_frontmatter(text)
         assert result["title"] == "Hello"
         assert result["generated_at"] == "2026-01-01"
@@ -296,7 +340,7 @@ class TestFrontmatterParsing:
 
         text = "---\nsources: [a.txt, b.txt, c.txt]\n---\n"
         result = parse_frontmatter(text)
-        assert result["sources"] == "[a.txt, b.txt, c.txt]"
+        assert result["sources"] == ["a.txt", "b.txt", "c.txt"]
 
 
 class TestHelpers:

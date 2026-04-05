@@ -6,13 +6,16 @@ import lilbee.services as svc_mod
 from lilbee.config import cfg
 from lilbee.query import (
     Searcher,
+    _format_citation,
     build_context,
     deduplicate_sources,
     format_source,
+    prefer_wiki,
     sort_by_relevance,
 )
 from lilbee.services import get_services
 from lilbee.store import SearchChunk
+from tests.conftest import make_citation
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +41,7 @@ def mock_svc():
 def _make_result(
     source="test.pdf",
     content_type="pdf",
+    chunk_type="raw",
     page_start=1,
     page_end=1,
     line_start=0,
@@ -51,6 +55,7 @@ def _make_result(
     return SearchChunk(
         source=source,
         content_type=content_type,
+        chunk_type=chunk_type,
         page_start=page_start,
         page_end=page_end,
         line_start=line_start,
@@ -960,3 +965,128 @@ class TestSearchEdgeCases:
     def test_whitespace_query(self, mock_svc):
         results = get_services().searcher.search("   ")
         assert isinstance(results, list)
+
+
+class TestFormatCitation:
+    def test_page_location(self):
+        rec = make_citation(page_start=3, page_end=3)
+        result = _format_citation(rec)
+        assert "page 3" in result
+        assert rec["source_filename"] in result
+
+    def test_page_range(self):
+        rec = make_citation(page_start=2, page_end=5)
+        result = _format_citation(rec)
+        assert "pages 2-5" in result
+
+    def test_line_location(self):
+        rec = make_citation(line_start=10, line_end=20)
+        result = _format_citation(rec)
+        assert "lines 10-20" in result
+
+    def test_single_line(self):
+        rec = make_citation(line_start=7, line_end=7)
+        result = _format_citation(rec)
+        assert "line 7" in result
+
+    def test_no_location(self):
+        rec = make_citation()
+        result = _format_citation(rec)
+        assert rec["source_filename"] in result
+        assert "page" not in result
+        assert "line" not in result
+
+
+class TestFormatSourceWiki:
+    def test_wiki_chunk_with_citations(self):
+        r = _make_result(
+            source="wiki/summaries/doc.md",
+            content_type="text",
+            chunk_type="wiki",
+        )
+        cits = [make_citation(page_start=3, page_end=3)]
+        result = format_source(r, citations=cits)
+        assert "wiki/summaries/doc.md" in result
+        assert "page 3" in result
+
+    def test_wiki_chunk_without_citations(self):
+        r = _make_result(
+            source="wiki/summaries/doc.md",
+            content_type="text",
+            chunk_type="wiki",
+        )
+        result = format_source(r)
+        assert "wiki/summaries/doc.md" in result
+
+
+class TestPreferWiki:
+    def test_prefers_wiki_over_raw(self):
+        results = [
+            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki"),
+            _make_result(source="doc.md", chunk_type="raw"),
+        ]
+        filtered = prefer_wiki(results)
+        assert len(filtered) == 1
+        assert filtered[0].chunk_type == "wiki"
+
+    def test_keeps_raw_when_no_wiki(self):
+        results = [
+            _make_result(source="doc.md", chunk_type="raw"),
+            _make_result(source="other.md", chunk_type="raw"),
+        ]
+        assert prefer_wiki(results) == results
+
+    def test_keeps_raw_without_wiki_coverage(self):
+        results = [
+            _make_result(source="wiki/summaries/doc.md", chunk_type="wiki"),
+            _make_result(source="other.md", chunk_type="raw"),
+        ]
+        filtered = prefer_wiki(results)
+        assert len(filtered) == 2
+
+    def test_empty_input(self):
+        assert prefer_wiki([]) == []
+
+    def test_nested_path_matching(self):
+        """Raw source "subdir/doc.md" maps to wiki slug "subdir--doc"."""
+        results = [
+            _make_result(source="wiki/summaries/subdir--doc.md", chunk_type="wiki"),
+            _make_result(source="subdir/doc.md", chunk_type="raw"),
+        ]
+        filtered = prefer_wiki(results)
+        assert len(filtered) == 1
+        assert filtered[0].chunk_type == "wiki"
+
+    def test_deeply_nested_path_matching(self):
+        """Raw source "a/b/c.md" maps to wiki slug "a--b--c"."""
+        results = [
+            _make_result(source="wiki/summaries/a--b--c.md", chunk_type="wiki"),
+            _make_result(source="a/b/c.md", chunk_type="raw"),
+        ]
+        filtered = prefer_wiki(results)
+        assert len(filtered) == 1
+        assert filtered[0].chunk_type == "wiki"
+
+
+class TestStructuredQueryWikiRaw:
+    def test_wiki_prefix(self, mock_svc):
+        mode, query = get_services().searcher._parse_structured_query("wiki: python typing")
+        assert mode == "wiki"
+        assert query == "python typing"
+
+    def test_raw_prefix(self, mock_svc):
+        mode, query = get_services().searcher._parse_structured_query("raw: python typing")
+        assert mode == "raw"
+        assert query == "python typing"
+
+    def test_wiki_mode_passes_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("wiki", "test", 5)
+        mock_svc.store.search.assert_called_once()
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+
+    def test_raw_mode_passes_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("raw", "test", 5)
+        mock_svc.store.search.assert_called_once()
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == "raw"

@@ -23,6 +23,7 @@ from lilbee.mcp import (
     lilbee_sync,
     lilbee_wiki_citations,
     lilbee_wiki_lint,
+    lilbee_wiki_prune,
     lilbee_wiki_status,
     main,
 )
@@ -579,6 +580,17 @@ class TestLilbeeWikiStatus:
         assert result["summaries"] == 1
         assert result["drafts"] == 1
         assert result["pages"] == 2
+
+
+class TestWikiPrune:
+    def test_prune_no_pages(self, mock_svc, tmp_path):
+        cfg.wiki_dir = "wiki"
+        cfg.wiki = True
+        result = lilbee_wiki_prune()
+        assert result["command"] == "wiki_prune"
+        assert result["archived"] == 0
+        assert result["flagged"] == 0
+        assert result["records"] == []
 
 
 class TestMcpSubcommand:

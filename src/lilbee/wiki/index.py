@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.config import Config, cfg
-from lilbee.wiki.shared import SUBDIR_TO_TYPE
+from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -23,29 +23,23 @@ def _wiki_root(config: Config) -> Path:
 
 def _parse_title(text: str) -> str:
     """Extract title from frontmatter or first heading."""
-    lines = text.splitlines()
-    in_frontmatter = False
-    for line in lines:
+    fm = parse_frontmatter(text)
+    if "title" in fm:
+        return str(fm["title"])
+    for line in text.splitlines():
         stripped = line.strip()
-        if stripped == "---":
-            in_frontmatter = not in_frontmatter
-            continue
-        if in_frontmatter and stripped.startswith("title:"):
-            return stripped.removeprefix("title:").strip()
-        if not in_frontmatter and stripped.startswith("# "):
+        if stripped.startswith("# "):
             return stripped.removeprefix("# ").strip()
     return ""
 
 
 def _parse_source_count(text: str) -> int:
     """Count sources from frontmatter sources field."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("sources:"):
-            value = stripped.removeprefix("sources:").strip().strip("[]")
-            if not value:
-                return 0
-            return len([s for s in value.split(",") if s.strip()])
+    sources = parse_frontmatter(text).get("sources")
+    if isinstance(sources, list):
+        return len(sources)
+    if isinstance(sources, str):
+        return len([s for s in sources.split(",") if s.strip()])
     return 0
 
 

@@ -827,10 +827,6 @@ def mcp_cmd() -> None:
     main()
 
 
-# ---------------------------------------------------------------------------
-# wiki subcommand group
-# ---------------------------------------------------------------------------
-
 wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")
 app.add_typer(wiki_app, name="wiki")
 

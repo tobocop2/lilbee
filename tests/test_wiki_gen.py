@@ -65,6 +65,18 @@ def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:
     return SearchChunk(**defaults)
 
 
+def _mock_provider(wiki_text: str, faith_score: str = "0.85") -> MagicMock:
+    provider = MagicMock()
+    provider.chat.side_effect = [wiki_text, faith_score]
+    return provider
+
+
+def _mock_store() -> MagicMock:
+    store = MagicMock(spec=Store)
+    store.add_citations.return_value = 0
+    return store
+
+
 class TestChunksToText:
     def test_basic_formatting(self):
         chunks = [_make_chunk("Hello world"), _make_chunk("Second chunk", chunk_index=1)]
@@ -249,16 +261,6 @@ class TestCheckFaithfulness:
 
 
 class TestGenerateSummaryPage:
-    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, faith_score]
-        return provider
-
-    def _mock_store(self) -> MagicMock:
-        store = MagicMock(spec=Store)
-        store.add_citations.return_value = 0
-        return store
-
     def test_generates_summary_page(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Python supports gradual typing.")
@@ -271,8 +273,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -295,8 +297,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Content"'
         )
-        provider = self._mock_provider(wiki_text, faith_score="0.3")
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text, faith_score="0.3")
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -304,7 +306,7 @@ class TestGenerateSummaryPage:
 
     def test_empty_chunks_returns_none(self):
         provider = MagicMock()
-        store = self._mock_store()
+        store = _mock_store()
         result = generate_summary_page("doc.md", [], provider, store)
         assert result is None
         provider.chat.assert_not_called()
@@ -315,7 +317,7 @@ class TestGenerateSummaryPage:
         chunks = [_make_chunk("Content")]
         provider = MagicMock()
         provider.chat.side_effect = ConnectionError("LLM down")
-        store = self._mock_store()
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
@@ -332,8 +334,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "This text is not in any chunk at all"'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
@@ -352,7 +354,7 @@ class TestGenerateSummaryPage:
         )
         provider = MagicMock()
         provider.chat.side_effect = [wiki_text, ConnectionError("LLM down")]
-        store = self._mock_store()
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -362,8 +364,8 @@ class TestGenerateSummaryPage:
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")
         chunks = [_make_chunk("Content")]
-        provider = self._mock_provider("   ")  # whitespace-only -> empty after strip
-        store = self._mock_store()
+        provider = _mock_provider("   ")  # whitespace-only -> empty after strip
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
@@ -380,8 +382,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             "[^src1]: doc.md, no excerpt"
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -400,8 +402,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -419,8 +421,8 @@ class TestGenerateSummaryPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         generate_summary_page("doc.md", chunks, provider, store)
         store.delete_citations_for_wiki.assert_called_once()
@@ -524,16 +526,6 @@ def _synthesis_wiki_text(sources: list[str]) -> str:
 
 
 class TestGenerateSynthesisPage:
-    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, faith_score]
-        return provider
-
-    def _mock_store(self) -> MagicMock:
-        store = MagicMock(spec=Store)
-        store.add_citations.return_value = 0
-        return store
-
     def test_generates_concepts_page(self, tmp_path: Path):
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
@@ -543,8 +535,8 @@ class TestGenerateSynthesisPage:
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
         wiki_text = _synthesis_wiki_text(sources)
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "gradual typing",
@@ -573,8 +565,8 @@ class TestGenerateSynthesisPage:
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
         wiki_text = _synthesis_wiki_text(sources)
-        provider = self._mock_provider(wiki_text, faith_score="0.3")
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text, faith_score="0.3")
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -589,7 +581,7 @@ class TestGenerateSynthesisPage:
 
     def test_no_chunks_returns_none(self):
         provider = MagicMock()
-        store = self._mock_store()
+        store = _mock_store()
         result = _generate_synthesis_page("topic", ["a.md"], {}, provider, store, cfg)
         assert result is None
         provider.chat.assert_not_called()
@@ -598,7 +590,7 @@ class TestGenerateSynthesisPage:
         chunks_by_source = {"a.md": [_make_chunk("text", source="a.md")]}
         provider = MagicMock()
         provider.chat.side_effect = ConnectionError("down")
-        store = self._mock_store()
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -619,8 +611,8 @@ class TestGenerateSynthesisPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: a.md, excerpt: "Not in any chunk at all"'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -639,7 +631,7 @@ class TestGenerateSynthesisPage:
         wiki_text = _synthesis_wiki_text(sources)
         provider = MagicMock()
         provider.chat.side_effect = [wiki_text, ConnectionError("down")]
-        store = self._mock_store()
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -654,8 +646,8 @@ class TestGenerateSynthesisPage:
 
     def test_llm_returns_empty_string(self, tmp_path: Path):
         chunks_by_source = {"a.md": [_make_chunk("text", source="a.md")]}
-        provider = self._mock_provider("   ")
-        store = self._mock_store()
+        provider = _mock_provider("   ")
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -678,8 +670,8 @@ class TestGenerateSynthesisPage:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             "[^src1]: a.md, no excerpt"
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "topic",
@@ -694,21 +686,11 @@ class TestGenerateSynthesisPage:
 
 
 class TestGenerateSynthesisPages:
-    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, faith_score]
-        return provider
-
-    def _mock_store(self) -> MagicMock:
-        store = MagicMock(spec=Store)
-        store.add_citations.return_value = 0
-        return store
-
     def test_no_clusters_returns_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         from lilbee.concepts import ConceptGraph
 
         monkeypatch.setattr(ConceptGraph, "get_cluster_sources", lambda self, **kw: {})
-        store = self._mock_store()
+        store = _mock_store()
         provider = MagicMock()
         result = generate_synthesis_pages(provider, store)
         assert result == []
@@ -726,7 +708,7 @@ class TestGenerateSynthesisPages:
             lambda self, **kw: {0: {"a.md", "b.md", "c.md"}},
         )
         monkeypatch.setattr(ConceptGraph, "get_cluster_label", lambda self, cid: "topic")
-        store = self._mock_store()
+        store = _mock_store()
         # Only 2 sources have chunks (need 3)
         store.get_chunks_by_source.side_effect = lambda name: (
             [_make_chunk("text", source=name)] if name != "c.md" else []
@@ -759,13 +741,13 @@ class TestGenerateSynthesisPages:
             lambda self, cid: "gradual typing",
         )
 
-        store = self._mock_store()
+        store = _mock_store()
         store.get_chunks_by_source.side_effect = lambda name: [
             _make_chunk(f"Fact from {name}.", source=name)
         ]
 
         wiki_text = _synthesis_wiki_text(sources)
-        provider = self._mock_provider(wiki_text)
+        provider = _mock_provider(wiki_text)
 
         result = generate_synthesis_pages(provider, store)
         assert len(result) == 1
@@ -823,16 +805,6 @@ class TestDivertToDrafts:
 class TestSummaryDriftDetection:
     """Drift detection during summary page regeneration."""
 
-    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, faith_score]
-        return provider
-
-    def _mock_store(self) -> MagicMock:
-        store = MagicMock(spec=Store)
-        store.add_citations.return_value = 0
-        return store
-
     def test_drift_diverts_to_drafts(self, tmp_path: Path):
         """When >30% of content changes, new version goes to drafts."""
         source = tmp_path / "documents" / "doc.md"
@@ -852,8 +824,8 @@ class TestSummaryDriftDetection:
             "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
             '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
         )
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is not None
@@ -879,8 +851,8 @@ class TestSummaryDriftDetection:
         )
 
         # Write an existing page with nearly identical content (only timestamp differs)
-        provider = self._mock_provider(wiki_text, faith_score="0.85")
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text, faith_score="0.85")
+        store = _mock_store()
 
         # First generation
         result1 = generate_summary_page("doc.md", chunks, provider, store)
@@ -888,8 +860,8 @@ class TestSummaryDriftDetection:
         assert "summaries" in str(result1)
 
         # Regenerate with same content — provider returns same text
-        provider2 = self._mock_provider(wiki_text, faith_score="0.85")
-        store2 = self._mock_store()
+        provider2 = _mock_provider(wiki_text, faith_score="0.85")
+        store2 = _mock_store()
         result2 = generate_summary_page("doc.md", chunks, provider2, store2)
         # Small diff (only timestamp) should overwrite, not divert
         assert result2 is not None
@@ -899,16 +871,6 @@ class TestSummaryDriftDetection:
 
 class TestSynthesisDriftDetection:
     """Drift detection during synthesis page regeneration."""
-
-    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
-        provider = MagicMock()
-        provider.chat.side_effect = [wiki_text, faith_score]
-        return provider
-
-    def _mock_store(self) -> MagicMock:
-        store = MagicMock(spec=Store)
-        store.add_citations.return_value = 0
-        return store
 
     def test_drift_diverts_synthesis_to_drafts(self, tmp_path: Path):
         """Synthesis pages also get drift-checked."""
@@ -926,8 +888,8 @@ class TestSynthesisDriftDetection:
             name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
         }
         wiki_text = _synthesis_wiki_text(sources)
-        provider = self._mock_provider(wiki_text)
-        store = self._mock_store()
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
 
         result = _generate_synthesis_page(
             "gradual typing", sources, chunks_by_source, provider, store, cfg

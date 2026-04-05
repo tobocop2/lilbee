@@ -68,9 +68,15 @@ def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
     slug = _slug_from_path(path, wiki_root)
     title = fm.get("title", path.stem.replace("-", " ").title())
     page_type = _page_type_from_path(path, wiki_root)
-    sources = fm.get("sources", "")
-    source_count = len(sources.strip("[]").split(",")) if sources else 0
-    created_at = fm.get("generated_at", "")
+    sources = fm.get("sources")
+    if isinstance(sources, list):
+        source_count = len(sources)
+    elif isinstance(sources, str):
+        source_count = len([s for s in sources.split(",") if s.strip()])
+    else:
+        source_count = 0
+    raw_at = fm.get("generated_at", "")
+    created_at = str(raw_at) if not hasattr(raw_at, "isoformat") else raw_at.isoformat()
     return WikiPageSummary(
         slug=slug,
         title=title,

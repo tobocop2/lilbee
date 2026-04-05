@@ -142,6 +142,56 @@ class TestHybridSearch:
         assert len(results) > 0
 
 
+class TestChunkTypeFilter:
+    def test_vector_search_filters_by_chunk_type(self, store, test_config):
+        """Vector-only search with chunk_type filters results."""
+        store.add_chunks(_make_records(n=2, chunk_type="raw"))
+        store.add_chunks(
+            [
+                {
+                    "source": "wiki/summaries/doc0.md",
+                    "content_type": "text",
+                    "chunk_type": "wiki",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "wiki summary text",
+                    "chunk_index": 0,
+                    "vector": [0.5] * test_config.embedding_dim,
+                }
+            ]
+        )
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=5, chunk_type="wiki")
+        assert all(r.chunk_type == "wiki" for r in results)
+        assert len(results) == 1
+
+    def test_hybrid_search_filters_by_chunk_type(self, store, test_config):
+        """Hybrid search with chunk_type filters results."""
+        store.add_chunks(_make_records(n=2, chunk_type="raw"))
+        store.add_chunks(
+            [
+                {
+                    "source": "wiki/summaries/doc0.md",
+                    "content_type": "text",
+                    "chunk_type": "wiki",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "chunk number 5 with wiki text",
+                    "chunk_index": 0,
+                    "vector": [0.5] * test_config.embedding_dim,
+                }
+            ]
+        )
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=5, query_text="chunk", chunk_type="wiki")
+        assert all(r.chunk_type == "wiki" for r in results)
+
+
 class TestMMRRerank:
     def test_selects_diverse_results(self):
         # Two results along x-axis (near-identical), one along y-axis (diverse but relevant)

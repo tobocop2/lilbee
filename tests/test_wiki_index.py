@@ -64,16 +64,22 @@ class TestParseTitle:
 
 class TestParseSourceCount:
     def test_single_source(self):
-        assert _parse_source_count("sources: [doc.md]") == 1
+        assert _parse_source_count("---\nsources: [doc.md]\n---\n") == 1
 
     def test_multiple_sources(self):
-        assert _parse_source_count("sources: [a.md, b.md, c.md]") == 3
+        assert _parse_source_count("---\nsources: [a.md, b.md, c.md]\n---\n") == 3
 
     def test_no_sources_field(self):
-        assert _parse_source_count("title: Hello") == 0
+        assert _parse_source_count("---\ntitle: Hello\n---\n") == 0
 
     def test_empty_sources(self):
-        assert _parse_source_count("sources: []") == 0
+        assert _parse_source_count("---\nsources: []\n---\n") == 0
+
+    def test_no_frontmatter(self):
+        assert _parse_source_count("Just text, no frontmatter") == 0
+
+    def test_string_sources_comma_separated(self):
+        assert _parse_source_count('---\nsources: "a.md, b.md"\n---\n') == 2
 
 
 class TestUpdateWikiIndex:

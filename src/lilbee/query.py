@@ -73,15 +73,42 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     return f"  → {result.source}"
 
 
-def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
-    """When both wiki and raw chunks exist for the same source, prefer wiki."""
-    wiki_sources: set[str] = set()
+def _source_slug(source_name: str) -> str:
+    """Derive the wiki filename stem from a raw source name.
+
+    Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
+    """
+    return source_name.replace("/", "--").rsplit(".", 1)[0]
+
+
+def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
+    """Build a set of raw source names that have wiki coverage.
+
+    Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
+    chunks have sources like "subdir/doc.md". Match by comparing the wiki
+    file stem against the slug derived from the raw source name.
+    """
+    wiki_stems: set[str] = set()
     for r in results:
         if r.chunk_type == "wiki":
-            wiki_sources.add(r.source)
-    if not wiki_sources:
+            # "wiki/summaries/subdir--doc.md" -> "subdir--doc"
+            filename = r.source.rsplit("/", 1)[-1]
+            wiki_stems.add(filename.rsplit(".", 1)[0])
+    if not wiki_stems:
+        return set()
+    raw_covered: set[str] = set()
+    for r in results:
+        if r.chunk_type != "wiki" and _source_slug(r.source) in wiki_stems:
+            raw_covered.add(r.source)
+    return raw_covered
+
+
+def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
+    """When both wiki and raw chunks exist for the same source, prefer wiki."""
+    covered = _wiki_covered_raw_sources(results)
+    if not covered:
         return results
-    return [r for r in results if r.chunk_type == "wiki" or r.source not in wiki_sources]
+    return [r for r in results if r.chunk_type == "wiki" or r.source not in covered]
 
 
 def deduplicate_sources(

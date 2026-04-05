@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -312,12 +313,63 @@ def _write_page(
     return page_path
 
 
+def _assemble_content(
+    frontmatter: str,
+    wiki_text: str,
+    citation_block: str,
+) -> str:
+    """Combine frontmatter, body, and citations into the full page content."""
+    full = frontmatter + wiki_text
+    if citation_block:
+        full += "\n\n" + citation_block
+    return full
+
+
+def _persist_page(
+    content: str,
+    wiki_root: Path,
+    subdir: str,
+    slug: str,
+    wiki_source: str,
+    verified: list[CitationRecord],
+    store: Store,
+    drift_threshold: float,
+) -> Path:
+    """Write the page to disk and persist citations to the store."""
+    page_path = _write_page(wiki_root, subdir, slug, content, drift_threshold)
+    for rec in verified:
+        rec["wiki_source"] = wiki_source
+    store.delete_citations_for_wiki(wiki_source)
+    store.add_citations(verified)
+    return page_path
+
+
+def _post_generate(
+    page_type: str,
+    label: str,
+    subdir: str,
+    slug: str,
+    source_names: list[str],
+    config: Config,
+    store: Store,
+) -> None:
+    """Prune raw chunks if configured, update index and log."""
+    if config.wiki_prune_raw:
+        for name in source_names:
+            store.delete_by_source(name)
+
+    from lilbee.wiki.index import append_wiki_log, update_wiki_index
+
+    update_wiki_index(config)
+    append_wiki_log("generated", f"{page_type} page for {label} -> {subdir}/{slug}.md", config)
+
+
 def _generate_page(
     label: str,
     prompt: str,
     chunks: list[SearchChunk],
     chunks_text: str,
-    citation_resolver: Any,
+    citation_resolver: Callable[[list[ParsedCitation]], list[CitationRecord]],
     page_type: str,
     slug: str,
     source_names: list[str],
@@ -325,23 +377,7 @@ def _generate_page(
     store: Store,
     config: Config,
 ) -> Path | None:
-    """Core generation pipeline shared by summary and synthesis pages.
-
-    Args:
-        label: human-readable label for logging (source name or topic)
-        prompt: filled LLM prompt
-        chunks: all chunks to verify citations against
-        chunks_text: pre-formatted chunk text for faithfulness check
-        citation_resolver: callable returning list[CitationRecord] from parsed citations
-        page_type: "summaries" or "concepts"
-        slug: filesystem slug for the page
-        source_names: list of source filenames (for frontmatter)
-        provider: LLM provider
-        store: vector store
-        config: configuration
-    """
-    wiki_root = config.data_root / config.wiki_dir
-
+    """Core generation pipeline shared by summary and synthesis pages."""
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     try:
         response = provider.chat(messages, stream=False)
@@ -354,15 +390,12 @@ def _generate_page(
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
-    citation_records = citation_resolver(parsed_citations)
-
-    verified = _verify_citations(citation_records, chunks, label)
+    verified = _verify_citations(citation_resolver(parsed_citations), chunks, label)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
         return None
 
     score = _check_faithfulness(chunks_text, wiki_text, provider, label)
-
     threshold = config.wiki_faithfulness_threshold
     subdir = page_type if score >= threshold else "drafts"
     if subdir == "drafts":
@@ -370,23 +403,22 @@ def _generate_page(
 
     frontmatter = _build_frontmatter(config, source_names, score)
     citation_block = render_citation_block(verified)
-    full_content = frontmatter + wiki_text
-    if citation_block:
-        full_content += "\n\n" + citation_block
+    full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
-    page_path = _write_page(wiki_root, subdir, slug, full_content, config.wiki_drift_threshold)
-
+    wiki_root = config.data_root / config.wiki_dir
     wiki_source = f"{config.wiki_dir}/{subdir}/{slug}.md"
-    for rec in verified:
-        rec["wiki_source"] = wiki_source
+    page_path = _persist_page(
+        full_content,
+        wiki_root,
+        subdir,
+        slug,
+        wiki_source,
+        verified,
+        store,
+        config.wiki_drift_threshold,
+    )
 
-    store.delete_citations_for_wiki(wiki_source)
-    store.add_citations(verified)
-
-    if config.wiki_prune_raw:
-        for name in source_names:
-            store.delete_by_source(name)
-
+    _post_generate(page_type, label, subdir, slug, source_names, config, store)
     log.info(
         "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",
         label,
@@ -394,12 +426,6 @@ def _generate_page(
         score,
         len(verified),
     )
-
-    from lilbee.wiki.index import append_wiki_log, update_wiki_index
-
-    update_wiki_index(config)
-    append_wiki_log("generated", f"{page_type} page for {label} -> {subdir}/{slug}.md", config)
-
     return page_path
 
 

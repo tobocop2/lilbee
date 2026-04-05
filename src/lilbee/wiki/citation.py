@@ -70,8 +70,11 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
 def render_citation_block(citations: list[CitationRecord]) -> str:
     """Generate the markdown footnote footer from CitationRecord objects.
 
-    Returns the full citation block including separator and comment.
+    Returns the full citation block including separator and comment,
+    or an empty string when there are no citations.
     """
+    if not citations:
+        return ""
     lines = [_CITATION_BLOCK_SEP, _CITATION_BLOCK_COMMENT]
     for rec in citations:
         lines.append(f"[^{rec['citation_key']}]: {_format_source_ref(rec)}")

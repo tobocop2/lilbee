@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import yaml
+
 SUBDIR_TO_TYPE: dict[str, str] = {
     "summaries": "summary",
     "concepts": "concept",
@@ -22,14 +24,11 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
     end = text.find("---", 3)
     if end == -1:
         return {}
-    block = text[3:end].strip()
-    result: dict[str, Any] = {}
-    for line in block.splitlines():
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        result[key.strip()] = value.strip()
-    return result
+    block = text[3:end]
+    try:
+        return yaml.safe_load(block) or {}
+    except yaml.YAMLError:
+        return {}
 
 
 def make_slug(label: str) -> str:

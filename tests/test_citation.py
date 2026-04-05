@@ -11,27 +11,7 @@ from lilbee.wiki.citation import (
     render_citation_block,
     verify_citation,
 )
-
-
-def _citation_record(**overrides: object) -> CitationRecord:
-    """Build a CitationRecord dict with sensible defaults."""
-    defaults: CitationRecord = {
-        "wiki_source": "page.md",
-        "wiki_chunk_index": 0,
-        "citation_key": "src1",
-        "claim_type": "fact",
-        "source_filename": "doc.md",
-        "source_hash": "abc",
-        "page_start": 0,
-        "page_end": 0,
-        "line_start": 0,
-        "line_end": 0,
-        "excerpt": "",
-        "created_at": "2026-01-01",
-    }
-    defaults.update(overrides)  # type: ignore[typeddict-item]
-    return defaults
-
+from tests.conftest import make_citation as _citation_record
 
 SAMPLE_WIKI_PAGE = """\
 ---
@@ -171,9 +151,7 @@ class TestRenderCitationBlock:
         assert "[^src2]: b.pdf, page 5" in result
 
     def test_renders_empty_list(self):
-        result = render_citation_block([])
-        assert "---" in result
-        assert "<!-- citations" in result
+        assert render_citation_block([]) == ""
 
 
 class TestVerifyCitation:

@@ -173,6 +173,20 @@ class TestCheckStaleMajority:
         store.get_citations_for_wiki.return_value = []
         assert not _check_stale_majority("wiki/summaries/doc.md", store, cfg)
 
+    def test_issues_but_no_citations(self, tmp_path: Path):
+        """Lint finds unmarked claims but store has no citation records."""
+        write_wiki_page(
+            tmp_path,
+            "summaries",
+            "orphan",
+            "---\ntitle: Orphan\nsources: [doc.md]\n---\n\n"
+            "An unmarked claim without any citation.\n",
+        )
+        store = MagicMock(spec=Store)
+        # Lint finds unmarked claims, but no citations exist in the store
+        store.get_citations_for_wiki.return_value = []
+        assert not _check_stale_majority("wiki/summaries/orphan.md", store, cfg)
+
 
 class TestArchivePage:
     def test_moves_file_and_cleans_store(self, tmp_path: Path):
