@@ -17,6 +17,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.model_info import ModelArchInfo, get_model_architecture
+from lilbee.store import SourceRecord
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class StatusScreen(Screen[None]):
         self._load_arch()
         self._load_storage(len(sources))
 
-    def _fetch_sources(self) -> list[dict[str, object]]:
+    def _fetch_sources(self) -> list[SourceRecord]:
         """Fetch sources once from the store."""
         try:
             from lilbee.services import get_services
@@ -125,14 +126,14 @@ class StatusScreen(Screen[None]):
         """Populate the configuration section."""
         self.query_one("#config-info", Static).update(_build_config_content())
 
-    def _load_documents(self, sources: list[dict[str, object]]) -> None:
+    def _load_documents(self, sources: list[SourceRecord]) -> None:
         """Populate the documents table."""
         table = self.query_one("#docs-table", DataTable)
         table.add_columns("Document", "Chunks")
         table.cursor_type = "row"
         self._fill_doc_rows(table, sources)
 
-    def _fill_doc_rows(self, table: DataTable, sources: list[dict[str, object]]) -> None:
+    def _fill_doc_rows(self, table: DataTable, sources: list[SourceRecord]) -> None:
         """Fill the documents table with source data."""
         if not sources:
             table.add_row("(unable to read store)", "")

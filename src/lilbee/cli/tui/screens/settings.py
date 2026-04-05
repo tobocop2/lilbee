@@ -40,7 +40,7 @@ def _effective_value(cfg_attr: str) -> str:
     user_value = getattr(cfg, cfg_attr, None)
     if user_value is not None:
         return str(user_value)
-    defaults = cfg._model_defaults
+    defaults = cfg.model_defaults
     if defaults is None:
         return "None"
     defaults_key = _DEFAULTS_REMAP.get(cfg_attr, cfg_attr)
@@ -97,8 +97,9 @@ def _make_editor(key: str, defn: SettingDef) -> Input | Checkbox | Select[str]:
 def _make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     """Create a Select widget for choice-based settings."""
     choices = [(c, c) for c in (defn.choices or ())]
-    current = value if value in {c[1] for c in choices} else Select.BLANK
-    return Select(choices, value=current, name=key, classes="setting-editor", id=f"ed-{key}")
+    if value in {c[1] for c in choices}:
+        return Select(choices, value=value, name=key, classes="setting-editor", id=f"ed-{key}")
+    return Select(choices, name=key, classes="setting-editor", id=f"ed-{key}")
 
 
 def _make_checkbox(key: str, value: str) -> Checkbox:
@@ -222,7 +223,9 @@ class SettingsScreen(Screen[None]):
             settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
-            if hasattr(self.app, "settings_changed_signal"):
+            from lilbee.cli.tui.app import LilbeeApp
+
+            if isinstance(self.app, LilbeeApp):
                 self.app.settings_changed_signal.publish((key, parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")

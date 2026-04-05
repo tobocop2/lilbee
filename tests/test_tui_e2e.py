@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible, Footer, Static
+from textual.widgets import Footer
 
 from lilbee.config import cfg
 
@@ -187,15 +187,13 @@ class TestModelSwitchSafety:
             bar._populating = False
 
             # Simulate model change
-            from textual.widgets import Select
-
             event = mock.MagicMock()
             event.value = "new-model.gguf"
             event.select = mock.MagicMock()
             event.select.id = "chat-model-select"
 
             with mock.patch("lilbee.services.reset_services"):
-                bar.on_select_changed(event)
+                bar._on_chat_model_changed(event)
 
             screen.action_cancel_stream.assert_called_once()
 
@@ -289,7 +287,6 @@ class TestChatOnlyBanner:
 class TestDownloadProgress:
     def test_progress_poller_reports_file_size(self, tmp_path):
         """Progress poller must report bytes from .incomplete file."""
-        import threading
         import time
 
         from lilbee.catalog import _start_progress_poller
@@ -441,7 +438,7 @@ class TestTaskCenter:
             assert table.row_count == 0
 
 
-class TestDownloadProgress:
+class TestDownloadProgressSlow:
     @pytest.mark.slow
     def test_download_progress_callback_receives_cumulative_values(self, tmp_path):
         """Download Mistral and verify progress callbacks receive cumulative values."""

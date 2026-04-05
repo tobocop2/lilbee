@@ -539,7 +539,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, embed, vision = _classify_installed_models()
+            chat, embed, _vision = _classify_installed_models()
 
         assert "llama3:8b" in chat
         assert "nomic-embed-text:latest" in embed
@@ -1610,7 +1610,8 @@ class TestNavBarClickSupport:
             bar = app.query_one(NavBar)
             regions = _view_regions()
             models_x = regions[1][0] + 1
-            bar.on_click(mock.Mock(x=models_x, y=0))
+            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
+                bar.on_click(mock.Mock(x=models_x, y=0))
             app.switch_view.assert_called_once_with("Models")
 
     async def test_click_outside_views_does_nothing(self) -> None:
@@ -1623,18 +1624,19 @@ class TestNavBarClickSupport:
             bar = app.query_one(NavBar)
             regions = _view_regions()
             past_end = regions[-1][1] + 10
-            bar.on_click(mock.Mock(x=past_end, y=0))
+            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
+                bar.on_click(mock.Mock(x=past_end, y=0))
             app.switch_view.assert_not_called()
 
-    async def test_click_without_switch_view_is_safe(self) -> None:
-        """Clicking on app without _switch_view does not crash."""
+    async def test_click_on_non_lilbee_app_is_safe(self) -> None:
+        """Clicking on app that is not LilbeeApp does not crash."""
         from lilbee.cli.tui.widgets.nav_bar import NavBar
 
         app = _NavBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
-            # App has no _switch_view -- should not raise
+            # App is not LilbeeApp -- isinstance check skips switch_view
             bar.on_click(mock.Mock(x=0, y=0))
 
 

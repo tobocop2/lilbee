@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -451,7 +452,8 @@ class CatalogScreen(Screen[None]):
             f"Sort: {self._sort_column} ({direction})  |  Showing {n_total}{more} models"
         )
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+    @on(DataTable.HeaderSelected, "#catalog-table")
+    def _on_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Sort by the clicked column header, toggling asc/desc."""
         col_key = str(event.column_key)
         if col_key == self._sort_column:
@@ -461,7 +463,8 @@ class CatalogScreen(Screen[None]):
             self._sort_ascending = True
         self._refresh_table()
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    @on(DataTable.RowSelected, "#catalog-table")
+    def _on_row_selected(self, event: DataTable.RowSelected) -> None:
         """Install/select the model on the highlighted row."""
         row_index = event.cursor_row
         if row_index < 0 or row_index >= len(self._rows):
@@ -526,6 +529,23 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
         self._run_download(model, task_id, task_bar)
 
+    def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
+        """Build a progress callback that reports download progress to the TaskBar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        tb: TaskBar = bar  # type: ignore[assignment]
+
+        def on_progress(downloaded: int, total: int) -> None:
+            mb_done = downloaded / (1024 * 1024)
+            if total > 0:
+                pct = min(int(downloaded * 100 / total), 100)
+                mb_total = total / (1024 * 1024)
+                self._safe_call(tb.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB")
+            else:
+                self._safe_call(tb.update_task, task_id, 0, f"{mb_done:.0f} MB")
+
+        return on_progress
+
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
         """Download a model in a background thread, reporting to TaskBar."""
@@ -535,20 +555,7 @@ class CatalogScreen(Screen[None]):
         bar: TaskBar = task_bar  # type: ignore[assignment]
 
         try:
-
-            def on_progress(downloaded: int, total: int) -> None:
-                mb_done = downloaded / (1024 * 1024)
-                if total > 0:
-                    pct = min(int(downloaded * 100 / total), 100)
-                    mb_total = total / (1024 * 1024)
-                    self._safe_call(
-                        bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
-                    )
-                else:
-                    # Total unknown - just show MB downloaded
-                    self._safe_call(bar.update_task, task_id, 0, f"{mb_done:.0f} MB")
-
-            download_model(model, on_progress=on_progress)
+            download_model(model, on_progress=self._make_progress_callback(task_id, bar))
             self._safe_call(bar.complete_task, task_id)
             self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
         except PermissionError:
@@ -682,11 +689,17 @@ class CatalogScreen(Screen[None]):
 
     def key_left(self) -> None:
         """Navigate to previous view instead of switching tabs."""
-        self.app.action_nav_prev()
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.action_nav_prev()
 
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
-        self.app.action_nav_next()
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.action_nav_next()
 
 
 def _group_rows_for_grid(

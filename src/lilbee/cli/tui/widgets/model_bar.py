@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -209,27 +209,49 @@ class ModelBar(Widget, can_focus=True):
 
         self._populating = False
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle model selection changes."""
+    @on(Select.Changed, "#chat-model-select")
+    def _on_chat_model_changed(self, event: Select.Changed) -> None:
+        """Handle chat model selection change."""
+        value = self._extract_value(event)
+        if value is None:
+            return
+        cfg.chat_model = value
+        settings.set_value(cfg.data_root, "chat_model", value)
+        self._after_model_change()
+
+    @on(Select.Changed, "#embed-model-select")
+    def _on_embed_model_changed(self, event: Select.Changed) -> None:
+        """Handle embedding model selection change."""
+        value = self._extract_value(event)
+        if value is None:
+            return
+        cfg.embedding_model = value
+        settings.set_value(cfg.data_root, "embedding_model", value)
+        self._after_model_change()
+
+    @on(Select.Changed, "#vision-model-select")
+    def _on_vision_model_changed(self, event: Select.Changed) -> None:
+        """Handle vision model selection change."""
         if self._populating:
             return
         if event.value is _DISABLED or event.value is None or str(event.value) == "":
-            if event.select.id == "vision-model-select":
-                cfg.vision_model = ""
-                settings.set_value(cfg.data_root, "vision_model", "")
+            cfg.vision_model = ""
+            settings.set_value(cfg.data_root, "vision_model", "")
             return
+        cfg.vision_model = str(event.value)
+        settings.set_value(cfg.data_root, "vision_model", cfg.vision_model)
+        self._after_model_change()
 
-        value = str(event.value)
-        if event.select.id == "chat-model-select":
-            cfg.chat_model = value
-            settings.set_value(cfg.data_root, "chat_model", value)
-        elif event.select.id == "embed-model-select":
-            cfg.embedding_model = value
-            settings.set_value(cfg.data_root, "embedding_model", value)
-        elif event.select.id == "vision-model-select":
-            cfg.vision_model = value
-            settings.set_value(cfg.data_root, "vision_model", value)
+    def _extract_value(self, event: Select.Changed) -> str | None:
+        """Extract a non-empty value from a Select.Changed event, or None to skip."""
+        if self._populating:
+            return None
+        if event.value is _DISABLED or event.value is None or str(event.value) == "":
+            return None
+        return str(event.value)
 
+    def _after_model_change(self) -> None:
+        """Shared post-change logic: cancel active stream and reset services."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen

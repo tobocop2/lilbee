@@ -81,7 +81,7 @@ class TaskBar(Static):
 
     def complete_task(self, task_id: str) -> None:
         """Mark task done, show brief 'done' flash, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.complete_task(task_id)
         self._refresh_display()
@@ -89,7 +89,7 @@ class TaskBar(Static):
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark task failed, show briefly, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.fail_task(task_id, detail)
         self._refresh_display()
@@ -97,7 +97,7 @@ class TaskBar(Static):
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel and remove a task."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.cancel(task_id)
         self._queue.remove_task(task_id)

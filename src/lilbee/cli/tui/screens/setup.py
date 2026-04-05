@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
@@ -112,7 +112,8 @@ class SetupWizard(Screen[str | None]):
             for m in FEATURED_EMBEDDING:
                 lv.append(_CatalogRow(m))
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
+    @on(ListView.Selected, "#setup-list")
+    def _on_list_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _InstalledRow):
             self._on_model_chosen(item.model_name)
@@ -142,7 +143,7 @@ class SetupWizard(Screen[str | None]):
         try:
             from lilbee.catalog import download_model
 
-            last_update_time = 0
+            last_update_time = 0.0
             last_pct = -1
 
             def _on_progress(downloaded: int, total: int) -> None:
@@ -218,11 +219,13 @@ class SetupWizard(Screen[str | None]):
         reset_services()
         self.dismiss("completed")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "setup-skip":
-            self.dismiss("skipped")
-        elif event.button.id == "setup-confirm":
-            self._finish()
+    @on(Button.Pressed, "#setup-skip")
+    def _on_skip(self) -> None:
+        self.dismiss("skipped")
+
+    @on(Button.Pressed, "#setup-confirm")
+    def _on_confirm(self) -> None:
+        self._finish()
 
     def action_cancel(self) -> None:
         self.dismiss("skipped")

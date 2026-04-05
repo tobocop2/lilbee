@@ -1673,11 +1673,11 @@ async def test_catalog_header_sort():
             # Simulate clicking same column header toggles direction
             event = MagicMock()
             event.column_key = "Name"
-            screen.on_data_table_header_selected(event)
+            screen._on_header_selected(event)
             assert screen._sort_ascending is False
             # Clicking different column resets to ascending
             event.column_key = "Downloads"
-            screen.on_data_table_header_selected(event)
+            screen._on_header_selected(event)
             assert screen._sort_column == "Downloads"
             assert screen._sort_ascending is True
 
@@ -1992,7 +1992,7 @@ async def test_catalog_row_selected_out_of_range():
             await _pilot.pause()
             event = MagicMock()
             event.cursor_row = 999
-            screen.on_data_table_row_selected(event)
+            screen._on_row_selected(event)
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -3564,7 +3564,7 @@ async def test_task_center_status_icon():
 
 
 async def test_app_switch_to_tasks():
-    """App _switch_view navigates to TaskCenter."""
+    """App switch_view navigates to TaskCenter."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.task_center import TaskCenter
 
@@ -3709,7 +3709,7 @@ async def test_task_center_row_click_shows_detail():
         row_key.value = tid
         event = mock.Mock()
         event.row_key = row_key
-        screen.on_data_table_row_highlighted(event)
+        screen._on_row_highlighted(event)
         await pilot.pause()
         text = detail.content
         assert "Download X" in text

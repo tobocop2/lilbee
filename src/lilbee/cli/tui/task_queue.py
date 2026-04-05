@@ -125,6 +125,11 @@ class TaskQueue:
             has_queued = any(len(q) > 0 for q in self._queues.values())
             return not has_active and not has_queued
 
+    def get_task(self, task_id: str) -> Task | None:
+        """Look up a task by ID. Returns None if not found."""
+        with self._lock:
+            return self._tasks.get(task_id)
+
     def enqueue(self, fn: Callable[[], None], name: str, task_type: str) -> str:
         """Add a task to the per-type queue. Returns a task_id."""
         task_id = uuid.uuid4().hex[:8]

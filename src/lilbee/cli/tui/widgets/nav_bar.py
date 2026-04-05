@@ -72,10 +72,11 @@ class NavBar(Widget):
 
     def on_click(self, event: Click) -> None:
         """Switch view when a view name in the bar is clicked."""
+        from lilbee.cli.tui.app import LilbeeApp
+
         view = _view_at_x(event.x)
-        switch = getattr(self.app, "switch_view", None)
-        if view is not None and switch is not None:
-            switch(view)
+        if view is not None and isinstance(self.app, LilbeeApp):
+            self.app.switch_view(view)
 
 
 def _view_regions() -> list[tuple[int, int, str]]:

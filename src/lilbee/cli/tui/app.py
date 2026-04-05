@@ -127,30 +127,24 @@ class LilbeeApp(App[None]):
             reset_services()
         os._exit(1)
 
-    def switch_view(self, view_name: str) -> None:
-        """Switch to a named view, popping any overlay screens first."""
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
+    def _pop_to_chat(self) -> None:
+        """Pop overlay screens until the Chat screen is on top."""
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-        from lilbee.cli.tui.screens.status import StatusScreen
-        from lilbee.cli.tui.screens.task_center import TaskCenter
 
         while len(self.screen_stack) > 1 and not isinstance(self.screen, ChatScreen):
             self.pop_screen()
 
-        _VIEW_MAP = {
-            "Models": CatalogScreen,
-            "Status": StatusScreen,
-            "Settings": SettingsScreen,
-            "Tasks": TaskCenter,
-        }
+    def switch_view(self, view_name: str) -> None:
+        """Switch to a named view, popping any overlay screens first."""
+        self._pop_to_chat()
 
-        if view_name == "Chat":
+        screen_cls = self._resolve_screen(view_name)
+        if screen_cls is not None:
+            self.push_screen(screen_cls())
+        elif view_name == "Chat":
             from textual.widgets import Input
 
             self.call_later(lambda: self.screen.query_one("#chat-input", Input).focus())
-        elif view_name in _VIEW_MAP:
-            self.push_screen(_VIEW_MAP[view_name]())
 
         self.active_view = view_name
         try:
@@ -158,6 +152,22 @@ class LilbeeApp(App[None]):
             nav.active_view = view_name
         except Exception:
             log.debug("NavBar update failed", exc_info=True)
+
+    @staticmethod
+    def _resolve_screen(view_name: str) -> type | None:
+        """Return the Screen class for a view name, or None for Chat."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+        from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.cli.tui.screens.task_center import TaskCenter
+
+        view_map: dict[str, type] = {
+            "Models": CatalogScreen,
+            "Status": StatusScreen,
+            "Settings": SettingsScreen,
+            "Tasks": TaskCenter,
+        }
+        return view_map.get(view_name)
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal

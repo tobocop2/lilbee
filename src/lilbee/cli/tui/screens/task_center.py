@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
@@ -94,7 +95,8 @@ class TaskCenter(Screen[None]):
         if table.row_count == 0:
             return
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        self.app.task_bar.queue.cancel(row_key.value)
+        if row_key.value is not None:
+            self.app.task_bar.queue.cancel(row_key.value)
         self._refresh_tasks()
 
     def action_cursor_down(self) -> None:
@@ -105,7 +107,8 @@ class TaskCenter(Screen[None]):
         """Move cursor up in the task table."""
         self.query_one("#task-table", DataTable).action_cursor_up()
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    @on(DataTable.RowHighlighted, "#task-table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Show detail for the highlighted row."""
         key = event.row_key.value if event.row_key is not None else None
         self._show_task_detail(key)

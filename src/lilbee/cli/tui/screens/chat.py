@@ -100,7 +100,13 @@ class ChatScreen(Screen[None]):
 
     def _get_task_bar(self) -> TaskBar:
         """Get the app-level TaskBar (created by LilbeeApp)."""
-        return self.app.task_bar  # type: ignore[return-value]
+        from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
+
+        bar = getattr(self.app, "task_bar", None)
+        if not isinstance(bar, _TaskBar):
+            msg_text = "App does not have a TaskBar"
+            raise RuntimeError(msg_text)
+        return bar
 
     def compose(self) -> ComposeResult:
         yield NavBar(id="global-nav-bar")

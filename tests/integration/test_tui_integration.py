@@ -884,16 +884,7 @@ class TestThemeCommand:
             app.screen._handle_slash("/theme")
 
 
-# ---------------------------------------------------------------------------
-# Integration tests for real download progress (no mocks)
-# ---------------------------------------------------------------------------
-
-
-import pytest
-
-pytestmark = pytest.mark.slow
-
-
+@pytest.mark.slow
 class TestRealDownloadProgress:
     """Integration tests verifying real download progress works from HuggingFace.
 
@@ -940,7 +931,6 @@ class TestRealDownloadProgress:
         Uses celinah/dummy-xet-testing (~1MB file) for fast testing.
         """
         from lilbee.catalog import CatalogModel, download_model
-        from lilbee.config import cfg
 
         # Use small test file from xet-enabled repo
         entry = CatalogModel(
@@ -961,7 +951,7 @@ class TestRealDownloadProgress:
             progress_calls.append((downloaded, total))
 
         # REAL download - no mocks!
-        result = download_model(entry, on_progress=on_progress)
+        download_model(entry, on_progress=on_progress)
 
         # KEY ASSERTIONS - prove the fix works
         assert len(progress_calls) > 0, (
@@ -982,7 +972,7 @@ class TestRealDownloadProgress:
             f"Total bytes {total_bytes} is much less than expected ~{expected_size}"
         )
 
-        print(f"\n✓ Download progress verified")
+        print("\n✓ Download progress verified")
         print(f"  Progress calls: {len(progress_calls)}")
         print(f"  Total bytes: {total_bytes / (1024 * 1024):.1f} MB")
         print(f"  First callback: {progress_calls[0]}")
@@ -996,8 +986,8 @@ class TestRealDownloadProgress:
         fix (disable_progress_bars + progress_updater callback) works.
         """
         import threading
+
         from lilbee.catalog import CatalogModel
-        from lilbee.config import cfg
 
         # Use small test file (~1MB)
         entry = CatalogModel(
@@ -1025,7 +1015,7 @@ class TestRealDownloadProgress:
 
                 from lilbee.catalog import download_model
 
-                result = download_model(entry, on_progress=lambda d, t: None)
+                download_model(entry, on_progress=lambda d, t: None)
             except Exception as e:
                 error_msg = str(e)
                 worker_errors.append(error_msg)
@@ -1048,7 +1038,7 @@ class TestRealDownloadProgress:
             "The fix (disable_progress_bars + tqdm_class=None) is not working."
         )
 
-        print(f"\n✓ Worker thread download completed without fd errors")
+        print("\n✓ Worker thread download completed without fd errors")
 
     async def test_setup_wizard_progress_bar_updates_during_download(self):
         """Verify TUI setup wizard progress bar updates during real download.
@@ -1056,10 +1046,9 @@ class TestRealDownloadProgress:
         This is the full integration test - runs the actual TUI with
         real download to verify the complete user flow works.
         """
+        from lilbee.catalog import CatalogModel
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.catalog import CatalogModel
-        from lilbee.config import cfg
 
         # Use small test file (~1MB)
         entry = CatalogModel(
@@ -1094,10 +1083,6 @@ class TestRealDownloadProgress:
                 # Set up our own progress tracking
                 def on_progress(downloaded, total):
                     progress_updates.append((downloaded, total))
-
-                # Patch download_model to use our callback
-                from unittest.mock import patch
-                import lilbee.catalog as catalog_module
 
                 original_download(model)
 
