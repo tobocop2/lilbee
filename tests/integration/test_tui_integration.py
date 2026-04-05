@@ -644,7 +644,7 @@ class TestSettingsKeybindings:
             await pilot.pause()
             assert not isinstance(app.screen, SettingsScreen)
 
-    async def test_settings_j_k_navigates_table(self) -> None:
+    async def test_settings_j_k_scrolls(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = _FullApp()
@@ -652,8 +652,8 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.action_cursor_down()
-            screen.action_cursor_up()
+            screen.action_scroll_down()
+            screen.action_scroll_up()
 
 
 class TestHelpModal:

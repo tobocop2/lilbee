@@ -17,7 +17,7 @@
     padding: 0 1;
 }
 
-#model-detail, #setting-detail {
+#model-detail {
     height: 6;
     padding: 1;
     border-top: solid $surface-lighten-2;
@@ -82,11 +82,6 @@ HelpModal {
     align: center middle;
 }
 
-#edit-bar {
-    height: auto;
-    max-height: 3;
-    padding: 0 1;
-}
 
 #chat-input.insert-mode {
     border: tall $accent;
