@@ -193,16 +193,11 @@ class LlamaCppProvider(LLMProvider):
                 self._chat_lock.release()
 
     def list_models(self) -> list[str]:
-        """List installed models from registry, falling back to file scan."""
-        from lilbee.config import cfg
+        """List installed models from registry."""
         from lilbee.services import get_services
 
         registry = get_services().registry
-        registered = sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
-        if registered:
-            return registered
-        # Fallback: scan models_dir for loose .gguf files
-        return sorted(p.name for p in cfg.models_dir.glob("*.gguf") if p.is_file())
+        return sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Not supported directly — catalog.py handles downloads."""
@@ -347,7 +342,6 @@ def _resolve_model_path(model: str) -> Path:
     Resolution order:
     1. Registry (canonical source for installed models)
     2. Absolute path (if it points to an existing file)
-    3. Filename or prefix match in models_dir (backwards compat)
     """
     from lilbee.services import get_services
 
@@ -363,22 +357,6 @@ def _resolve_model_path(model: str) -> Path:
         if candidate.exists():
             return candidate
         raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
-
-    # Scan models_dir for exact filename or prefix match
-    from lilbee.config import cfg
-
-    models_dir = cfg.models_dir
-    exact = models_dir / model
-    if exact.exists():
-        return exact
-    if not model.endswith(".gguf"):
-        exact_gguf = models_dir / f"{model}.gguf"
-        if exact_gguf.exists():
-            return exact_gguf
-    # Prefix match
-    matches = sorted(p for p in models_dir.glob("*.gguf") if p.name.startswith(model))
-    if matches:
-        return matches[0]
 
     raise ProviderError(
         f"Model {model!r} not found in registry. "

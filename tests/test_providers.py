@@ -35,10 +35,26 @@ def _reset_provider() -> None:
 
 @pytest.fixture()
 def models_dir(tmp_path: Path) -> Path:
-    """Create a temporary models directory with test .gguf files."""
+    """Create a temporary models directory with a registered test model."""
+    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
     models = tmp_path / "models"
     models.mkdir()
-    (models / "test-model.gguf").write_bytes(b"fake-gguf")
+    registry = ModelRegistry(models)
+
+    source = tmp_path / "test-model.gguf"
+    source.write_bytes(b"fake-gguf")
+    ref = ModelRef(name="test-model")
+    manifest = ModelManifest(
+        name="test-model",
+        tag="latest",
+        size_bytes=9,
+        task="chat",
+        source_repo="org/test-model-GGUF",
+        source_filename="test-model.gguf",
+        downloaded_at="2026-01-01T00:00:00+00:00",
+    )
+    registry.install(ref, source, manifest)
     return models
 
 
@@ -176,10 +192,25 @@ class TestLlamaCppProvider:
 
     def test_chat_model_override(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
         cfg.chat_model = "test-model"
         cfg.models_dir = models_dir
-        (models_dir / "other-model.gguf").write_bytes(b"fake")
+
+        registry = ModelRegistry(models_dir)
+        source = models_dir.parent / "other-model.gguf"
+        source.write_bytes(b"fake")
+        ref = ModelRef(name="other-model")
+        manifest = ModelManifest(
+            name="other-model",
+            tag="latest",
+            size_bytes=4,
+            task="chat",
+            source_repo="org/other-GGUF",
+            source_filename="other-model.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        registry.install(ref, source, manifest)
 
         mock_llama_instance = mock.MagicMock()
         mock_llama_instance.create_chat_completion.return_value = {
@@ -190,9 +221,9 @@ class TestLlamaCppProvider:
         provider = LlamaCppProvider()
         provider.chat([{"role": "user", "content": "hi"}], model="other-model")
 
-        # Llama should have been called with the overridden model path
+        # Llama should have been called with a model path from the registry
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
-        assert "other-model" in call_kwargs["model_path"]
+        assert "other-GGUF" in call_kwargs["model_path"]
 
     def test_list_models(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
@@ -201,7 +232,7 @@ class TestLlamaCppProvider:
 
         provider = LlamaCppProvider()
         result = provider.list_models()
-        assert result == ["test-model.gguf"]
+        assert result == ["test-model:latest"]
 
     def test_list_models_empty_dir(self, tmp_path: Path) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
@@ -299,26 +330,29 @@ class TestLlamaCppProvider:
             call_kwargs = llama_cpp.Llama.call_args[1]
             assert "n_batch" not in call_kwargs
 
-    def test_resolve_model_path_direct(self, models_dir: Path) -> None:
+    def test_resolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
         cfg.models_dir = models_dir
-        path = _resolve_model_path(str(models_dir / "test-model.gguf"))
-        assert path.name == "test-model.gguf"
+        # Absolute path to an existing .gguf file
+        abs_model = tmp_path / "standalone.gguf"
+        abs_model.write_bytes(b"standalone-model")
+        path = _resolve_model_path(str(abs_model))
+        assert path == abs_model
 
-    def test_resolve_model_path_in_models_dir(self, models_dir: Path) -> None:
+    def test_resolve_model_path_via_registry(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
         cfg.models_dir = models_dir
         path = _resolve_model_path("test-model")
-        assert path.name == "test-model.gguf"
+        assert path.exists()
 
-    def test_resolve_model_path_by_filename(self, models_dir: Path) -> None:
+    def test_resolve_model_path_registry_with_tag(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
         cfg.models_dir = models_dir
-        path = _resolve_model_path("test-model.gguf")
-        assert path.name == "test-model.gguf"
+        path = _resolve_model_path("test-model:latest")
+        assert path.exists()
 
     def test_resolve_model_path_not_found(self, models_dir: Path) -> None:
         from lilbee.providers.base import ProviderError
@@ -335,31 +369,6 @@ class TestLlamaCppProvider:
         cfg.models_dir = models_dir
         with pytest.raises(ProviderError, match="Model file not found"):
             _resolve_model_path("/nonexistent/model.gguf")
-
-    def test_resolve_model_path_prefix_match(self, models_dir: Path) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
-
-        cfg.models_dir = models_dir
-        # "test-model.gguf" already exists from fixture; prefix "test-" should match it
-        path = _resolve_model_path("test-")
-        assert path.name == "test-model.gguf"
-
-    def test_resolve_model_path_prefix_match_picks_first_sorted(self, models_dir: Path) -> None:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
-
-        cfg.models_dir = models_dir
-        (models_dir / "alpha-v1.gguf").touch()
-        (models_dir / "alpha-v2.gguf").touch()
-        path = _resolve_model_path("alpha-")
-        assert path.name == "alpha-v1.gguf"
-
-    def test_resolve_model_path_prefix_no_match(self, models_dir: Path) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
-
-        cfg.models_dir = models_dir
-        with pytest.raises(ProviderError, match="not found"):
-            _resolve_model_path("nonexistent-prefix-")
 
     def test_embed_caches_llm(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider

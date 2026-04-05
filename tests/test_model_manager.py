@@ -28,17 +28,32 @@ class TestModelSource:
 
 
 class TestModelManagerListInstalled:
-    def test_native_lists_gguf_files(self, tmp_path: Path) -> None:
+    def test_native_lists_registered_models(self, tmp_path: Path) -> None:
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "llama3-8b.gguf").touch()
-        (models_dir / "mistral-7b.gguf").touch()
-        (models_dir / "notes.txt").write_text("not a model")
+        registry = ModelRegistry(models_dir)
+
+        for name in ("llama3-8b", "mistral-7b"):
+            source = tmp_path / f"{name}.gguf"
+            source.write_bytes(b"fake-model-data")
+            ref = ModelRef(name=name)
+            manifest = ModelManifest(
+                name=name,
+                tag="latest",
+                size_bytes=15,
+                task="chat",
+                source_repo="org/repo",
+                source_filename=f"{name}.gguf",
+                downloaded_at="2026-01-01T00:00:00+00:00",
+            )
+            registry.install(ref, source, manifest)
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         result = mgr.list_installed(ModelSource.NATIVE)
 
-        assert set(result) == {"llama3-8b.gguf", "mistral-7b.gguf"}
+        assert set(result) == {"llama3-8b:latest", "mistral-7b:latest"}
 
     def test_native_empty_dir(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -89,9 +104,25 @@ class TestModelManagerListInstalled:
         assert result == []
 
     def test_none_source_lists_both(self, tmp_path: Path) -> None:
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "native-model.gguf").touch()
+        registry = ModelRegistry(models_dir)
+
+        source = tmp_path / "native-model.gguf"
+        source.write_bytes(b"fake-model")
+        ref = ModelRef(name="native-model")
+        manifest = ModelManifest(
+            name="native-model",
+            tag="latest",
+            size_bytes=10,
+            task="chat",
+            source_repo="org/repo",
+            source_filename="native-model.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        registry.install(ref, source, manifest)
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "remote-model:latest"}]}
@@ -101,13 +132,29 @@ class TestModelManagerListInstalled:
             mgr = ModelManager(models_dir, "http://localhost:11434")
             result = mgr.list_installed(None)
 
-        assert set(result) == {"native-model.gguf", "remote-model:latest"}
+        assert set(result) == {"native-model:latest", "remote-model:latest"}
 
     def test_none_source_deduplicates(self, tmp_path: Path) -> None:
         """If same model appears in both sources, it should appear once."""
+        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "llama3:latest.gguf").touch()
+        registry = ModelRegistry(models_dir)
+
+        source = tmp_path / "llama3.gguf"
+        source.write_bytes(b"fake-model")
+        ref = ModelRef(name="llama3")
+        manifest = ModelManifest(
+            name="llama3",
+            tag="latest",
+            size_bytes=10,
+            task="chat",
+            source_repo="org/repo",
+            source_filename="llama3.gguf",
+            downloaded_at="2026-01-01T00:00:00+00:00",
+        )
+        registry.install(ref, source, manifest)
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
