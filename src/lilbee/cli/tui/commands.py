@@ -37,10 +37,10 @@ class LilbeeCommandProvider(Provider):
     def _get_commands(self) -> list[tuple[str, str, Any]]:
         app = self._app
         commands: list[tuple[str, str, Any]] = [
-            ("Open model catalog", "Browse and install models", lambda: app._switch_view("Models")),
-            ("Open status", "Knowledge base status", lambda: app._switch_view("Status")),
-            ("Open settings", "View and change settings", lambda: app._switch_view("Settings")),
-            ("Open task center", "Monitor background tasks", lambda: app._switch_view("Tasks")),
+            ("Open model catalog", "Browse and install models", lambda: app.switch_view("Models")),
+            ("Open status", "Knowledge base status", lambda: app.switch_view("Status")),
+            ("Open settings", "View and change settings", lambda: app.switch_view("Settings")),
+            ("Open task center", "Monitor background tasks", lambda: app.switch_view("Tasks")),
             ("Help", "Show keybinding reference", app.action_push_help),
             ("Cycle theme", "Switch to next color theme", app.action_cycle_theme),
             ("Sync documents", "Sync knowledge base", self._action_sync),

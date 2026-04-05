@@ -644,7 +644,7 @@ class TestSettingsKeybindings:
             await pilot.pause()
             assert not isinstance(app.screen, SettingsScreen)
 
-    async def test_settings_j_k_navigates_table(self) -> None:
+    async def test_settings_j_k_scrolls(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = _FullApp()
@@ -652,8 +652,8 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.action_cursor_down()
-            screen.action_cursor_up()
+            screen.action_scroll_down()
+            screen.action_scroll_up()
 
 
 class TestHelpModal:
@@ -896,11 +896,11 @@ pytestmark = pytest.mark.slow
 
 class TestRealDownloadProgress:
     """Integration tests verifying real download progress works from HuggingFace.
-    
+
     These tests download actual files from HuggingFace (no mocks) to verify
     the full progress callback chain works correctly. They use Qwen3 0.6B
     (~0.5GB) - the smallest featured GGUF model.
-    
+
     Run with: uv run pytest tests/integration/test_tui_integration.py -v -m slow
     """
 
@@ -909,7 +909,7 @@ class TestRealDownloadProgress:
         """Set up isolated config for each test."""
         from lilbee.config import cfg
         from lilbee.model_manager import reset_model_manager
-        
+
         snapshot = cfg.model_copy()
         cfg.data_dir = tmp_path / "data"
         cfg.data_root = tmp_path
@@ -920,28 +920,28 @@ class TestRealDownloadProgress:
         cfg.embedding_model = "test-embed:latest"
         cfg.vision_model = ""
         cfg.chunk_size = 512
-        
+
         for d in [cfg.models_dir, cfg.data_dir, cfg.documents_dir]:
             d.mkdir(parents=True, exist_ok=True)
-        
+
         yield
-        
+
         reset_model_manager()
         for field in type(snapshot).model_fields:
             setattr(cfg, field, getattr(snapshot, field))
 
     async def test_real_download_progress_callback_invoked(self):
         """Download small file from HuggingFace and verify progress callbacks work.
-        
+
         This test verifies the fix for progress_updater routing:
         - Progress callbacks should be invoked with real byte values
         - Not ignored (which was the original bug)
-        
+
         Uses celinah/dummy-xet-testing (~1MB file) for fast testing.
         """
         from lilbee.catalog import CatalogModel, download_model
         from lilbee.config import cfg
-        
+
         # Use small test file from xet-enabled repo
         entry = CatalogModel(
             name="dummy-xet-test",
@@ -954,44 +954,43 @@ class TestRealDownloadProgress:
             downloads=0,
             task="chat",
         )
-        
+
         progress_calls = []
-        
+
         def on_progress(downloaded: int, total: int):
             progress_calls.append((downloaded, total))
-        
+
         # REAL download - no mocks!
         result = download_model(entry, on_progress=on_progress)
-        
+
         # KEY ASSERTIONS - prove the fix works
         assert len(progress_calls) > 0, (
             "Progress callback never invoked! "
             "This means progress_updater is not being passed through correctly. "
             "The fix in huggingface_hub/_download_to_tmp_and_move is not working."
         )
-        
+
         # Verify we received real byte progress (not zeros)
         total_bytes = sum(downloaded for downloaded, total in progress_calls)
         assert total_bytes > 0, (
-            "Progress callback received zero bytes! "
-            "The callback was invoked but with zero values."
+            "Progress callback received zero bytes! The callback was invoked but with zero values."
         )
-        
+
         # Verify we downloaded the expected amount (~1MB)
         expected_size = 1 * 1024 * 1024  # ~1MB
         assert total_bytes >= expected_size * 0.8, (
             f"Total bytes {total_bytes} is much less than expected ~{expected_size}"
         )
-        
+
         print(f"\n✓ Download progress verified")
         print(f"  Progress calls: {len(progress_calls)}")
-        print(f"  Total bytes: {total_bytes / (1024*1024):.1f} MB")
+        print(f"  Total bytes: {total_bytes / (1024 * 1024):.1f} MB")
         print(f"  First callback: {progress_calls[0]}")
         print(f"  Last callback: {progress_calls[-1]}")
 
     async def test_tui_download_no_fd_error_in_worker_thread(self):
         """Verify download with disable_progress_bars doesn't cause fd error.
-        
+
         The 'bad value(s) in fds_to_keep' error occurred when tqdm
         was used in Textual worker threads. This test verifies the
         fix (disable_progress_bars + progress_updater callback) works.
@@ -999,7 +998,7 @@ class TestRealDownloadProgress:
         import threading
         from lilbee.catalog import CatalogModel
         from lilbee.config import cfg
-        
+
         # Use small test file (~1MB)
         entry = CatalogModel(
             name="dummy-xet-test",
@@ -1012,18 +1011,20 @@ class TestRealDownloadProgress:
             downloads=0,
             task="chat",
         )
-        
+
         # Track any errors from the worker thread
         worker_errors = []
-        
+
         def download_in_thread():
             """Run download in a thread like Textual's @work(thread=True)."""
             try:
                 # This is what setup.py does - disable progress bars before download
                 from huggingface_hub.utils import disable_progress_bars
+
                 disable_progress_bars()
-                
+
                 from lilbee.catalog import download_model
+
                 result = download_model(entry, on_progress=lambda d, t: None)
             except Exception as e:
                 error_msg = str(e)
@@ -1031,27 +1032,27 @@ class TestRealDownloadProgress:
                 # Check for the specific fd error
                 if "fds_to_keep" in error_msg or "bad value" in error_msg.lower():
                     worker_errors.append(f"FD_ERROR: {error_msg}")
-        
+
         # Run in a thread (simulating Textual's @work(thread=True))
         thread = threading.Thread(target=download_in_thread)
         thread.start()
         thread.join(timeout=120)  # 2 minute timeout
-        
+
         # Verify thread completed without fd errors
         assert not thread.is_alive(), "Download timed out"
-        
+
         # Check for fd error specifically
         fd_errors = [e for e in worker_errors if "FD_ERROR" in e or "fds_to_keep" in e]
         assert len(fd_errors) == 0, (
             f"FD error occurred in worker thread: {fd_errors}. "
             "The fix (disable_progress_bars + tqdm_class=None) is not working."
         )
-        
+
         print(f"\n✓ Worker thread download completed without fd errors")
 
     async def test_setup_wizard_progress_bar_updates_during_download(self):
         """Verify TUI setup wizard progress bar updates during real download.
-        
+
         This is the full integration test - runs the actual TUI with
         real download to verify the complete user flow works.
         """
@@ -1059,7 +1060,7 @@ class TestRealDownloadProgress:
         from lilbee.cli.tui.screens.setup import SetupWizard
         from lilbee.catalog import CatalogModel
         from lilbee.config import cfg
-        
+
         # Use small test file (~1MB)
         entry = CatalogModel(
             name="dummy-xet-test",
@@ -1072,46 +1073,46 @@ class TestRealDownloadProgress:
             downloads=0,
             task="chat",
         )
-        
+
         app = LilbeeApp()
         download_completed = False
         progress_updates = []
-        
+
         async with app.run_test(size=(120, 40)) as pilot:
             app.push_screen(SetupWizard())
             await pilot.pause()
-            
+
             setup = app.screen
-            
+
             # Override the progress callback to track updates
             original_download = setup._download_model
-            
+
             def track_progress(model):
                 """Wrapper that tracks progress."""
                 nonlocal download_completed, progress_updates
-                
+
                 # Set up our own progress tracking
                 def on_progress(downloaded, total):
                     progress_updates.append((downloaded, total))
-                
+
                 # Patch download_model to use our callback
                 from unittest.mock import patch
                 import lilbee.catalog as catalog_module
-                
+
                 original_download(model)
-            
+
             # Run the download (this uses @work(thread=True) internally)
             setup._download_model(entry)
-            
+
             # Wait for download to make progress (give it 30 seconds)
             await pilot.pause(30)
-            
+
             # Verify progress updates occurred
             assert len(progress_updates) > 0, (
                 "No progress updates received during TUI download! "
                 "The progress callback chain is broken."
             )
-            
+
             # Verify we're making real progress (bytes increasing)
             if len(progress_updates) >= 2:
                 first_bytes = progress_updates[0][0]
@@ -1119,7 +1120,7 @@ class TestRealDownloadProgress:
                 assert last_bytes > first_bytes, (
                     f"Progress not advancing: first={first_bytes}, last={last_bytes}"
                 )
-            
+
             print(f"\n✓ TUI progress updates: {len(progress_updates)}")
             print(f"  First: {progress_updates[0] if progress_updates else 'N/A'}")
             print(f"  Last: {progress_updates[-1] if progress_updates else 'N/A'}")

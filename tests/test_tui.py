@@ -216,7 +216,7 @@ class TestChatScreenAsync:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._switch_view("Models")
+            app.switch_view("Models")
             await pilot.pause()
             assert len(app.screen_stack) > 1
 
@@ -345,8 +345,8 @@ class TestSettingsScreenAsync:
             await pilot.pause()
             app.push_screen(SettingsScreen())
             await pilot.pause()
-            table = app.screen.query_one("#settings-table")
-            assert table is not None
+            groups = app.screen.query(".setting-group")
+            assert len(groups) > 0
 
 
 class TestStatusScreenAsync:
@@ -367,7 +367,7 @@ class TestStatusScreenAsync:
                 await pilot.pause()
                 app.push_screen(StatusScreen())
                 await pilot.pause()
-                info = app.screen.query_one("#status-info")
+                info = app.screen.query_one("#config-info")
                 assert info is not None
 
 
@@ -564,7 +564,7 @@ class TestContextAwareQuit:
         app = LilbeeApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            task_bar = app._task_bar  # type: ignore[attr-defined]
+            task_bar = app.task_bar
             task_bar.add_task("Test download", "download")
             task_bar.queue.advance()
             await app.action_quit()
@@ -582,10 +582,10 @@ class TestContextAwareQuit:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = app.screen
-            screen._streaming = True  # type: ignore[attr-defined]
+            screen._streaming = True
             await app.action_quit()
             await pilot.pause()
-            assert not screen._streaming  # type: ignore[attr-defined]
+            assert not screen._streaming
             assert app.is_running
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -711,3 +711,55 @@ class TestLoginCommand:
             await pilot.press("enter")
             await pilot.pause()
             mock_wb.assert_called_once_with("https://huggingface.co/settings/tokens")
+
+
+class TestAppSignals:
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_families", return_value=[])
+    async def test_settings_changed_signal_exists(
+        self,
+        _fam: mock.MagicMock,
+        _cat: mock.MagicMock,
+    ) -> None:
+        _cat.return_value = CatalogResult(total=0, limit=25, offset=0, models=[])
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert hasattr(app, "settings_changed_signal")
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_families", return_value=[])
+    async def test_model_changed_signal_exists(
+        self,
+        _fam: mock.MagicMock,
+        _cat: mock.MagicMock,
+    ) -> None:
+        _cat.return_value = CatalogResult(total=0, limit=25, offset=0, models=[])
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert hasattr(app, "model_changed_signal")
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_families", return_value=[])
+    async def test_signal_subscribe_and_publish(
+        self,
+        _fam: mock.MagicMock,
+        _cat: mock.MagicMock,
+    ) -> None:
+        _cat.return_value = CatalogResult(total=0, limit=25, offset=0, models=[])
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            received: list[tuple[str, object]] = []
+            app.settings_changed_signal.subscribe(app, lambda val: received.append(val))
+            app.settings_changed_signal.publish(("chat_model", "new-model"))
+            await pilot.pause()
+            assert len(received) == 1
+            assert received[0] == ("chat_model", "new-model")

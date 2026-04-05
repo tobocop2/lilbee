@@ -69,9 +69,6 @@ class ChatTestApp(App[None]):
         self.push_screen(ChatScreen())
 
 
-# -- Bug: embedding model set but search shows "chat only" --
-
-
 class TestEmbeddingAvailable:
     def test_registry_name_with_spaces_resolves_via_fallback(self):
         """Embedding model 'Nomic Embed Text v1.5:latest' must match
@@ -113,9 +110,6 @@ class TestEmbeddingAvailable:
         cfg.embedding_model = "nonexistent-model"
         embedder = Embedder(cfg, mock_provider)
         assert embedder.embedding_available() is False
-
-
-# -- Bug: chat dropdown showed vision models --
 
 
 class TestModelClassification:
@@ -175,9 +169,6 @@ class TestModelClassification:
         assert "loose-vision.gguf" not in all_models
 
 
-# -- Bug: model switch during stream caused segfault --
-
-
 class TestModelSwitchSafety:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
@@ -209,9 +200,6 @@ class TestModelSwitchSafety:
             screen.action_cancel_stream.assert_called_once()
 
 
-# -- Bug: NavBar missing from some screens --
-
-
 class TestNavBarPresence:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
@@ -229,13 +217,10 @@ class TestNavBarPresence:
 
             # Cycle through all views
             for view in ["Models", "Status", "Settings", "Tasks"]:
-                app._switch_view(view)
+                app.switch_view(view)
                 await pilot.pause()
                 nav = app.screen.query_one("#global-nav-bar")
                 assert nav is not None, f"NavBar missing on {view} screen"
-
-
-# -- Bug: mode indicator not showing --
 
 
 class TestModeIndicator:
@@ -257,9 +242,6 @@ class TestModeIndicator:
             assert "NORMAL" in nav.mode_text
 
 
-# -- Bug: view cycling broken --
-
-
 class TestViewCycling:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
@@ -269,16 +251,13 @@ class TestViewCycling:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert app._active_view == "Chat"
+            assert app.active_view == "Chat"
 
             expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
             for view in expected:
                 app.action_nav_next()
                 await pilot.pause()
-                assert app._active_view == view, f"Expected {view}, got {app._active_view}"
-
-
-# -- Bug: chat-only banner shown despite embedding model set --
+                assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
 
 class TestChatOnlyBanner:
@@ -305,9 +284,6 @@ class TestChatOnlyBanner:
 
                 banner = app.screen.query_one("#chat-only-banner", Static)
                 assert banner.display is True
-
-
-# -- Bug: download progress stuck at 0% --
 
 
 class TestDownloadProgress:
@@ -408,7 +384,7 @@ class TestDownloadProgress:
         (cfg.models_dir / "test.gguf").write_bytes(b"\0" * 100)
 
         with (
-            mock.patch("lilbee.catalog._resolve_filename", return_value="test.gguf"),
+            mock.patch("lilbee.catalog.resolve_filename", return_value="test.gguf"),
             mock.patch("lilbee.catalog.hf_hub_download", side_effect=fake_download),
             mock.patch("lilbee.catalog._register_model"),
         ):
@@ -432,25 +408,19 @@ class TestTaskCenter:
             await pilot.pause()
 
             # Add a mock task directly to the task bar
-            task_bar = getattr(app, "_task_bar", None)
+            task_bar = app.task_bar
             assert task_bar is not None
 
             task_id = task_bar.add_task("Test Download", "download")
-
-            # Update task to have progress
             task_bar.update_task(task_id, 45, "100/500 MB")
 
-            # Switch to Task Center - this triggers on_mount which calls _refresh_tasks
-            app._switch_view("Tasks")
+            app.switch_view("Tasks")
             await pilot.pause()
 
-            # Verify the task list has the task
-            task_list = app.screen.query_one("#task-list")
-            assert task_list is not None
+            from textual.widgets import DataTable
 
-            # Should have at least one collapsible
-            collapsibles = app.screen.query(Collapsible)
-            assert len(collapsibles) >= 1, f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table.row_count >= 1
 
     async def test_task_center_renders_empty_state(self, _mock_resolve):
         """Task Center shows 'All quiet' when no tasks."""
@@ -462,13 +432,13 @@ class TestTaskCenter:
             await pilot.pause()
 
             # Switch to Task Center with no tasks
-            app._switch_view("Tasks")
+            app.switch_view("Tasks")
             await pilot.pause()
 
-            # The task-list VerticalScroll should have children
-            task_list = app.screen.query_one("#task-list")
-            # Should have at least one child (the empty state Static)
-            assert len(task_list.children) >= 1, f"Expected at least 1 child, got {len(task_list.children)}"
+            from textual.widgets import DataTable
+
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table.row_count == 0
 
 
 class TestDownloadProgress:

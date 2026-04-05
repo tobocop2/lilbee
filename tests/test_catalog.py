@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 # Add local huggingface_hub for development testing
-_HF_HUB_PATH = '/Users/tobias/projects/huggingface_hub/src'
+_HF_HUB_PATH = "/Users/tobias/projects/huggingface_hub/src"
 if os.path.isdir(_HF_HUB_PATH) and _HF_HUB_PATH not in sys.path:
     sys.path.insert(0, _HF_HUB_PATH)
 
@@ -543,7 +543,7 @@ class TestDownloadModel:
         """progress_updater callback is invoked by hf_hub_download."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
@@ -567,7 +567,7 @@ class TestDownloadModel:
         models_dir = tmp_path / "models"
         monkeypatch.setattr(catalog.cfg, "models_dir", models_dir)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry)
@@ -576,7 +576,7 @@ class TestDownloadModel:
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         progress_calls: list[tuple[int, int]] = []
 
@@ -601,7 +601,7 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 
@@ -617,7 +617,7 @@ class TestDownloadModel:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -632,7 +632,7 @@ class TestDownloadModel:
 class TestResolveFilename:
     def test_exact_filename(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_EMBEDDING[0]
-        result = catalog._resolve_filename(entry)
+        result = catalog.resolve_filename(entry)
         assert result == entry.gguf_filename
 
     def test_wildcard_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -645,7 +645,7 @@ class TestResolveFilename:
         }
         mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        result = catalog._resolve_filename(entry)
+        result = catalog.resolve_filename(entry)
         assert result == "Qwen3-0.6B-Q4_K_M.gguf"
 
     def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -654,7 +654,7 @@ class TestResolveFilename:
         mock_resp = httpx.Response(200, json=data, request=httpx.Request("GET", "https://x"))
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         with pytest.raises(RuntimeError, match="No GGUF files found"):
-            catalog._resolve_filename(entry)
+            catalog.resolve_filename(entry)
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
@@ -664,14 +664,14 @@ class TestResolveFilename:
 
         monkeypatch.setattr(httpx, "get", raise_connect)
         with pytest.raises(RuntimeError, match="Cannot query files"):
-            catalog._resolve_filename(entry)
+            catalog.resolve_filename(entry)
 
     def test_wildcard_http_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         entry = FEATURED_CHAT[0]
         mock_resp = httpx.Response(500)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         with pytest.raises(RuntimeError):
-            catalog._resolve_filename(entry)
+            catalog.resolve_filename(entry)
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
@@ -679,7 +679,7 @@ class TestResolveFilename:
         mock_resp = httpx.Response(401)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
-            catalog._resolve_filename(entry)
+            catalog.resolve_filename(entry)
 
     def test_pick_best_gguf_prefers_q4_k_m(self) -> None:
         files = ["model-Q8_0.gguf", "model-Q4_K_M.gguf", "model-Q5_K_M.gguf"]
@@ -1009,7 +1009,7 @@ class TestVisionMmprojFiles:
         """download_model downloads mmproj file for vision entries."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         download_calls: list[dict] = []
 
@@ -1035,7 +1035,7 @@ class TestVisionMmprojFiles:
         """download_model does NOT download mmproj for chat entries."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         download_calls: list[dict] = []
 
@@ -1054,7 +1054,7 @@ class TestVisionMmprojFiles:
         """When mmproj resolution fails, model download still succeeds."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         monkeypatch.setattr(catalog, "_resolve_mmproj_filename", lambda repo, pat: None)
@@ -1068,7 +1068,7 @@ class TestVisionMmprojFiles:
         """When mmproj already exists in models_dir, skip re-download."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
 
         mmproj_file = tmp_path / "model-mmproj-f16.gguf"
         mmproj_file.write_bytes(b"existing mmproj")
@@ -1112,7 +1112,7 @@ class TestVisionMmprojFallback:
             0,
             "vision",
         )
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: "custom-Q4_K_M.gguf")
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "custom-Q4_K_M.gguf")
 
         download_calls: list[dict] = []
 
@@ -1268,7 +1268,7 @@ class TestGatedRepoShowsLoginMessage:
     ) -> None:
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
-        monkeypatch.setattr(catalog, "_resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         from huggingface_hub.utils import GatedRepoError
 

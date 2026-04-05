@@ -230,11 +230,11 @@ class ModelBar(Widget, can_focus=True):
             cfg.vision_model = value
             settings.set_value(cfg.data_root, "vision_model", value)
 
-        # Cancel any active stream before swapping models to prevent segfault
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
         screen = self.app.screen
-        if hasattr(screen, "_streaming") and screen._streaming:
-            if hasattr(screen, "action_cancel_stream"):
-                screen.action_cancel_stream()
+        if isinstance(screen, ChatScreen) and screen._streaming:
+            screen.action_cancel_stream()
 
         from lilbee.services import reset_services
 

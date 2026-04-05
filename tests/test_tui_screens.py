@@ -16,7 +16,6 @@ from lilbee.cli.tui.screens.catalog import (
     _format_size_gb,
     _matches_search,
     _parse_param_label,
-    _parse_param_size,
     _remote_to_row,
     _row_display_name,
 )
@@ -31,6 +30,7 @@ _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 def _isolated_cfg(tmp_path):
     """Snapshot and restore cfg for every test."""
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.lancedb_dir = tmp_path / "lancedb"
@@ -63,12 +63,16 @@ def mock_svc():
 
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
-    """Patch out embedding model checks so ChatScreen mounts cleanly."""
+    """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
     with (
         patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
+        ),
+        patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=([], [], []),
         ),
     ):
         yield
@@ -105,11 +109,6 @@ def _make_remote_model(
     return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
 
 
-# ---------------------------------------------------------------------------
-# Pure function tests: catalog helpers
-# ---------------------------------------------------------------------------
-
-
 class TestParseParamLabel:
     def test_extracts_integer(self):
         assert _parse_param_label("qwen-8B-instruct") == "8B"
@@ -122,32 +121,6 @@ class TestParseParamLabel:
 
     def test_case_insensitive(self):
         assert _parse_param_label("model-3b-chat") == "3B"
-
-
-class TestParseParamSize:
-    def test_small(self):
-        assert _parse_param_size("model-1.5B") == "Small (<=3B)"
-
-    def test_medium(self):
-        assert _parse_param_size("model-7B") == "Medium (3-8B)"
-
-    def test_large(self):
-        assert _parse_param_size("model-14B") == "Large (8-30B)"
-
-    def test_extra_large(self):
-        assert _parse_param_size("model-70B") == "Extra Large (30B+)"
-
-    def test_unknown(self):
-        assert _parse_param_size("nomic-embed") == "unknown"
-
-    def test_boundary_3b(self):
-        assert _parse_param_size("model-3B") == "Small (<=3B)"
-
-    def test_boundary_8b(self):
-        assert _parse_param_size("model-8B") == "Medium (3-8B)"
-
-    def test_boundary_30b(self):
-        assert _parse_param_size("model-30B") == "Large (8-30B)"
 
 
 class TestFormatDownloads:
@@ -270,11 +243,6 @@ class TestRemoteToRow:
         assert row.params == "--"
 
 
-# ---------------------------------------------------------------------------
-# Settings screen (Textual integration)
-# ---------------------------------------------------------------------------
-
-
 class SettingsTestApp(App[None]):
     CSS = ""
 
@@ -287,208 +255,106 @@ class SettingsTestApp(App[None]):
         self.push_screen(SettingsScreen())
 
 
-async def test_settings_screen_renders_table():
+async def test_settings_screen_mounts_grouped_sections():
+    """Settings screen renders grouped sections with setting rows."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        assert table.row_count > 0
-
-
-async def test_settings_screen_detail_panel():
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        assert table.row_count > 0
+        groups = app.screen.query(".setting-group")
+        assert len(groups) > 0
+        rows = app.screen.query(".setting-row")
+        assert len(rows) > 0
 
 
-async def test_settings_screen_vim_keys():
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        await _pilot.press("j")
-        await _pilot.press("k")
-
-
-async def test_settings_screen_pop():
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.press("q")
-
-
-async def test_settings_screen_row_highlighted_empty_key():
-    """Cover the branch where event.row_key has no value."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        detail = app.screen.query_one("#setting-detail", Static)
-        event = MagicMock()
-        event.row_key = MagicMock()
-        event.row_key.value = None
-        event.row_key.__bool__ = lambda s: False
-        app.screen.on_data_table_row_highlighted(event)
-        assert str(detail.render()) == ""
-
-
-async def test_settings_screen_row_highlighted_unknown_key():
-    """Cover the branch where key is not in SETTINGS_MAP."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        event = MagicMock()
-        event.row_key = MagicMock()
-        event.row_key.value = "nonexistent_key_xyz"
-        event.row_key.__bool__ = lambda self: True
-        app.screen.on_data_table_row_highlighted(event)
-
-
-async def test_settings_enter_opens_editor():
-    """F1: pressing Enter on a writable row opens an inline editor."""
+async def test_settings_search_filters_settings():
+    """Search input filters visible setting rows."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import DataTable, Input
+        from textual.widgets import Input
 
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        # Move to top_k row (first writable row, index 3)
-        table.move_cursor(row=3)
+        search = app.screen.query_one("#settings-search", Input)
+        search.focus()
+        search.value = "top_k"
         await pilot.pause()
-        app.screen.action_edit_row()
-        await pilot.pause()
-        editor = app.screen.query_one("#settings-editor", Input)
-        assert editor is not None
-        assert app.screen._editing_key is not None
+        visible = [r for r in app.screen.query(".setting-row") if r.display]
+        assert len(visible) >= 1
+        assert any("top_k" in (r.name or "") for r in visible)
 
 
-async def test_settings_enter_saves_value():
-    """F1: submitting editor saves the value."""
+async def test_settings_search_clears_restores_all():
+    """Clearing search restores all settings."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import DataTable, Input
+        from textual.widgets import Input
 
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        # Move to top_k row (row 3, index-based)
-        table.move_cursor(row=3)
+        search = app.screen.query_one("#settings-search", Input)
+        total = len(app.screen.query(".setting-row"))
+        search.value = "xyznonexistent"
         await pilot.pause()
-        app.screen.action_edit_row()
+        search.value = ""
         await pilot.pause()
-        editor = app.screen.query_one("#settings-editor", Input)
-        editor.value = "20"
+        visible = [r for r in app.screen.query(".setting-row") if r.display]
+        assert len(visible) == total
+
+
+async def test_settings_bool_renders_checkbox():
+    """Boolean settings render as Checkbox widgets."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        checkboxes = app.screen.query("Checkbox.setting-editor")
+        assert len(checkboxes) >= 1
+
+
+async def test_settings_readonly_no_editor():
+    """Read-only settings do not have editor widgets."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        chat_row = app.screen.query_one("#row-chat_model")
+        editors = chat_row.query(".setting-editor")
+        assert len(editors) == 0
+
+
+async def test_settings_persist_on_change():
+    """Changing a setting persists the value to cfg."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
+        editor.value = "20"
         await pilot.press("enter")
         await pilot.pause()
         assert cfg.top_k == 20
-        assert app.screen._editing_key is None
 
 
-async def test_settings_escape_cancels_edit():
-    """F1: pressing Escape cancels the edit."""
+async def test_settings_checkbox_persist():
+    """Toggling a checkbox persists the boolean value."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import DataTable
+        from textual.widgets import Checkbox
 
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        # Move to top_k (first writable row, index 3)
-        table.move_cursor(row=3)
+        cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
+        original = cfg.show_reasoning
+        cb.toggle()
         await pilot.pause()
-        app.screen.action_edit_row()
-        await pilot.pause()
-        assert app.screen._editing_key is not None
-        app.screen.action_dismiss_or_back()
-        await pilot.pause()
-        assert app.screen._editing_key is None
+        assert cfg.show_reasoning != original
 
 
-async def test_settings_readonly_shows_warning():
-    """F1: Enter on hf_token row shows read-only warning."""
+async def test_settings_vim_keys():
+    """Vim navigation keys work on the scroll container."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        # Move cursor to last row (hf_token)
-        table.move_cursor(row=table.row_count - 1)
-        await pilot.pause()
-        app.screen.action_edit_row()
-        await pilot.pause()
-        # Should not have opened an editor
-        assert app.screen._editing_key is None
+        await pilot.press("j")
+        await pilot.press("k")
+        await pilot.press("g")
+        await pilot.press("G")
 
 
-async def test_settings_readonly_fields_show_locked_tag():
-    """Read-only settings show [locked] in the type column."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        # chat_model is row 0 and non-writable
-        row = table.get_row_at(0)
-        assert "[locked]" in str(row[2])
-        # top_k is row 3 and writable — no locked tag
-        writable_row = table.get_row_at(3)
-        assert "[locked]" not in str(writable_row[2])
-
-
-async def test_settings_readonly_field_blocks_editing():
-    """Pressing Enter on a non-writable settings field shows warning."""
+async def test_settings_pop_screen():
+    """Pressing q pops the settings screen."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        # chat_model is row 0 — read-only
-        table.move_cursor(row=0)
-        await pilot.pause()
-        app.screen.action_edit_row()
-        await pilot.pause()
-        assert app.screen._editing_key is None
-
-
-async def test_settings_model_info_rows_present():
-    """Model architecture info rows are shown in the settings table."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        keys = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
-        assert "chat_model_arch" in keys
-        assert "embed_model_arch" in keys
-        assert "vision_projector" in keys
-        assert "active_chat_handler" in keys
-
-
-async def test_settings_model_info_rows_not_editable():
-    """Model info rows are read-only."""
-    from lilbee.cli.tui.screens.settings import _is_writable
-
-    assert not _is_writable("chat_model_arch")
-    assert not _is_writable("embed_model_arch")
-    assert not _is_writable("vision_projector")
-    assert not _is_writable("active_chat_handler")
-
-
-async def test_settings_model_info_row_detail():
-    """Highlighting a model info row shows detail text."""
-    app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        event = MagicMock()
-        event.row_key = MagicMock()
-        event.row_key.value = "chat_model_arch"
-        event.row_key.__bool__ = lambda self: True
-        app.screen.on_data_table_row_highlighted(event)
-        detail = app.screen.query_one("#setting-detail", Static)
-        rendered = str(detail.render())
-        assert "read-only" in rendered
+        await pilot.press("q")
 
 
 async def test_settings_effective_value_shows_model_default():
@@ -514,12 +380,10 @@ async def test_settings_effective_value_shows_model_default():
         result = _effective_value("temperature")
         assert "0.7" in result
         assert "(model default)" in result
-        # num_ctx also has a default
         cfg.num_ctx = None
         result = _effective_value("num_ctx")
         assert "4096" in result
         assert "(model default)" in result
-        # top_p has no default set
         cfg.top_p = None
         result = _effective_value("top_p")
         assert result == "None"
@@ -580,54 +444,46 @@ async def test_settings_is_writable():
     assert _is_writable("temperature")
     assert not _is_writable("chat_model")
     assert not _is_writable("embedding_model")
-    assert not _is_writable("hf_token")
-    assert not _is_writable("data_root")
     assert not _is_writable("nonexistent_key_xyz")
 
 
-async def test_settings_model_info_values():
-    """Model info rows show 'unknown' or 'not loaded' when no model loaded."""
-    from lilbee.cli.tui.screens.settings import _get_model_info
+async def test_settings_persist_invalid_int():
+    """Invalid value for int field shows error and does not change cfg."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
 
-    old_defaults = cfg._model_defaults
-    try:
-        cfg.clear_model_defaults()
-        info = _get_model_info()
-        assert info["chat_model_arch"] == "unknown"
-        assert info["embed_model_arch"] == "unknown"
-        assert info["vision_projector"] == "unknown"
-        assert info["active_chat_handler"] == "not loaded"
-    finally:
-        object.__setattr__(cfg, "_model_defaults", old_defaults)
-
-
-async def test_settings_model_info_loaded():
-    """Model info shows 'loaded' when model defaults are available."""
-    from dataclasses import dataclass
-
-    from lilbee.cli.tui.screens.settings import _get_model_info
-
-    @dataclass(frozen=True)
-    class FakeDefaults:
-        temperature: float | None = 0.7
-        top_p: float | None = None
-        top_k: int | None = None
-        repeat_penalty: float | None = None
-        num_ctx: int | None = None
-        max_tokens: int | None = None
-
-    old_defaults = cfg._model_defaults
-    try:
-        cfg.apply_model_defaults(FakeDefaults())
-        info = _get_model_info()
-        assert info["active_chat_handler"] == "loaded"
-    finally:
-        object.__setattr__(cfg, "_model_defaults", old_defaults)
+        original = cfg.top_k
+        editor = app.screen.query_one("#ed-top_k", Input)
+        editor.focus()
+        editor.value = "abc"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert cfg.top_k == original
 
 
-# ---------------------------------------------------------------------------
-# Status screen (Textual integration)
-# ---------------------------------------------------------------------------
+async def test_settings_select_save():
+    """_on_select_save routes through _persist_value correctly."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        defn = SettingDef(cfg_attr="system_prompt", type=str, nullable=False, group="Generation")
+        event = MagicMock()
+        event.select.name = "test_select"
+        event.value = "chosen"
+        with (
+            patch.dict(
+                "lilbee.cli.tui.screens.settings.SETTINGS_MAP",
+                {"test_select": defn},
+            ),
+            patch.object(screen, "_persist_value") as mock_persist,
+        ):
+            screen._on_select_save(event)
+            mock_persist.assert_called_once_with("test_select", defn, "chosen")
 
 
 class StatusTestApp(App[None]):
@@ -648,10 +504,38 @@ async def test_status_screen_renders_info(mock_svc):
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        info = app.screen.query_one("#status-info", Static)
+        info = app.screen.query_one("#config-info", Static)
         rendered = str(info.render())
-        assert "test-model:latest" in rendered
-        assert "test-embed:latest" in rendered
+        assert "Chat model" in rendered
+        assert "Embed model" in rendered
+
+
+async def test_status_screen_has_collapsible_sections(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Collapsible
+
+        sections = app.screen.query(Collapsible)
+        assert len(sections) == 4
+
+
+async def test_status_screen_config_shows_models(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#config-info", Static)
+        rendered = str(info.render())
+        assert "Chat model" in rendered
+        assert "Embed model" in rendered
+        assert "Vision model" in rendered
+
+
+async def test_status_screen_config_pills_render(mock_svc):
+    cfg.vision_model = ""
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#config-info", Static)
+        rendered = str(info.render())
+        assert "loaded" in rendered or "not set" in rendered
 
 
 async def test_status_screen_shows_documents(mock_svc):
@@ -670,10 +554,39 @@ async def test_status_screen_store_error(mock_svc):
     mock_svc.store.get_sources.side_effect = Exception("no table")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
         table = app.screen.query_one("#docs-table", DataTable)
         assert table.row_count == 1
+
+
+async def test_status_screen_storage_section(mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#storage-info", Static)
+        rendered = str(info.render())
+        assert "Documents" in rendered
+        assert "Data dir" in rendered
+        assert "Models dir" in rendered
+
+
+async def test_status_screen_arch_section(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#arch-info", Static)
+        rendered = str(info.render())
+        assert "Chat arch" in rendered
+        assert "Handler" in rendered
+
+
+async def test_status_screen_arch_with_vision(mock_svc):
+    cfg.vision_model = "test-vision:latest"
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#arch-info", Static)
+        rendered = str(info.render())
+        assert "Vision proj" in rendered
 
 
 async def test_status_screen_vim_keys(mock_svc):
@@ -697,9 +610,102 @@ async def test_status_screen_escape_pops():
         await _pilot.press("escape")
 
 
-# ---------------------------------------------------------------------------
-# LilbeeApp tests
-# ---------------------------------------------------------------------------
+def test_status_model_pill_truthy():
+    from lilbee.cli.tui.screens.status import _model_pill
+
+    result = _model_pill("qwen3:8b")
+    assert "loaded" in str(result)
+
+
+def test_status_model_pill_empty():
+    from lilbee.cli.tui.screens.status import _model_pill
+
+    result = _model_pill("")
+    assert "not set" in str(result)
+
+
+def test_status_read_chat_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_chat_arch
+
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            return_value={"architecture": "llama"},
+        ),
+    ):
+        result = _read_chat_arch(info)
+    assert result.chat_arch == "llama"
+    assert result.active_handler == "llama-cpp"
+
+
+def test_status_read_embed_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_embed_arch
+
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            return_value={"architecture": "bert"},
+        ),
+    ):
+        result = _read_embed_arch(info)
+    assert result.embed_arch == "bert"
+
+
+def test_status_read_vision_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+
+    cfg.vision_model = "test-vision:latest"
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._find_mmproj_for_model",
+            return_value="/fake/mmproj",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            return_value="resampler",
+        ),
+    ):
+        result = _read_vision_arch(info)
+    assert result.vision_projector == "resampler"
+
+
+def test_status_read_vision_arch_skips_when_no_model():
+    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+
+    cfg.vision_model = ""
+    info = ModelArchInfo()
+    result = _read_vision_arch(info)
+    assert result.vision_projector == "unknown"
+
+
+def test_status_read_model_arch_import_error():
+    from lilbee.model_info import get_model_architecture
+
+    with patch(
+        "builtins.__import__",
+        side_effect=lambda name, *a, **kw: (
+            (_ for _ in ()).throw(ImportError("no llama-cpp"))
+            if "llama_cpp" in name
+            else __import__(name, *a, **kw)
+        ),
+    ):
+        result = get_model_architecture()
+    assert result.chat_arch == "unknown"
 
 
 async def test_app_mounts_chat_screen():
@@ -753,7 +759,7 @@ async def test_app_switch_to_catalog():
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.model_manager.classify_remote_models", return_value=[]),
         ):
-            app._switch_view("Models")
+            app.switch_view("Models")
             await _pilot.pause()
             assert isinstance(app.screen, CatalogScreen)
 
@@ -763,7 +769,7 @@ async def test_app_switch_to_status():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app._switch_view("Status")
+        app.switch_view("Status")
         await _pilot.pause()
         from lilbee.cli.tui.screens.status import StatusScreen
 
@@ -775,7 +781,7 @@ async def test_app_switch_to_settings():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app._switch_view("Settings")
+        app.switch_view("Settings")
         await _pilot.pause()
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -801,11 +807,6 @@ async def test_app_auto_sync_flag():
     assert app._auto_sync is True
 
 
-# ---------------------------------------------------------------------------
-# ChatScreen slash command tests
-# ---------------------------------------------------------------------------
-
-
 class ChatTestApp(App[None]):
     CSS = ""
 
@@ -813,7 +814,7 @@ class ChatTestApp(App[None]):
         super().__init__()
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        self._task_bar = TaskBar(id="app-task-bar")
+        self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
         yield Footer()
@@ -821,7 +822,7 @@ class ChatTestApp(App[None]):
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.mount(self._task_bar)
+        self.mount(self.task_bar)
         self.push_screen(ChatScreen())
 
 
@@ -850,8 +851,9 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/model new-model:latest")
-        assert cfg.chat_model == "new-model:latest"
+        with patch("lilbee.cli.tui.screens.chat.settings.set_value"):
+            app.screen._handle_slash("/model new-model:latest")
+            assert cfg.chat_model == "new-model:latest"
 
 
 async def test_chat_slash_model_no_arg():
@@ -1277,11 +1279,6 @@ async def test_chat_slash_delete_dispatch():
         app.screen._handle_slash("/delete")
 
 
-# ---------------------------------------------------------------------------
-# ChatScreen action_complete tests
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_action_complete_no_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1357,11 +1354,6 @@ async def test_chat_action_complete_cycle_no_selection():
             app.screen.action_complete()
 
 
-# ---------------------------------------------------------------------------
-# ChatScreen on_input_submitted (non-slash = send message)
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1375,26 +1367,16 @@ async def test_chat_send_message():
             assert app.screen._history[0]["role"] == "user"
 
 
-async def test_chat_input_submitted_wrong_input_ignored():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
+async def test_chat_input_handler_uses_on_decorator():
+    """Chat input handlers use @on decorator for ID filtering."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
-        event = Input.Submitted(app.screen.query_one("#chat-input", Input), "test")
-        event.input = MagicMock()
-        event.input.id = "other-input"
-        app.screen.on_input_submitted(event)
-        assert len(app.screen._history) == 0
-
-
-async def test_chat_input_changed_other_input_ignored():
-    """on_input_changed should only react to chat-input."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        event = MagicMock()
-        event.input = MagicMock()
-        event.input.id = "other-input"
-        app.screen.on_input_changed(event)
+    assert hasattr(ChatScreen._on_chat_submitted, "__wrapped__") or hasattr(
+        ChatScreen._on_chat_submitted, "_textual_on"
+    )
+    assert hasattr(ChatScreen._on_chat_input_changed, "__wrapped__") or hasattr(
+        ChatScreen._on_chat_input_changed, "_textual_on"
+    )
 
 
 async def test_chat_scroll_to_bottom():
@@ -1415,11 +1397,6 @@ async def test_chat_trim_history_when_over_limit():
         app.screen._trim_history()
         assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
         assert app.screen._history[0]["content"] == "msg-10"
-
-
-# ---------------------------------------------------------------------------
-# CommandProvider tests
-# ---------------------------------------------------------------------------
 
 
 async def test_command_provider_discover():
@@ -1631,11 +1608,6 @@ async def test_command_provider_document_commands_empty_name():
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
-
-
-# ---------------------------------------------------------------------------
-# CatalogScreen tests
-# ---------------------------------------------------------------------------
 
 
 class CatalogTestApp(App[None]):
@@ -1993,28 +1965,20 @@ async def test_catalog_input_changed_refreshes():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            with patch.object(screen, "_refresh_table") as mock_refresh:
-                event = MagicMock()
+            with patch.object(screen, "_refresh_view") as mock_refresh:
+                event = MagicMock(spec=Input.Changed)
                 event.input = inp
-                screen.on_input_changed(event)
+                screen._on_search_changed(event)
                 mock_refresh.assert_called()
 
 
-async def test_catalog_input_changed_other_input_ignored():
+async def test_catalog_input_handler_uses_on_decorator():
+    """Catalog search handlers use @on decorator for ID filtering."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            with patch.object(screen, "_refresh_table") as mock_refresh:
-                event = MagicMock()
-                event.input = MagicMock()
-                event.input.id = "other-input"
-                screen.on_input_changed(event)
-                mock_refresh.assert_not_called()
+    assert hasattr(CatalogScreen._on_search_changed, "__wrapped__") or hasattr(
+        CatalogScreen._on_search_changed, "_textual_on"
+    )
 
 
 async def test_catalog_row_selected_out_of_range():
@@ -2029,11 +1993,6 @@ async def test_catalog_row_selected_out_of_range():
             event = MagicMock()
             event.cursor_row = 999
             screen.on_data_table_row_selected(event)
-
-
-# ---------------------------------------------------------------------------
-# Direct worker body tests (call underlying fn, not @work decorator)
-# ---------------------------------------------------------------------------
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -2150,7 +2109,7 @@ async def test_chat_sync_progress_percentage():
         from lilbee.progress import EventType, FileStartEvent
 
         update_calls: list[tuple] = []
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
         original_update = task_bar.update_task
 
         def tracking_update(task_id, pct, status):
@@ -2269,11 +2228,6 @@ async def test_chat_embedding_ready_false_no_sync():
             mock_sync.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Additional coverage: chat.py lines
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
@@ -2381,11 +2335,6 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.pause()
 
 
-# ---------------------------------------------------------------------------
-# Additional coverage: catalog.py worker body lines
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_refresh_table_empty():
     """Cover empty table case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2490,11 +2439,6 @@ async def test_catalog_jump_top_bottom():
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-
-
-# ---------------------------------------------------------------------------
-# Additional coverage: commands.py vision catalog exception (lines 91-92)
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_vim_j_cycles_focus_from_chat_log():
@@ -2755,18 +2699,12 @@ async def test_chat_half_page_actions():
         app.screen.action_half_page_up()
 
 
-async def test_settings_key_g_G(mock_svc):
-    """g/G jump to first/last row in settings table."""
+async def test_settings_key_g_G():
+    """g/G scroll settings via action methods."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#settings-table", DataTable)
-        table.focus()
-        app.screen.action_jump_bottom()
-        assert table.cursor_row == table.row_count - 1
-        app.screen.action_jump_top()
-        assert table.cursor_row == 0
+        app.screen.action_scroll_end()
+        app.screen.action_scroll_home()
 
 
 async def test_status_key_g_G(mock_svc):
@@ -2851,11 +2789,6 @@ async def test_chat_bindings_include_half_page():
     keys = {b.key for b in ChatScreen.BINDINGS if isinstance(b, B)}
     assert "ctrl+d" in keys
     assert "ctrl+u" in keys
-
-
-# ---------------------------------------------------------------------------
-# Catalog: delete model (d key)
-# ---------------------------------------------------------------------------
 
 
 async def test_catalog_delete_installed_model_confirmation():
@@ -2999,11 +2932,6 @@ async def test_catalog_delete_in_input_ignored():
             assert screen._pending_delete is None
 
 
-# ---------------------------------------------------------------------------
-# Chat: /remove slash command
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_slash_remove_no_args():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3056,7 +2984,7 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
             ) as mock_copy,
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
-            task_bar = app._task_bar  # type: ignore[attr-defined]
+            task_bar = app.task_bar
             add_task_spy = MagicMock(wraps=task_bar.add_task)
             with patch.object(task_bar, "add_task", add_task_spy):
                 app.screen._handle_slash(f"/add {test_file}")
@@ -3275,17 +3203,17 @@ async def test_app_nav_switches_all_views():
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
 
-        app._switch_view("Chat")
+        app.switch_view("Chat")
         await pilot.pause()
-        assert app._active_view == "Chat"
+        assert app.active_view == "Chat"
 
-        app._switch_view("Tasks")
+        app.switch_view("Tasks")
         await pilot.pause()
-        assert app._active_view == "Tasks"
+        assert app.active_view == "Tasks"
 
-        app._switch_view("Models")
+        app.switch_view("Models")
         await pilot.pause()
-        assert app._active_view == "Models"
+        assert app.active_view == "Models"
 
 
 async def test_chat_ctrl_n_p_bindings_exist():
@@ -3349,7 +3277,7 @@ async def test_task_center_renders_active_and_history():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
 
         # Complete a task to create history
         t1 = task_bar.add_task("Sync A", "sync")
@@ -3368,22 +3296,6 @@ async def test_task_center_renders_active_and_history():
         assert table.row_count >= 2  # active + history
 
 
-async def test_task_center_no_task_bar():
-    """TaskCenter handles missing task_bar gracefully."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        # Remove _task_bar reference
-        if hasattr(app, "_task_bar"):
-            delattr(app, "_task_bar")
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        table = app.screen.query_one("#task-table")
-        assert table is not None
-
-
 async def test_task_center_cancel_action():
     """TaskCenter cancel action triggers on active task."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -3391,7 +3303,7 @@ async def test_task_center_cancel_action():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
 
         task_bar.add_task("Sync", "sync")
         task_bar.queue.advance()
@@ -3525,7 +3437,7 @@ async def test_chat_sync_gating_rejects_add(tmp_path):
         app.screen._handle_slash(f"/add {test_file}")
         await pilot.pause()
         # No task should have been created
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
         assert task_bar.queue.is_empty
 
 
@@ -3536,7 +3448,7 @@ async def test_chat_sync_gating_rejects_sync():
         app.screen._sync_active = True
         app.screen._run_sync()
         await pilot.pause()
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
         # No new sync task should be queued
         assert task_bar.queue.active_task is None
 
@@ -3625,7 +3537,7 @@ async def test_task_center_with_queued_tasks():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app._task_bar  # type: ignore[attr-defined]
+        task_bar = app.task_bar
 
         # Add active + queued tasks (same type so one is queued)
         task_bar.add_task("Download A", "download")
@@ -3637,22 +3549,6 @@ async def test_task_center_with_queued_tasks():
 
         table = app.screen.query_one("#task-table")
         assert table.row_count >= 2  # active + queued
-
-
-async def test_task_center_cancel_no_task_bar():
-    """TaskCenter cancel with no _task_bar is a no-op."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        if hasattr(app, "_task_bar"):
-            delattr(app, "_task_bar")
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        # Should not crash
-        app.screen.action_cancel_task()
-        await pilot.pause()
 
 
 async def test_task_center_status_icon():
@@ -3674,7 +3570,7 @@ async def test_app_switch_to_tasks():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        app._switch_view("Tasks")
+        app.switch_view("Tasks")
         await pilot.pause()
         assert isinstance(app.screen, TaskCenter)
 
@@ -3796,7 +3692,7 @@ async def test_task_center_row_click_shows_detail():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app._task_bar
+        task_bar = app.task_bar
         tid = task_bar.add_task("Download X", "download")
         task_bar.queue.advance()
         task_bar.queue.update_task(tid, 42, "10/24 MB")
@@ -3813,31 +3709,12 @@ async def test_task_center_row_click_shows_detail():
         row_key.value = tid
         event = mock.Mock()
         event.row_key = row_key
-        screen.on_data_table_row_selected(event)
+        screen.on_data_table_row_highlighted(event)
         await pilot.pause()
         text = detail.content
         assert "Download X" in text
         assert "download" in text
         assert "42%" in text
-
-
-async def test_task_center_row_click_no_task_bar():
-    """TaskCenter row click handles missing task_bar gracefully."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-
-        # Remove task_bar and verify _find_task returns None
-        if hasattr(app, "_task_bar"):
-            delattr(app, "_task_bar")
-        result = screen._find_task("nonexistent")
-        assert result is None
 
 
 async def test_task_center_show_detail_no_key():
@@ -3857,10 +3734,112 @@ async def test_task_center_show_detail_no_key():
         assert detail.content == ""
 
 
-async def test_settings_row_click_opens_editor():
-    """Clicking a writable row in Settings opens the inline editor."""
-    from unittest import mock
+async def test_task_center_has_css_path():
+    """TaskCenter declares a CSS_PATH for task-specific styles."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
 
+    assert TaskCenter.CSS_PATH == "task_center.tcss"
+
+
+def test_task_center_status_pill():
+    """_status_pill returns a pill string for each status."""
+    from lilbee.cli.tui.screens.task_center import _status_pill
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    for status in TaskStatus:
+        result = _status_pill(status)
+        assert status.value in result
+
+
+async def test_chat_screen_has_css_path():
+    """ChatScreen declares a CSS_PATH for chat-specific styles."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    assert ChatScreen.CSS_PATH == "chat.tcss"
+
+
+async def test_chat_status_line_updates_on_model_change():
+    """ChatStatusLine renders a pill when model_name is set."""
+    from textual.app import App
+
+    from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+    class StatusApp(App[None]):
+        def compose(self):  # type: ignore[override]
+            yield ChatStatusLine(id="status")
+
+    app = StatusApp()
+    async with app.run_test(size=(80, 10)) as pilot:
+        widget = app.query_one("#status", ChatStatusLine)
+        widget.model_name = "qwen3:8b"
+        await pilot.pause()
+        assert widget.model_name == "qwen3:8b"
+        # Label.content holds the plain-text form of the last update() call
+        assert "qwen3:8b" in str(widget.content)
+
+
+async def test_chat_status_line_empty_model():
+    """ChatStatusLine renders empty when model_name is empty."""
+    from textual.app import App
+
+    from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+    class StatusApp(App[None]):
+        def compose(self):  # type: ignore[override]
+            yield ChatStatusLine(id="status")
+
+    app = StatusApp()
+    async with app.run_test(size=(80, 10)) as pilot:
+        widget = app.query_one("#status", ChatStatusLine)
+        widget.model_name = ""
+        await pilot.pause()
+        assert widget.model_name == ""
+
+
+async def test_chat_screen_has_status_line():
+    """ChatScreen compose includes a ChatStatusLine widget."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
+        assert status is not None
+
+
+async def test_chat_screen_has_prompt_area():
+    """ChatScreen compose wraps input in a PromptArea container."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import PromptArea
+
+        prompt_area = app.screen.query_one("#chat-prompt-area", PromptArea)
+        assert prompt_area is not None
+
+
+async def test_chat_refresh_status_line():
+    """_refresh_status_line sets the model name on the status widget."""
+    cfg.chat_model = "my-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
+        assert status.model_name == "my-model"
+
+
+async def test_settings_group_titles_present():
+    """Settings screen renders group titles for each section."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -3868,11 +3847,5 @@ async def test_settings_row_click_opens_editor():
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(SettingsScreen())
         await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-
-        # Verify on_data_table_row_selected calls action_edit_row
-        with mock.patch.object(screen, "action_edit_row") as mocked:
-            event = mock.Mock()
-            screen.on_data_table_row_selected(event)
-            mocked.assert_called_once()
+        titles = app.screen.query(".group-title")
+        assert len(titles) >= 2

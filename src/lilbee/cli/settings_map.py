@@ -22,21 +22,112 @@ class SettingDef:
     nullable: bool
     writable: bool = True
     render: RenderStyle = field(default=RenderStyle.COMPACT)
+    group: str = "General"
+    help_text: str = ""
+    choices: tuple[str, ...] | None = None
 
 
 SETTINGS_MAP: dict[str, SettingDef] = {
-    "chat_model": SettingDef("chat_model", str, nullable=False, writable=False),
-    "vision_model": SettingDef("vision_model", str, nullable=True, writable=False),
-    "embedding_model": SettingDef("embedding_model", str, nullable=False, writable=False),
-    "top_k": SettingDef("top_k", int, nullable=False),
-    "temperature": SettingDef("temperature", float, nullable=True),
-    "top_p": SettingDef("top_p", float, nullable=True),
-    "top_k_sampling": SettingDef("top_k_sampling", int, nullable=True),
-    "repeat_penalty": SettingDef("repeat_penalty", float, nullable=True),
-    "num_ctx": SettingDef("num_ctx", int, nullable=True),
-    "seed": SettingDef("seed", int, nullable=True),
-    "system_prompt": SettingDef("system_prompt", str, nullable=False, render=RenderStyle.FULL),
-    "show_reasoning": SettingDef("show_reasoning", bool, nullable=False),
-    "reranker_model": SettingDef("reranker_model", str, nullable=True),
-    "rerank_candidates": SettingDef("rerank_candidates", int, nullable=False),
+    "chat_model": SettingDef(
+        "chat_model",
+        str,
+        nullable=False,
+        writable=False,
+        group="Models",
+        help_text="LLM used for chat and generation",
+    ),
+    "vision_model": SettingDef(
+        "vision_model",
+        str,
+        nullable=True,
+        writable=False,
+        group="Models",
+        help_text="Vision model for OCR on images and PDFs",
+    ),
+    "embedding_model": SettingDef(
+        "embedding_model",
+        str,
+        nullable=False,
+        writable=False,
+        group="Models",
+        help_text="Model used to embed document chunks",
+    ),
+    "reranker_model": SettingDef(
+        "reranker_model",
+        str,
+        nullable=True,
+        group="Models",
+        help_text="Cross-encoder model for result reranking",
+    ),
+    "temperature": SettingDef(
+        "temperature",
+        float,
+        nullable=True,
+        group="Generation",
+        help_text="Sampling temperature (higher = more creative)",
+    ),
+    "top_p": SettingDef(
+        "top_p",
+        float,
+        nullable=True,
+        group="Generation",
+        help_text="Nucleus sampling cutoff probability",
+    ),
+    "top_k_sampling": SettingDef(
+        "top_k_sampling",
+        int,
+        nullable=True,
+        group="Generation",
+        help_text="Top-K sampling: number of tokens to consider",
+    ),
+    "repeat_penalty": SettingDef(
+        "repeat_penalty",
+        float,
+        nullable=True,
+        group="Generation",
+        help_text="Penalty for repeating tokens",
+    ),
+    "num_ctx": SettingDef(
+        "num_ctx",
+        int,
+        nullable=True,
+        group="Generation",
+        help_text="Context window size in tokens",
+    ),
+    "seed": SettingDef(
+        "seed",
+        int,
+        nullable=True,
+        group="Generation",
+        help_text="Random seed for reproducible output",
+    ),
+    "system_prompt": SettingDef(
+        "system_prompt",
+        str,
+        nullable=False,
+        render=RenderStyle.FULL,
+        group="Generation",
+        help_text="System prompt sent before every conversation",
+    ),
+    "top_k": SettingDef(
+        "top_k",
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Number of chunks returned by search",
+    ),
+    "rerank_candidates": SettingDef(
+        "rerank_candidates",
+        int,
+        nullable=False,
+        group="Retrieval",
+        help_text="Candidate pool size for reranking",
+    ),
+    "show_reasoning": SettingDef(
+        "show_reasoning",
+        bool,
+        nullable=False,
+        group="Display",
+        help_text="Show model reasoning/thinking tokens in output",
+    ),
 }
