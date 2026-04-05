@@ -31,17 +31,12 @@ Markdown {
     margin: 0 1;
 }
 
-#chat-input.insert-mode {
-    border: tall $accent;
+#chat-input {
+    border: none;
 }
 
 #chat-input.normal-mode {
-    border: tall $surface-lighten-1;
     opacity: 0.7;
-}
-
-#chat-input:focus {
-    border: tall $accent;
 }
 
 #chat-only-banner {
@@ -63,7 +58,12 @@ Markdown {
     height: auto;
     dock: bottom;
     border: tall transparent;
-    &:focus-within {
-        border: tall $accent;
-    }
+}
+
+#chat-prompt-area.insert-mode {
+    border: tall $accent;
+}
+
+#chat-prompt-area.normal-mode {
+    border: tall $surface-lighten-1;
 }

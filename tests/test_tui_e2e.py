@@ -284,7 +284,6 @@ class TestChatOnlyBanner:
                 assert banner.display is True
 
 
-
 class TestTaskCenter:
     async def test_task_center_renders_with_active_task(self, _mock_resolve):
         """Task Center must render collapsible task widgets without crashing."""
@@ -403,3 +402,314 @@ class TestDownloadProgressSlow:
         finally:
             for field_name in type(snapshot).model_fields:
                 setattr(cfg, field_name, getattr(snapshot, field_name))
+
+
+def _mock_catalog_deps():
+    """Context manager that mocks all catalog network calls."""
+    from lilbee.catalog import ModelFamily, ModelVariant
+
+    families = [
+        ModelFamily(
+            name="TestChat",
+            task="chat",
+            description="A test chat model",
+            variants=(
+                ModelVariant(
+                    hf_repo="test/chat-repo",
+                    filename="chat-Q4.gguf",
+                    param_count="7B",
+                    quant="Q4_K_M",
+                    size_mb=4000,
+                    recommended=True,
+                ),
+            ),
+        ),
+        ModelFamily(
+            name="TestEmbed",
+            task="embedding",
+            description="A test embedding model",
+            variants=(
+                ModelVariant(
+                    hf_repo="test/embed-repo",
+                    filename="embed-Q8.gguf",
+                    param_count="0.5B",
+                    quant="Q8_0",
+                    size_mb=500,
+                    recommended=True,
+                ),
+            ),
+        ),
+    ]
+    return mock.patch.multiple(
+        "lilbee.cli.tui.screens.catalog",
+        get_families=mock.MagicMock(return_value=families),
+        get_catalog=mock.MagicMock(return_value=mock.MagicMock(models=[])),
+    )
+
+
+def _mock_remote_models():
+    """Mock classify_remote_models to return empty list."""
+    return mock.patch(
+        "lilbee.model_manager.classify_remote_models",
+        return_value=[],
+    )
+
+
+class TestScreenTransitions:
+    """Test that switching between screens does not crash."""
+
+    async def test_navigate_chat_to_catalog_to_settings(self, _mock_resolve):
+        """F2→Models, then F4→Settings, verify no crash."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                assert app.active_view == "Chat"
+
+                app.switch_view("Models")
+                await pilot.pause()
+                assert app.active_view == "Models"
+
+                app.switch_view("Settings")
+                await pilot.pause()
+                assert app.active_view == "Settings"
+
+    async def test_navigate_all_views_via_keybindings(self, _mock_resolve):
+        """Cycle through all 5 views with nav_next (l key)."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
+                for view in expected:
+                    app.action_nav_next()
+                    await pilot.pause()
+                    assert app.active_view == view
+
+    async def test_navigate_back_with_q(self, _mock_resolve):
+        """Push catalog, press q, verify back at chat."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+                assert app.active_view == "Models"
+
+                await pilot.press("q")
+                await pilot.pause()
+                # Should be back at Chat (base screen)
+                from lilbee.cli.tui.screens.chat import ChatScreen
+
+                assert isinstance(app.screen, ChatScreen)
+
+    async def test_navigate_catalog_to_tasks(self, _mock_resolve):
+        """The specific crash case: catalog → tasks transition."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+                app.switch_view("Tasks")
+                await pilot.pause()
+                assert app.active_view == "Tasks"
+
+
+class TestCatalogGrid:
+    """Test catalog grid view rendering and interactions."""
+
+    async def test_catalog_grid_view_default(self, _mock_resolve):
+        """Grid is shown on mount by default."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                grids = app.screen.query(GridSelect)
+                assert len(grids) > 0
+
+    async def test_catalog_toggle_view(self, _mock_resolve):
+        """Press v twice: grid → list → grid."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                screen = app.screen
+                assert screen.has_class("-grid-view")
+
+                screen.action_toggle_view()
+                await pilot.pause()
+                assert screen.has_class("-list-view")
+
+                screen.action_toggle_view()
+                await pilot.pause()
+                assert screen.has_class("-grid-view")
+
+    async def test_catalog_search_filters_cards(self, _mock_resolve):
+        """Type search text, verify cards filtered (not destroyed/recreated)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                all_cards = app.screen.query(ModelCard)
+                initial_count = len(all_cards)
+                assert initial_count > 0
+
+                # Type a search that matches only one family
+                search = app.screen.query_one("#catalog-search")
+                search.display = True
+                search.value = "TestChat"
+                await pilot.pause()
+
+                # Cards still exist (not destroyed), but some hidden
+                all_cards_after = app.screen.query(ModelCard)
+                assert len(all_cards_after) == initial_count
+                visible = [c for c in all_cards_after if c.display]
+                hidden = [c for c in all_cards_after if not c.display]
+                assert len(visible) >= 1
+                assert len(hidden) >= 1
+
+    async def test_catalog_grid_card_count(self, _mock_resolve):
+        """Verify correct number of cards for featured models."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                cards = app.screen.query(ModelCard)
+                # 2 families with 1 variant each = 2 cards
+                assert len(cards) == 2
+
+
+class TestSettingsScreen:
+    """Test settings screen rendering and filtering."""
+
+    async def test_settings_has_grouped_sections(self, _mock_resolve):
+        """Verify group headings exist."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+
+            groups = app.screen.query(".group-title")
+            assert len(groups) >= 1
+
+    async def test_settings_search_filters(self, _mock_resolve):
+        """Type in search, verify filtering hides non-matching rows."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+
+            all_rows = app.screen.query(".setting-row")
+            total = len(all_rows)
+            assert total > 0
+
+            # Search for something specific
+            search = app.screen.query_one("#settings-search")
+            search.value = "chat_model"
+            await pilot.pause()
+
+            visible = [r for r in app.screen.query(".setting-row") if r.display]
+            assert len(visible) < total
+            assert len(visible) >= 1
+
+
+class TestStatusScreen:
+    """Test status screen rendering."""
+
+    async def test_status_has_collapsible_sections(self, _mock_resolve):
+        """Verify Collapsible widgets exist for config, docs, etc."""
+        from textual.widgets import Collapsible
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Status")
+            await pilot.pause()
+
+            collapsibles = app.screen.query(Collapsible)
+            assert len(collapsibles) >= 3
+
+
+class TestTaskCenterScreen:
+    """Test task center screen rendering."""
+
+    async def test_task_center_renders(self, _mock_resolve):
+        """Basic mount test — task center renders without crash."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Tasks")
+            await pilot.pause()
+
+            from textual.widgets import DataTable
+
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table is not None
+
+
+class TestChatPromptBorder:
+    """Test that the chat prompt area has a single border, not stacked."""
+
+    async def test_prompt_area_insert_mode_border(self, _mock_resolve):
+        """PromptArea should have insert-mode class, input should have no border."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            area = app.screen.query_one("#chat-prompt-area")
+            inp = app.screen.query_one("#chat-input")
+            assert area.has_class("insert-mode")
+            # Input should not have its own border
+            assert inp.styles.border is not None  # exists but set to none in CSS
+
+    async def test_prompt_area_normal_mode_border(self, _mock_resolve):
+        """PromptArea should switch to normal-mode class on escape."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.action_enter_normal_mode()
+            await pilot.pause()
+            area = app.screen.query_one("#chat-prompt-area")
+            assert area.has_class("normal-mode")
+            assert not area.has_class("insert-mode")

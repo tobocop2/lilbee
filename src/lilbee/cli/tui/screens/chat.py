@@ -202,12 +202,17 @@ class ChatScreen(Screen[None]):
     def _update_input_style(self) -> None:
         """Toggle input border and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
+        area = self.query_one("#chat-prompt-area", PromptArea)
         if self._insert_mode:
             inp.remove_class("normal-mode")
             inp.add_class("insert-mode")
+            area.remove_class("normal-mode")
+            area.add_class("insert-mode")
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
+            area.remove_class("insert-mode")
+            area.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:

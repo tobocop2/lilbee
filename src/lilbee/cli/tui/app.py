@@ -147,6 +147,10 @@ class LilbeeApp(App[None]):
             self.call_later(lambda: self.screen.query_one("#chat-input", Input).focus())
 
         self.active_view = view_name
+        self.call_after_refresh(self._update_nav, view_name)
+
+    def _update_nav(self, view_name: str) -> None:
+        """Update the NavBar after the new screen has mounted."""
         try:
             nav = self.screen.query_one("#global-nav-bar", NavBar)
             nav.active_view = view_name

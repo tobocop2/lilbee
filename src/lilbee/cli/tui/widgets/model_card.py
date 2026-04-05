@@ -29,31 +29,20 @@ class ModelCard(containers.VerticalGroup):
     DEFAULT_CSS = """
     ModelCard {
         height: auto;
+        min-height: 3;
         border: tall transparent;
         padding: 0 1;
 
-        &:hover {
-            background: $panel;
-        }
+        &:hover { background: $panel; }
+        &.-highlight { border: tall $primary; background: $panel; }
 
-        &.-highlight {
-            border: tall $primary;
-            background: $panel;
-        }
-
-        Grid {
-            grid-size: 2 1;
-            grid-columns: 1fr auto;
+        HorizontalGroup {
             height: auto;
         }
-
-        #card-name {
-            text-style: bold;
-        }
-
-        #card-info {
-            color: $text-muted;
-        }
+        #card-name { text-style: bold; width: 1fr; }
+        #card-task { width: auto; }
+        #card-info { color: $text-muted; }
+        #card-status { color: $text-muted; }
     }
     """
 
@@ -68,7 +57,7 @@ class ModelCard(containers.VerticalGroup):
     def compose(self) -> ComposeResult:
         row = self._row
         bg = _TASK_COLORS.get(row.task, "$primary")
-        with containers.Grid():
+        with containers.HorizontalGroup():
             yield widgets.Label(row.name, id="card-name")
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
         specs = _build_specs(row.params, row.quant, row.size)

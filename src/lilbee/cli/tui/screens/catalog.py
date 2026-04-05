@@ -276,7 +276,10 @@ class CatalogScreen(Screen[None]):
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
         """Filter models when search input changes."""
-        self._refresh_view()
+        if self._grid_view:
+            self._filter_grid()
+        else:
+            self._refresh_table()
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
@@ -403,13 +406,12 @@ class CatalogScreen(Screen[None]):
             self._refresh_table()
 
     def _refresh_grid(self) -> None:
-        """Rebuild the grid view from local-only data sources."""
-        search = self._get_search_text()
+        """Rebuild the grid view with all cards (called when data changes)."""
         container = self.query_one("#catalog-grid", VerticalScroll)
         container.remove_children()
-        family_rows = self._build_family_rows(search)
-        remote_rows = self._build_remote_rows(search)
-        hf_rows = self._build_hf_rows(search) if self._hf_fetched else []
+        family_rows = self._build_family_rows("")
+        remote_rows = self._build_remote_rows("")
+        hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
         widgets_to_mount: list[Static | GridSelect] = []
         for heading, rows in _group_rows_for_grid(all_rows):
@@ -420,6 +422,22 @@ class CatalogScreen(Screen[None]):
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
         container.mount_all(widgets_to_mount)
+
+    def _filter_grid(self) -> None:
+        """Filter visible cards by search text without recreating widgets."""
+        search = self._get_search_text()
+        for card in self.query(ModelCard):
+            card.display = _matches_search(card.row, search)
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        children = list(container.children)
+        for i, child in enumerate(children):
+            if not child.has_class("section-heading"):
+                continue
+            grid = children[i + 1] if i + 1 < len(children) else None
+            if isinstance(grid, GridSelect):
+                has_visible = any(c.display for c in grid.children)
+                child.display = has_visible
+                grid.display = has_visible
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:

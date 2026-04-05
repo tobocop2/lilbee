@@ -30,7 +30,7 @@
 .section-heading {
     text-style: bold underline;
     color: $text-muted;
-    padding: 1 0 0 1;
+    padding: 1 0 0 2;
 }
 
 /* View toggle: hide inactive view */
@@ -42,5 +42,6 @@ CatalogScreen.-list-view #catalog-grid { display: none; }
 GridSelect {
     height: auto;
     padding: 0;
-    margin: 0;
+    margin: 0 1;
+    grid-gutter: 0;
 }

@@ -1965,11 +1965,11 @@ async def test_catalog_input_changed_refreshes():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            with patch.object(screen, "_refresh_view") as mock_refresh:
+            with patch.object(screen, "_filter_grid") as mock_filter:
                 event = MagicMock(spec=Input.Changed)
                 event.input = inp
                 screen._on_search_changed(event)
-                mock_refresh.assert_called()
+                mock_filter.assert_called()
 
 
 async def test_catalog_input_handler_uses_on_decorator():
