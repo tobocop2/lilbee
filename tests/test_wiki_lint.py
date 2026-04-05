@@ -7,18 +7,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import make_citation, source_hash, write_source, write_wiki_page
 from lilbee.config import cfg
-from lilbee.store import CitationRecord, Store
+from lilbee.store import Store
 from lilbee.wiki.lint import (
     IssueSeverity,
     LintIssue,
     LintReport,
     _lint_model_changed,
-    _parse_frontmatter_field,
     lint_all,
     lint_changed_sources,
     lint_wiki_page,
 )
+from lilbee.wiki.shared import parse_frontmatter
 
 
 @pytest.fixture(autouse=True)
@@ -35,60 +36,6 @@ def isolated_env(tmp_path: Path):
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-
-
-def _write_source(tmp_path: Path, name: str, content: str) -> Path:
-    """Write a source document and return its path."""
-    path = tmp_path / "documents" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
-
-
-def _write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
-    """Write a wiki page and return its path."""
-    wiki_root = tmp_path / "wiki" / subdir
-    wiki_root.mkdir(parents=True, exist_ok=True)
-    path = wiki_root / f"{slug}.md"
-    path.write_text(content)
-    return path
-
-
-def _source_hash(path: Path) -> str:
-    """Get the SHA-256 hash of a file."""
-    import hashlib
-
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(8192), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _make_citation(
-    wiki_source: str = "wiki/summaries/doc.md",
-    source_filename: str = "doc.md",
-    source_hash: str = "abc",
-    excerpt: str = "some text",
-    citation_key: str = "src1",
-    **kwargs: object,
-) -> CitationRecord:
-    defaults: CitationRecord = {
-        "wiki_source": wiki_source,
-        "wiki_chunk_index": 0,
-        "citation_key": citation_key,
-        "claim_type": "fact",
-        "source_filename": source_filename,
-        "source_hash": source_hash,
-        "page_start": 0,
-        "page_end": 0,
-        "line_start": 0,
-        "line_end": 0,
-        "excerpt": excerpt,
-        "created_at": "2026-01-01",
-    }
-    defaults.update(kwargs)  # type: ignore[typeddict-item]
-    return defaults
 
 
 class TestLintReport:
@@ -111,8 +58,8 @@ class TestLintReport:
 
 class TestLintWikiPage:
     def test_valid_citation_no_issues(self, tmp_path: Path):
-        source = _write_source(tmp_path, "doc.md", "Python supports gradual typing.")
-        _write_wiki_page(
+        source = write_source(tmp_path, "doc.md", "Python supports gradual typing.")
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -123,8 +70,8 @@ class TestLintWikiPage:
         )
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(
-                source_hash=_source_hash(source),
+            make_citation(
+                source_hash=source_hash(source),
                 excerpt="gradual typing",
             ),
         ]
@@ -132,10 +79,10 @@ class TestLintWikiPage:
         assert issues == []
 
     def test_deleted_source_is_error(self, tmp_path: Path):
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="deleted.md"),
+            make_citation(source_filename="deleted.md"),
         ]
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert len(issues) == 1
@@ -143,23 +90,23 @@ class TestLintWikiPage:
         assert "deleted" in issues[0].message.lower()
 
     def test_stale_hash_is_warning(self, tmp_path: Path):
-        _write_source(tmp_path, "doc.md", "Updated content.")
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        write_source(tmp_path, "doc.md", "Updated content.")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash="old_hash", excerpt="Updated content"),
+            make_citation(source_hash="old_hash", excerpt="Updated content"),
         ]
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert any(i.severity == IssueSeverity.WARNING for i in issues)
         assert any("stale" in i.message.lower() for i in issues)
 
     def test_excerpt_missing_is_warning(self, tmp_path: Path):
-        source = _write_source(tmp_path, "doc.md", "Completely different text.")
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        source = write_source(tmp_path, "doc.md", "Completely different text.")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(
-                source_hash=_source_hash(source),
+            make_citation(
+                source_hash=source_hash(source),
                 excerpt="not in source at all",
             ),
         ]
@@ -167,7 +114,7 @@ class TestLintWikiPage:
         assert any("excerpt" in i.message.lower() for i in issues)
 
     def test_unmarked_claims_detected(self, tmp_path: Path):
-        _write_wiki_page(
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -185,7 +132,7 @@ class TestLintWikiPage:
         assert issues == []
 
     def test_no_citations_only_checks_unmarked(self, tmp_path: Path):
-        _write_wiki_page(
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -202,13 +149,13 @@ class TestLintWikiPage:
 
 class TestLintChangedSources:
     def test_lints_pages_citing_changed_source(self, tmp_path: Path):
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_source.return_value = [
-            _make_citation(source_filename="doc.md"),
+            make_citation(source_filename="doc.md"),
         ]
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="doc.md"),
+            make_citation(source_filename="doc.md"),
         ]
         report = lint_changed_sources(["doc.md"], store)
         assert isinstance(report, LintReport)
@@ -216,8 +163,8 @@ class TestLintChangedSources:
         assert report.error_count >= 1
 
     def test_deduplicates_pages(self, tmp_path: Path):
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
-        rec = _make_citation(source_filename="doc.md")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n")
+        rec = make_citation(source_filename="doc.md")
         store = MagicMock(spec=Store)
         # Both changed sources point to the same wiki page
         store.get_citations_for_source.return_value = [rec]
@@ -241,13 +188,13 @@ class TestLintChangedSources:
 
 class TestLintAll:
     def test_lints_all_wiki_pages(self, tmp_path: Path):
-        _write_wiki_page(
+        write_wiki_page(
             tmp_path,
             "summaries",
             "a",
             "Unmarked claim.\n",
         )
-        _write_wiki_page(
+        write_wiki_page(
             tmp_path,
             "drafts",
             "b",
@@ -270,27 +217,27 @@ class TestLintAll:
         assert report.issues == []
 
 
-class TestParseFrontmatterField:
+class TestParseFrontmatter:
     def test_extracts_field(self):
         text = "---\ngenerated_by: qwen3:8b\ngenerated_at: 2026-01-01\n---\n\n# Page"
-        assert _parse_frontmatter_field(text, "generated_by") == "qwen3:8b"
+        assert parse_frontmatter(text).get("generated_by") == "qwen3:8b"
 
     def test_missing_field(self):
         text = "---\ngenerated_at: 2026-01-01\n---\n\n# Page"
-        assert _parse_frontmatter_field(text, "generated_by") == ""
+        assert parse_frontmatter(text).get("generated_by") is None
 
     def test_no_frontmatter(self):
         text = "# Just a heading\n\nSome content."
-        assert _parse_frontmatter_field(text, "generated_by") == ""
+        assert parse_frontmatter(text) == {}
 
     def test_unclosed_frontmatter(self):
         text = "---\ngenerated_by: model\nno closing fence"
-        assert _parse_frontmatter_field(text, "generated_by") == ""
+        assert parse_frontmatter(text) == {}
 
 
 class TestLintModelChanged:
     def test_same_model_no_issue(self, tmp_path: Path):
-        page = _write_wiki_page(
+        page = write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -300,7 +247,7 @@ class TestLintModelChanged:
         assert result is None
 
     def test_different_model_flags_issue(self, tmp_path: Path):
-        page = _write_wiki_page(
+        page = write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -314,7 +261,7 @@ class TestLintModelChanged:
         assert "test-model" in result.message
 
     def test_no_frontmatter_no_issue(self, tmp_path: Path):
-        page = _write_wiki_page(
+        page = write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -325,7 +272,7 @@ class TestLintModelChanged:
 
     def test_model_changed_in_lint_wiki_page(self, tmp_path: Path):
         """model_changed shows up through lint_wiki_page integration."""
-        _write_wiki_page(
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -338,7 +285,7 @@ class TestLintModelChanged:
 
     def test_model_changed_does_not_trigger_regen(self, tmp_path: Path):
         """Model change is a warning, not an error — no auto-regeneration."""
-        page = _write_wiki_page(
+        page = write_wiki_page(
             tmp_path,
             "summaries",
             "doc",

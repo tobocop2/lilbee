@@ -158,7 +158,13 @@ class TestWikiEnabled:
             resp = await client.get("/api/wiki/summaries/nope", headers=_h())
         assert resp.status_code == 404
 
-    async def test_page_citations_stub(self, isolated_env: Path):
+    async def test_page_citations(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+
+        mock_svc = make_mock_services()
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "cited")
         async with AsyncTestClient(_create_app()) as client:
@@ -168,12 +174,22 @@ class TestWikiEnabled:
         assert body["slug"] == "summaries/cited"
         assert body["citations"] == []
 
-    async def test_page_citations_missing_page(self):
+    async def test_page_citations_missing_page(self, monkeypatch: pytest.MonkeyPatch):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/summaries/nope/citations", headers=_h())
         assert resp.status_code == 404
 
-    async def test_citations_reverse_empty(self):
+    async def test_citations_reverse_empty(self, monkeypatch: pytest.MonkeyPatch):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+
+        mock_svc = make_mock_services()
+        mock_svc.store.get_citations_for_source.return_value = []
+        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get(
                 "/api/wiki/citations", params={"source": "test.txt"}, headers=_h()
@@ -203,11 +219,24 @@ class TestWikiEnabled:
         assert len(drafts) == 1
         assert drafts[0]["slug"] == "drafts/failed-page"
 
-    async def test_lint_stub(self):
+    async def test_lint_returns_report(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(
+            lint_mod,
+            "lint_all",
+            lambda store, config=None: lint_mod.LintReport(),
+        )
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/lint", headers=_h())
         assert resp.status_code == 201
-        assert resp.json()["status"] == "not_implemented"
+        body = resp.json()
+        assert body["errors"] == 0
+        assert body["warnings"] == 0
+        assert body["issues"] == []
 
     async def test_lint_status_stub(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -217,13 +246,21 @@ class TestWikiEnabled:
         assert body["task_id"] == "task-abc"
         assert body["status"] == "not_implemented"
 
-    async def test_generate_stub(self):
+    async def test_generate_returns_result(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.wiki import gen as gen_mod
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 201
         body = resp.json()
-        assert body["status"] == "not_implemented"
         assert body["source"] == "test.txt"
+        assert body["status"] == "failed"
 
     async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -237,28 +274,28 @@ class TestWikiEnabled:
 
 class TestFrontmatterParsing:
     def test_valid_frontmatter(self):
-        from lilbee.server.wiki import _parse_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
 
         text = "---\ntitle: Hello\ngenerated_at: 2026-01-01\n---\nBody"
-        result = _parse_frontmatter(text)
+        result = parse_frontmatter(text)
         assert result["title"] == "Hello"
         assert result["generated_at"] == "2026-01-01"
 
     def test_no_frontmatter(self):
-        from lilbee.server.wiki import _parse_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
 
-        assert _parse_frontmatter("Just text") == {}
+        assert parse_frontmatter("Just text") == {}
 
     def test_unclosed_frontmatter(self):
-        from lilbee.server.wiki import _parse_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
 
-        assert _parse_frontmatter("---\ntitle: Hello\nNo close") == {}
+        assert parse_frontmatter("---\ntitle: Hello\nNo close") == {}
 
     def test_multiple_sources(self):
-        from lilbee.server.wiki import _parse_frontmatter
+        from lilbee.wiki.shared import parse_frontmatter
 
         text = "---\nsources: [a.txt, b.txt, c.txt]\n---\n"
-        result = _parse_frontmatter(text)
+        result = parse_frontmatter(text)
         assert result["sources"] == "[a.txt, b.txt, c.txt]"
 
 
@@ -334,6 +371,12 @@ class TestHelpers:
         from lilbee.server.wiki import _find_page
 
         assert _find_page("summaries/nope") is None
+
+    def test_find_page_rejects_path_traversal(self):
+        from lilbee.server.wiki import _find_page
+
+        assert _find_page("../../etc/passwd") is None
+        assert _find_page("summaries/../../../etc/passwd") is None
 
 
 class TestPydanticModels:

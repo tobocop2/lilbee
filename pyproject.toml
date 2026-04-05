@@ -79,6 +79,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
 markers = ["slow: integration tests that download models or take >10s"]

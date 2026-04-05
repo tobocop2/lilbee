@@ -7,19 +7,20 @@ Two modes:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 from lilbee.config import Config, cfg
+from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord, Store
 from lilbee.wiki.citation import (
     CitationStatus,
     find_unmarked_claims,
     verify_citation,
 )
+from lilbee.wiki.shared import parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -55,15 +56,6 @@ class LintReport:
         return sum(1 for i in self.issues if i.severity == IssueSeverity.WARNING)
 
 
-def _file_hash(path: Path) -> str:
-    """Compute SHA-256 hash of a file."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(8192), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def _lint_citation(
     rec: CitationRecord,
     documents_dir: Path,
@@ -82,7 +74,7 @@ def _lint_citation(
             message=f"Source deleted: {rec['source_filename']}",
         )
 
-    current_hash = _file_hash(source_path)
+    current_hash = file_hash(source_path)
     if current_hash != rec["source_hash"]:
         return LintIssue(
             wiki_source=wiki_source,
@@ -101,30 +93,10 @@ def _lint_citation(
     return None
 
 
-def _parse_frontmatter_field(text: str, field: str) -> str:
-    """Extract a YAML frontmatter field value from wiki page text.
-
-    Looks for ``field: value`` between ``---`` fences. Returns empty string
-    if the field is not found.
-    """
-    if not text.startswith("---"):
-        return ""
-    end = text.find("---", 3)
-    if end == -1:
-        return ""
-    block = text[3:end]
-    prefix = f"{field}:"
-    for line in block.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(prefix):
-            return stripped[len(prefix) :].strip()
-    return ""
-
-
 def _lint_model_changed(wiki_source: str, wiki_path: Path, config: Config) -> LintIssue | None:
     """Flag pages whose generated_by model differs from the current chat model."""
     text = wiki_path.read_text(encoding="utf-8", errors="replace")
-    generated_by = _parse_frontmatter_field(text, "generated_by")
+    generated_by = parse_frontmatter(text).get("generated_by", "")
     if not generated_by:
         return None
     if generated_by != config.chat_model:

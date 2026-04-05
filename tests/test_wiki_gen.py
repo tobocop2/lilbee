@@ -7,10 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.wiki.citation import ParsedCitation
 from lilbee.config import cfg
 from lilbee.store import SearchChunk, Store
+from lilbee.wiki.citation import ParsedCitation
 from lilbee.wiki.gen import (
+    _check_faithfulness,
     _chunks_to_text,
     _content_change_ratio,
     _diff_summary,
@@ -18,14 +19,15 @@ from lilbee.wiki.gen import (
     _extract_excerpt,
     _find_excerpt_source,
     _generate_synthesis_page,
-    _make_slug,
     _match_citation_source,
     _parse_faithfulness_score,
     _resolve_citations,
     _resolve_multi_source_citations,
+    _verify_citations,
     generate_summary_page,
     generate_synthesis_pages,
 )
+from lilbee.wiki.shared import make_slug
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +41,7 @@ def isolated_env(tmp_path: Path):
     cfg.wiki = True
     cfg.wiki_dir = "wiki"
     cfg.wiki_faithfulness_threshold = 0.7
+    cfg.wiki_prune_raw = False
     cfg.chat_model = "test-model"
     yield tmp_path
     for name in type(cfg).model_fields:
@@ -135,6 +138,114 @@ class TestResolveCitations:
         records = _resolve_citations(parsed, "doc.md", "hash", chunks)
         assert records[0]["page_start"] == 0
         assert records[0]["line_start"] == 0
+
+
+class TestVerifyCitations:
+    def test_keeps_matching_excerpts(self):
+        from lilbee.store import CitationRecord
+
+        chunks = [_make_chunk("Python supports typing.")]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": "Python supports typing.",
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test")
+        assert len(verified) == 1
+
+    def test_drops_unmatched_excerpts(self):
+        from lilbee.store import CitationRecord
+
+        chunks = [_make_chunk("Different text")]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": "Not in chunks",
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test")
+        assert len(verified) == 0
+
+    def test_keeps_inference_citations(self):
+        from lilbee.store import CitationRecord
+
+        chunks = [_make_chunk("text")]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "inference",
+                "source_filename": "doc.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": "",
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test")
+        assert len(verified) == 1
+
+    def test_skips_wiki_sourced_citations(self):
+        from lilbee.store import CitationRecord
+
+        chunks = [_make_chunk("text")]
+        recs: list[CitationRecord] = [
+            {
+                "wiki_source": "",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "wiki/summaries/page.md",
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": "text",
+                "created_at": "now",
+            }
+        ]
+        verified = _verify_citations(recs, chunks, "test")
+        assert len(verified) == 0
+
+
+class TestCheckFaithfulness:
+    def test_returns_score(self):
+        provider = MagicMock()
+        provider.chat.return_value = "0.85"
+        score = _check_faithfulness("chunks", "wiki", provider, "test")
+        assert score == 0.85
+
+    def test_failure_returns_zero(self):
+        provider = MagicMock()
+        provider.chat.side_effect = ConnectionError("down")
+        score = _check_faithfulness("chunks", "wiki", provider, "test")
+        assert score == 0.0
 
 
 class TestGenerateSummaryPage:
@@ -276,16 +387,61 @@ class TestGenerateSummaryPage:
         assert result is not None
         store.add_citations.assert_called_once()
 
+    def test_prune_raw_deletes_source_chunks(self, tmp_path: Path):
+        cfg.wiki_prune_raw = True
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = self._mock_provider(wiki_text)
+        store = self._mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is not None
+        store.delete_by_source.assert_called_once_with("doc.md")
+
+    def test_citations_cleared_before_adding(self, tmp_path: Path):
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = self._mock_provider(wiki_text)
+        store = self._mock_store()
+
+        generate_summary_page("doc.md", chunks, provider, store)
+        store.delete_citations_for_wiki.assert_called_once()
+        store.add_citations.assert_called_once()
+
 
 class TestMakeSlug:
     def test_spaces_to_dashes(self):
-        assert _make_slug("gradual typing") == "gradual-typing"
+        assert make_slug("gradual typing") == "gradual-typing"
 
     def test_slashes_to_double_dashes(self):
-        assert _make_slug("path/to/concept") == "path--to--concept"
+        assert make_slug("path/to/concept") == "path--to--concept"
 
     def test_lowercase(self):
-        assert _make_slug("Python Types") == "python-types"
+        assert make_slug("Python Types") == "python-types"
+
+    def test_strips_special_characters(self):
+        assert make_slug("hello! world?") == "hello-world"
+
+    def test_preserves_hyphens(self):
+        assert make_slug("well-known") == "well-known"
 
 
 class TestMatchCitationSource:
@@ -404,7 +560,7 @@ class TestGenerateSynthesisPage:
         assert result.name == "gradual-typing.md"
         content = result.read_text()
         assert "generated_by: test-model" in content
-        assert "sources: [a.md, b.md, c.md]" in content
+        assert 'sources: ["a.md", "b.md", "c.md"]' in content
         assert "faithfulness_score: 0.85" in content
         store.add_citations.assert_called_once()
 

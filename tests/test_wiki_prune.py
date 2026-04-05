@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import make_citation, source_hash, write_source, write_wiki_page
 from lilbee.config import cfg
-from lilbee.store import CitationRecord, Store
+from lilbee.store import Store
 from lilbee.wiki.prune import (
     PruneAction,
     PruneRecord,
@@ -38,55 +38,6 @@ def isolated_env(tmp_path: Path):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _write_source(tmp_path: Path, name: str, content: str) -> Path:
-    path = tmp_path / "documents" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
-
-
-def _write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
-    wiki_root = tmp_path / "wiki" / subdir
-    wiki_root.mkdir(parents=True, exist_ok=True)
-    path = wiki_root / f"{slug}.md"
-    path.write_text(content)
-    return path
-
-
-def _file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(8192), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _make_citation(
-    wiki_source: str = "wiki/summaries/doc.md",
-    source_filename: str = "doc.md",
-    source_hash: str = "abc",
-    excerpt: str = "some text",
-    citation_key: str = "src1",
-    **kwargs: object,
-) -> CitationRecord:
-    defaults: CitationRecord = {
-        "wiki_source": wiki_source,
-        "wiki_chunk_index": 0,
-        "citation_key": citation_key,
-        "claim_type": "fact",
-        "source_filename": source_filename,
-        "source_hash": source_hash,
-        "page_start": 0,
-        "page_end": 0,
-        "line_start": 0,
-        "line_end": 0,
-        "excerpt": excerpt,
-        "created_at": "2026-01-01",
-    }
-    defaults.update(kwargs)  # type: ignore[typeddict-item]
-    return defaults
-
-
 class TestPruneReport:
     def test_empty_report(self):
         report = PruneReport()
@@ -109,16 +60,16 @@ class TestCheckAllSourcesDeleted:
     def test_all_deleted(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="gone.md"),
+            make_citation(source_filename="gone.md"),
         ]
         assert _check_all_sources_deleted("wiki/summaries/doc.md", store, cfg.documents_dir)
 
     def test_some_still_exist(self, tmp_path: Path):
-        _write_source(tmp_path, "alive.md", "content")
+        write_source(tmp_path, "alive.md", "content")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="gone.md"),
-            _make_citation(source_filename="alive.md", citation_key="src2"),
+            make_citation(source_filename="gone.md"),
+            make_citation(source_filename="alive.md", citation_key="src2"),
         ]
         assert not _check_all_sources_deleted("wiki/summaries/doc.md", store, cfg.documents_dir)
 
@@ -130,24 +81,24 @@ class TestCheckAllSourcesDeleted:
 
 class TestCheckClusterBelowThreshold:
     def test_concepts_page_below_threshold(self, tmp_path: Path):
-        _write_source(tmp_path, "a.md", "content a")
+        write_source(tmp_path, "a.md", "content a")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="a.md"),
-            _make_citation(source_filename="gone1.md", citation_key="src2"),
-            _make_citation(source_filename="gone2.md", citation_key="src3"),
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="gone1.md", citation_key="src2"),
+            make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
         assert _check_cluster_below_threshold("wiki/concepts/topic.md", store, cfg.documents_dir)
 
     def test_concepts_page_above_threshold(self, tmp_path: Path):
-        _write_source(tmp_path, "a.md", "content a")
-        _write_source(tmp_path, "b.md", "content b")
-        _write_source(tmp_path, "c.md", "content c")
+        write_source(tmp_path, "a.md", "content a")
+        write_source(tmp_path, "b.md", "content b")
+        write_source(tmp_path, "c.md", "content c")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="a.md"),
-            _make_citation(source_filename="b.md", citation_key="src2"),
-            _make_citation(source_filename="c.md", citation_key="src3"),
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="b.md", citation_key="src2"),
+            make_citation(source_filename="c.md", citation_key="src3"),
         ]
         assert not _check_cluster_below_threshold(
             "wiki/concepts/topic.md", store, cfg.documents_dir
@@ -156,7 +107,7 @@ class TestCheckClusterBelowThreshold:
     def test_non_concepts_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="gone.md"),
+            make_citation(source_filename="gone.md"),
         ]
         assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store, cfg.documents_dir)
 
@@ -170,18 +121,18 @@ class TestCheckClusterBelowThreshold:
 
 class TestCheckStaleMajority:
     def test_majority_stale(self, tmp_path: Path):
-        _write_source(tmp_path, "doc.md", "Updated content.")
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n> Fact2.[^src2]\n")
+        write_source(tmp_path, "doc.md", "Updated content.")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Fact.[^src1]\n> Fact2.[^src2]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash="old_hash", excerpt="old text"),
-            _make_citation(source_hash="old_hash", excerpt="old text 2", citation_key="src2"),
+            make_citation(source_hash="old_hash", excerpt="old text"),
+            make_citation(source_hash="old_hash", excerpt="old text 2", citation_key="src2"),
         ]
         assert _check_stale_majority("wiki/summaries/doc.md", store, cfg)
 
     def test_minority_stale(self, tmp_path: Path):
-        source = _write_source(tmp_path, "doc.md", "Good content here.")
-        _write_wiki_page(
+        source = write_source(tmp_path, "doc.md", "Good content here.")
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -192,17 +143,17 @@ class TestCheckStaleMajority:
             "[^src2]: doc.md, lines 1-5\n",
         )
         store = MagicMock(spec=Store)
-        good_hash = _file_hash(source)
+        good_hash = source_hash(source)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash=good_hash, excerpt="Good content"),
-            _make_citation(source_hash="old_hash", excerpt="old text", citation_key="src2"),
+            make_citation(source_hash=good_hash, excerpt="Good content"),
+            make_citation(source_hash="old_hash", excerpt="old text", citation_key="src2"),
         ]
         # 1 out of 2 is stale = 50%, not >50%
         assert not _check_stale_majority("wiki/summaries/doc.md", store, cfg)
 
     def test_no_issues(self, tmp_path: Path):
-        source = _write_source(tmp_path, "doc.md", "Content.")
-        _write_wiki_page(
+        source = write_source(tmp_path, "doc.md", "Content.")
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -213,7 +164,7 @@ class TestCheckStaleMajority:
         )
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash=_file_hash(source), excerpt="Content"),
+            make_citation(source_hash=source_hash(source), excerpt="Content"),
         ]
         assert not _check_stale_majority("wiki/summaries/doc.md", store, cfg)
 
@@ -225,7 +176,7 @@ class TestCheckStaleMajority:
 
 class TestArchivePage:
     def test_moves_file_and_cleans_store(self, tmp_path: Path):
-        page = _write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        page = write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
         wiki_root = tmp_path / "wiki"
         store = MagicMock(spec=Store)
 
@@ -251,10 +202,10 @@ class TestArchivePage:
 
 class TestPruneWiki:
     def test_archives_page_with_all_sources_deleted(self, tmp_path: Path):
-        _write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_filename="deleted.md"),
+            make_citation(source_filename="deleted.md"),
         ]
 
         report = prune_wiki(store)
@@ -265,20 +216,20 @@ class TestPruneWiki:
         assert (tmp_path / "wiki" / "archive" / "doc.md").exists()
 
     def test_archives_concept_page_below_threshold(self, tmp_path: Path):
-        _write_wiki_page(tmp_path, "concepts", "topic", "# Topic\n")
-        _write_source(tmp_path, "a.md", "content")
+        write_wiki_page(tmp_path, "concepts", "topic", "# Topic\n")
+        write_source(tmp_path, "a.md", "content")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="a.md",
             ),
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="gone1.md",
                 citation_key="src2",
             ),
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="gone2.md",
                 citation_key="src3",
@@ -291,12 +242,12 @@ class TestPruneWiki:
         assert "below 3" in report.records[0].reason
 
     def test_flags_page_with_stale_majority(self, tmp_path: Path):
-        _write_source(tmp_path, "doc.md", "New content.")
-        _write_wiki_page(tmp_path, "summaries", "doc", "> Old.[^src1]\n> Old2.[^src2]\n")
+        write_source(tmp_path, "doc.md", "New content.")
+        write_wiki_page(tmp_path, "summaries", "doc", "> Old.[^src1]\n> Old2.[^src2]\n")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash="old_hash", excerpt="old text"),
-            _make_citation(source_hash="old_hash", excerpt="old text 2", citation_key="src2"),
+            make_citation(source_hash="old_hash", excerpt="old text"),
+            make_citation(source_hash="old_hash", excerpt="old text 2", citation_key="src2"),
         ]
 
         report = prune_wiki(store)
@@ -318,8 +269,8 @@ class TestPruneWiki:
         assert report.records == []
 
     def test_healthy_page_not_pruned(self, tmp_path: Path):
-        source = _write_source(tmp_path, "doc.md", "Good content here.")
-        _write_wiki_page(
+        source = write_source(tmp_path, "doc.md", "Good content here.")
+        write_wiki_page(
             tmp_path,
             "summaries",
             "doc",
@@ -330,7 +281,7 @@ class TestPruneWiki:
         )
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(source_hash=_file_hash(source), excerpt="Good content"),
+            make_citation(source_hash=source_hash(source), excerpt="Good content"),
         ]
 
         report = prune_wiki(store)
@@ -339,10 +290,10 @@ class TestPruneWiki:
         assert (tmp_path / "wiki" / "summaries" / "doc.md").exists()
 
     def test_concept_page_with_enough_sources_not_pruned(self, tmp_path: Path):
-        source_a = _write_source(tmp_path, "a.md", "a")
-        source_b = _write_source(tmp_path, "b.md", "b")
-        source_c = _write_source(tmp_path, "c.md", "c")
-        _write_wiki_page(
+        source_a = write_source(tmp_path, "a.md", "a")
+        source_b = write_source(tmp_path, "b.md", "b")
+        source_c = write_source(tmp_path, "c.md", "c")
+        write_wiki_page(
             tmp_path,
             "concepts",
             "topic",
@@ -353,23 +304,23 @@ class TestPruneWiki:
         )
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="a.md",
-                source_hash=_file_hash(source_a),
+                source_hash=source_hash(source_a),
                 excerpt="a",
             ),
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="b.md",
-                source_hash=_file_hash(source_b),
+                source_hash=source_hash(source_b),
                 excerpt="b",
                 citation_key="src2",
             ),
-            _make_citation(
+            make_citation(
                 wiki_source="wiki/concepts/topic.md",
                 source_filename="c.md",
-                source_hash=_file_hash(source_c),
+                source_hash=source_hash(source_c),
                 excerpt="c",
                 citation_key="src3",
             ),

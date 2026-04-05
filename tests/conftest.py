@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from lilbee.config import cfg
+from lilbee.ingest import file_hash
+from lilbee.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -82,3 +84,52 @@ def copy_fixtures_to(subdir: str, dest: Path) -> None:
     for item in src.iterdir():
         if item.is_file():
             shutil.copy2(item, dest / item.name)
+
+
+def make_citation(
+    wiki_source: str = "wiki/summaries/doc.md",
+    source_filename: str = "doc.md",
+    source_hash: str = "abc",
+    excerpt: str = "some text",
+    citation_key: str = "src1",
+    **kwargs: object,
+) -> CitationRecord:
+    """Build a CitationRecord with sensible defaults."""
+    defaults: CitationRecord = {
+        "wiki_source": wiki_source,
+        "wiki_chunk_index": 0,
+        "citation_key": citation_key,
+        "claim_type": "fact",
+        "source_filename": source_filename,
+        "source_hash": source_hash,
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "excerpt": excerpt,
+        "created_at": "2026-01-01",
+    }
+    defaults.update(kwargs)  # type: ignore[typeddict-item]
+    return defaults
+
+
+def write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
+    """Write a wiki page and return its path."""
+    wiki_root = tmp_path / "wiki" / subdir
+    wiki_root.mkdir(parents=True, exist_ok=True)
+    path = wiki_root / f"{slug}.md"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def write_source(tmp_path: Path, name: str, content: str) -> Path:
+    """Write a source document and return its path."""
+    path = tmp_path / "documents" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return path
+
+
+def source_hash(path: Path) -> str:
+    """Get the SHA-256 hash of a file (delegates to ingest.file_hash)."""
+    return file_hash(path)

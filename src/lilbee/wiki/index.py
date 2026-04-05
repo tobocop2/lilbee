@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.config import Config, cfg
+from lilbee.wiki.shared import SUBDIR_TO_TYPE
 
 log = logging.getLogger(__name__)
 
@@ -48,12 +49,6 @@ def _parse_source_count(text: str) -> int:
     return 0
 
 
-_SUBDIR_TO_TYPE: dict[str, str] = {
-    "summaries": "summary",
-    "concepts": "concept",
-}
-
-
 def update_wiki_index(config: Config | None = None) -> Path:
     """Scan summaries/ and concepts/ directories and write wiki/index.md.
 
@@ -70,7 +65,7 @@ def update_wiki_index(config: Config | None = None) -> Path:
         subdir_path = root / subdir
         if not subdir_path.is_dir():
             continue
-        page_type = _SUBDIR_TO_TYPE[subdir]
+        page_type = SUBDIR_TO_TYPE[subdir]
         for md_path in sorted(subdir_path.glob("*.md")):
             text = md_path.read_text(encoding="utf-8")
             title = _parse_title(text) or md_path.stem.replace("-", " ").title()
@@ -105,7 +100,9 @@ def append_wiki_log(
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d")
     entry = f"## [{timestamp}] {action} | {details}\n\n"
 
-    existing = log_path.read_text(encoding="utf-8") if log_path.exists() else "# Wiki Log\n\n"
+    if not log_path.exists():
+        log_path.write_text("# Wiki Log\n\n", encoding="utf-8")
 
-    log_path.write_text(existing + entry, encoding="utf-8")
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(entry)
     return log_path

@@ -2,6 +2,7 @@
 
 import pytest
 
+from lilbee.store import CitationRecord
 from lilbee.wiki.citation import (
     CitationStatus,
     ParsedCitation,
@@ -10,7 +11,6 @@ from lilbee.wiki.citation import (
     render_citation_block,
     verify_citation,
 )
-from lilbee.store import CitationRecord
 
 
 def _citation_record(**overrides: object) -> CitationRecord:

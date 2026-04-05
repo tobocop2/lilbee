@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import write_wiki_page
 from lilbee.config import cfg
 from lilbee.wiki.index import (
     _parse_source_count,
@@ -29,14 +30,6 @@ def isolated_env(tmp_path: Path):
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-
-
-def _write_wiki_page(tmp_path: Path, subdir: str, slug: str, content: str) -> Path:
-    page_dir = tmp_path / "wiki" / subdir
-    page_dir.mkdir(parents=True, exist_ok=True)
-    path = page_dir / f"{slug}.md"
-    path.write_text(content, encoding="utf-8")
-    return path
 
 
 _SUMMARY_PAGE = (
@@ -92,7 +85,7 @@ class TestUpdateWikiIndex:
         assert "- [" not in content
 
     def test_summary_pages_listed(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "my-doc", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "my-doc", _SUMMARY_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "[My Document](summaries/my-doc.md)" in content
@@ -100,7 +93,7 @@ class TestUpdateWikiIndex:
         assert "1 sources" in content
 
     def test_concept_pages_listed(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "[Type Safety](concepts/type-safety.md)" in content
@@ -108,16 +101,16 @@ class TestUpdateWikiIndex:
         assert "3 sources" in content
 
     def test_both_subdirs(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
-        _write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "summaries/doc-a.md" in content
         assert "concepts/type-safety.md" in content
 
     def test_sorted_within_subdir(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "z-doc", _SUMMARY_PAGE)
-        _write_wiki_page(isolated_env, "summaries", "a-doc", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "z-doc", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "a-doc", _SUMMARY_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         a_pos = content.index("a-doc")
@@ -125,7 +118,7 @@ class TestUpdateWikiIndex:
         assert a_pos < z_pos
 
     def test_fallback_title_from_stem(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "no-title", "Just text, no heading.")
+        write_wiki_page(isolated_env, "summaries", "no-title", "Just text, no heading.")
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "[No Title]" in content
@@ -137,16 +130,16 @@ class TestUpdateWikiIndex:
         assert path.exists()
 
     def test_overwrites_existing_index(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
         update_wiki_index()
-        _write_wiki_page(isolated_env, "summaries", "doc-b", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "doc-b", _SUMMARY_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "doc-a" in content
         assert "doc-b" in content
 
     def test_accepts_explicit_config(self, isolated_env: Path):
-        _write_wiki_page(isolated_env, "summaries", "doc", _SUMMARY_PAGE)
+        write_wiki_page(isolated_env, "summaries", "doc", _SUMMARY_PAGE)
         path = update_wiki_index(config=cfg)
         assert path.exists()
 

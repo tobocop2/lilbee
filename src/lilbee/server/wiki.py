@@ -10,7 +10,9 @@ from litestar.exceptions import NotFoundException
 from litestar.params import Parameter
 
 from lilbee.config import cfg
+from lilbee.security import validate_path_within
 from lilbee.server.models import WikiPageSummary
+from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
 
 
 def _wiki_root() -> Path:
@@ -24,36 +26,11 @@ def _require_wiki() -> None:
         raise NotFoundException(detail="wiki not enabled")
 
 
-def _parse_frontmatter(text: str) -> dict[str, Any]:
-    """Extract YAML frontmatter fields from a wiki page string."""
-    if not text.startswith("---"):
-        return {}
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-    block = text[3:end].strip()
-    result: dict[str, Any] = {}
-    for line in block.splitlines():
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        result[key.strip()] = value.strip()
-    return result
-
-
 def _list_md_files(directory: Path) -> list[Path]:
     """Return sorted markdown files in a directory (non-recursive)."""
     if not directory.is_dir():
         return []
     return sorted(directory.glob("*.md"))
-
-
-_SUBDIR_TO_TYPE: dict[str, str] = {
-    "summaries": "summary",
-    "concepts": "concept",
-    "drafts": "draft",
-    "archive": "archive",
-}
 
 
 def _page_type_from_path(path: Path, wiki_root: Path) -> str:
@@ -64,7 +41,7 @@ def _page_type_from_path(path: Path, wiki_root: Path) -> str:
         return "unknown"
     parts = relative.parts
     if len(parts) >= 2:
-        return _SUBDIR_TO_TYPE.get(parts[0], "unknown")
+        return SUBDIR_TO_TYPE.get(parts[0], "unknown")
     return "unknown"
 
 
@@ -77,13 +54,17 @@ def _slug_from_path(path: Path, wiki_root: Path) -> str:
 def _find_page(slug: str) -> Path | None:
     """Resolve a slug to a wiki page path, or None if not found."""
     candidate = _wiki_root() / f"{slug}.md"
+    try:
+        validate_path_within(candidate, _wiki_root())
+    except ValueError:
+        return None
     return candidate if candidate.is_file() else None
 
 
 def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
     """Build a WikiPageSummary from a markdown file on disk."""
     text = path.read_text(encoding="utf-8")
-    fm = _parse_frontmatter(text)
+    fm = parse_frontmatter(text)
     slug = _slug_from_path(path, wiki_root)
     title = fm.get("title", path.stem.replace("-", " ").title())
     page_type = _page_type_from_path(path, wiki_root)
@@ -141,8 +122,10 @@ async def wiki_citations_reverse_route(
     _require_wiki()
     if not source:
         return []
-    # Stub: return empty until citation table is implemented
-    return []
+    from lilbee.services import get_services
+
+    records = get_services().store.get_citations_for_source(source)
+    return [dict(r) for r in records]
 
 
 @get("/api/wiki/lint/{task_id:str}")
@@ -164,7 +147,7 @@ async def wiki_read_route(slug: str) -> dict[str, Any]:
     if path is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
     text = path.read_text(encoding="utf-8")
-    fm = _parse_frontmatter(text)
+    fm = parse_frontmatter(text)
     return {
         "slug": slug,
         "title": fm.get("title", path.stem.replace("-", " ").title()),
@@ -177,22 +160,50 @@ def _citations_for_slug(slug: str) -> dict[str, Any]:
     path = _find_page(slug)
     if path is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
-    # Stub: return empty until citation table is implemented
-    return {"slug": slug, "citations": []}
+    from lilbee.services import get_services
+
+    wiki_source = f"{cfg.wiki_dir}/{slug}.md"
+    records = get_services().store.get_citations_for_wiki(wiki_source)
+    return {"slug": slug, "citations": [dict(r) for r in records]}
 
 
 @post("/api/wiki/lint")
 async def wiki_lint_route() -> dict[str, Any]:
-    """Trigger a full wiki lint (background task)."""
+    """Trigger a full wiki lint."""
     _require_wiki()
-    return {"status": "not_implemented"}
+    from lilbee.services import get_services
+    from lilbee.wiki.lint import lint_all
+
+    report = lint_all(get_services().store)
+    return {
+        "issues": [
+            {
+                "wiki_source": i.wiki_source,
+                "severity": i.severity.value,
+                "message": i.message,
+            }
+            for i in report.issues
+        ],
+        "errors": report.error_count,
+        "warnings": report.warning_count,
+    }
 
 
 @post("/api/wiki/generate/{source:path}")
 async def wiki_generate_route(source: str) -> dict[str, Any]:
-    """Trigger wiki generation for a source document (background)."""
+    """Trigger wiki generation for a source document."""
     _require_wiki()
-    return {"status": "not_implemented", "source": source.lstrip("/")}
+    source = source.lstrip("/")
+
+    from lilbee.services import get_services
+    from lilbee.wiki.gen import generate_summary_page
+
+    svc = get_services()
+    chunks = svc.store.get_chunks_by_source(source)
+    result = generate_summary_page(source, chunks, svc.provider, svc.store)
+    if result is None:
+        return {"status": "failed", "source": source}
+    return {"status": "generated", "source": source, "path": str(result)}
 
 
 @post("/api/wiki/prune")
