@@ -12,6 +12,30 @@ from typing import Any, ClassVar
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
+def ConfigField(
+    *args: Any,
+    writable: bool = False,
+    reindex: bool = False,
+    write_only: bool = False,
+    public: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``."""
+    extra: dict[str, bool] = {}
+    if writable:
+        extra["writable"] = True
+    if reindex:
+        extra["reindex"] = True
+    if write_only:
+        extra["write_only"] = True
+    if not public:
+        extra["public"] = False
+    if extra:
+        kwargs["json_schema_extra"] = extra
+    return Field(*args, **kwargs)
+
+
 log = logging.getLogger(__name__)
 
 DEFAULT_IGNORE_DIRS = frozenset(
@@ -66,12 +90,13 @@ class Config(BaseSettings):
     chat_model: str = Field(default="qwen3:8b", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
-    chunk_size: int = Field(default=512, ge=1)
-    chunk_overlap: int = Field(default=100, ge=0)
+    chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
+    chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     max_embed_chars: int = Field(default=2000, ge=1)
-    top_k: int = Field(default=10, ge=1)
-    max_distance: float = Field(default=0.7, ge=0.0)
-    system_prompt: str = Field(default=_DEFAULT_SYSTEM_PROMPT, min_length=1)
+    top_k: int = ConfigField(default=10, ge=1, writable=True)
+    max_distance: float = ConfigField(default=0.9, ge=0.0, writable=True)
+    adaptive_threshold: bool = Field(default=False)
+    system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     vision_model: str = ""
     vision_timeout: float = Field(default=120.0, ge=0.0)
@@ -79,39 +104,40 @@ class Config(BaseSettings):
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
     json_mode: bool = False
-    temperature: float | None = Field(default=None, ge=0.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    top_k_sampling: int | None = Field(default=None, ge=1)
-    repeat_penalty: float | None = Field(default=None, ge=0.0)
-    num_ctx: int | None = Field(default=None, ge=1)
-    seed: int | None = None
-    llm_provider: str = "auto"
-    litellm_base_url: str = "http://localhost:11434"
-    llm_api_key: str = ""
+    temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
+    top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
+    repeat_penalty: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
+    max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
+    seed: int | None = ConfigField(default=None, writable=True)
+    llm_provider: str = ConfigField(default="auto", writable=True)
+    litellm_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
 
     # Retrieval quality knobs — defaults chosen from academic research and grantflow
     # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
 
     # Max chunks per source document in results. Prevents one large file from
     # dominating all top-k slots. 3 balances coverage vs diversity.
-    diversity_max_per_source: int = Field(default=3, ge=1)
+    diversity_max_per_source: int = ConfigField(default=3, ge=1, writable=True)
 
     # MMR relevance/diversity tradeoff. 0.0 = max diversity, 1.0 = pure relevance.
     # 0.5 is the standard default from Carbonell & Goldstein 1998.
-    mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0)
+    mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # How many extra candidates to retrieve for MMR reranking.
     # 3x gives enough candidates to find diverse results without excessive latency.
-    candidate_multiplier: int = Field(default=3, ge=1)
+    candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
     # Number of LLM-generated alternative queries for expansion.
     # 3 variants covers lexical + semantic angles. Set to 0 to disable expansion.
-    query_expansion_count: int = Field(default=3, ge=0)
+    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
 
     # Cosine distance threshold step for adaptive widening.
     # When too few results are found, threshold widens by this amount per retry.
     # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
-    adaptive_threshold_step: float = Field(default=0.2, gt=0.0)
+    adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
 
     # Validate LLM-generated expansion variants to prevent query drift.
     # Checks token overlap with original query (>= 0.3) and deduplicates
@@ -129,15 +155,15 @@ class Config(BaseSettings):
 
     # Maximum chunks included in LLM context after adaptive selection.
     # More = more complete answers but higher latency and token cost.
-    max_context_sources: int = Field(default=5, ge=1)
+    max_context_sources: int = ConfigField(default=5, ge=1, writable=True)
 
     # Enable HyDE (Hypothetical Document Embeddings) for search.
     # Gao et al. 2022. Adds ~500ms per query. Best for vague queries.
-    hyde: bool = False
+    hyde: bool = ConfigField(default=False, writable=True)
 
     # Weight for HyDE results relative to original search (0.0-1.0).
     # Lower = less trust in hypothetical documents.
-    hyde_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    hyde_weight: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
 
     # HyDE prompt template. Must contain {question} placeholder.
     hyde_prompt: str = (
@@ -148,35 +174,54 @@ class Config(BaseSettings):
 
     # Cross-encoder model for reranking. Empty = disabled.
     # Requires sentence-transformers installed.
-    reranker_model: str = ""
+    reranker_model: str = ConfigField(default="", writable=True, public=False)
 
     # Number of candidates to rerank with cross-encoder.
-    rerank_candidates: int = Field(default=20, ge=1)
+    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=False)
 
     # Enable temporal filtering (date-based result filtering).
     # Only activates when temporal keywords detected in query.
-    temporal_filtering: bool = True
+    temporal_filtering: bool = ConfigField(default=True, writable=True)
 
     # Show reasoning model thinking process (<think>...</think> tags).
     # When False, thinking is stripped silently. When True, emitted as
     # separate SSE events (event: reasoning) for UI rendering.
-    show_reasoning: bool = False
+    show_reasoning: bool = ConfigField(default=False, writable=True)
 
     # Web crawling settings
     # Maximum link-following depth for recursive crawls.
-    crawl_max_depth: int = Field(default=2, ge=0)
+    crawl_max_depth: int = ConfigField(default=2, ge=0, writable=True)
 
     # Maximum pages to fetch in a single crawl operation.
-    crawl_max_pages: int = Field(default=50, ge=1)
+    crawl_max_pages: int = ConfigField(default=50, ge=1, writable=True)
 
     # Per-page timeout in seconds for fetching a URL.
-    crawl_timeout: int = Field(default=30, ge=1)
+    crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
 
     # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
     crawl_max_concurrent: int = Field(default=0, ge=0)
 
     # Seconds between periodic syncs during crawl (0 = sync only at end).
-    crawl_sync_interval: int = Field(default=30, ge=0)
+    crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
+
+    # Fraction of GPU/unified memory available for loaded models.
+    # 0.75 leaves headroom for the OS and other processes.
+    gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
+
+    # Seconds a model stays loaded after last use. 0 = unload immediately.
+    model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
+
+    # Run embedding and vision inference in a subprocess to avoid GIL blocking.
+    # Applies only to the llama-cpp provider.
+    subprocess_embed: bool = ConfigField(default=False, writable=True)
+
+    # Use Markdown widget for chat responses in the TUI. When False, uses
+    # plain Static text (faster rendering, no formatting).
+    markdown_rendering: bool = True
+
+    # Per-model generation defaults (not serialized, not a config field).
+    # Set via apply_model_defaults() when switching models.
+    _model_defaults: Any = None
 
     # Wiki layer — LLM-maintained synthesis pages with citation provenance.
     # Requires optional ``wiki`` extra: ``pip install lilbee[wiki]``.
@@ -193,15 +238,15 @@ class Config(BaseSettings):
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.
-    concept_graph: bool = True
+    concept_graph: bool = ConfigField(default=True, writable=True)
 
     # Weight for concept overlap boosting in search results (0.0-1.0).
     # Higher = concept overlap matters more relative to vector similarity.
-    concept_boost_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
 
     # Maximum noun-phrase concepts extracted per chunk.
     # Caps extraction to avoid noise from very long chunks.
-    concept_max_per_chunk: int = Field(default=10, ge=1)
+    concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
 
     # Class variable — not a settings field
     _toml_cache: ClassVar[dict[str, Any]] = {}
@@ -297,22 +342,58 @@ class Config(BaseSettings):
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
+    def apply_model_defaults(self, defaults: Any) -> None:
+        """Store per-model generation defaults for 3-layer merge."""
+        object.__setattr__(self, "_model_defaults", defaults)
+
+    def clear_model_defaults(self) -> None:
+        """Reset per-model defaults to None."""
+        object.__setattr__(self, "_model_defaults", None)
+
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
-        """Build LLM generation options from config fields and overrides.
+        """Build LLM generation options with 3-layer merge.
+
+        Layer 1 (base): model defaults from ``_model_defaults``
+        Layer 2 (override): user config fields — only if explicitly set (not None)
+        Layer 3 (override): per-call ``overrides`` parameter
 
         Remaps ``top_k_sampling`` to the provider's ``top_k`` key.
         Filters out ``None`` values so the provider uses its model defaults.
         """
-        mapping: dict[str, Any] = {
+        result = _model_defaults_dict(self._model_defaults)
+        user_fields: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k_sampling,
             "repeat_penalty": self.repeat_penalty,
             "num_ctx": self.num_ctx,
             "seed": self.seed,
+            "max_tokens": self.max_tokens,
         }
-        mapping.update(overrides)
-        return {k: v for k, v in mapping.items() if v is not None}
+        for k, v in user_fields.items():
+            if v is not None:
+                result[k] = v
+        for k, v in overrides.items():
+            if v is not None:
+                result[k] = v
+        return result
+
+
+def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
+    """Convert a ModelDefaults instance to a dict with provider key names.
+
+    Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
+    Filters out None values.
+    """
+    if defaults is None:
+        return {}
+    from dataclasses import fields as dc_fields
+
+    return {
+        f.name: getattr(defaults, f.name)
+        for f in dc_fields(defaults)
+        if getattr(defaults, f.name) is not None
+    }
 
 
 class _PlainEnvSource:

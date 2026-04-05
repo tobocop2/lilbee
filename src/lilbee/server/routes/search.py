@@ -2,26 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from litestar import get, post
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.query import ChatMessage as ChatMessageDict
+from lilbee.results import DocumentResult
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
-    CleanedChunk,
 )
-
-
-def _clean_to_model(raw: dict) -> CleanedChunk:
-    """Convert a raw cleaned dict to a CleanedChunk model."""
-    return CleanedChunk(**raw)
 
 
 @get("/api/search")
@@ -29,7 +22,7 @@ def _clean_to_model(raw: dict) -> CleanedChunk:
 async def search_route(
     q: str = Parameter(query="q"),
     top_k: int = Parameter(query="top_k", default=5, le=100),
-) -> list[dict[str, Any]]:
+) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     return await handlers.search(q, top_k=top_k)
 
@@ -37,14 +30,10 @@ async def search_route(
 @post("/api/ask")
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
-    raw = await handlers.ask(
+    return await handlers.ask(
         question=data.question,
         top_k=data.top_k,
         options=data.options,
-    )
-    return AskResponse(
-        answer=raw["answer"],
-        sources=[_clean_to_model(s) for s in raw["sources"]],
     )
 
 
@@ -67,15 +56,11 @@ async def chat_route(data: ChatRequest) -> AskResponse:
     history: list[ChatMessageDict] = [
         ChatMessageDict(role=m.role, content=m.content) for m in data.history
     ]
-    raw = await handlers.chat(
+    return await handlers.chat(
         question=data.question,
         history=history,
         top_k=data.top_k,
         options=data.options,
-    )
-    return AskResponse(
-        answer=raw["answer"],
-        sources=[_clean_to_model(s) for s in raw["sources"]],
     )
 
 

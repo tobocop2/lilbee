@@ -352,9 +352,34 @@ class Store:
         if chunk_type:
             query = query.where(f"chunk_type = '{escape_sql_string(chunk_type)}'")
         rows = query.to_list()
+        log.debug(
+            "Vector search: query=%r, candidates=%d, max_distance=%.2f",
+            query_text or "vector-only",
+            len(rows),
+            max_distance,
+        )
+        if rows:
+            distances = [r.get("distance", 0) for r in rows[:5]]
+            log.debug("Top 5 distances: %s", distances)
         results = [SearchChunk(**r) for r in rows]
         if max_distance > 0:
-            results = self._adaptive_filter(results, top_k, max_distance)
+            before = len(results)
+            if self._config.adaptive_threshold:
+                results = self._adaptive_filter(results, top_k, max_distance)
+                log.debug(
+                    "After adaptive filter: %d/%d results, threshold=%.2f",
+                    len(results),
+                    before,
+                    max_distance,
+                )
+            else:
+                results = self._fixed_filter(results, max_distance)
+                log.debug(
+                    "After fixed filter: %d/%d results, threshold=%.2f",
+                    len(results),
+                    before,
+                    max_distance,
+                )
         if len(results) > top_k:
             results = mmr_rerank(query_vector, results, top_k, self._config.mmr_lambda)
         return results
@@ -399,6 +424,10 @@ class Store:
                 break
             cutoff = i + 1
         return sorted_results[:cutoff]
+
+    def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
+        """Simple fixed threshold filter - keep only results within distance threshold."""
+        return [r for r in results if r.distance is not None and r.distance <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return all chunks for a given source file."""

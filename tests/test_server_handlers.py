@@ -1,5 +1,6 @@
 """Tests for the framework-agnostic server handlers."""
 
+import asyncio
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -80,7 +81,8 @@ class TestHealth:
     async def test_returns_status_and_version(self):
         with patch("lilbee.server.handlers.get_version", return_value="1.2.3"):
             result = await handlers.health()
-        assert result == {"status": "ok", "version": "1.2.3"}
+        assert result.status == "ok"
+        assert result.version == "1.2.3"
 
 
 class TestStatus:
@@ -99,8 +101,8 @@ class TestStatus:
         )
         with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
             result = await handlers.status()
-        assert result["sources"] == []
-        assert result["total_chunks"] == 0
+        assert result.sources == []
+        assert result.total_chunks == 0
 
 
 class TestSearch:
@@ -120,7 +122,7 @@ class TestSearch:
         mock_svc.searcher.search.return_value = [chunk]
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
-        assert result[0]["source"] == "doc.pdf"
+        assert result[0].source == "doc.pdf"
         mock_svc.searcher.search.assert_called_once_with("test", top_k=3)
 
     async def test_empty_results(self, mock_svc):
@@ -151,18 +153,17 @@ class TestAsk:
             ],
         )
         result = await handlers.ask("what?")
-        assert result["answer"] == "42"
-        assert len(result["sources"]) == 1
-        assert "vector" not in result["sources"][0]
-        assert result["sources"][0]["distance"] == 0.1
+        assert result.answer == "42"
+        assert len(result.sources) == 1
+        assert result.sources[0].distance == 0.1
 
     async def test_no_sources(self, mock_svc):
         from lilbee.query import AskResult
 
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="No docs found.", sources=[])
         result = await handlers.ask("what?")
-        assert result["answer"] == "No docs found."
-        assert result["sources"] == []
+        assert result.answer == "No docs found."
+        assert result.sources == []
 
 
 class TestAskStream:
@@ -234,15 +235,16 @@ class TestAskStream:
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = blocking_chat
-        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
-            gen = handlers.ask_stream("question")
-            async for event in gen:
-                if event and "first" in event:
-                    await gen.aclose()
-                    barrier.set()
-                    break
-
-        assert any("Stream cancelled by client" in r.message for r in caplog.records)
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.ask_stream("question")
+        async for event in gen:
+            if event and "first" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        # Give async generator cleanup a tick to fire the log
+        await asyncio.sleep(0.05)
+        assert any("cancelled by client" in r.message for r in caplog.records)
 
     async def test_skips_empty_tokens(self, mock_svc):
         """Empty strings from provider are not emitted."""
@@ -263,7 +265,7 @@ class TestChat:
         mock_svc.searcher.ask_raw.return_value = AskResult(answer="ok", sources=[])
         history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
         result = await handlers.chat("follow up", history)
-        assert result["answer"] == "ok"
+        assert result.answer == "ok"
         mock_svc.searcher.ask_raw.assert_called_once_with(
             "follow up", top_k=0, history=history, options=None
         )
@@ -336,15 +338,15 @@ class TestChatStream:
 
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = blocking_chat
-        with caplog.at_level(logging.INFO, logger="lilbee.server.handlers"):
-            gen = handlers.chat_stream("question", [])
-            async for event in gen:
-                if event and "first" in event:
-                    await gen.aclose()
-                    barrier.set()
-                    break
-
-        assert any("Stream cancelled by client" in r.message for r in caplog.records)
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.chat_stream("question", [])
+        async for event in gen:
+            if event and "first" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        await asyncio.sleep(0.05)
+        assert any("cancelled by client" in r.message for r in caplog.records)
 
     async def test_skips_empty_tokens(self, mock_svc):
         """Empty strings from provider are not emitted."""
@@ -363,11 +365,13 @@ class TestSyncStream:
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
         async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             if on_progress:
-                on_progress("file_done", {"file": "a.txt", "status": "ok", "chunks": 3})
-                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
+                from lilbee.progress import FileDoneEvent, SyncDoneEvent
+
+                on_progress("file_done", FileDoneEvent(file="a.txt", status="ok", chunks=3))
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
@@ -385,12 +389,17 @@ class TestSyncStream:
         sync_result = SyncResult(added=["b.txt"])
 
         async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             if on_progress:
-                on_progress("file_start", {"file": "b.txt", "total_files": 1, "current_file": 1})
-                on_progress("file_done", {"file": "b.txt", "status": "ok", "chunks": 2})
-                on_progress("done", {"added": 1, "updated": 0, "removed": 0, "failed": 0})
+                from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
+
+                on_progress(
+                    "file_start",
+                    FileStartEvent(file="b.txt", total_files=1, current_file=1),
+                )
+                on_progress("file_done", FileDoneEvent(file="b.txt", status="ok", chunks=2))
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
             return sync_result
 
         with patch("lilbee.ingest.sync", side_effect=fake_sync):
@@ -409,7 +418,7 @@ class TestSyncStream:
         sync_result = SyncResult()
 
         async def slow_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
         ):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
@@ -420,6 +429,55 @@ class TestSyncStream:
         done_events = [e for e in events if e.startswith("event: done")]
         assert len(done_events) == 1
 
+    async def test_cancel_sets_cancel_event(self, caplog):
+        """Closing the sync_stream generator signals cancel to the sync task."""
+        import threading
+
+        barrier = threading.Event()
+        captured_cancel: list[threading.Event] = []
+
+        async def blocking_sync(
+            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
+        ):
+            captured_cancel.append(cancel)
+            if on_progress:
+                from lilbee.progress import FileStartEvent
+
+                on_progress(
+                    "file_start", FileStartEvent(file="a.txt", total_files=1, current_file=1)
+                )
+            barrier.wait(timeout=2)
+            return SyncResult()
+
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        with patch("lilbee.ingest.sync", side_effect=blocking_sync):
+            gen = handlers.sync_stream()
+            async for event in gen:
+                if event and "file_start" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+            await asyncio.sleep(0.05)
+
+        assert captured_cancel and captured_cancel[0].is_set()
+        assert any("Sync stream cancelled by client" in r.message for r in caplog.records)
+
+
+class TestAddFiles:
+    async def test_stream_yields_events(self, isolated_env):
+        """add_files_stream yields SSE events and a done event."""
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content")
+
+        async def fake_sync(**kwargs):
+            return SyncResult()
+
+        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+            events = []
+            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+                events.append(event)
+            assert any("done" in e for e in events)
+
 
 class TestListModels:
     @patch("lilbee.models.list_installed_models")
@@ -427,49 +485,49 @@ class TestListModels:
         mock_list.return_value = ["qwen3:8b", "mistral:7b"]
         result = await handlers.list_models()
 
-        assert result["chat"]["active"] == cfg.chat_model
-        assert isinstance(result["chat"]["catalog"], list)
-        assert len(result["chat"]["catalog"]) > 0
-        assert "qwen3:8b" in result["chat"]["installed"]
+        assert result.chat.active == cfg.chat_model
+        assert isinstance(result.chat.catalog, list)
+        assert len(result.chat.catalog) > 0
+        assert "qwen3:8b" in result.chat.installed
 
-        assert isinstance(result["vision"]["catalog"], list)
-        assert isinstance(result["vision"]["installed"], list)
+        assert isinstance(result.vision.catalog, list)
+        assert isinstance(result.vision.installed, list)
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:8b"]
         result = await handlers.list_models()
 
-        catalog = result["chat"]["catalog"]
-        qwen_entry = next(m for m in catalog if m["name"] == "qwen3:8b")
-        assert qwen_entry["installed"] is True
+        catalog = result.chat.catalog
+        qwen_entry = next(m for m in catalog if m.name == "qwen3:8b")
+        assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if m["name"] == "mistral:7b")
-        assert mistral_entry["installed"] is False
+        mistral_entry = next(m for m in catalog if m.name == "mistral:7b")
+        assert mistral_entry.installed is False
 
 
 class TestSetChatModel:
     async def test_updates_config_and_persists(self, tmp_path):
         result = await handlers.set_chat_model("llama3")
-        assert result["model"] == "llama3:latest"
+        assert result.model == "llama3:latest"
         assert cfg.chat_model == "llama3:latest"
 
     async def test_preserves_existing_tag(self, tmp_path):
         result = await handlers.set_chat_model("llama3:7b")
-        assert result["model"] == "llama3:7b"
+        assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
 
 
 class TestSetVisionModel:
     async def test_updates_config_and_persists(self, tmp_path):
         result = await handlers.set_vision_model("minicpm-v:latest")
-        assert result["model"] == "minicpm-v:latest"
+        assert result.model == "minicpm-v:latest"
         assert cfg.vision_model == "minicpm-v:latest"
 
     async def test_empty_string_disables(self, tmp_path):
         cfg.vision_model = "some-model:latest"
         result = await handlers.set_vision_model("")
-        assert result["model"] == ""
+        assert result.model == ""
         assert cfg.vision_model == ""
 
 
@@ -499,12 +557,12 @@ class TestModelsCatalog:
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
 
-        assert result["total"] == 1
-        assert len(result["models"]) == 1
-        m = result["models"][0]
-        assert m["name"] == "Qwen3 8B"
-        assert m["installed"] is False
-        assert m["source"] == "native"
+        assert result.total == 1
+        assert len(result.models) == 1
+        m = result.models[0]
+        assert m.name == "Qwen3 8B"
+        assert m.installed is False
+        assert m.source == "native"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
@@ -557,7 +615,7 @@ class TestModelsCatalog:
         )
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
-        assert result["models"][0]["installed"] is True
+        assert result.models[0].installed is True
 
 
 class TestModelsInstalled:
@@ -567,18 +625,18 @@ class TestModelsInstalled:
         from lilbee.model_manager import ModelSource
 
         mock_manager.get_source.return_value = ModelSource.LITELLM
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert len(result["models"]) == 2
-        assert result["models"][0]["source"] == "litellm"
+        assert len(result.models) == 2
+        assert result.models[0].source == "litellm"
 
     async def test_unknown_source_defaults_to_litellm(self):
         mock_manager = MagicMock()
         mock_manager.list_installed.return_value = ["unknown"]
         mock_manager.get_source.return_value = None
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_installed()
-        assert result["models"][0]["source"] == "litellm"
+        assert result.models[0].source == "litellm"
 
 
 class TestModelsPull:
@@ -592,7 +650,7 @@ class TestModelsPull:
             return None
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("test", source="native")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
@@ -601,40 +659,67 @@ class TestModelsPull:
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
         mock_manager.pull.side_effect = RuntimeError("fail")
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             events = [e async for e in handlers.models_pull("bad", source="native")]
         non_empty = [e for e in events if e]
         assert any("error" in e and "fail" in e for e in non_empty)
+
+    async def test_cancel_stops_pull(self, caplog):
+        """Closing the pull generator mid-stream sets cancel and logs."""
+        import threading
+
+        barrier = threading.Event()
+        mock_manager = MagicMock()
+
+        def blocking_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"status": "downloading"})
+            barrier.wait(timeout=2)
+            if on_progress:
+                on_progress({"status": "done"})
+
+        mock_manager.pull.side_effect = blocking_pull
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+            gen = handlers.models_pull("test", source="native")
+            async for event in gen:
+                if event and "downloading" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+            await asyncio.sleep(0.05)
+
+        assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestModelsDelete:
     async def test_returns_deleted_true(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = True
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("test", source="litellm")
-        assert result["deleted"] is True
-        assert result["model"] == "test"
+        assert result.deleted is True
+        assert result.model == "test"
 
     async def test_returns_deleted_false(self):
         mock_manager = MagicMock()
         mock_manager.remove.return_value = False
-        with patch("lilbee.model_manager.get_model_manager", return_value=mock_manager):
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             result = await handlers.models_delete("missing", source="native")
-        assert result["deleted"] is False
-        assert result["freed_gb"] == 0.0
+        assert result.deleted is False
+        assert result.freed_gb == 0.0
 
 
 class TestModelsShow:
     async def test_returns_params(self, mock_svc):
         mock_svc.provider.show_model.return_value = {"parameters": "temp 0.7"}
         result = await handlers.models_show("qwen3:8b")
-        assert result == {"parameters": "temp 0.7"}
+        assert result.model_dump() == {"parameters": "temp 0.7"}
 
     async def test_returns_empty_when_none(self, mock_svc):
         mock_svc.provider.show_model.return_value = None
         result = await handlers.models_show("unknown")
-        assert result == {}
+        assert result.model_dump() == {}
 
 
 class TestDeleteDocuments:
@@ -643,8 +728,8 @@ class TestDeleteDocuments:
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await handlers.delete_documents(["a.md"])
-        assert result["removed"] == ["a.md"]
-        assert result["not_found"] == []
+        assert result.removed == ["a.md"]
+        assert result.not_found == []
 
     async def test_not_found(self, mock_svc):
         from lilbee.store import RemoveResult
@@ -653,8 +738,8 @@ class TestDeleteDocuments:
             removed=[], not_found=["missing.md"]
         )
         result = await handlers.delete_documents(["missing.md"])
-        assert result["removed"] == []
-        assert result["not_found"] == ["missing.md"]
+        assert result.removed == []
+        assert result.not_found == ["missing.md"]
 
     async def test_delete_files_removes_from_disk(self, mock_svc, tmp_path):
         from lilbee.store import RemoveResult
@@ -670,21 +755,127 @@ class TestDeleteDocuments:
 
         mock_svc.store.remove_documents.side_effect = fake_remove
         result = await handlers.delete_documents(["a.md"], delete_files=True)
-        assert result["removed"] == ["a.md"]
+        assert result.removed == ["a.md"]
         assert not f.exists()
+
+
+class TestUpdateConfig:
+    async def test_update_config_valid(self, tmp_path):
+        result = await handlers.update_config({"temperature": 0.7})
+        assert result.updated == ["temperature"]
+        assert result.reindex_required is False
+        assert cfg.temperature == 0.7
+
+    async def test_update_config_reindex(self, tmp_path):
+        result = await handlers.update_config({"chunk_size": 1024})
+        assert result.reindex_required is True
+        assert cfg.chunk_size == 1024
+
+    async def test_update_config_null_reset(self, tmp_path):
+        cfg.temperature = 0.5
+        result = await handlers.update_config({"temperature": None})
+        assert result.updated == ["temperature"]
+        assert cfg.temperature is None
+        # Verify delete_value was called (file should not contain temperature)
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert "temperature" not in stored
+
+    async def test_update_config_unknown_field(self):
+        with pytest.raises(ValueError, match="Unknown or read-only config field"):
+            await handlers.update_config({"bogus_field": 123})
+
+    async def test_non_nullable_field_rejects_null(self):
+        with pytest.raises(ValueError, match="does not accept null"):
+            await handlers.update_config({"system_prompt": None})
+
+    async def test_empty_dict_returns_no_updates(self):
+        result = await handlers.update_config({})
+        assert result.updated == []
+        assert result.reindex_required is False
+
+    async def test_invalid_type_raises(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            await handlers.update_config({"chunk_size": "not_a_number"})
+
+    async def test_llm_api_key_write_only(self, tmp_path):
+        """llm_api_key can be written via PATCH but is excluded from GET."""
+        result = await handlers.update_config({"llm_api_key": "sk-test123"})
+        assert result.updated == ["llm_api_key"]
+        assert cfg.llm_api_key == "sk-test123"
+        # Verify it's excluded from GET /api/config
+        config = await handlers.get_config()
+        assert "llm_api_key" not in config.model_dump()
+
+    async def test_multi_field_bad_second_no_partial_apply(self):
+        """If second field is invalid, first field should NOT be applied."""
+        original_temp = cfg.temperature
+        with pytest.raises(ValueError, match="does not accept null"):
+            await handlers.update_config({"temperature": 0.9, "system_prompt": None})
+        # temperature should be unchanged — validation happens before apply
+        assert cfg.temperature == original_temp
+
+    async def test_multi_field_success(self, tmp_path):
+        """Multiple valid fields are applied and persisted in one call."""
+        result = await handlers.update_config({"temperature": 0.7, "top_k": 5})
+        assert set(result.updated) == {"temperature", "top_k"}
+        assert result.reindex_required is False
+        assert cfg.temperature == 0.7
+        assert cfg.top_k == 5
+        # Verify both persisted
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert stored["temperature"] == "0.7"
+        assert stored["top_k"] == "5"
+
+
+class TestSetEmbeddingModel:
+    async def test_updates_config_and_persists(self, tmp_path):
+        result = await handlers.set_embedding_model("nomic-embed-text:latest")
+        assert result.model == "nomic-embed-text:latest"
+        assert cfg.embedding_model == "nomic-embed-text:latest"
+        from lilbee import settings as s
+
+        stored = s.load(cfg.data_root)
+        assert stored["embedding_model"] == "nomic-embed-text:latest"
+
+    async def test_empty_string_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            await handlers.set_embedding_model("")
+
+    async def test_embedding_model_without_tag(self, tmp_path):
+        """Setting embedding model without a tag stores it as-is (no :latest append)."""
+        result = await handlers.set_embedding_model("nomic-embed-text")
+        assert result.model == "nomic-embed-text"
+        assert cfg.embedding_model == "nomic-embed-text"
 
 
 class TestGetConfig:
     async def test_returns_all_config_keys(self):
         result = await handlers.get_config()
-        assert "chat_model" in result
-        assert "system_prompt" in result
-        assert "litellm_base_url" in result
-        assert "diversity_max_per_source" in result
-        assert "mmr_lambda" in result
-        assert "query_expansion_count" in result
-        assert "adaptive_threshold_step" in result
-        assert "temperature" in result
+        dumped = result.model_dump()
+        assert "chat_model" in dumped
+        assert "system_prompt" in dumped
+        assert "litellm_base_url" in dumped
+        assert "diversity_max_per_source" in dumped
+        assert "mmr_lambda" in dumped
+        assert "query_expansion_count" in dumped
+        assert "adaptive_threshold_step" in dumped
+        assert "temperature" in dumped
+        assert "max_context_sources" in dumped
+        assert "hyde" in dumped
+        assert "hyde_weight" in dumped
+        assert "temporal_filtering" in dumped
+        assert "concept_graph" in dumped
+        assert "concept_boost_weight" in dumped
+        assert "concept_max_per_chunk" in dumped
+        assert "llm_api_key" not in dumped
 
 
 class TestListDocuments:
@@ -693,26 +884,26 @@ class TestListDocuments:
             {"filename": "a.md", "chunk_count": 5, "ingested_at": "2026-01-01"},
         ]
         result = await handlers.list_documents()
-        assert result["total"] == 1
-        assert result["documents"][0]["filename"] == "a.md"
-        assert result["documents"][0]["chunk_count"] == 5
+        assert result.total == 1
+        assert result.documents[0].filename == "a.md"
+        assert result.documents[0].chunk_count == 5
 
     async def test_empty(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
         result = await handlers.list_documents()
-        assert result["total"] == 0
-        assert result["documents"] == []
+        assert result.total == 0
+        assert result.documents == []
 
     async def test_pagination(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
             {"filename": f"doc{i}.md", "chunk_count": i} for i in range(10)
         ]
         result = await handlers.list_documents(limit=3, offset=2)
-        assert result["total"] == 10
-        assert len(result["documents"]) == 3
-        assert result["documents"][0]["filename"] == "doc2.md"
-        assert result["limit"] == 3
-        assert result["offset"] == 2
+        assert result.total == 10
+        assert len(result.documents) == 3
+        assert result.documents[0].filename == "doc2.md"
+        assert result.limit == 3
+        assert result.offset == 2
 
     async def test_search_filter(self, mock_svc):
         mock_svc.store.get_sources.return_value = [
@@ -721,21 +912,22 @@ class TestListDocuments:
             {"filename": "readme_dev.md", "chunk_count": 2},
         ]
         result = await handlers.list_documents(search="readme")
-        assert result["total"] == 2
-        assert all("readme" in d["filename"] for d in result["documents"])
+        assert result.total == 2
+        assert all("readme" in d.filename for d in result.documents)
 
 
 class TestGetConfigReranker:
     @patch("lilbee.reranker.reranker_available", return_value=False)
     async def test_hides_reranker_when_not_installed(self, mock_avail):
         result = await handlers.get_config()
-        assert "reranker_model" not in result
+        assert "reranker_model" not in result.model_dump()
 
     @patch("lilbee.reranker.reranker_available", return_value=True)
     async def test_shows_reranker_when_installed(self, mock_avail):
         result = await handlers.get_config()
-        assert "reranker_model" in result
-        assert "rerank_candidates" in result
+        dumped = result.model_dump()
+        assert "reranker_model" in dumped
+        assert "rerank_candidates" in dumped
 
 
 class TestCrawlStream:
@@ -754,10 +946,12 @@ class TestCrawlStream:
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
         from pathlib import Path
 
-        async def fake_crawl(url, *, depth, max_pages, on_progress):
-            on_progress("crawl_start", {"url": url, "depth": depth})
-            on_progress("crawl_page", {"url": url, "current": 1, "total": 1})
-            on_progress("crawl_done", {"pages_crawled": 1, "files_written": 1})
+        async def fake_crawl(url, *, depth, max_pages, on_progress, cancel=None):
+            from lilbee.progress import CrawlDoneEvent, CrawlPageEvent, CrawlStartEvent
+
+            on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
+            on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
+            on_progress("crawl_done", CrawlDoneEvent(pages_crawled=1, files_written=1))
             return [Path("/tmp/test.md")]
 
         mock_crawl.side_effect = fake_crawl
@@ -775,6 +969,32 @@ class TestCrawlStream:
         async for event in handlers.crawl_stream("https://example.com"):
             events.append(event)
         assert any("error" in e and "network fail" in e for e in events)
+
+    @patch("lilbee.crawler.crawl_and_save")
+    @patch("lilbee.crawler.validate_crawl_url")
+    async def test_cancel_stops_crawl(self, _mock_validate, mock_crawl, caplog):
+        """Closing the crawl generator mid-stream sets cancel and logs."""
+        import threading
+
+        barrier = threading.Event()
+
+        async def blocking_crawl(url, *, depth, max_pages, on_progress, cancel=None):
+            from lilbee.progress import CrawlStartEvent
+
+            on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
+            barrier.wait(timeout=2)
+            return []
+
+        mock_crawl.side_effect = blocking_crawl
+        caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
+        gen = handlers.crawl_stream("https://example.com")
+        async for event in gen:
+            if event and "crawl_start" in event:
+                await gen.aclose()
+                barrier.set()
+                break
+        await asyncio.sleep(0.05)
+        assert any("Crawl stream cancelled by client" in r.message for r in caplog.records)
 
 
 class TestSseHelpers:
@@ -795,3 +1015,62 @@ class TestResolveGenerationOptions:
     def test_without_options(self):
         result = handlers._resolve_generation_options(None)
         assert result is None
+
+
+class TestListExternalModels:
+    """Tests for the external model discovery handler."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """Reset the external models cache before each test."""
+        import lilbee.server.handlers as h
+
+        h._external_cache = (0.0, "", None)
+        yield
+        h._external_cache = (0.0, "", None)
+
+    @patch("lilbee.services.get_services")
+    async def test_returns_provider_models(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a", "model-b"]
+        result = await handlers.list_external_models()
+        assert result.models == ["model-a", "model-b"]
+        assert result.error is None
+
+    @patch("lilbee.services.get_services")
+    async def test_error_returns_empty_with_message(self, mock_svc):
+        mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
+        result = await handlers.list_external_models()
+        assert result.models == []
+        assert result.error is not None
+
+    @patch("lilbee.services.get_services")
+    async def test_cache_reuses_result(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+        result1 = await handlers.list_external_models()
+        result2 = await handlers.list_external_models()
+        assert result1 == result2
+        assert result1.models == ["model-a"]
+        mock_svc.return_value.provider.list_models.assert_called_once()
+
+    @patch("lilbee.server.handlers.time")
+    @patch("lilbee.services.get_services")
+    async def test_cache_expires(self, mock_svc, mock_time):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+        mock_time.monotonic.return_value = 0.0
+        await handlers.list_external_models()
+
+        mock_time.monotonic.return_value = 61.0
+        await handlers.list_external_models()
+
+        assert mock_svc.return_value.provider.list_models.call_count == 2
+
+    @patch("lilbee.services.get_services")
+    async def test_cache_invalidates_on_config_change(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+        cfg.litellm_base_url = "https://provider-a.example"
+        await handlers.list_external_models()
+
+        cfg.litellm_base_url = "https://provider-b.example"
+        await handlers.list_external_models()
+
+        assert mock_svc.return_value.provider.list_models.call_count == 2

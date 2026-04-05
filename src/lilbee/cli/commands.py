@@ -299,12 +299,10 @@ def _crawl_urls_blocking(
     urls: list[str], *, crawl: bool, depth: int | None, max_pages: int | None
 ) -> list[Path]:
     """Crawl URLs synchronously (for CLI), returning paths written."""
-    from typing import Any
-
     from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 
     from lilbee.crawler import crawl_and_save
-    from lilbee.progress import DetailedProgressCallback, EventType
+    from lilbee.progress import CrawlPageEvent, DetailedProgressCallback, EventType, ProgressEvent
 
     effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
     effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
@@ -315,12 +313,12 @@ def _crawl_urls_blocking(
             ptask = progress.add_task(f"Crawling {url}...", total=None)
 
             def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
-                def on_progress(event_type: EventType, data: dict[str, Any]) -> None:
+                def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
-                        current = data.get("current", 0)
-                        total = data.get("total", 0)
-                        page_url = data.get("url", "")
-                        progress.update(_t, description=f"Crawled {current}/{total}: {page_url}")
+                        assert isinstance(data, CrawlPageEvent)
+                        progress.update(
+                            _t, description=f"Crawled {data.current}/{data.total}: {data.url}"
+                        )
 
                 return on_progress
 
@@ -817,6 +815,32 @@ def _topics_overview(top_k: int) -> None:
             preview += f" (+{len(comm.concepts) - 5} more)"
         table.add_row(str(comm.cluster_id), str(comm.size), preview)
     console.print(table)
+
+
+@app.command()
+def login() -> None:
+    """Log in to HuggingFace for access to gated models (Mistral, Llama, etc.)."""
+    import webbrowser
+
+    from huggingface_hub import get_token
+    from huggingface_hub import login as hf_login
+
+    if get_token():
+        typer.echo("Already logged in to HuggingFace.")
+        if not typer.confirm("Log in again?", default=False):
+            return
+
+    typer.echo("Opening HuggingFace token page in your browser...")
+    typer.echo("Create a token with 'Read' access, then paste it below.\n")
+    webbrowser.open("https://huggingface.co/settings/tokens")
+
+    token = typer.prompt("Paste your HuggingFace token", hide_input=True)
+    if not token.strip():
+        typer.echo("No token provided.", err=True)
+        raise typer.Exit(1)
+
+    hf_login(token=token.strip(), add_to_git_credential=False)
+    typer.echo("Logged in! Gated models (Mistral, Llama, etc.) are now accessible.")
 
 
 @app.command(name="mcp")

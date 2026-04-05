@@ -79,7 +79,7 @@ class LiteLLMProvider(LLMProvider):
 
     def chat(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
         *,
         stream: bool = False,
         options: dict[str, Any] | None = None,
@@ -145,7 +145,11 @@ class LiteLLMProvider(LLMProvider):
             raise ProviderError(f"Cannot pull model {model!r}: {exc}", provider="litellm") from exc
 
     def show_model(self, model: str) -> dict[str, str] | None:
-        """Get model info via the /api/show endpoint."""
+        """Get model info via the /api/show endpoint.
+
+        Also parses and caches per-model generation defaults from the
+        ``parameters`` field so they can be applied via config.
+        """
         try:
             resp = httpx.post(
                 f"{self._base_url}/api/show",
@@ -155,11 +159,11 @@ class LiteLLMProvider(LLMProvider):
             resp.raise_for_status()
             data = resp.json()
             params = data.get("parameters", "")
-            if isinstance(params, str):
-                if not params:
-                    return None
+            if isinstance(params, str) and params:
+                _cache_ollama_defaults(model, params)
                 return {"parameters": params}
             if params:
+                _cache_ollama_defaults(model, str(params))
                 return {"parameters": str(params)}
             return None
         except httpx.HTTPError:
@@ -169,7 +173,7 @@ class LiteLLMProvider(LLMProvider):
         """No resources to release for litellm provider."""
 
 
-def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _format_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Convert messages with images to litellm content format."""
     formatted: list[dict[str, Any]] = []
     for msg in messages:
@@ -188,6 +192,14 @@ def _format_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             formatted.append(msg)
     return formatted
+
+
+def _cache_ollama_defaults(model: str, params_text: str) -> None:
+    """Parse Ollama parameters and store in the model defaults cache."""
+    from lilbee.model_defaults import parse_ollama_parameters, set_defaults
+
+    defaults = parse_ollama_parameters(params_text)
+    set_defaults(model, defaults)
 
 
 def _stream_tokens(response: Any) -> Iterator[str]:

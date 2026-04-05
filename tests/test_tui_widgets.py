@@ -127,6 +127,54 @@ class TestAssistantMessageAsync:
             assert am._citation_widget is not None
             assert am._citation_widget.display is False
 
+    async def test_markdown_rendering_true_uses_markdown_widget(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = True
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am.use_markdown is True
+            assert isinstance(am._content_widget, Markdown)
+
+    async def test_markdown_rendering_false_uses_static_widget(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = False
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert am.use_markdown is False
+            assert not isinstance(am._content_widget, Markdown)
+            assert isinstance(am._content_widget, Static)
+
+    async def test_rebuild_content_widget_toggles_type(self) -> None:
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = True
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            assert isinstance(am._content_widget, Markdown)
+            am.append_content("hello")
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            assert not isinstance(am._content_widget, Markdown)
+            assert am.use_markdown is False
+
+    async def test_rebuild_content_widget_noop_when_no_widget(self) -> None:
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        app = _MsgApp()
+        async with app.run_test():
+            am = AssistantMessage()
+            am._content_widget = None
+            await am.rebuild_content_widget(use_markdown=False)
+            assert am._content_widget is None
+
 
 # ---------------------------------------------------------------------------
 # help_modal.py
@@ -167,27 +215,138 @@ class TestHelpModal:
 
 
 # ---------------------------------------------------------------------------
-# sync_bar.py
+# task_bar.py
 # ---------------------------------------------------------------------------
 
 
-class _SyncApp(App):
+class _TaskBarApp(App):
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.sync_bar import SyncBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        yield SyncBar()
+        yield TaskBar(id="task-bar")
 
 
-class TestSyncBar:
-    async def test_set_status_updates(self) -> None:
-        from lilbee.cli.tui.widgets.sync_bar import SyncBar
+class TestTaskBar:
+    async def test_hidden_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        app = _SyncApp()
+        app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(SyncBar)
-            bar.set_status("Syncing 3 files...")
+            bar = app.query_one(TaskBar)
+            assert bar.display is False
+
+    async def test_shows_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
             await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Sync docs", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
+    async def test_shows_multiple_queued(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Download A", "download")
+            bar.queue.advance()
+            bar.add_task("Sync", "sync")
+            bar.add_task("Crawl", "crawl")
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+            assert len(bar.queue.queued_tasks) == 2
+
+    async def test_complete_removes_after_flash(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar.complete_task(task_id)
+            await pilot.pause()
+            # After flash timer fires, task is removed
+            await pilot.pause(delay=1.5)
+            assert bar.queue.is_empty
+
+    async def test_queue_advances_on_complete(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            t1 = bar.add_task("Download A", "download")
+            bar.queue.advance()
+            bar.add_task("Sync B", "sync")
+            bar.complete_task(t1)
+            # After flash, next task should advance
+            await pilot.pause(delay=1.5)
+            active = bar.queue.active_task
+            assert active is not None
+            assert active.name == "Sync B"
+
+    async def test_cancel_removes_immediately(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar.cancel_task(task_id)
+            await pilot.pause()
+            assert bar.queue.is_empty
+
+    async def test_update_task_changes_progress(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar.update_task(task_id, 42, "21/50 MB")
+            await pilot.pause()
+            assert bar.queue.active_task is not None
+            assert bar.queue.active_task.progress == 42
+
+    async def test_fail_task_shows_then_removes(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar.fail_task(task_id, "Network error")
+            await pilot.pause(delay=1.5)
+            assert bar.queue.is_empty
+
+    async def test_app_task_bar_ref(self) -> None:
+        """TaskBar is accessible via app._task_bar from other screens."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            app._task_bar = bar  # type: ignore[attr-defined]
+            assert getattr(app, "_task_bar", None) is bar
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +362,17 @@ class _ModelBarApp(App):
 
 
 class TestModelBar:
-    async def test_refresh_shows_config(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+    @pytest.fixture(autouse=True)
+    def mock_classify(self):
+        empty = ([], [], [])
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=empty,
+        ):
+            yield
+
+    async def test_renders_select_widgets(self) -> None:
+        from textual.widgets import Select
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic"
@@ -212,20 +380,208 @@ class TestModelBar:
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar.refresh_models()
-            await pilot.pause()
+            selects = list(app.query(Select))
+            assert len(selects) == 3
 
-    async def test_refresh_shows_vision_when_set(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
+    async def test_widget_exists_with_3_selects(self) -> None:
+        from textual.widgets import Select
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_sel = app.query_one("#chat-model-select", Select)
+            embed_sel = app.query_one("#embed-model-select", Select)
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert chat_sel is not None
+            assert embed_sel is not None
+            assert vision_sel is not None
+
+    async def test_vision_set_when_configured(self) -> None:
+        from textual.widgets import Select
 
         cfg.vision_model = "llava"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(ModelBar)
-            bar.refresh_models()
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava"
+
+    async def test_labels_rendered(self) -> None:
+        from textual.widgets import Label
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
             await pilot.pause()
+            labels = [str(lbl.render()) for lbl in app.query(Label)]
+            assert "Chat:" in labels
+            assert "Embed:" in labels
+            assert "Vision:" in labels
+
+
+class TestIsMmproj:
+    def test_mmproj_detected(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("llava-mmproj-f16.gguf") is True
+
+    def test_mmproj_case_insensitive(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("model-MMPROJ-q4.gguf") is True
+
+    def test_normal_model_not_mmproj(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _is_mmproj
+
+        assert _is_mmproj("qwen3:8b") is False
+
+
+class TestClassifyInstalledModels:
+    def test_native_models_classified_by_task(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.registry import ModelManifest
+
+        chat_manifest = ModelManifest(
+            name="qwen3",
+            tag="8b",
+            size_bytes=100,
+            task="chat",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        embed_manifest = ModelManifest(
+            name="nomic-embed-text",
+            tag="latest",
+            size_bytes=100,
+            task="embedding",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        vision_manifest = ModelManifest(
+            name="llava",
+            tag="latest",
+            size_bytes=100,
+            task="vision",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [
+                chat_manifest,
+                embed_manifest,
+                vision_manifest,
+            ]
+            chat, embed, vision = _classify_installed_models()
+
+        assert "qwen3:8b" in chat
+        assert "nomic-embed-text:latest" in embed
+        assert "llava:latest" in vision
+
+    def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+        from lilbee.registry import ModelManifest
+
+        mmproj_manifest = ModelManifest(
+            name="llava-mmproj",
+            tag="latest",
+            size_bytes=100,
+            task="vision",
+            source_repo="",
+            source_filename="",
+            downloaded_at="",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        # Legacy mmproj .gguf file
+        (cfg.models_dir / "clip-mmproj-f16.gguf").write_text("fake")
+
+        remote_mmproj = RemoteModel(
+            name="mmproj-model:latest",
+            task="vision",
+            family="clip",
+            parameter_size="",
+        )
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[remote_mmproj],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
+            chat, embed, vision = _classify_installed_models()
+
+        all_names = chat + embed + vision
+        assert not any("mmproj" in n.lower() for n in all_names)
+
+    def test_remote_models_classified(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+        from lilbee.model_manager import RemoteModel
+
+        remote_chat = RemoteModel(
+            name="llama3:8b",
+            task="chat",
+            family="llama",
+            parameter_size="8B",
+        )
+        remote_embed = RemoteModel(
+            name="nomic-embed-text:latest",
+            task="embedding",
+            family="nomic-bert",
+            parameter_size="137M",
+        )
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[remote_chat, remote_embed],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, embed, vision = _classify_installed_models()
+
+        assert "llama3:8b" in chat
+        assert "nomic-embed-text:latest" in embed
+
+    def test_legacy_gguf_added_as_chat(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        (cfg.models_dir / "custom-model.gguf").write_text("fake")
+
+        with (
+            mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
+            mock.patch(
+                "lilbee.model_manager.classify_remote_models",
+                return_value=[],
+            ),
+        ):
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, embed, vision = _classify_installed_models()
+
+        assert "custom-model.gguf" in chat
 
 
 # ---------------------------------------------------------------------------
@@ -712,108 +1068,269 @@ class TestCompletionOverlay:
 
 
 # ---------------------------------------------------------------------------
-# download_modal.py
+# task_queue.py (unit tests for queue logic)
 # ---------------------------------------------------------------------------
 
 
-class _DlApp(App):
-    def compose(self) -> ComposeResult:
-        yield Static("bg")
+class TestTaskQueue:
+    def test_enqueue_and_advance(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "Sync", "sync")
+        assert q.is_empty is False
+        task = q.advance()
+        assert task is not None
+        assert task.status == TaskStatus.ACTIVE
+        assert q.active_task is task
+
+    def test_complete_clears_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.complete_task(tid)
+        q.remove_task(tid)
+        assert q.is_empty
+
+    def test_cancel_queued(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        queued_id = q.enqueue(lambda: None, "B", "sync")
+        assert q.cancel(queued_id) is True
+        assert len(q.queued_tasks) == 0
+
+    def test_cancel_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        assert q.cancel(tid) is True
+        assert q.active_task is None
+
+    def test_advance_returns_none_when_same_type_active(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance("download")
+        q.enqueue(lambda: None, "B", "download")
+        assert q.advance("download") is None  # same type already active
+
+    def test_advance_different_types_concurrent(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "A", "download")
+        q.advance("download")
+        q.enqueue(lambda: None, "B", "sync")
+        task = q.advance("sync")
+        assert task is not None  # different type can advance
+        assert task.name == "B"
+        assert len(q.active_tasks) == 2
+
+    def test_fail_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        q.advance()
+        q.fail_task(tid, "oops")
+        task = q._tasks.get(tid)
+        assert task is not None
+        assert task.status == TaskStatus.FAILED
+
+    def test_on_change_callback(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        calls: list[bool] = []
+        q = TaskQueue(on_change=lambda: calls.append(True))
+        q.enqueue(lambda: None, "A", "sync")
+        assert len(calls) >= 1
+
+    def test_complete_task_adds_to_history(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.complete_task(tid)
+        assert len(q.history) == 1
+        assert q.history[0].status == TaskStatus.DONE
+
+    def test_fail_task_adds_to_history(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance()
+        q.fail_task(tid, "oops")
+        assert len(q.history) == 1
+        assert q.history[0].status == TaskStatus.FAILED
+
+    def test_history_accumulates(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(t1)
+        q.remove_task(t1)
+        t2 = q.enqueue(lambda: None, "B", "sync")
+        q.advance()
+        q.fail_task(t2, "err")
+        assert len(q.history) == 2
+
+    def test_history_empty_initially(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.history == []
+
+    def test_cancel_nonexistent_returns_false(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.cancel("nonexistent") is False
+
+    def test_remove_task_nonexistent_is_noop(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.remove_task("nonexistent")
+        assert q.is_empty
+
+    def test_update_task_nonexistent_is_noop(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.update_task("nonexistent", 50, "detail")
+        assert q.is_empty
+
+    def test_advance_empty_returns_none(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.advance() is None
+
+    def test_remove_active_task_clears_active_id(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        assert q.active_task is not None
+        q.remove_task(tid)
+        assert q.active_task is None
+
+    def test_active_tasks_returns_all(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        q.advance("download")
+        q.advance("sync")
+        assert len(q.active_tasks) == 2
+
+    def test_active_tasks_empty_initially(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.active_tasks == []
+
+    def test_is_empty_with_multiple_types(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL", "download")
+        q.advance("download")
+        assert not q.is_empty
+        q.complete_task(t1)
+        q.remove_task(t1)
+        assert q.is_empty
+
+    def test_advance_with_task_type_arg(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        task = q.advance("sync")
+        assert task is not None
+        assert task.name == "Sync"
+        assert task.status == TaskStatus.ACTIVE
+        # download not yet advanced
+        assert len(q.active_tasks) == 1
+
+    def test_complete_frees_type_slot(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL-A", "download")
+        q.enqueue(lambda: None, "DL-B", "download")
+        q.advance("download")
+        q.complete_task(t1)
+        q.remove_task(t1)
+        t2 = q.advance("download")
+        assert t2 is not None
+        assert t2.name == "DL-B"
+
+    def test_queued_tasks_across_types(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        q.enqueue(lambda: None, "DL", "download")
+        q.enqueue(lambda: None, "Sync", "sync")
+        assert len(q.queued_tasks) == 2
+        q.advance("download")
+        # DL is now active, Sync still queued
+        assert len(q.queued_tasks) == 1
+
+    def test_cancel_concurrent_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "DL", "download")
+        t2 = q.enqueue(lambda: None, "Sync", "sync")
+        q.advance("download")
+        q.advance("sync")
+        assert len(q.active_tasks) == 2
+        q.cancel(t1)
+        assert len(q.active_tasks) == 1
+        assert q.active_tasks[0].task_id == t2
 
 
-class TestDownloadModal:
-    def test_stores_model(self) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+# ---------------------------------------------------------------------------
+# CompletionOverlay.cycle_prev
+# ---------------------------------------------------------------------------
 
-        m = _make_model("Test")
-        modal = DownloadModal(m)
-        assert modal._model is m
 
-    @mock.patch("lilbee.catalog.download_model")
-    async def test_download_success(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
+class TestCompletionOverlayCyclePrev:
+    async def test_cycle_prev_wraps(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-        mock_dl.return_value = None
-        m = _make_model("Test")
-        app = _DlApp()
-
-        results: list[bool] = []
-
+        app = _OverlayApp()
         async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m), callback=lambda r: results.append(r))
             await pilot.pause()
-            # Wait for the worker to complete
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            overlay.show_completions(["a", "b", "c"])
+            result = overlay.cycle_prev()
+            assert result == "c"  # wraps from 0 to 2
 
-        mock_dl.assert_called_once()
+    async def test_cycle_prev_returns_none_when_empty(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
-    @mock.patch("lilbee.catalog.download_model", side_effect=RuntimeError("net error"))
-    async def test_download_failure(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("Test")
-        app = _DlApp()
-
+        app = _OverlayApp()
         async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m))
             await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
-
-    async def test_cancel_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("Test")
-        app = _DlApp()
-
-        async with app.run_test() as pilot:
-            # Patch download to block so we can cancel
-            with mock.patch("lilbee.catalog.download_model") as mock_dl:
-                import threading
-
-                evt = threading.Event()
-                mock_dl.side_effect = lambda *a, **kw: evt.wait(5)
-                app.push_screen(DownloadModal(m))
-                await pilot.pause()
-                screen = app.screen
-                screen.action_cancel()
-                evt.set()
-                await pilot.pause()
-
-    def test_set_status_and_update_progress(self) -> None:
-        """Test internal helpers directly (they need mounted widgets, so test via compose)."""
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        m = _make_model("TestDl")
-        modal = DownloadModal(m)
-        # _do_dismiss with no _dismiss_result defaults to False
-        modal._dismiss_result = True
-        assert modal._dismiss_result is True
-
-    @mock.patch("lilbee.catalog.download_model")
-    async def test_progress_callback(self, mock_dl: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.download_modal import DownloadModal
-
-        def capture_progress(model, *, on_progress=None):
-            if on_progress:
-                on_progress(50, 100)
-                on_progress(100, 100)
-                # Edge: total=0 should not crash
-                on_progress(0, 0)
-
-        mock_dl.side_effect = capture_progress
-        m = _make_model("Test")
-        app = _DlApp()
-
-        async with app.run_test() as pilot:
-            app.push_screen(DownloadModal(m))
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
+            overlay = app.query_one(CompletionOverlay)
+            assert overlay.cycle_prev() is None
 
 
 # ---------------------------------------------------------------------------
@@ -826,143 +1343,429 @@ class _SetupApp(App):
         yield Static("bg")
 
 
-class TestSetupModal:
-    def test_creates_without_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+class TestSetupWizard:
+    def test_creates(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
-        modal = SetupModal()
-        assert modal._remote_embeddings == []
+        wizard = SetupWizard()
+        assert wizard._selected_chat is None
+        assert wizard._selected_embed is None
 
-    def test_creates_with_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        modal = SetupModal(ollama_embeddings=["nomic:latest"])
-        assert modal._remote_embeddings == ["nomic:latest"]
-
-    async def test_compose_with_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    async def test_compose_mounts(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(ollama_embeddings=["nomic:latest"]))
+            app.push_screen(SetupWizard())
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_compose_without_remote(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
-
-    async def test_action_cancel(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    async def test_action_cancel_dismisses_skipped(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
         results: list[object] = []
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(), callback=lambda r: results.append(r))
+            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
             app.screen.action_cancel()
             await pilot.pause()
-        assert None in results
+        assert "skipped" in results
 
-    async def test_remote_row_selection_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-        app = _SetupApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(ollama_embeddings=["nomic:latest"]),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            # Find the list and select the remote row (index 1 -- first is header label)
-            from textual.widgets import ListView
+        chat, embed = _scan_installed_models(tmp_path / "nonexistent")
+        assert chat == []
+        assert embed == []
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 1  # _RemoteRow
-            await pilot.pause()
-            # Simulate selection via action
-            lv.action_select_cursor()
-            await pilot.pause()
-        assert "nomic:latest" in results
+    def test_scan_installed_models_splits_by_name(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-    @mock.patch("lilbee.models.pull_with_progress")
-    async def test_embedding_row_triggers_download(self, mock_pull: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+        (tmp_path / "chat-model.gguf").touch()
+        (tmp_path / "nomic-embed-text.gguf").touch()
+        chat, embed = _scan_installed_models(tmp_path)
+        assert len(chat) == 1
+        assert len(embed) == 1
+        assert "chat" in chat[0].name.lower()
+        assert "embed" in embed[0].name.lower()
 
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
+    def test_installed_row_compose(self, tmp_path) -> None:
+        from lilbee.cli.tui.screens.setup import _InstalledRow
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 0  # First EmbeddingRow (recommended)
-            await pilot.pause()
-            lv.action_select_cursor()
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.pause()
-        mock_pull.assert_called_once()
-
-    @mock.patch("lilbee.models.pull_with_progress", side_effect=RuntimeError("fail"))
-    async def test_download_error_shows_status(self, mock_pull: mock.MagicMock) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
-
-            lv = app.screen.query_one("#embed-picker", ListView)
-            lv.index = 0
-            await pilot.pause()
-            lv.action_select_cursor()
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-
-    def test_finish_dismiss_no_downloaded_name(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        modal = SetupModal()
-        # _finish_dismiss without _downloaded_name should use getattr default
-        # Can't call dismiss outside of app, but test the attribute access logic
-        assert getattr(modal, "_downloaded_name", None) is None
-
-
-class TestEmbeddingRow:
-    def test_recommended_suffix(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
-
-        m = _make_model("Test", task="embedding")
-        row = _EmbeddingRow(m, recommended=True)
-        assert row._recommended is True
+        model_file = tmp_path / "test.gguf"
+        model_file.write_bytes(b"x" * 1024)
+        row = _InstalledRow(model_file)
         children = list(row.compose())
         assert len(children) == 1
 
-    def test_not_recommended(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
+    def test_catalog_row_compose(self) -> None:
+        from lilbee.cli.tui.screens.setup import _CatalogRow
 
-        m = _make_model("Test", task="embedding")
-        row = _EmbeddingRow(m, recommended=False)
-        assert row._recommended is False
+        model = _make_model("Test", task="chat")
+        row = _CatalogRow(model)
         children = list(row.compose())
         assert len(children) == 1
 
 
-class TestRemoteSetupRow:
-    def test_compose(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import _RemoteRow
+# ---------------------------------------------------------------------------
+# catalog.py screen — HF grouping, empty tabs, size grouping
+# ---------------------------------------------------------------------------
 
-        row = _RemoteRow("nomic:latest")
-        assert row.remote_name == "nomic:latest"
-        children = list(row.compose())
-        assert len(children) == 1
+
+class TestAllTasksFetched:
+    def test_all_tasks_constant(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _ALL_TASKS
+
+        assert "chat" in _ALL_TASKS
+        assert "embedding" in _ALL_TASKS
+        assert "vision" in _ALL_TASKS
+
+
+class TestMatchesSearchWidget:
+    def test_matches_name(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+
+        m = _make_model("Qwen3 8B", task="chat")
+        row = _catalog_to_row(m, installed=False)
+        assert _matches_search(row, "qwen") is True
+
+    def test_no_match(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+
+        m = _make_model("Qwen3 8B", task="chat")
+        row = _catalog_to_row(m, installed=False)
+        assert _matches_search(row, "llama") is False
+
+
+# ---------------------------------------------------------------------------
+# command_registry.py — /login command
+# ---------------------------------------------------------------------------
+
+
+class TestLoginCommandRegistered:
+    def test_login_in_registry(self) -> None:
+        from lilbee.cli.tui.command_registry import COMMANDS, build_dispatch_dict
+
+        names = [c.name for c in COMMANDS]
+        assert "/login" in names
+        dispatch = build_dispatch_dict()
+        assert dispatch["/login"] == "_cmd_login"
+
+
+# ---------------------------------------------------------------------------
+# settings.py — HF token field
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsHfToken:
+    def test_get_hf_token_display_not_set(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.settings import _get_hf_token_display
+
+        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        # Without any token set, should show "not set"
+        result = _get_hf_token_display()
+        assert isinstance(result, str)
+
+    def test_get_hf_token_display_from_env(self, monkeypatch) -> None:
+        from lilbee.cli.tui.screens.settings import _get_hf_token_display
+
+        monkeypatch.setenv("HF_TOKEN", "hf_abcdefghijklmnop")
+        result = _get_hf_token_display()
+        assert result.startswith("hf_a")
+        assert result.endswith("mnop")
+        assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# __init__.py — Ctrl-C clean shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestRunTuiKeyboardInterrupt:
+    def test_keyboard_interrupt_does_not_raise(self) -> None:
+        with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
+            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            with (
+                mock.patch("lilbee.cli.tui.shutdown_executor"),
+                mock.patch("lilbee.cli.tui.reset_services"),
+            ):
+                from lilbee.cli.tui import run_tui
+
+                run_tui()
+
+    def test_cleanup_called_on_interrupt(self) -> None:
+        with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
+            MockApp.return_value.run.side_effect = KeyboardInterrupt
+            with (
+                mock.patch("lilbee.cli.tui.shutdown_executor") as mock_shutdown,
+                mock.patch("lilbee.cli.tui.reset_services") as mock_reset,
+            ):
+                from lilbee.cli.tui import run_tui
+
+                run_tui()
+                mock_shutdown.assert_called_once()
+                mock_reset.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# nav_bar.py — global docked navigation bar
+# ---------------------------------------------------------------------------
+
+
+class _NavBarApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="nav-bar")
+
+
+class TestNavBar:
+    async def test_compose_yields_static(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            assert bar is not None
+
+    async def test_default_active_view_is_chat(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            assert bar.active_view == "Chat"
+
+    async def test_watch_active_view_updates_display(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Models"
+            await pilot.pause()
+            # Just verify it doesn't crash and updates
+            assert bar.active_view == "Models"
+
+    async def test_all_views_shown_in_display(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Just verify the NavBar composes successfully with all views
+            bar = app.query_one(NavBar)
+            assert bar.active_view == "Chat"
+
+    async def test_set_active_view_to_status(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Status"
+            await pilot.pause()
+            assert bar.active_view == "Status"
+
+    async def test_active_task_text_shown(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_task_text = "\u25b6 Sync 60%"
+            await pilot.pause()
+            assert bar.active_task_text == "\u25b6 Sync 60%"
+
+    async def test_active_task_text_clears(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_task_text = "\u25b6 Sync 60%"
+            await pilot.pause()
+            bar.active_task_text = ""
+            await pilot.pause()
+            assert bar.active_task_text == ""
+
+    async def test_dock_top_in_css(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        assert "dock: top" in NavBar.DEFAULT_CSS
+
+    async def test_tasks_highlighted_when_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Chat"
+            bar.active_task_text = "Downloading..."
+            await pilot.pause()
+            content = app.query_one("#nav-bar-content", Static)
+            assert "[bold yellow]Tasks[/]" in content.content
+
+    async def test_tasks_not_highlighted_without_active_task(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            bar.active_view = "Chat"
+            bar.active_task_text = ""
+            await pilot.pause()
+            content = app.query_one("#nav-bar-content", Static)
+            assert "[bold yellow]Tasks[/]" not in content.content
+
+    async def test_view_index_0_is_chat(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[0] == "Chat"
+
+    async def test_view_index_3_is_settings(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[3] == "Settings"
+
+    async def test_view_index_4_is_tasks(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
+
+        assert _VIEWS[4] == "Tasks"
+
+
+class TestNavBarClickSupport:
+    def test_view_regions_covers_all_views(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _VIEWS, _view_regions
+
+        regions = _view_regions()
+        assert len(regions) == len(_VIEWS)
+        for (start, end, name), expected in zip(regions, _VIEWS, strict=True):
+            assert name == expected
+            assert end - start == len(name) + 2
+
+    def test_view_regions_are_contiguous(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_regions
+
+        regions = _view_regions()
+        assert regions[0][0] == 0
+        for i in range(1, len(regions)):
+            assert regions[i][0] == regions[i - 1][1]
+
+    def test_view_at_x_returns_chat_at_zero(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
+
+        assert _view_at_x(0) == "Chat"
+
+    def test_view_at_x_returns_models(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        models_start = regions[1][0]
+        assert _view_at_x(models_start) == "Models"
+
+    def test_view_at_x_returns_last_view(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        last_start = regions[-1][0]
+        assert _view_at_x(last_start) == "Tasks"
+
+    def test_view_at_x_returns_none_past_end(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
+
+        regions = _view_regions()
+        past_end = regions[-1][1]
+        assert _view_at_x(past_end) is None
+
+    def test_view_at_x_returns_none_for_negative(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
+
+        assert _view_at_x(-1) is None
+
+    async def test_click_calls_switch_view(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
+
+        app = _NavBarApp()
+        app._switch_view = mock.Mock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            regions = _view_regions()
+            models_x = regions[1][0] + 1
+            bar.on_click(mock.Mock(x=models_x, y=0))
+            app._switch_view.assert_called_once_with("Models")
+
+    async def test_click_outside_views_does_nothing(self) -> None:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
+
+        app = _NavBarApp()
+        app._switch_view = mock.Mock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            regions = _view_regions()
+            past_end = regions[-1][1] + 10
+            bar.on_click(mock.Mock(x=past_end, y=0))
+            app._switch_view.assert_not_called()
+
+    async def test_click_without_switch_view_is_safe(self) -> None:
+        """Clicking on app without _switch_view does not crash."""
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        app = _NavBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(NavBar)
+            # App has no _switch_view -- should not raise
+            bar.on_click(mock.Mock(x=0, y=0))
+
+
+# ---------------------------------------------------------------------------
+# app.py — global NavBar composition and key bindings
+# ---------------------------------------------------------------------------
+
+
+class TestLilbeeAppGlobalNavBar:
+    async def test_screen_composes_global_nav_bar(self) -> None:
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Pop any setup wizard that may appear
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            nav = app.screen.query_one("#global-nav-bar")
+            assert nav is not None
+
+    async def test_nav_bar_default_is_chat(self) -> None:
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            nav = app.screen.query_one("#global-nav-bar")
+            assert nav.active_view == "Chat"

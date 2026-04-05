@@ -7,6 +7,7 @@ process lifetime.  Tests call ``reset_services()`` between runs.
 
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from lilbee.embedder import Embedder
     from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
+    from lilbee.registry import ModelRegistry
     from lilbee.reranker import Reranker
     from lilbee.store import Store
 
@@ -29,6 +31,7 @@ class Services:
     reranker: Reranker
     concepts: ConceptGraph
     searcher: Searcher
+    registry: ModelRegistry
 
 
 _svc: Services | None = None
@@ -45,6 +48,7 @@ def get_services() -> Services:
     from lilbee.embedder import Embedder
     from lilbee.providers.factory import create_provider
     from lilbee.query import Searcher
+    from lilbee.registry import ModelRegistry
     from lilbee.reranker import Reranker
     from lilbee.store import Store
 
@@ -53,6 +57,7 @@ def get_services() -> Services:
     embedder = Embedder(cfg, provider)
     reranker = Reranker(cfg)
     concepts = ConceptGraph(cfg, store)
+    registry = ModelRegistry(cfg.models_dir)
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     _svc = Services(
         provider=provider,
@@ -61,6 +66,7 @@ def get_services() -> Services:
         reranker=reranker,
         concepts=concepts,
         searcher=searcher,
+        registry=registry,
     )
     return _svc
 
@@ -78,3 +84,6 @@ def reset_services() -> None:
         _svc.provider.shutdown()
         _svc.store.close()
     _svc = None
+
+
+atexit.register(reset_services)

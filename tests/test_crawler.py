@@ -678,6 +678,17 @@ class TestCrawlAndSave:
         assert _get_crawl_semaphore() is None
         crawler_mod._state.semaphore = None
 
+    @patch("lilbee.crawler.crawl_single")
+    async def test_cancel_returns_empty(self, mock_crawl_single, isolated_env):
+        """Setting cancel event causes crawl_and_save to return empty list."""
+        import threading
+
+        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
+        cancel = threading.Event()
+        cancel.set()
+        paths = await crawl_and_save("https://example.com", cancel=cancel)
+        assert paths == []
+
 
 class TestPeriodicSync:
     async def test_sync_disabled_when_interval_zero(self, isolated_env):

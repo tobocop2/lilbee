@@ -51,6 +51,10 @@ def make_mock_services(**overrides):
     if searcher is None:
         searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
 
+    registry = overrides.pop("registry", None)
+    if registry is None:
+        registry = MagicMock()
+
     return Services(
         provider=provider,
         store=store,
@@ -58,6 +62,7 @@ def make_mock_services(**overrides):
         reranker=reranker,
         concepts=concepts,
         searcher=searcher,
+        registry=registry,
     )
 
 

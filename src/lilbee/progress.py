@@ -20,7 +20,6 @@ class EventType(StrEnum):
     CRAWL_START = "crawl_start"
     CRAWL_PAGE = "crawl_page"
     CRAWL_DONE = "crawl_done"
-    CRAWL_ERROR = "crawl_error"
 
 
 class SseEvent(StrEnum):
@@ -32,17 +31,6 @@ class SseEvent(StrEnum):
     ERROR = "error"
     DONE = "done"
     PROGRESS = "progress"
-
-
-DetailedProgressCallback = Callable[[EventType, dict[str, Any]], None]
-
-# When set, vision updates the batch task's description instead of creating its own bar.
-# Value is (Progress, batch_task_id).
-shared_progress: ContextVar[tuple[Any, Any] | None] = ContextVar("shared_progress", default=None)
-
-
-def noop_callback(event_type: EventType, data: dict[str, Any]) -> None:
-    """Default no-op callback — discards all events."""
 
 
 class FileStartEvent(BaseModel):
@@ -78,6 +66,36 @@ class ExtractEvent(BaseModel):
     total_pages: int
 
 
+class EmbedEvent(BaseModel):
+    """Emitted per batch during embedding."""
+
+    file: str
+    chunk: int
+    total_chunks: int
+
+
+class CrawlStartEvent(BaseModel):
+    """Emitted when a crawl operation begins."""
+
+    url: str
+    depth: int
+
+
+class CrawlPageEvent(BaseModel):
+    """Emitted per page during crawling."""
+
+    url: str
+    current: int
+    total: int
+
+
+class CrawlDoneEvent(BaseModel):
+    """Emitted when a crawl operation completes."""
+
+    pages_crawled: int
+    files_written: int
+
+
 class SyncDoneEvent(BaseModel):
     """Emitted when the sync operation completes."""
 
@@ -85,3 +103,26 @@ class SyncDoneEvent(BaseModel):
     updated: int
     removed: int
     failed: int
+
+
+ProgressEvent = (
+    FileStartEvent
+    | FileDoneEvent
+    | BatchProgressEvent
+    | ExtractEvent
+    | EmbedEvent
+    | SyncDoneEvent
+    | CrawlStartEvent
+    | CrawlPageEvent
+    | CrawlDoneEvent
+)
+
+DetailedProgressCallback = Callable[[EventType, ProgressEvent], None]
+
+# When set, vision updates the batch task's description instead of creating its own bar.
+# Value is (Progress, batch_task_id).
+shared_progress: ContextVar[tuple[Any, Any] | None] = ContextVar("shared_progress", default=None)
+
+
+def noop_callback(event_type: EventType, data: ProgressEvent) -> None:
+    """Default no-op callback — discards all events."""

@@ -373,11 +373,13 @@ class TestGenerationOptions:
         cfg.top_k_sampling = None
         cfg.repeat_penalty = None
         cfg.num_ctx = None
+        cfg.max_tokens = None
         try:
             get_services().searcher.ask_raw("q")
             assert mock_svc.provider.chat.call_args[1]["options"] == {"temperature": 0.7}
         finally:
             cfg.temperature = None
+            cfg.max_tokens = 4096
 
     def test_ask_stream_passes_options(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -403,6 +405,7 @@ class TestGenerationOptions:
         cfg.repeat_penalty = None
         cfg.num_ctx = None
         cfg.seed = None
+        cfg.max_tokens = None
         get_services().searcher.ask_raw("q")
         assert mock_svc.provider.chat.call_args[1]["options"] is None
 

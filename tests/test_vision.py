@@ -19,13 +19,20 @@ def _clean_vision_module() -> None:
 
 @pytest.fixture()
 def mock_provider():
-    """Create a mock provider and inject it via Services."""
-    provider = mock.MagicMock()
+    """Create a mock provider and inject it via Services.
+
+    Uses spec_set to exclude vision_ocr — tests that need the subprocess
+    path should set it explicitly on the mock.
+    """
+    provider = mock.MagicMock(
+        spec=["chat", "embed", "list_models", "pull_model", "show_model", "shutdown"]
+    )
     store = mock.MagicMock()
     embedder = mock.MagicMock()
     reranker = mock.MagicMock()
     concepts = mock.MagicMock()
     searcher = mock.MagicMock()
+    registry = mock.MagicMock()
     services = Services(
         provider=provider,
         store=store,
@@ -33,6 +40,7 @@ def mock_provider():
         reranker=reranker,
         concepts=concepts,
         searcher=searcher,
+        registry=registry,
     )
     set_services(services)
     yield provider
@@ -141,9 +149,58 @@ class TestExtractPageText:
         mock_provider.chat.assert_called_once()
         call_args = mock_provider.chat.call_args
         messages = call_args[0][0]
-        assert messages[0]["content"] == _OCR_PROMPT
-        assert messages[0]["images"] == [b"png-bytes"]
+        # OpenAI-compatible multipart content format
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[1]["type"] == "text"
+        assert content[1]["text"] == _OCR_PROMPT
         assert call_args[1]["model"] == "my-model"
+
+
+class TestExtractPageTextSubprocess:
+    """Test extract_page_text when provider has vision_ocr method."""
+
+    def test_delegates_to_vision_ocr(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.return_value = "subprocess text"
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
+        )
+        set_services(services)
+
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"png", "vision-model")
+        assert result == "subprocess text"
+        provider.vision_ocr.assert_called_once()
+        provider.chat.assert_not_called()
+
+    def test_vision_ocr_error_returns_none(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.side_effect = RuntimeError("worker died")
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
+        )
+        set_services(services)
+
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"png", "vision-model")
+        assert result is None
 
 
 class TestExtractPdfVision:
@@ -327,3 +384,34 @@ class TestExtractPageTextTimeout:
 
         result = extract_page_text(b"fake-png", "model", timeout=0.01)
         assert result is None
+
+
+class TestPngToDataUrl:
+    def test_encodes_png_bytes(self) -> None:
+        import base64
+
+        from lilbee.vision import _png_to_data_url
+
+        png_bytes = b"\x89PNG\r\n\x1a\n"
+        result = _png_to_data_url(png_bytes)
+        assert result.startswith("data:image/png;base64,")
+        # Verify round-trip
+        encoded = result.split(",", 1)[1]
+        assert base64.b64decode(encoded) == png_bytes
+
+
+class TestBuildVisionMessages:
+    def test_builds_openai_format(self) -> None:
+        from lilbee.vision import _build_vision_messages
+
+        messages = _build_vision_messages("describe this", b"fake-png")
+        assert len(messages) == 1
+        msg = messages[0]
+        assert msg["role"] == "user"
+        content = msg["content"]
+        assert isinstance(content, list)
+        assert len(content) == 2
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[1]["type"] == "text"
+        assert content[1]["text"] == "describe this"

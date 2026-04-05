@@ -87,17 +87,39 @@ class _TagParser:
         return StreamToken(content=before, is_reasoning=False)
 
 
+_MAX_REASONING_CHARS = 16_000  # ~4K tokens — safety limit for runaway reasoning
+
+
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
     """Filter ``<think>...</think>`` tags from a token stream.
 
     When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``.
     When *show* is False, strips thinking content entirely.
     Tokens outside thinking blocks are always yielded as ``is_reasoning=False``.
+
+    Reasoning is capped at ``_MAX_REASONING_CHARS`` to prevent runaway
+    thinking loops (common with Qwen3 and similar models).
     """
     parser = _TagParser(show=show)
+    reasoning_chars = 0
     for token in tokens:
         for st in parser.feed(token):
             if st.content:
+                if st.is_reasoning:
+                    reasoning_chars += len(st.content)
+                    if reasoning_chars > _MAX_REASONING_CHARS:
+                        parser.in_thinking = False
+                        parser.buf = ""
+                        yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
+                        break
+                yield st
+        else:
+            continue
+        break  # reasoning limit hit — exit outer loop too
+    # Drain remaining non-reasoning tokens after truncation
+    for token in tokens:
+        for st in parser.feed(token):
+            if st.content and not st.is_reasoning:
                 yield st
     final = parser.flush()
     if final and final.content:

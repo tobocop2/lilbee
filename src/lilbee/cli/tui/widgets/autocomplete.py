@@ -131,6 +131,7 @@ _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/vision": _vision_options,
     "/set": _setting_options,
     "/delete": _document_options,
+    "/remove": _model_options,
     "/theme": _theme_options,
     "/add": _path_options,
 }
@@ -187,6 +188,15 @@ class CompletionOverlay(Vertical):
         if not self._options:
             return None
         self._index = (self._index + 1) % len(self._options)
+        ol = self.query_one("#completion-list", OptionList)
+        ol.highlighted = self._index
+        return self._options[self._index]
+
+    def cycle_prev(self) -> str | None:
+        """Cycle to previous option and return it."""
+        if not self._options:
+            return None
+        self._index = (self._index - 1) % len(self._options)
         ol = self.query_one("#completion-list", OptionList)
         ol.highlighted = self._index
         return self._options[self._index]

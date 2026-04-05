@@ -39,7 +39,7 @@ class TestFromEnvDefaults:
             assert c.chunk_overlap == 100
             assert c.max_embed_chars == 2000
             assert c.top_k == 10
-            assert c.max_distance == 0.7
+            assert c.max_distance == 0.9
             assert c.json_mode is False
 
     def test_constants_unchanged(self):
@@ -349,6 +349,7 @@ class TestGenerationOptions:
         c.repeat_penalty = None
         c.num_ctx = None
         c.seed = None
+        c.max_tokens = None
         assert c.generation_options() == {}
 
     def test_includes_set_values(self):
@@ -359,8 +360,14 @@ class TestGenerationOptions:
         c.top_k_sampling = None
         c.repeat_penalty = None
         c.num_ctx = None
+        c.max_tokens = None
         opts = c.generation_options()
         assert opts == {"temperature": 0.3, "seed": 42}
+
+    def test_includes_max_tokens(self):
+        c = Config()
+        opts = c.generation_options()
+        assert opts["max_tokens"] == 4096
 
     def test_remaps_top_k_sampling(self):
         c = Config()
@@ -370,6 +377,7 @@ class TestGenerationOptions:
         c.repeat_penalty = None
         c.num_ctx = None
         c.seed = None
+        c.max_tokens = None
         opts = c.generation_options()
         assert opts == {"top_k": 40}
         assert "top_k_sampling" not in opts
@@ -382,6 +390,7 @@ class TestGenerationOptions:
         c.repeat_penalty = None
         c.num_ctx = None
         c.seed = None
+        c.max_tokens = None
         opts = c.generation_options(temperature=0.9, num_ctx=4096)
         assert opts == {"temperature": 0.9, "num_ctx": 4096}
 

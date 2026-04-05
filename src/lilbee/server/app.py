@@ -25,14 +25,21 @@ from lilbee.server.routes.documents import (
     documents_remove_route,
     sync_route,
 )
-from lilbee.server.routes.general import config_route, health_route, status_route
+from lilbee.server.routes.general import (
+    config_route,
+    config_update_route,
+    health_route,
+    status_route,
+)
 from lilbee.server.routes.models import (
     models_catalog_route,
     models_delete_route,
+    models_external_route,
     models_installed_route,
     models_list_route,
     models_pull_route,
     models_set_chat_route,
+    models_set_embedding_route,
     models_set_vision_route,
     models_show_route,
 )
@@ -83,7 +90,7 @@ def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
         allow_origins=cfg.cors_origins,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
     )
     return Litestar(
@@ -93,6 +100,7 @@ def create_app() -> Litestar:
             health_route,
             status_route,
             config_route,
+            config_update_route,
             search_route,
             ask_route,
             ask_stream_route,
@@ -101,7 +109,9 @@ def create_app() -> Litestar:
             sync_route,
             add_route,
             models_list_route,
+            models_external_route,
             models_set_chat_route,
+            models_set_embedding_route,
             models_set_vision_route,
             models_catalog_route,
             models_installed_route,

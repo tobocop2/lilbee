@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 
 from lilbee.cli import theme
 from lilbee.ingest import sync
-from lilbee.progress import EventType, ExtractEvent, FileStartEvent, SyncDoneEvent
+from lilbee.progress import EventType, ExtractEvent, FileStartEvent, ProgressEvent, SyncDoneEvent
 
 if TYPE_CHECKING:
     from lilbee.progress import DetailedProgressCallback
@@ -26,16 +26,14 @@ def _format_sync_summary(added: int, updated: int, removed: int, failed: int) ->
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
     """Return a callback that prints one-line status for FILE_START and DONE events."""
 
-    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
         if event_type == EventType.FILE_START:
-            ev = FileStartEvent(**data)
+            assert isinstance(data, FileStartEvent)
             m = theme.MUTED
-            con.print(f"[{m}]Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}[/{m}]")
+            con.print(f"[{m}]Syncing [{data.current_file}/{data.total_files}]: {data.file}[/{m}]")
         elif event_type == EventType.DONE:
-            ev_done = SyncDoneEvent(**data)
-            summary = _format_sync_summary(
-                ev_done.added, ev_done.updated, ev_done.removed, ev_done.failed
-            )
+            assert isinstance(data, SyncDoneEvent)
+            summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
             if summary:
                 con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
 
@@ -107,22 +105,22 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
 
     status.clear()
 
-    def _callback(event_type: EventType, data: dict[str, Any]) -> None:
+    def _callback(event_type: EventType, data: ProgressEvent) -> None:
         queue_suffix = f" (+{status.pending} queued)" if status.pending > 0 else ""
         if event_type == EventType.FILE_START:
-            ev = FileStartEvent(**data)
-            status.text = f"⟳ Syncing [{ev.current_file}/{ev.total_files}]: {ev.file}{queue_suffix}"
-        elif event_type == EventType.EXTRACT:
-            ev_ext = ExtractEvent(**data)
+            assert isinstance(data, FileStartEvent)
             status.text = (
-                f"⟳ Vision OCR [{ev_ext.page}/{ev_ext.total_pages}]: {ev_ext.file}{queue_suffix}"
+                f"⟳ Syncing [{data.current_file}/{data.total_files}]: {data.file}{queue_suffix}"
+            )
+        elif event_type == EventType.EXTRACT:
+            assert isinstance(data, ExtractEvent)
+            status.text = (
+                f"⟳ Vision OCR [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
             )
         elif event_type == EventType.DONE:
             status.clear()
-            ev_done = SyncDoneEvent(**data)
-            summary = _format_sync_summary(
-                ev_done.added, ev_done.updated, ev_done.removed, ev_done.failed
-            )
+            assert isinstance(data, SyncDoneEvent)
+            summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
             if summary:
                 print(f"✓ Synced: {summary}")
 

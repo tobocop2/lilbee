@@ -20,13 +20,14 @@ class SettingDef:
     cfg_attr: str
     type: type
     nullable: bool
+    writable: bool = True
     render: RenderStyle = field(default=RenderStyle.COMPACT)
 
 
 SETTINGS_MAP: dict[str, SettingDef] = {
-    "chat_model": SettingDef("chat_model", str, nullable=False),
-    "vision_model": SettingDef("vision_model", str, nullable=True),
-    "embedding_model": SettingDef("embedding_model", str, nullable=False),
+    "chat_model": SettingDef("chat_model", str, nullable=False, writable=False),
+    "vision_model": SettingDef("vision_model", str, nullable=True, writable=False),
+    "embedding_model": SettingDef("embedding_model", str, nullable=False, writable=False),
     "top_k": SettingDef("top_k", int, nullable=False),
     "temperature": SettingDef("temperature", float, nullable=True),
     "top_p": SettingDef("top_p", float, nullable=True),

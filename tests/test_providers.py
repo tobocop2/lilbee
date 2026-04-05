@@ -23,11 +23,14 @@ if TYPE_CHECKING:
 @pytest.fixture(autouse=True)
 def _reset_provider() -> None:
     """Reset provider singleton between tests."""
+    import lilbee.providers.llama_cpp_provider as lcp
     from lilbee.services import reset_services
 
     reset_services()
+    lcp._registry = None
     yield
     reset_services()
+    lcp._registry = None
 
 
 @pytest.fixture()
@@ -81,16 +84,17 @@ class TestLlamaCppProvider:
         cfg.models_dir = models_dir
 
         mock_llama_instance = mock.MagicMock()
-        mock_llama_instance.create_embedding.return_value = {
-            "data": [{"embedding": [0.1, 0.2, 0.3]}, {"embedding": [0.4, 0.5, 0.6]}]
-        }
+        mock_llama_instance.create_embedding.side_effect = [
+            {"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+            {"data": [{"embedding": [0.4, 0.5, 0.6]}]},
+        ]
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
         provider = LlamaCppProvider()
         result = provider.embed(["hello", "world"])
 
         assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        mock_llama_instance.create_embedding.assert_called_once_with(input=["hello", "world"])
+        assert mock_llama_instance.create_embedding.call_count == 2
 
     def test_chat_non_stream(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
@@ -230,6 +234,71 @@ class TestLlamaCppProvider:
         provider = LlamaCppProvider()
         assert provider.show_model("some-model") is None
 
+    def test_read_gguf_metadata(self, models_dir: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+
+        mock_llm = MagicMock()
+        mock_llm.metadata = {
+            "general.architecture": "qwen3",
+            "general.name": "Qwen3 8B",
+            "general.file_type": "15",
+            "qwen3.context_length": "32768",
+            "qwen3.embedding_length": "4096",
+            "tokenizer.chat_template": "{% if messages %}...",
+        }
+        with patch("llama_cpp.Llama", return_value=mock_llm):
+            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+        assert result["architecture"] == "qwen3"
+        assert result["context_length"] == "32768"
+        assert result["embedding_length"] == "4096"
+        assert result["chat_template"] == "{% if messages %}..."
+        assert result["name"] == "Qwen3 8B"
+        mock_llm.close.assert_called_once()
+
+    def test_read_gguf_metadata_empty(self, models_dir: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+
+        mock_llm = MagicMock()
+        mock_llm.metadata = {}
+        with patch("llama_cpp.Llama", return_value=mock_llm):
+            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+        assert result is None
+
+    def test_load_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        cfg.num_ctx = None
+        with (
+            patch("llama_cpp.Llama") as mock_llama_cls,
+            patch(
+                "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+                return_value={"context_length": "2048"},
+            ),
+        ):
+            _load_llama(models_dir / "test-model.gguf", embedding=True)
+            call_kwargs = mock_llama_cls.call_args[1]
+            assert call_kwargs["n_batch"] == 2048
+            assert call_kwargs["n_ubatch"] == 2048
+            assert call_kwargs["embedding"] is True
+
+    def test_load_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
+        from unittest.mock import patch
+
+        from lilbee.providers.llama_cpp_provider import _load_llama
+
+        with patch("llama_cpp.Llama"):
+            _load_llama(models_dir / "test-model.gguf", embedding=False)
+            import llama_cpp
+
+            call_kwargs = llama_cpp.Llama.call_args[1]
+            assert "n_batch" not in call_kwargs
+
     def test_resolve_model_path_direct(self, models_dir: Path) -> None:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
@@ -267,6 +336,31 @@ class TestLlamaCppProvider:
         with pytest.raises(ProviderError, match="Model file not found"):
             _resolve_model_path("/nonexistent/model.gguf")
 
+    def test_resolve_model_path_prefix_match(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        # "test-model.gguf" already exists from fixture; prefix "test-" should match it
+        path = _resolve_model_path("test-")
+        assert path.name == "test-model.gguf"
+
+    def test_resolve_model_path_prefix_match_picks_first_sorted(self, models_dir: Path) -> None:
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        (models_dir / "alpha-v1.gguf").touch()
+        (models_dir / "alpha-v2.gguf").touch()
+        path = _resolve_model_path("alpha-")
+        assert path.name == "alpha-v1.gguf"
+
+    def test_resolve_model_path_prefix_no_match(self, models_dir: Path) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+        cfg.models_dir = models_dir
+        with pytest.raises(ProviderError, match="not found"):
+            _resolve_model_path("nonexistent-prefix-")
+
     def test_embed_caches_llm(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
@@ -277,11 +371,13 @@ class TestLlamaCppProvider:
         mock_llama_instance.create_embedding.return_value = {"data": [{"embedding": [0.1] * 3}]}
         mock_llama_cpp.Llama.return_value = mock_llama_instance
 
+        cfg.num_ctx = 4096  # Explicit ctx skips metadata read
         provider = LlamaCppProvider()
         provider.embed(["a"])
         provider.embed(["b"])
 
-        # Llama should only be instantiated once for embeddings
+        # With explicit num_ctx, no metadata read needed — only 1 Llama call.
+        # Second embed reuses the cached instance.
         assert mock_llama_cpp.Llama.call_count == 1
 
 
@@ -846,23 +942,21 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         return rp
 
-    def test_routes_chat_to_litellm_when_model_in_litellm(self) -> None:
+    def test_routes_chat_to_litellm_when_available(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "hello"
         rp._litellm = mock_litellm
-        rp._remote_models = {"qwen3:8b"}
+        rp._use_litellm = True
 
         cfg.chat_model = "qwen3:8b"
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
 
-    def test_routes_chat_to_llama_cpp_when_not_in_litellm(self) -> None:
+    def test_routes_chat_to_llama_cpp_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        rp._litellm = mock_litellm
-        rp._remote_models = set()
+        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
@@ -873,52 +967,42 @@ class TestRoutingProvider:
         assert result == "local"
         mock_llama.chat.assert_called_once()
 
-    def test_routes_embed_to_litellm_when_model_available(self) -> None:
+    def test_routes_embed_to_litellm_when_available(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.embed.return_value = [[0.1, 0.2]]
         rp._litellm = mock_litellm
-        rp._remote_models = {"nomic-embed-text:latest"}
+        rp._use_litellm = True
 
-        cfg.embedding_model = "nomic-embed-text:latest"
         result = rp.embed(["test"])
         assert result == [[0.1, 0.2]]
         mock_litellm.embed.assert_called_once()
 
-    def test_routes_embed_to_llama_cpp_when_not_in_litellm(self) -> None:
+    def test_routes_embed_to_llama_cpp_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        rp._litellm = mock_litellm
-        rp._remote_models = set()
+        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
         rp._llama_cpp = mock_llama
 
-        cfg.embedding_model = "embed.gguf"
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
-    def test_list_models_merges_both_sources(self) -> None:
+    def test_list_models_native_only_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        rp._litellm = mock_litellm
-        rp._remote_models = {"qwen3:8b", "mistral:7b"}
+        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.list_models.return_value = ["local.gguf"]
         rp._llama_cpp = mock_llama
 
         result = rp.list_models()
-        assert "qwen3:8b" in result
-        assert "local.gguf" in result
-        assert len(result) == 3
+        assert result == ["local.gguf"]
 
     def test_litellm_unreachable_falls_back_to_llama_cpp(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        rp._litellm = mock_litellm
-        rp._remote_models = set()
+        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "fallback"
@@ -928,22 +1012,20 @@ class TestRoutingProvider:
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "fallback"
 
-    def test_show_model_delegates_to_litellm(self) -> None:
+    def test_show_model_delegates_to_litellm_when_available(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.show_model.return_value = {"parameters": "temp 0.7"}
         rp._litellm = mock_litellm
-        rp._remote_models = {"qwen3:8b"}
+        rp._use_litellm = True
 
         result = rp.show_model("qwen3:8b")
         assert result == {"parameters": "temp 0.7"}
         mock_litellm.show_model.assert_called_once_with("qwen3:8b")
 
-    def test_show_model_falls_back_to_llama_cpp(self) -> None:
+    def test_show_model_uses_llama_cpp_when_litellm_unavailable(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        rp._litellm = mock_litellm
-        rp._remote_models = set()
+        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.show_model.return_value = None
@@ -952,44 +1034,18 @@ class TestRoutingProvider:
         result = rp.show_model("local.gguf")
         assert result is None
 
-    def test_invalidate_cache_clears_litellm_list(self) -> None:
-        from lilbee.providers.litellm_provider import LiteLLMProvider
-
-        if not LiteLLMProvider.available():
-            pytest.skip("litellm not installed")
+    def test_invalidate_cache_clears_detection(self) -> None:
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["qwen3:8b"]
-        rp._litellm = mock_litellm
-
-        # First call caches (litellm_available() returns True since litellm is installed)
-        assert rp._is_in_litellm("qwen3:8b")
-        assert rp._remote_models is not None
+        rp._use_litellm = True
 
         rp.invalidate_cache()
-        assert rp._remote_models is None
+        assert rp._use_litellm is None
 
-    def test_pull_model_delegates_to_litellm(self) -> None:
-        rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.list_models.return_value = ["qwen3:8b"]
-        mock_litellm.pull_model.return_value = None
-        rp._litellm = mock_litellm
-        rp._remote_models = {"qwen3:8b"}  # pre-populate cache
-
-        rp.pull_model("qwen3:8b")
-        mock_litellm.pull_model.assert_called_once()
-        # Cache should be invalidated after pull
-        assert rp._remote_models is None
-
-    def test_pull_model_raises_when_litellm_fails(self) -> None:
+    def test_pull_model_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
 
         rp = self._make_provider()
-        mock_litellm = mock.MagicMock()
-        mock_litellm.pull_model.side_effect = ProviderError("fail")
-        rp._litellm = mock_litellm
-        rp._remote_models = set()
+        rp._use_litellm = False
 
         with pytest.raises(ProviderError, match="no pull-capable backend"):
             rp.pull_model("bad-model")
@@ -999,7 +1055,7 @@ class TestRoutingProvider:
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "saw it"
         rp._litellm = mock_litellm
-        rp._remote_models = {"vision:7b"}
+        rp._use_litellm = True
 
         cfg.chat_model = "local.gguf"
         result = rp.chat(
@@ -1010,12 +1066,11 @@ class TestRoutingProvider:
         mock_litellm.chat.assert_called_once()
 
     def test_litellm_not_installed_skips_remote(self) -> None:
-        """When litellm is not installed, routing provider skips remote models."""
+        """When litellm is not installed, routing provider uses llama-cpp."""
         rp = self._make_provider()
 
         with mock.patch("lilbee.providers.litellm_provider.litellm_available", return_value=False):
-            models = rp._litellm_models()
-        assert models == set()
+            assert rp._should_use_litellm() is False
 
 
 # ---------------------------------------------------------------------------

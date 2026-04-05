@@ -15,7 +15,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from lilbee.config import cfg
-from lilbee.progress import DetailedProgressCallback, EventType
+from lilbee.progress import (
+    CrawlDoneEvent,
+    CrawlPageEvent,
+    CrawlStartEvent,
+    DetailedProgressCallback,
+    EventType,
+)
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
@@ -351,7 +357,7 @@ async def crawl_recursive(
                 if on_progress:
                     on_progress(
                         EventType.CRAWL_PAGE,
-                        {"url": cr.url, "current": i + 1, "total": len(crawl_results)},
+                        CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
                     )
                 if cr.success:
                     results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
@@ -410,11 +416,13 @@ async def crawl_and_save(
     depth: int = 0,
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
     Uses hash-based change detection: always fetches, but only saves files
     whose content has changed (or is new).
+    When *cancel* is set, returns early with an empty list.
     """
     max_pages = min(max_pages if max_pages > 0 else cfg.crawl_max_pages, cfg.crawl_max_pages)
 
@@ -423,7 +431,7 @@ async def crawl_and_save(
         sem.acquire()
     try:
         if on_progress:
-            on_progress(EventType.CRAWL_START, {"url": url, "depth": depth})
+            on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=depth))
 
         if depth > 0:
             results = await crawl_recursive(
@@ -433,7 +441,10 @@ async def crawl_and_save(
             result = await crawl_single(url)
             results = [result]
             if on_progress:
-                on_progress(EventType.CRAWL_PAGE, {"url": url, "current": 1, "total": 1})
+                on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))
+
+        if cancel and cancel.is_set():
+            return []
 
         changed = _filter_changed(results)
         paths = save_crawl_results(changed)
@@ -443,7 +454,7 @@ async def crawl_and_save(
         if on_progress:
             on_progress(
                 EventType.CRAWL_DONE,
-                {"pages_crawled": len(results), "files_written": len(paths)},
+                CrawlDoneEvent(pages_crawled=len(results), files_written=len(paths)),
             )
 
         return paths
