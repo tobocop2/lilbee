@@ -1,0 +1,194 @@
+"""Lint wiki pages for citation staleness, missing sources, and unmarked claims.
+
+Two modes:
+- lightweight: runs automatically after sync, checks only pages whose sources changed
+- full: manual ``lilbee wiki lint``, checks all wiki pages
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+
+from lilbee.citation import (
+    CitationStatus,
+    find_unmarked_claims,
+    verify_citation,
+)
+from lilbee.config import Config, cfg
+from lilbee.store import CitationRecord, Store
+
+log = logging.getLogger(__name__)
+
+
+class IssueSeverity(Enum):
+    """Severity level for lint issues."""
+
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class LintIssue:
+    """A single lint finding on a wiki page."""
+
+    wiki_source: str
+    severity: IssueSeverity
+    message: str
+
+
+@dataclass
+class LintReport:
+    """Aggregated results from linting one or more wiki pages."""
+
+    issues: list[LintIssue] = field(default_factory=list)
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == IssueSeverity.ERROR)
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for i in self.issues if i.severity == IssueSeverity.WARNING)
+
+
+def _file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of a file."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(8192), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _lint_citation(
+    rec: CitationRecord,
+    documents_dir: Path,
+) -> LintIssue | None:
+    """Check a single citation record against the filesystem.
+
+    Returns a LintIssue if the citation is stale or broken, None if valid.
+    """
+    source_path = documents_dir / rec["source_filename"]
+    wiki_source = rec["wiki_source"]
+
+    if not source_path.exists():
+        return LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.ERROR,
+            message=f"Source deleted: {rec['source_filename']}",
+        )
+
+    current_hash = _file_hash(source_path)
+    if current_hash != rec["source_hash"]:
+        return LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.WARNING,
+            message=f"Stale hash for {rec['source_filename']} (citation: {rec['citation_key']})",
+        )
+
+    source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    status = verify_citation(rec, source_text)
+    if status == CitationStatus.EXCERPT_MISSING:
+        return LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.WARNING,
+            message=f"Excerpt not found in source for {rec['citation_key']}",
+        )
+    return None
+
+
+def _lint_unmarked(wiki_source: str, wiki_path: Path) -> list[LintIssue]:
+    """Find unmarked claims in a wiki page."""
+    markdown = wiki_path.read_text(encoding="utf-8", errors="replace")
+    unmarked = find_unmarked_claims(markdown)
+    return [
+        LintIssue(
+            wiki_source=wiki_source,
+            severity=IssueSeverity.WARNING,
+            message=f"Unmarked claim: {line[:80]}",
+        )
+        for line in unmarked
+    ]
+
+
+def lint_wiki_page(
+    wiki_source: str,
+    store: Store,
+    config: Config | None = None,
+) -> list[LintIssue]:
+    """Lint a single wiki page: check citations and unmarked claims."""
+    if config is None:
+        config = cfg
+    issues: list[LintIssue] = []
+
+    citations = store.get_citations_for_wiki(wiki_source)
+    for rec in citations:
+        issue = _lint_citation(rec, config.documents_dir)
+        if issue is not None:
+            issues.append(issue)
+
+    wiki_root = config.data_root / config.wiki_dir
+    # wiki_source is like "wiki/summaries/doc.md" — strip the wiki_dir prefix
+    relative = wiki_source.removeprefix(config.wiki_dir + "/")
+    wiki_path = wiki_root / relative
+    if wiki_path.exists():
+        issues.extend(_lint_unmarked(wiki_source, wiki_path))
+
+    return issues
+
+
+def lint_changed_sources(
+    changed_sources: list[str],
+    store: Store,
+    config: Config | None = None,
+) -> LintReport:
+    """Lightweight lint: check only wiki pages citing changed/removed sources.
+
+    Intended to run automatically after sync.
+    """
+    if config is None:
+        config = cfg
+    report = LintReport()
+
+    seen_pages: set[str] = set()
+    for source_name in changed_sources:
+        citations = store.get_citations_for_source(source_name)
+        for rec in citations:
+            wiki_source = rec["wiki_source"]
+            if wiki_source in seen_pages:
+                continue
+            seen_pages.add(wiki_source)
+            report.issues.extend(lint_wiki_page(wiki_source, store, config))
+
+    if report.issues:
+        log.info(
+            "Wiki lint: %d error(s), %d warning(s)",
+            report.error_count,
+            report.warning_count,
+        )
+    return report
+
+
+def lint_all(
+    store: Store,
+    config: Config | None = None,
+) -> LintReport:
+    """Full lint: check every wiki page in the store."""
+    if config is None:
+        config = cfg
+    report = LintReport()
+
+    wiki_root = config.data_root / config.wiki_dir
+    if not wiki_root.exists():
+        return report
+
+    for md_path in sorted(wiki_root.rglob("*.md")):
+        relative = md_path.relative_to(wiki_root)
+        wiki_source = f"{config.wiki_dir}/{relative}"
+        report.issues.extend(lint_wiki_page(wiki_source, store, config))
+
+    return report
