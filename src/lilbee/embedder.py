@@ -46,16 +46,27 @@ class Embedder:
         return self.embedding_available()
 
     def embedding_available(self) -> bool:
-        """Return True if the embedding model is listed by the provider."""
+        """Return True if the embedding model can be resolved.
+
+        Checks the provider model list and the native registry path
+        resolution.  Returns True if either finds the model.
+        """
         model = self._config.embedding_model
         if not model:
             return False
         try:
             available = self._provider.list_models()
             model_base = model.split(":")[0].lower().replace(" ", "-")
-            return any(model_base in m.lower().replace(" ", "-") for m in available)
+            if any(model_base in m.lower().replace(" ", "-") for m in available):
+                return True
         except Exception:
-            log.debug("embedding_available check failed", exc_info=True)
+            log.debug("embedding_available provider check failed", exc_info=True)
+        try:
+            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+
+            _resolve_model_path(model)
+            return True
+        except Exception:
             return False
 
     def embed(self, text: str) -> list[float]:

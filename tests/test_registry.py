@@ -214,20 +214,21 @@ class TestModelRegistry:
         resolved = registry.resolve(ref)
         assert resolved == blob_path
 
-    def test_install_missing_cache_file_raises(self, tmp_path: Path) -> None:
-        """install() raises FileNotFoundError when file not in cache."""
+    def test_install_copies_source_to_cache(self, tmp_path: Path) -> None:
+        """install() copies source file into HF cache when not already present."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
 
-        nonexistent = tmp_path / "nonexistent.gguf"
-        nonexistent.write_bytes(b"data")
+        source = tmp_path / "external.gguf"
+        source.write_bytes(b"data")
 
         ref = ModelRef(name="test-model")
         manifest = _make_manifest(source_repo="org/repo")
 
-        with pytest.raises(FileNotFoundError, match="not found in cache"):
-            registry.install(ref, nonexistent, manifest)
+        blob_path = registry.install(ref, source, manifest)
+        assert blob_path.exists()
+        assert registry.is_installed(ref)
 
     def test_install_same_content_creates_same_blob(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"

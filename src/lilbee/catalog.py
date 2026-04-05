@@ -50,6 +50,7 @@ class CatalogModel:
     featured: bool
     downloads: int
     task: str
+    registry_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         True,
         0,
         "chat",
+        registry_name="qwen3:0.6b",
     ),
     CatalogModel(
         "Qwen3 4B",
@@ -107,6 +109,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         True,
         0,
         "chat",
+        registry_name="qwen3:4b",
     ),
     CatalogModel(
         "Qwen3 8B",
@@ -118,6 +121,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         True,
         0,
         "chat",
+        registry_name="qwen3:8b",
     ),
     CatalogModel(
         "Mistral 7B Instruct",
@@ -129,6 +133,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         True,
         0,
         "chat",
+        registry_name="mistral:7b",
     ),
     CatalogModel(
         "Qwen3-Coder 30B A3B",
@@ -140,6 +145,7 @@ FEATURED_CHAT: tuple[CatalogModel, ...] = (
         True,
         0,
         "chat",
+        registry_name="qwen3-coder:30b",
     ),
 )
 
@@ -154,6 +160,7 @@ FEATURED_EMBEDDING: tuple[CatalogModel, ...] = (
         True,
         0,
         "embedding",
+        registry_name="nomic-embed-text:latest",
     ),
 )
 
@@ -168,6 +175,7 @@ FEATURED_VISION: tuple[CatalogModel, ...] = (
         True,
         0,
         "vision",
+        registry_name="lightonocr-2:latest",
     ),
 )
 

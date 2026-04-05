@@ -37,11 +37,15 @@ class ModelInfo:
     size_gb: float
     min_ram_gb: float
     description: str
+    registry_name: str = ""
 
 
 def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
     """Build a ModelInfo tuple from catalog.py's CatalogModel entries."""
-    return tuple(ModelInfo(m.name, m.size_gb, m.min_ram_gb, m.description) for m in featured)
+    return tuple(
+        ModelInfo(m.name, m.size_gb, m.min_ram_gb, m.description, m.registry_name)
+        for m in featured
+    )
 
 
 # Derived from catalog.py's featured lists — single source of truth

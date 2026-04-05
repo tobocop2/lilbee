@@ -152,21 +152,23 @@ class ModelRegistry:
             return False
 
     def install(self, ref: ModelRef, source_path: Path, manifest: ModelManifest) -> Path:
-        """Write manifest for a model already in HF cache.
+        """Write manifest and ensure blob exists in cache.
 
-        The file is already in the cache dir (thanks to cache_dir setting).
-        This just creates the manifest to track it.
+        If the source file is already at the expected cache location, just writes
+        the manifest.  Otherwise copies the source into the HF-style cache tree
+        so that ``resolve()`` can find it afterward.
         """
-        # Compute hash to store in manifest
+        import shutil
+
         digest = _sha256_file(source_path)
 
-        # Resolve the cache path to get the blob filename
         cache_path = self._root / f"models--{manifest.source_repo.replace('/', '--')}"
-        blob_path = cache_path / "blobs" / digest
+        blobs_dir = cache_path / "blobs"
+        blob_path = blobs_dir / digest
 
-        # Verify file exists in cache
         if not blob_path.exists():
-            raise FileNotFoundError(f"Downloaded file not found in cache: {blob_path}")
+            blobs_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, blob_path)
 
         # Write manifest
         updated = ModelManifest(

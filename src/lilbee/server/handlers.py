@@ -442,11 +442,11 @@ async def list_models() -> ModelsResponse:
             active=cfg.chat_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.registry_name or m.name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=(m.registry_name or m.name) in installed,
                 )
                 for m in MODEL_CATALOG
             ],
@@ -456,11 +456,11 @@ async def list_models() -> ModelsResponse:
             active=cfg.vision_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.registry_name or m.name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=(m.registry_name or m.name) in installed,
                 )
                 for m in VISION_CATALOG
             ],

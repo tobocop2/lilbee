@@ -6,11 +6,24 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from lilbee.config import cfg
 from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cfg(tmp_path):
+    """Snapshot and restore cfg for every test to prevent cross-test pollution."""
+    snapshot = cfg.model_copy()
+    cfg.models_dir = tmp_path / "models"
+    yield
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
+    cfg.clear_model_defaults()
 
 
 def make_mock_services(**overrides):
