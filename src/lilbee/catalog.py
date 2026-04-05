@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel
 
 from lilbee.config import cfg
+from lilbee.types import TASK_CHAT, TASK_EMBEDDING, TASK_VISION
 
 log = logging.getLogger(__name__)
 
@@ -469,27 +470,29 @@ def get_catalog(
     return CatalogResult(total=total, limit=limit, offset=offset, models=paginated)
 
 
+_TASK_TO_PIPELINE: dict[str, tuple[str, str | None]] = {
+    TASK_CHAT: ("text-generation", None),
+    TASK_EMBEDDING: ("feature-extraction", "sentence-transformers"),
+    TASK_VISION: ("image-text-to-text", None),
+}
+
+
 def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:
     """Map task name to HuggingFace pipeline tag and library filter."""
-    mapping = {
-        "chat": ("text-generation", None),
-        "embedding": ("feature-extraction", "sentence-transformers"),
-        "vision": ("image-text-to-text", None),
-    }
-    return mapping.get(task or "chat", ("text-generation", None))
+    return _TASK_TO_PIPELINE.get(task or TASK_CHAT, ("text-generation", None))
 
 
 _PIPELINE_TO_TASK: dict[str, str] = {
-    "text-generation": "chat",
-    "feature-extraction": "embedding",
-    "image-text-to-text": "vision",
-    "image-to-text": "vision",
+    "text-generation": TASK_CHAT,
+    "feature-extraction": TASK_EMBEDDING,
+    "image-text-to-text": TASK_VISION,
+    "image-to-text": TASK_VISION,
 }
 
 
 def _pipeline_to_task(pipeline_tag: str) -> str:
     """Map HuggingFace pipeline tag to internal task name."""
-    return _PIPELINE_TO_TASK.get(pipeline_tag, "chat")
+    return _PIPELINE_TO_TASK.get(pipeline_tag, TASK_CHAT)
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:
@@ -576,7 +579,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     _register_model(entry, dest)
 
     # Download mmproj file for vision models
-    if entry.task == "vision":
+    if entry.task == TASK_VISION:
         _download_mmproj(entry)
 
     return dest

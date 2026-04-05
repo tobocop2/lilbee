@@ -15,6 +15,7 @@ from textual.widgets import Button, Label, ListItem, ListView, ProgressBar, Stat
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
+from lilbee.types import TASK_CHAT, TASK_EMBEDDING
 
 log = logging.getLogger(__name__)
 
@@ -38,9 +39,9 @@ def _scan_installed_models(models_dir: Path | None = None) -> tuple[list[Path], 
         embed: list[Path] = []
         for m in registry.list_installed():
             path = registry.resolve(f"{m.name}:{m.tag}")
-            if m.task == "embedding":
+            if m.task == TASK_EMBEDDING:
                 embed.append(path)
-            elif m.task == "chat":
+            elif m.task == TASK_CHAT:
                 chat.append(path)
         if chat or embed:
             return sorted(chat), sorted(embed)

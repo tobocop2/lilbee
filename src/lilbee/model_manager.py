@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from lilbee.security import validate_path_within
+from lilbee.types import TASK_CHAT, TASK_EMBEDDING, TASK_VISION
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ class RemoteModel:
     """A model from the litellm backend with inferred task classification."""
 
     name: str
-    task: str  # "chat", "embedding", "vision"
+    task: str  # TaskType value: "chat", "embedding", or "vision"
     family: str
     parameter_size: str
     provider: str = "Remote"  # "Ollama", "OpenAI", "Anthropic", or "Remote"
@@ -233,11 +234,11 @@ def _classify_remote_task(name: str, family: str) -> str:
     """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
-        return "embedding"
+        return TASK_EMBEDDING
     name_lower = name.lower()
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
-        return "vision"
-    return "chat"
+        return TASK_VISION
+    return TASK_CHAT
 
 
 def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
@@ -271,7 +272,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
 
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the litellm backend."""
-    return [m.name for m in classify_remote_models(base_url) if m.task == "embedding"]
+    return [m.name for m in classify_remote_models(base_url) if m.task == TASK_EMBEDDING]
 
 
 _manager: ModelManager | None = None

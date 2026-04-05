@@ -28,8 +28,10 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from lilbee.security import validate_path_within
+from lilbee.types import TASK_CHAT
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ class ModelManifest:
     name: str
     tag: str
     size_bytes: int
-    task: str  # "chat", "embedding", or "vision"
+    task: str  # "chat", "embedding", or "vision" — use TaskType constants
     source_repo: str  # HuggingFace repo
     source_filename: str  # original .gguf filename
     downloaded_at: str  # ISO 8601 timestamp
@@ -298,8 +300,16 @@ class ModelRegistry:
         return any(manifest.blob == digest for manifest in self.list_installed())
 
 
-def _match_catalog_entry(filename: str) -> tuple[str, str, str]:
-    """Match a .gguf filename to a catalog entry, returning (name, task, repo).
+class CatalogMatch(NamedTuple):
+    """Result of matching a .gguf filename to a catalog entry."""
+
+    name: str
+    task: str
+    repo: str
+
+
+def _match_catalog_entry(filename: str) -> CatalogMatch:
+    """Match a .gguf filename to a catalog entry.
 
     Falls back to deriving a name from the filename itself.
     """
@@ -310,7 +320,7 @@ def _match_catalog_entry(filename: str) -> tuple[str, str, str]:
         # Match on repo name fragment or exact filename
         repo_stem = entry.hf_repo.split("/")[-1].lower()
         if filename_lower.startswith(repo_stem) or entry.gguf_filename == filename:
-            return entry.name, entry.task, entry.hf_repo
+            return CatalogMatch(entry.name, entry.task, entry.hf_repo)
     # Fallback: strip extension and quant suffix for a reasonable name
     stem = filename.rsplit(".", 1)[0]
-    return stem, "chat", ""
+    return CatalogMatch(stem, TASK_CHAT, "")
