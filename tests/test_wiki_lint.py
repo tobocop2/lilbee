@@ -217,6 +217,20 @@ class TestLintAll:
         assert report.issues == []
 
 
+class TestPathTraversalDefense:
+    def test_citation_with_traversal_path_returns_error(self, tmp_path: Path):
+        write_source(tmp_path, "legit.md", "content")
+        cit = make_citation(
+            wiki_source="wiki/summaries/doc.md",
+            source_filename="../../etc/passwd",
+        )
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [cit]
+        issues = lint_wiki_page("wiki/summaries/doc.md", store)
+        error_issues = [i for i in issues if i.severity == IssueSeverity.ERROR]
+        assert any("escapes documents dir" in i.message for i in error_issues)
+
+
 class TestParseFrontmatter:
     def test_extracts_field(self):
         text = "---\ngenerated_by: qwen3:8b\ngenerated_at: 2026-01-01\n---\n\n# Page"

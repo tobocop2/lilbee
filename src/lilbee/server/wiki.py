@@ -189,6 +189,13 @@ async def wiki_generate_route(source: str) -> dict[str, Any]:
     _require_wiki()
     source = source.lstrip("/")
 
+    from lilbee.security import validate_path_within
+
+    try:
+        validate_path_within(cfg.documents_dir / source, cfg.documents_dir)
+    except ValueError:
+        raise NotFoundException(detail=f"invalid source path: {source}") from None
+
     from lilbee.services import get_services
     from lilbee.wiki.gen import generate_summary_page
 

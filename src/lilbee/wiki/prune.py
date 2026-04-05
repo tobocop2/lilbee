@@ -151,23 +151,51 @@ def _archive_and_record(
     return PruneRecord(wiki_source=wiki_source, action=PruneAction.ARCHIVED, reason=reason)
 
 
-def prune_wiki(
-    store: Store,
-    config: Config | None = None,
-) -> PruneReport:
-    """Scan all wiki pages and prune stale/orphaned ones.
+def _evaluate_page(
+    wiki_source: str, wiki_root: Path, store: Store, config: Config
+) -> PruneRecord | None:
+    """Check a single wiki page against pruning rules. Returns a record or None."""
+    if _check_all_sources_deleted(wiki_source, store, config.documents_dir):
+        return _archive_and_record(
+            wiki_source, wiki_root, store, config, "all cited sources deleted"
+        )
+    if _check_cluster_below_threshold(wiki_source, store, config.documents_dir):
+        return _archive_and_record(
+            wiki_source, wiki_root, store, config, "concept cluster below 3 live sources"
+        )
+    if _check_stale_majority(wiki_source, store, config):
+        return PruneRecord(
+            wiki_source=wiki_source,
+            action=PruneAction.FLAGGED,
+            reason="majority of citations stale",
+        )
+    return None
 
-    Returns a PruneReport with all actions taken.
-    """
+
+def _finalize_prune(report: PruneReport, config: Config) -> None:
+    """Update wiki index and log after pruning."""
+    if not report.records:
+        return
+    log.info(
+        "Wiki prune: %d archived, %d flagged",
+        report.archived_count,
+        report.flagged_count,
+    )
+    from lilbee.wiki.index import append_wiki_log, update_wiki_index
+
+    update_wiki_index(config)
+    for rec in report.records:
+        append_wiki_log(f"pruned ({rec.action.value})", f"{rec.wiki_source}: {rec.reason}", config)
+
+
+def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
+    """Scan all wiki pages and prune stale/orphaned ones."""
     if config is None:
         config = cfg
-
     wiki_root = config.data_root / config.wiki_dir
     report = PruneReport()
-
     if not wiki_root.exists():
         return report
-
     for subdir in ("summaries", "concepts"):
         subdir_path = wiki_root / subdir
         if not subdir_path.exists():
@@ -175,51 +203,8 @@ def prune_wiki(
         for md_path in sorted(subdir_path.rglob("*.md")):
             relative = md_path.relative_to(wiki_root)
             wiki_source = f"{config.wiki_dir}/{relative}"
-
-            if _check_all_sources_deleted(wiki_source, store, config.documents_dir):
-                report.records.append(
-                    _archive_and_record(
-                        wiki_source, wiki_root, store, config, "all cited sources deleted"
-                    )
-                )
-                continue
-
-            if _check_cluster_below_threshold(wiki_source, store, config.documents_dir):
-                report.records.append(
-                    _archive_and_record(
-                        wiki_source,
-                        wiki_root,
-                        store,
-                        config,
-                        "concept cluster below 3 live sources",
-                    )
-                )
-                continue
-
-            if _check_stale_majority(wiki_source, store, config):
-                report.records.append(
-                    PruneRecord(
-                        wiki_source=wiki_source,
-                        action=PruneAction.FLAGGED,
-                        reason="majority of citations stale",
-                    )
-                )
-
-    if report.records:
-        log.info(
-            "Wiki prune: %d archived, %d flagged for regeneration",
-            report.archived_count,
-            report.flagged_count,
-        )
-
-        from lilbee.wiki.index import append_wiki_log, update_wiki_index
-
-        update_wiki_index(config)
-        for rec in report.records:
-            append_wiki_log(
-                f"pruned ({rec.action.value})",
-                f"{rec.wiki_source}: {rec.reason}",
-                config,
-            )
-
+            record = _evaluate_page(wiki_source, wiki_root, store, config)
+            if record:
+                report.records.append(record)
+    _finalize_prune(report, config)
     return report

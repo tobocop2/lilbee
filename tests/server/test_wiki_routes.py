@@ -306,6 +306,11 @@ class TestWikiEnabled:
         assert body["source"] == "test.txt"
         assert "path" in body
 
+    async def test_generate_path_traversal_blocked(self):
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/../../etc/passwd", headers=_h())
+        assert resp.status_code == 404
+
     async def test_prune_returns_report(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/prune", headers=_h())

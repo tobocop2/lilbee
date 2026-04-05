@@ -56,6 +56,21 @@ class TestPruneReport:
         assert report.flagged_count == 1
 
 
+class TestPruneRecordToDict:
+    def test_serializes_fields(self):
+        rec = PruneRecord("wiki/a.md", PruneAction.ARCHIVED, "sources deleted")
+        d = rec.to_dict()
+        assert d == {
+            "wiki_source": "wiki/a.md",
+            "action": "archived",
+            "reason": "sources deleted",
+        }
+
+    def test_flagged_action(self):
+        rec = PruneRecord("wiki/b.md", PruneAction.FLAGGED, "stale citations")
+        assert rec.to_dict()["action"] == "flagged"
+
+
 class TestCheckAllSourcesDeleted:
     def test_all_deleted(self, tmp_path: Path):
         store = MagicMock(spec=Store)
