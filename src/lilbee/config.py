@@ -185,6 +185,11 @@ class Config(BaseSettings):
     wiki_prune_raw: bool = False
     wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    # Maximum fraction of content that may change before a regeneration is
+    # flagged for human review instead of overwriting the existing page.
+    # 0.3 = 30% of lines changed triggers the drift guard.
+    wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.

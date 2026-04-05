@@ -12,6 +12,9 @@ from lilbee.config import cfg
 from lilbee.store import SearchChunk, Store
 from lilbee.wiki_gen import (
     _chunks_to_text,
+    _content_change_ratio,
+    _diff_summary,
+    _divert_to_drafts,
     _extract_excerpt,
     _find_excerpt_source,
     _generate_synthesis_page,
@@ -612,3 +615,168 @@ class TestGenerateSynthesisPages:
         assert len(result) == 1
         assert result[0].exists()
         assert "concepts" in str(result[0]) or "drafts" in str(result[0])
+
+
+class TestContentChangeRatio:
+    def test_identical_texts(self):
+        assert _content_change_ratio("a\nb\nc", "a\nb\nc") == 0.0
+
+    def test_completely_different(self):
+        assert _content_change_ratio("a\nb\nc", "x\ny\nz") == 1.0
+
+    def test_partial_change(self):
+        old = "line1\nline2\nline3\nline4"
+        new = "line1\nchanged\nline3\nline4"
+        ratio = _content_change_ratio(old, new)
+        assert 0.0 < ratio < 1.0
+
+    def test_empty_old(self):
+        # empty -> something = 100% change
+        assert _content_change_ratio("", "new content") == 1.0
+
+    def test_empty_both(self):
+        assert _content_change_ratio("", "") == 0.0
+
+
+class TestDiffSummary:
+    def test_produces_unified_diff(self):
+        result = _diff_summary("old line", "new line")
+        assert "---" in result or "-old line" in result
+
+    def test_truncates_long_diff(self):
+        old = "\n".join(f"line{i}" for i in range(50))
+        new = "\n".join(f"changed{i}" for i in range(50))
+        result = _diff_summary(old, new)
+        assert "more lines" in result
+
+
+class TestDivertToDrafts:
+    def test_writes_draft_with_note(self, tmp_path: Path):
+        drafts_dir = tmp_path / "drafts"
+        content = "# New Page\n\nNew content."
+        result = _divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
+        assert result.exists()
+        assert result.parent == drafts_dir
+        text = result.read_text()
+        assert "DRIFT" in text
+        assert "45%" in text
+        assert "human review" in text
+        assert content in text
+
+
+class TestSummaryDriftDetection:
+    """Drift detection during summary page regeneration."""
+
+    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
+        provider = MagicMock()
+        provider.chat.side_effect = [wiki_text, faith_score]
+        return provider
+
+    def _mock_store(self) -> MagicMock:
+        store = MagicMock(spec=Store)
+        store.add_citations.return_value = 0
+        return store
+
+    def test_drift_diverts_to_drafts(self, tmp_path: Path):
+        """When >30% of content changes, new version goes to drafts."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        # Write an existing page with very different content
+        wiki_root = tmp_path / "wiki" / "summaries"
+        wiki_root.mkdir(parents=True)
+        existing = wiki_root / "doc.md"
+        existing.write_text("---\ngenerated_by: old-model\n---\n\nCompletely different content.\n")
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = self._mock_provider(wiki_text)
+        store = self._mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is not None
+        assert "drafts" in str(result)
+        # Original page should be unchanged
+        assert "Completely different content" in existing.read_text()
+        # Draft should have drift note
+        draft_text = result.read_text()
+        assert "DRIFT" in draft_text
+
+    def test_small_change_overwrites(self, tmp_path: Path):
+        """When content barely changes, existing page is overwritten normally."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+
+        # Write an existing page with nearly identical content (only timestamp differs)
+        provider = self._mock_provider(wiki_text, faith_score="0.85")
+        store = self._mock_store()
+
+        # First generation
+        result1 = generate_summary_page("doc.md", chunks, provider, store)
+        assert result1 is not None
+        assert "summaries" in str(result1)
+
+        # Regenerate with same content — provider returns same text
+        provider2 = self._mock_provider(wiki_text, faith_score="0.85")
+        store2 = self._mock_store()
+        result2 = generate_summary_page("doc.md", chunks, provider2, store2)
+        # Small diff (only timestamp) should overwrite, not divert
+        assert result2 is not None
+        # Should still be in summaries (not drafts) since content is nearly identical
+        assert "summaries" in str(result2)
+
+
+class TestSynthesisDriftDetection:
+    """Drift detection during synthesis page regeneration."""
+
+    def _mock_provider(self, wiki_text: str, faith_score: str = "0.85") -> MagicMock:
+        provider = MagicMock()
+        provider.chat.side_effect = [wiki_text, faith_score]
+        return provider
+
+    def _mock_store(self) -> MagicMock:
+        store = MagicMock(spec=Store)
+        store.add_citations.return_value = 0
+        return store
+
+    def test_drift_diverts_synthesis_to_drafts(self, tmp_path: Path):
+        """Synthesis pages also get drift-checked."""
+        sources = ["a.md", "b.md", "c.md"]
+        for name in sources:
+            (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
+
+        # Write an existing concepts page with very different content
+        concepts_dir = tmp_path / "wiki" / "concepts"
+        concepts_dir.mkdir(parents=True)
+        existing = concepts_dir / "gradual-typing.md"
+        existing.write_text("---\ngenerated_by: old\n---\n\nTotally different synthesis.\n")
+
+        chunks_by_source = {
+            name: [_make_chunk(f"Fact from {name}.", source=name)] for name in sources
+        }
+        wiki_text = _synthesis_wiki_text(sources)
+        provider = self._mock_provider(wiki_text)
+        store = self._mock_store()
+
+        result = _generate_synthesis_page(
+            "gradual typing", sources, chunks_by_source, provider, store, cfg
+        )
+        assert result is not None
+        assert "drafts" in str(result)
+        # Original should be unchanged
+        assert "Totally different synthesis" in existing.read_text()

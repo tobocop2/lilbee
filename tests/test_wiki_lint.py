@@ -13,6 +13,8 @@ from lilbee.wiki_lint import (
     IssueSeverity,
     LintIssue,
     LintReport,
+    _lint_model_changed,
+    _parse_frontmatter_field,
     lint_all,
     lint_changed_sources,
     lint_wiki_page,
@@ -29,6 +31,7 @@ def isolated_env(tmp_path: Path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.wiki = True
     cfg.wiki_dir = "wiki"
+    cfg.chat_model = "test-model"
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -265,3 +268,82 @@ class TestLintAll:
         store = MagicMock(spec=Store)
         report = lint_all(store)
         assert report.issues == []
+
+
+class TestParseFrontmatterField:
+    def test_extracts_field(self):
+        text = "---\ngenerated_by: qwen3:8b\ngenerated_at: 2026-01-01\n---\n\n# Page"
+        assert _parse_frontmatter_field(text, "generated_by") == "qwen3:8b"
+
+    def test_missing_field(self):
+        text = "---\ngenerated_at: 2026-01-01\n---\n\n# Page"
+        assert _parse_frontmatter_field(text, "generated_by") == ""
+
+    def test_no_frontmatter(self):
+        text = "# Just a heading\n\nSome content."
+        assert _parse_frontmatter_field(text, "generated_by") == ""
+
+    def test_unclosed_frontmatter(self):
+        text = "---\ngenerated_by: model\nno closing fence"
+        assert _parse_frontmatter_field(text, "generated_by") == ""
+
+
+class TestLintModelChanged:
+    def test_same_model_no_issue(self, tmp_path: Path):
+        page = _write_wiki_page(
+            tmp_path,
+            "summaries",
+            "doc",
+            "---\ngenerated_by: test-model\n---\n\n# Doc\n",
+        )
+        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+        assert result is None
+
+    def test_different_model_flags_issue(self, tmp_path: Path):
+        page = _write_wiki_page(
+            tmp_path,
+            "summaries",
+            "doc",
+            "---\ngenerated_by: old-model\n---\n\n# Doc\n",
+        )
+        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+        assert result is not None
+        assert result.severity == IssueSeverity.WARNING
+        assert "model_changed" in result.message
+        assert "old-model" in result.message
+        assert "test-model" in result.message
+
+    def test_no_frontmatter_no_issue(self, tmp_path: Path):
+        page = _write_wiki_page(
+            tmp_path,
+            "summaries",
+            "doc",
+            "# No frontmatter\n\nJust content.\n",
+        )
+        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+        assert result is None
+
+    def test_model_changed_in_lint_wiki_page(self, tmp_path: Path):
+        """model_changed shows up through lint_wiki_page integration."""
+        _write_wiki_page(
+            tmp_path,
+            "summaries",
+            "doc",
+            "---\ngenerated_by: different-model\n---\n\n> Cited.[^src1]\n",
+        )
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        issues = lint_wiki_page("wiki/summaries/doc.md", store)
+        assert any("model_changed" in i.message for i in issues)
+
+    def test_model_changed_does_not_trigger_regen(self, tmp_path: Path):
+        """Model change is a warning, not an error — no auto-regeneration."""
+        page = _write_wiki_page(
+            tmp_path,
+            "summaries",
+            "doc",
+            "---\ngenerated_by: old-model\n---\n\n# Doc\n",
+        )
+        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+        assert result is not None
+        assert result.severity == IssueSeverity.WARNING  # warning, not error

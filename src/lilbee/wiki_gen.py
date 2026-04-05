@@ -8,6 +8,7 @@ _citations table is the source of truth; markdown footnotes are rendered from it
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import logging
 from datetime import UTC, datetime
@@ -190,6 +191,54 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _content_change_ratio(old_text: str, new_text: str) -> float:
+    """Fraction of lines that changed between two texts (0.0 = identical, 1.0 = total rewrite)."""
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    if not old_lines and not new_lines:
+        return 0.0
+    total = max(len(old_lines), len(new_lines))
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+    changed = total - sum(block.size for block in matcher.get_matching_blocks())
+    return changed / total
+
+
+def _diff_summary(old_text: str, new_text: str) -> str:
+    """Human-readable unified diff summary (first 20 diff lines)."""
+    diff = difflib.unified_diff(
+        old_text.splitlines(),
+        new_text.splitlines(),
+        lineterm="",
+        fromfile="old",
+        tofile="new",
+    )
+    lines = list(diff)
+    if len(lines) > 20:
+        return "\n".join(lines[:20]) + f"\n... ({len(lines) - 20} more lines)"
+    return "\n".join(lines)
+
+
+def _divert_to_drafts(
+    new_content: str,
+    drafts_dir: Path,
+    slug: str,
+    change_ratio: float,
+    diff_text: str,
+) -> Path:
+    """Write new content to wiki/drafts/ with a drift note instead of overwriting."""
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    draft_path = drafts_dir / f"{slug}.md"
+    note = f"<!-- DRIFT: {change_ratio:.0%} content changed — flagged for human review -->\n\n"
+    draft_path.write_text(note + new_content, encoding="utf-8")
+    log.warning(
+        "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
+        slug,
+        change_ratio * 100,
+        diff_text,
+    )
+    return draft_path
+
+
 def generate_summary_page(
     source_name: str,
     chunks: list[SearchChunk],
@@ -293,6 +342,15 @@ def generate_summary_page(
     if citation_block:
         full_content += "\n\n" + citation_block
 
+    # Step 7b: Drift detection — if existing page changed too much, divert to drafts
+    if page_path.exists():
+        old_content = page_path.read_text(encoding="utf-8")
+        ratio = _content_change_ratio(old_content, full_content)
+        if ratio > config.wiki_drift_threshold:
+            drafts_dir = wiki_root / "drafts"
+            diff_text = _diff_summary(old_content, full_content)
+            return _divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
+
     page_path.write_text(full_content, encoding="utf-8")
 
     # Step 8: Write citation records to store
@@ -302,7 +360,7 @@ def generate_summary_page(
     store.add_citations(verified)
 
     log.info(
-        "Generated wiki page for %s → %s (score=%.2f, citations=%d)",
+        "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",
         source_name,
         subdir,
         score,
@@ -491,6 +549,15 @@ def _generate_synthesis_page(
     full_content = frontmatter + wiki_text
     if citation_block:
         full_content += "\n\n" + citation_block
+
+    # Drift detection — if existing page changed too much, divert to drafts
+    if page_path.exists():
+        old_content = page_path.read_text(encoding="utf-8")
+        ratio = _content_change_ratio(old_content, full_content)
+        if ratio > config.wiki_drift_threshold:
+            drafts_dir = wiki_root / "drafts"
+            diff_text = _diff_summary(old_content, full_content)
+            return _divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
 
     page_path.write_text(full_content, encoding="utf-8")
 
