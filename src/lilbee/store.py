@@ -319,11 +319,13 @@ class Store:
         top_k: int | None = None,
         max_distance: float | None = None,
         query_text: str | None = None,
+        chunk_type: str | None = None,
     ) -> list[SearchChunk]:
         """Search for similar chunks — hybrid when FTS available, else vector-only.
 
         Results with distance > max_distance are filtered out (vector-only path).
         Pass max_distance=0 to disable filtering.
+        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
         """
         if top_k is None:
             top_k = self._config.top_k
@@ -338,12 +340,18 @@ class Store:
 
         if query_text and self._fts_ready:
             try:
-                return _hybrid_search(table, query_text, query_vector, top_k)
+                results = _hybrid_search(table, query_text, query_vector, top_k)
+                if chunk_type:
+                    results = [r for r in results if r.chunk_type == chunk_type]
+                return results
             except Exception:
                 log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
         candidate_k = top_k * self._config.candidate_multiplier
-        rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
+        query = table.search(query_vector).metric("cosine").limit(candidate_k)
+        if chunk_type:
+            query = query.where(f"chunk_type = '{escape_sql_string(chunk_type)}'")
+        rows = query.to_list()
         results = [SearchChunk(**r) for r in rows]
         if max_distance > 0:
             results = self._adaptive_filter(results, top_k, max_distance)
