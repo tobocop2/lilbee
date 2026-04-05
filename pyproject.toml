@@ -58,6 +58,9 @@ Issues = "https://github.com/tobocop2/lilbee/issues"
 [project.scripts]
 lilbee = "lilbee.launcher:main"
 
+[tool.uv.sources]
+huggingface_hub = { git = "https://github.com/tobocop2/huggingface_hub.git", branch = "fix/download-progress-callbacks" }
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
