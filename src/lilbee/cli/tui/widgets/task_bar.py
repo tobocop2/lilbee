@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label, ProgressBar, Static
 
-from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus
+from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
 
 log = logging.getLogger(__name__)
 
@@ -189,11 +189,4 @@ class TaskBar(Static):
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:
-        icons = {
-            TaskStatus.ACTIVE: "\u25b8",
-            TaskStatus.DONE: "\u2713",
-            TaskStatus.FAILED: "\u2717",
-            TaskStatus.CANCELLED: "\u2212",
-            TaskStatus.QUEUED: "\u2022",
-        }
-        return icons.get(status, "\u25b8")
+        return STATUS_ICONS.get(status, "\u25b8")

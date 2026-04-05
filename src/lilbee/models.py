@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console
@@ -15,6 +16,13 @@ from lilbee import settings
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
+
+
+class ModelTask(StrEnum):
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    VISION = "vision"
+
 
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2

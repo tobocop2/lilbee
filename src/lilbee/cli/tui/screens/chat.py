@@ -13,15 +13,17 @@ from typing import TYPE_CHECKING, ClassVar
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
+from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Label, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -47,8 +49,29 @@ _MAX_HISTORY_MESSAGES = 200
 _FOCUSABLE_IDS = ("model-bar", "chat-log", "chat-input")
 
 
+class ChatStatusLine(Label):
+    """One-line status bar showing the current model as a pill badge."""
+
+    model_name: var[str] = var("")
+
+    def watch_model_name(self, name: str) -> None:
+        """Re-render when model name changes."""
+        if name:
+            self.update(pill(name, "$primary", "$text"))
+        else:
+            self.update("")
+
+
+class PromptArea(Vertical):
+    """Container for chat input that highlights on focus-within."""
+
+    pass
+
+
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
+
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "/ commands", show=True),
@@ -85,17 +108,20 @@ class ChatScreen(Screen[None]):
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
+        yield ChatStatusLine(id="chat-status-line")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
-        yield Input(
-            placeholder=msg.CHAT_INPUT_PLACEHOLDER,
-            id="chat-input",
-            suggester=SlashSuggester(use_cache=False),
-        )
+        with PromptArea(id="chat-prompt-area"):
+            yield Input(
+                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                id="chat-input",
+                suggester=SlashSuggester(use_cache=False),
+            )
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self._update_input_style()
+        self._refresh_status_line()
         self.query_one("#chat-only-banner", Static).display = False
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
@@ -850,8 +876,13 @@ class ChatScreen(Screen[None]):
                 overlay.hide()
 
     def _refresh_model_bar(self) -> None:
-        """Update the model status bar."""
+        """Update the model status bar and status line."""
         self.query_one("#model-bar", ModelBar).refresh_models()
+        self._refresh_status_line()
+
+    def _refresh_status_line(self) -> None:
+        """Update the status line pill with the current chat model."""
+        self.query_one("#chat-status-line", ChatStatusLine).model_name = cfg.chat_model
 
     def key_j(self) -> None:
         """Vim j: cycle focus to next widget in normal mode."""

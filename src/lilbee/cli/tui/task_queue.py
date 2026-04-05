@@ -26,6 +26,15 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+STATUS_ICONS: dict[TaskStatus, str] = {
+    TaskStatus.QUEUED: "\u23f3",
+    TaskStatus.ACTIVE: "\u25b6",
+    TaskStatus.DONE: "\u2713",
+    TaskStatus.FAILED: "\u2717",
+    TaskStatus.CANCELLED: "\u2298",
+}
+
+
 @dataclass
 class Task:
     """A single unit of work in the queue."""

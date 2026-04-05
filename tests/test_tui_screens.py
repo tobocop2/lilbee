@@ -105,9 +105,7 @@ def _make_remote_model(
     return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
 
 
-# ---------------------------------------------------------------------------
 # Pure function tests: catalog helpers
-# ---------------------------------------------------------------------------
 
 
 class TestParseParamLabel:
@@ -270,9 +268,7 @@ class TestRemoteToRow:
         assert row.params == "--"
 
 
-# ---------------------------------------------------------------------------
 # Settings screen (Textual integration)
-# ---------------------------------------------------------------------------
 
 
 class SettingsTestApp(App[None]):
@@ -625,9 +621,7 @@ async def test_settings_model_info_loaded():
         object.__setattr__(cfg, "_model_defaults", old_defaults)
 
 
-# ---------------------------------------------------------------------------
 # Status screen (Textual integration)
-# ---------------------------------------------------------------------------
 
 
 class StatusTestApp(App[None]):
@@ -697,9 +691,7 @@ async def test_status_screen_escape_pops():
         await _pilot.press("escape")
 
 
-# ---------------------------------------------------------------------------
 # LilbeeApp tests
-# ---------------------------------------------------------------------------
 
 
 async def test_app_mounts_chat_screen():
@@ -801,9 +793,7 @@ async def test_app_auto_sync_flag():
     assert app._auto_sync is True
 
 
-# ---------------------------------------------------------------------------
 # ChatScreen slash command tests
-# ---------------------------------------------------------------------------
 
 
 class ChatTestApp(App[None]):
@@ -1277,9 +1267,7 @@ async def test_chat_slash_delete_dispatch():
         app.screen._handle_slash("/delete")
 
 
-# ---------------------------------------------------------------------------
 # ChatScreen action_complete tests
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_action_complete_no_options():
@@ -1357,9 +1345,7 @@ async def test_chat_action_complete_cycle_no_selection():
             app.screen.action_complete()
 
 
-# ---------------------------------------------------------------------------
 # ChatScreen on_input_submitted (non-slash = send message)
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_send_message():
@@ -1417,9 +1403,7 @@ async def test_chat_trim_history_when_over_limit():
         assert app.screen._history[0]["content"] == "msg-10"
 
 
-# ---------------------------------------------------------------------------
 # CommandProvider tests
-# ---------------------------------------------------------------------------
 
 
 async def test_command_provider_discover():
@@ -1633,9 +1617,7 @@ async def test_command_provider_document_commands_empty_name():
         assert cmds == []
 
 
-# ---------------------------------------------------------------------------
 # CatalogScreen tests
-# ---------------------------------------------------------------------------
 
 
 class CatalogTestApp(App[None]):
@@ -2031,9 +2013,7 @@ async def test_catalog_row_selected_out_of_range():
             screen.on_data_table_row_selected(event)
 
 
-# ---------------------------------------------------------------------------
 # Direct worker body tests (call underlying fn, not @work decorator)
-# ---------------------------------------------------------------------------
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -2269,9 +2249,7 @@ async def test_chat_embedding_ready_false_no_sync():
             mock_sync.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # Additional coverage: chat.py lines
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_on_input_submitted_slash():
@@ -2381,9 +2359,7 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.pause()
 
 
-# ---------------------------------------------------------------------------
 # Additional coverage: catalog.py worker body lines
-# ---------------------------------------------------------------------------
 
 
 async def test_catalog_refresh_table_empty():
@@ -2492,9 +2468,7 @@ async def test_catalog_jump_top_bottom():
             screen.action_jump_top()
 
 
-# ---------------------------------------------------------------------------
 # Additional coverage: commands.py vision catalog exception (lines 91-92)
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_vim_j_cycles_focus_from_chat_log():
@@ -2853,9 +2827,7 @@ async def test_chat_bindings_include_half_page():
     assert "ctrl+u" in keys
 
 
-# ---------------------------------------------------------------------------
 # Catalog: delete model (d key)
-# ---------------------------------------------------------------------------
 
 
 async def test_catalog_delete_installed_model_confirmation():
@@ -2999,9 +2971,7 @@ async def test_catalog_delete_in_input_ignored():
             assert screen._pending_delete is None
 
 
-# ---------------------------------------------------------------------------
 # Chat: /remove slash command
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_slash_remove_no_args():
@@ -3813,7 +3783,7 @@ async def test_task_center_row_click_shows_detail():
         row_key.value = tid
         event = mock.Mock()
         event.row_key = row_key
-        screen.on_data_table_row_selected(event)
+        screen.on_data_table_row_highlighted(event)
         await pilot.pause()
         text = detail.content
         assert "Download X" in text
@@ -3855,6 +3825,110 @@ async def test_task_center_show_detail_no_key():
         await pilot.pause()
         detail = screen.query_one("#task-detail", Static)
         assert detail.content == ""
+
+
+async def test_task_center_has_css_path():
+    """TaskCenter declares a CSS_PATH for task-specific styles."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    assert TaskCenter.CSS_PATH == "task_center.tcss"
+
+
+def test_task_center_status_pill():
+    """_status_pill returns a pill string for each status."""
+    from lilbee.cli.tui.screens.task_center import _status_pill
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    for status in TaskStatus:
+        result = _status_pill(status)
+        assert status.value in result
+
+
+async def test_chat_screen_has_css_path():
+    """ChatScreen declares a CSS_PATH for chat-specific styles."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    assert ChatScreen.CSS_PATH == "chat.tcss"
+
+
+async def test_chat_status_line_updates_on_model_change():
+    """ChatStatusLine renders a pill when model_name is set."""
+    from textual.app import App
+
+    from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+    class StatusApp(App[None]):
+        def compose(self):  # type: ignore[override]
+            yield ChatStatusLine(id="status")
+
+    app = StatusApp()
+    async with app.run_test(size=(80, 10)) as pilot:
+        widget = app.query_one("#status", ChatStatusLine)
+        widget.model_name = "qwen3:8b"
+        await pilot.pause()
+        assert widget.model_name == "qwen3:8b"
+        # Label.content holds the plain-text form of the last update() call
+        assert "qwen3:8b" in str(widget.content)
+
+
+async def test_chat_status_line_empty_model():
+    """ChatStatusLine renders empty when model_name is empty."""
+    from textual.app import App
+
+    from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+    class StatusApp(App[None]):
+        def compose(self):  # type: ignore[override]
+            yield ChatStatusLine(id="status")
+
+    app = StatusApp()
+    async with app.run_test(size=(80, 10)) as pilot:
+        widget = app.query_one("#status", ChatStatusLine)
+        widget.model_name = ""
+        await pilot.pause()
+        assert widget.model_name == ""
+
+
+async def test_chat_screen_has_status_line():
+    """ChatScreen compose includes a ChatStatusLine widget."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
+        assert status is not None
+
+
+async def test_chat_screen_has_prompt_area():
+    """ChatScreen compose wraps input in a PromptArea container."""
+    cfg.chat_model = "test-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import PromptArea
+
+        prompt_area = app.screen.query_one("#chat-prompt-area", PromptArea)
+        assert prompt_area is not None
+
+
+async def test_chat_refresh_status_line():
+    """_refresh_status_line sets the model name on the status widget."""
+    cfg.chat_model = "my-model"
+    cfg.embedding_model = "test-embed"
+    cfg.vision_model = ""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatStatusLine
+
+        status = app.screen.query_one("#chat-status-line", ChatStatusLine)
+        assert status.model_name == "my-model"
 
 
 async def test_settings_row_click_opens_editor():
