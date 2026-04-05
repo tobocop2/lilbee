@@ -105,11 +105,6 @@ def _make_remote_model(
     return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
 
 
-# ---------------------------------------------------------------------------
-# Pure function tests: catalog helpers
-# ---------------------------------------------------------------------------
-
-
 class TestParseParamLabel:
     def test_extracts_integer(self):
         assert _parse_param_label("qwen-8B-instruct") == "8B"
@@ -268,11 +263,6 @@ class TestRemoteToRow:
         rm = _make_remote_model(parameter_size="")
         row = _remote_to_row(rm)
         assert row.params == "--"
-
-
-# ---------------------------------------------------------------------------
-# Settings screen (Textual integration)
-# ---------------------------------------------------------------------------
 
 
 class SettingsTestApp(App[None]):
@@ -602,32 +592,21 @@ async def test_settings_model_info_values():
 
 
 async def test_settings_model_info_loaded():
-    """Model info shows 'loaded' when model defaults are available."""
-    from dataclasses import dataclass
-
+    """Model info shows 'llama-cpp' handler when model is resolvable."""
     from lilbee.cli.tui.screens.settings import _get_model_info
 
-    @dataclass(frozen=True)
-    class FakeDefaults:
-        temperature: float | None = 0.7
-        top_p: float | None = None
-        top_k: int | None = None
-        repeat_penalty: float | None = None
-        num_ctx: int | None = None
-        max_tokens: int | None = None
-
-    old_defaults = cfg._model_defaults
-    try:
-        cfg.apply_model_defaults(FakeDefaults())
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            return_value={"architecture": "llama"},
+        ),
+    ):
         info = _get_model_info()
-        assert info["active_chat_handler"] == "loaded"
-    finally:
-        object.__setattr__(cfg, "_model_defaults", old_defaults)
-
-
-# ---------------------------------------------------------------------------
-# Status screen (Textual integration)
-# ---------------------------------------------------------------------------
+    assert info["active_chat_handler"] == "llama-cpp"
 
 
 class StatusTestApp(App[None]):
@@ -648,10 +627,38 @@ async def test_status_screen_renders_info(mock_svc):
     ]
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        info = app.screen.query_one("#status-info", Static)
+        info = app.screen.query_one("#config-info", Static)
         rendered = str(info.render())
         assert "test-model:latest" in rendered
         assert "test-embed:latest" in rendered
+
+
+async def test_status_screen_has_collapsible_sections(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from textual.widgets import Collapsible
+
+        sections = app.screen.query(Collapsible)
+        assert len(sections) == 4
+
+
+async def test_status_screen_config_shows_models(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#config-info", Static)
+        rendered = str(info.render())
+        assert "Chat model" in rendered
+        assert "Embed model" in rendered
+        assert "Vision model" in rendered
+
+
+async def test_status_screen_config_pills_render(mock_svc):
+    cfg.vision_model = ""
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#config-info", Static)
+        rendered = str(info.render())
+        assert "loaded" in rendered or "not set" in rendered
 
 
 async def test_status_screen_shows_documents(mock_svc):
@@ -670,10 +677,137 @@ async def test_status_screen_store_error(mock_svc):
     mock_svc.store.get_sources.side_effect = Exception("no table")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
         table = app.screen.query_one("#docs-table", DataTable)
         assert table.row_count == 1
+
+
+async def test_status_screen_storage_section(mock_svc):
+    mock_svc.store.get_sources.return_value = [
+        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
+    ]
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#storage-info", Static)
+        rendered = str(info.render())
+        assert "Documents" in rendered
+        assert "Data dir" in rendered
+        assert "Models dir" in rendered
+
+
+async def test_status_screen_arch_section(mock_svc):
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#arch-info", Static)
+        rendered = str(info.render())
+        assert "Chat arch" in rendered
+        assert "Handler" in rendered
+
+
+def test_status_model_pill_truthy():
+    from lilbee.cli.tui.screens.status import _model_pill
+
+    result = _model_pill("qwen3:8b")
+    assert "loaded" in str(result)
+
+
+def test_status_model_pill_empty():
+    from lilbee.cli.tui.screens.status import _model_pill
+
+    result = _model_pill("")
+    assert "not set" in str(result)
+
+
+def test_status_read_chat_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_chat_arch
+
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            return_value={"architecture": "llama"},
+        ),
+    ):
+        result = _read_chat_arch(info)
+    assert result.chat_arch == "llama"
+    assert result.active_handler == "llama-cpp"
+
+
+def test_status_read_embed_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_embed_arch
+
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            return_value={"architecture": "bert"},
+        ),
+    ):
+        result = _read_embed_arch(info)
+    assert result.embed_arch == "bert"
+
+
+def test_status_read_vision_arch_success():
+    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+
+    cfg.vision_model = "test-vision:latest"
+    info = ModelArchInfo()
+    with (
+        patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            return_value="/fake/path",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._find_mmproj_for_model",
+            return_value="/fake/mmproj",
+        ),
+        patch(
+            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            return_value="resampler",
+        ),
+    ):
+        result = _read_vision_arch(info)
+    assert result.vision_projector == "resampler"
+
+
+def test_status_read_vision_arch_skips_when_no_model():
+    from lilbee.model_info import ModelArchInfo, _read_vision_arch
+
+    cfg.vision_model = ""
+    info = ModelArchInfo()
+    result = _read_vision_arch(info)
+    assert result.vision_projector == "unknown"
+
+
+def test_status_read_model_arch_import_error():
+    from lilbee.model_info import get_model_architecture
+
+    with patch(
+        "builtins.__import__",
+        side_effect=lambda name, *a, **kw: (
+            (_ for _ in ()).throw(ImportError("no llama-cpp"))
+            if "llama_cpp" in name
+            else __import__(name, *a, **kw)
+        ),
+    ):
+        result = get_model_architecture()
+    assert result.chat_arch == "unknown"
+
+
+async def test_status_screen_arch_with_vision(mock_svc):
+    cfg.vision_model = "test-vision:latest"
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        info = app.screen.query_one("#arch-info", Static)
+        rendered = str(info.render())
+        assert "Vision proj" in rendered
 
 
 async def test_status_screen_vim_keys(mock_svc):
@@ -695,11 +829,6 @@ async def test_status_screen_escape_pops():
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.press("escape")
-
-
-# ---------------------------------------------------------------------------
-# LilbeeApp tests
-# ---------------------------------------------------------------------------
 
 
 async def test_app_mounts_chat_screen():
@@ -799,11 +928,6 @@ async def test_app_auto_sync_flag():
 
     app = LilbeeApp(auto_sync=True)
     assert app._auto_sync is True
-
-
-# ---------------------------------------------------------------------------
-# ChatScreen slash command tests
-# ---------------------------------------------------------------------------
 
 
 class ChatTestApp(App[None]):
@@ -1277,11 +1401,6 @@ async def test_chat_slash_delete_dispatch():
         app.screen._handle_slash("/delete")
 
 
-# ---------------------------------------------------------------------------
-# ChatScreen action_complete tests
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_action_complete_no_options():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1357,11 +1476,6 @@ async def test_chat_action_complete_cycle_no_selection():
             app.screen.action_complete()
 
 
-# ---------------------------------------------------------------------------
-# ChatScreen on_input_submitted (non-slash = send message)
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_send_message():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1415,11 +1529,6 @@ async def test_chat_trim_history_when_over_limit():
         app.screen._trim_history()
         assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
         assert app.screen._history[0]["content"] == "msg-10"
-
-
-# ---------------------------------------------------------------------------
-# CommandProvider tests
-# ---------------------------------------------------------------------------
 
 
 async def test_command_provider_discover():
@@ -1631,11 +1740,6 @@ async def test_command_provider_document_commands_empty_name():
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
-
-
-# ---------------------------------------------------------------------------
-# CatalogScreen tests
-# ---------------------------------------------------------------------------
 
 
 class CatalogTestApp(App[None]):
@@ -2031,11 +2135,6 @@ async def test_catalog_row_selected_out_of_range():
             screen.on_data_table_row_selected(event)
 
 
-# ---------------------------------------------------------------------------
-# Direct worker body tests (call underlying fn, not @work decorator)
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_fetch_more_hf_worker():
     """Cover _fetch_more_hf worker body."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2269,11 +2368,6 @@ async def test_chat_embedding_ready_false_no_sync():
             mock_sync.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Additional coverage: chat.py lines
-# ---------------------------------------------------------------------------
-
-
 async def test_chat_on_input_submitted_slash():
     """Cover the on_input_submitted slash dispatch (line 94-95)."""
     app = ChatTestApp()
@@ -2381,11 +2475,6 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.pause()
 
 
-# ---------------------------------------------------------------------------
-# Additional coverage: catalog.py worker body lines
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_refresh_table_empty():
     """Cover empty table case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2490,11 +2579,6 @@ async def test_catalog_jump_top_bottom():
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-
-
-# ---------------------------------------------------------------------------
-# Additional coverage: commands.py vision catalog exception (lines 91-92)
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_vim_j_cycles_focus_from_chat_log():
@@ -2853,11 +2937,6 @@ async def test_chat_bindings_include_half_page():
     assert "ctrl+u" in keys
 
 
-# ---------------------------------------------------------------------------
-# Catalog: delete model (d key)
-# ---------------------------------------------------------------------------
-
-
 async def test_catalog_delete_installed_model_confirmation():
     """First press of d shows confirmation notification."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -2997,11 +3076,6 @@ async def test_catalog_delete_in_input_ignored():
             screen.query_one("#catalog-search", Input).focus()
             screen.action_delete_model()
             assert screen._pending_delete is None
-
-
-# ---------------------------------------------------------------------------
-# Chat: /remove slash command
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_slash_remove_no_args():

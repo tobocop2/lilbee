@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import fields as dc_fields
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -97,51 +96,15 @@ def _defaults_field_map() -> dict[str, str]:
 
 def _get_model_info() -> dict[str, str]:
     """Collect model architecture info by reading GGUF metadata from registry."""
-    info: dict[str, str] = {
-        "chat_model_arch": "unknown",
-        "embed_model_arch": "unknown",
-        "vision_projector": "unknown",
-        "active_chat_handler": "not loaded",
+    from lilbee.model_info import get_model_architecture
+
+    arch = get_model_architecture()
+    return {
+        "chat_model_arch": arch.chat_arch,
+        "embed_model_arch": arch.embed_arch,
+        "vision_projector": arch.vision_projector,
+        "active_chat_handler": arch.active_handler,
     }
-    try:
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata, _resolve_model_path
-
-        # Chat model
-        try:
-            path = _resolve_model_path(cfg.chat_model)
-            meta = _read_gguf_metadata(path)
-            if meta:
-                info["chat_model_arch"] = meta.get("architecture", "unknown")
-                info["active_chat_handler"] = "llama-cpp"
-        except Exception:
-            pass
-
-        # Embedding model
-        try:
-            path = _resolve_model_path(cfg.embedding_model)
-            meta = _read_gguf_metadata(path)
-            if meta:
-                info["embed_model_arch"] = meta.get("architecture", "unknown")
-        except Exception:
-            pass
-
-        # Vision projector
-        if cfg.vision_model:
-            try:
-                from lilbee.providers.llama_cpp_provider import (
-                    _find_mmproj_for_model,
-                    _read_mmproj_projector_type,
-                )
-
-                path = _resolve_model_path(cfg.vision_model)
-                mmproj = _find_mmproj_for_model(path)
-                proj_type = _read_mmproj_projector_type(mmproj)
-                info["vision_projector"] = proj_type or "unknown"
-            except Exception:
-                pass
-    except ImportError:
-        pass  # llama-cpp not available (litellm-only mode)
-    return info
 
 
 def _is_writable(key: str) -> bool:

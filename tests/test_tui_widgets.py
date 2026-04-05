@@ -1769,3 +1769,88 @@ class TestLilbeeAppGlobalNavBar:
                 await pilot.pause()
             nav = app.screen.query_one("#global-nav-bar")
             assert nav.active_view == "Chat"
+
+
+# ---------------------------------------------------------------------------
+# pill.py
+# ---------------------------------------------------------------------------
+
+
+class TestPill:
+    def test_pill_from_string(self) -> None:
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("chat", "$primary", "$text")
+        text = str(result)
+        assert "chat" in text
+        assert "\u258c" in text  # left half-block
+        assert "\u2590" in text  # right half-block
+
+    def test_pill_from_content(self) -> None:
+        from textual.content import Content
+
+        from lilbee.cli.tui.pill import pill
+
+        content_input = Content("embed")
+        result = pill(content_input, "$secondary", "$text")
+        assert "embed" in str(result)
+
+    def test_pill_empty_string(self) -> None:
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("", "$primary", "$text")
+        text = str(result)
+        assert "\u258c" in text
+        assert "\u2590" in text
+
+    def test_pill_returns_content(self) -> None:
+        from textual.content import Content
+
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("ok", "$success", "$text")
+        assert isinstance(result, Content)
+
+
+# ---------------------------------------------------------------------------
+# events.py
+# ---------------------------------------------------------------------------
+
+
+class TestEvents:
+    def test_model_changed_is_message(self) -> None:
+        from textual.message import Message
+
+        from lilbee.cli.tui.events import ModelChanged
+
+        msg = ModelChanged("chat", "qwen3:8b")
+        assert isinstance(msg, Message)
+        assert msg.role == "chat"
+        assert msg.name == "qwen3:8b"
+
+    def test_task_state_changed(self) -> None:
+        from lilbee.cli.tui.events import TaskStateChanged
+
+        msg = TaskStateChanged("task-1", "active")
+        assert msg.task_id == "task-1"
+        assert msg.status == "active"
+
+    def test_view_switched(self) -> None:
+        from lilbee.cli.tui.events import ViewSwitched
+
+        msg = ViewSwitched("Models")
+        assert msg.view_name == "Models"
+
+    def test_sync_requested(self) -> None:
+        from textual.message import Message
+
+        from lilbee.cli.tui.events import SyncRequested
+
+        msg = SyncRequested()
+        assert isinstance(msg, Message)
+
+    def test_catalog_view_toggled(self) -> None:
+        from lilbee.cli.tui.events import CatalogViewToggled
+
+        msg = CatalogViewToggled("grid")
+        assert msg.view_mode == "grid"
