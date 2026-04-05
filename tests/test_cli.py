@@ -1987,3 +1987,177 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "concept_0" in result.output
         assert "more)" in result.output
+
+
+class TestWikiLint:
+    def test_lint_all_no_issues(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+        assert "No issues found" in result.output
+
+    def test_lint_all_with_issues(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        wiki_dir = isolated_env / "wiki" / "summaries"
+        wiki_dir.mkdir(parents=True)
+        (wiki_dir / "doc.md").write_text("Unmarked claim.\n")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+        assert "Unmarked" in result.output
+
+    def test_lint_single_page(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        wiki_dir = isolated_env / "wiki" / "summaries"
+        wiki_dir.mkdir(parents=True)
+        (wiki_dir / "doc.md").write_text(
+            "> Cited.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+
+    def test_lint_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "lint"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_lint"
+        assert "total" in data
+
+
+class TestWikiCitations:
+    def test_citations_empty(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        assert "No citations found" in result.output
+
+    def test_citations_with_records(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = [
+            {
+                "wiki_source": "wiki/summaries/doc.md",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "abc",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 1,
+                "line_end": 10,
+                "excerpt": "Python supports typing.",
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        assert "src1" in result.output
+        assert "doc.md" in result.output
+
+    def test_citations_long_excerpt_truncated(self, mock_svc):
+        long_excerpt = "A" * 80
+        mock_svc.store.get_citations_for_wiki.return_value = [
+            {
+                "wiki_source": "wiki/summaries/doc.md",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "abc",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 1,
+                "line_end": 10,
+                "excerpt": long_excerpt,
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        # Full 80-char excerpt should not appear — truncated by code or Rich
+        assert long_excerpt not in result.output
+
+    def test_citations_json_output(self, mock_svc):
+        cfg.json_mode = True
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_citations"
+        assert data["total"] == 0
+
+
+class TestWikiStatus:
+    def test_status_no_wiki_dir(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "does not exist" in result.output
+
+    def test_status_with_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        (isolated_env / "wiki" / "drafts").mkdir(parents=True)
+        (isolated_env / "wiki" / "drafts" / "b.md").write_text("content")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "1" in result.output  # summaries count
+
+    def test_status_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "wiki_enabled" in data
+        assert data["pages"] == 0
+
+    def test_status_json_with_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["summaries"] == 1
+        assert data["drafts"] == 0
+
+    def test_status_all_clean(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text(
+            "> Cited.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "all clean" in result.output
+
+    def test_status_wiki_disabled(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
