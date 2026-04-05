@@ -101,9 +101,20 @@ def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
 
 @get("/api/wiki")
 async def wiki_list_route() -> list[dict[str, Any]]:
-    """List all wiki pages across subdirectories."""
+    """List all wiki pages across subdirectories.
+
+    If wiki/index.md exists, regenerate it first to ensure freshness,
+    then build the page list from disk.
+    """
     _require_wiki()
     root = _wiki_root()
+
+    index_path = root / "index.md"
+    if index_path.is_file():
+        from lilbee.wiki_index import update_wiki_index
+
+        update_wiki_index()
+
     pages: list[WikiPageSummary] = []
     for subdir in ("summaries", "concepts"):
         for path in _list_md_files(root / subdir):

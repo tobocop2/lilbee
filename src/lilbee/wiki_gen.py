@@ -366,6 +366,12 @@ def generate_summary_page(
         score,
         len(verified),
     )
+
+    from lilbee.wiki_index import append_wiki_log, update_wiki_index
+
+    update_wiki_index(config)
+    append_wiki_log("generated", f"summary page for {source_name} -> {subdir}/{slug}.md", config)
+
     return page_path
 
 
@@ -574,6 +580,12 @@ def _generate_synthesis_page(
         len(verified),
         len(source_names),
     )
+
+    from lilbee.wiki_index import append_wiki_log, update_wiki_index
+
+    update_wiki_index(config)
+    append_wiki_log("generated", f"synthesis page for {topic!r} -> {subdir}/{slug}.md", config)
+
     return page_path
 
 

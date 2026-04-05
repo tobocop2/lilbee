@@ -193,4 +193,15 @@ def prune_wiki(
             report.archived_count,
             report.flagged_count,
         )
+
+        from lilbee.wiki_index import append_wiki_log, update_wiki_index
+
+        update_wiki_index(config)
+        for rec in report.records:
+            append_wiki_log(
+                f"pruned ({rec.action.value})",
+                f"{rec.wiki_source}: {rec.reason}",
+                config,
+            )
+
     return report
