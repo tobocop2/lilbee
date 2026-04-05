@@ -95,3 +95,35 @@ class CrawlRequest(BaseModel):
     url: str
     depth: int = Field(default=0, le=10)
     max_pages: int = Field(default=50, le=1000)
+
+
+class WikiPageSummary(BaseModel):
+    """Summary of a wiki page for list endpoints."""
+
+    slug: str
+    title: str = ""
+    page_type: str = "unknown"
+    source_count: int = 0
+    created_at: str = ""
+
+
+class WikiCitation(BaseModel):
+    """A citation linking a wiki claim to a source location."""
+
+    citation_key: str
+    claim_type: str = "fact"
+    source_filename: str = ""
+    page_start: int = 0
+    page_end: int = 0
+    line_start: int = 0
+    line_end: int = 0
+    excerpt: str = ""
+
+
+class LintIssue(BaseModel):
+    """A single lint finding for a wiki page."""
+
+    wiki_source: str
+    citation_key: str = ""
+    status: str = "valid"
+    message: str = ""
