@@ -286,9 +286,11 @@ def _check_faithfulness(
     wiki_text: str,
     provider: LLMProvider,
     label: str,
+    config: Config | None = None,
 ) -> float:
     """Run the faithfulness check and return the score (0.0 on failure)."""
-    prompt = _FAITHFULNESS_PROMPT.format(chunks_text=chunks_text, wiki_text=wiki_text)
+    template = (config.wiki_faithfulness_prompt if config else "") or _FAITHFULNESS_PROMPT
+    prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     try:
         response = provider.chat(messages, stream=False)
@@ -413,7 +415,7 @@ def _generate_page(
         log.warning("No valid citations for %s, skipping", label)
         return None
 
-    score = _check_faithfulness(chunks_text, wiki_text, provider, label)
+    score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
     threshold = config.wiki_faithfulness_threshold
     subdir = page_type if score >= threshold else "drafts"
     if subdir == "drafts":
@@ -469,7 +471,8 @@ def generate_summary_page(
         return None
 
     chunks_text = _chunks_to_text(chunks)
-    prompt = _SUMMARY_PROMPT.format(source_name=source_name, chunks_text=chunks_text)
+    template = config.wiki_summary_prompt or _SUMMARY_PROMPT
+    prompt = template.format(source_name=source_name, chunks_text=chunks_text)
     slug = source_name.replace("/", "--").rsplit(".", 1)[0]
 
     source_path = config.documents_dir / source_name
@@ -574,7 +577,8 @@ def _generate_synthesis_page(
 
     chunks_text = _chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
-    prompt = _SYNTHESIS_PROMPT.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
+    template = config.wiki_synthesis_prompt or _SYNTHESIS_PROMPT
+    prompt = template.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
     slug = make_slug(topic)
 
     source_hashes: dict[str, str] = {}

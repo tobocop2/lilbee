@@ -239,6 +239,13 @@ class Config(BaseSettings):
     # 0.3 = 30% of lines changed triggers the drift guard.
     wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
 
+    # LLM prompt templates for wiki page generation. Override via env vars
+    # LILBEE_WIKI_SUMMARY_PROMPT, LILBEE_WIKI_FAITHFULNESS_PROMPT,
+    # LILBEE_WIKI_SYNTHESIS_PROMPT. Must contain the expected {placeholders}.
+    wiki_summary_prompt: str = ""
+    wiki_faithfulness_prompt: str = ""
+    wiki_synthesis_prompt: str = ""
+
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
     # results and expand queries. Requires spacy + networkx + graspologic-native.
