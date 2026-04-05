@@ -510,9 +510,7 @@ class CatalogScreen(Screen[None]):
                     )
                 else:
                     # Total unknown - just show MB downloaded
-                    self._safe_call(
-                        bar.update_task, task_id, 0, f"{mb_done:.0f} MB"
-                    )
+                    self._safe_call(bar.update_task, task_id, 0, f"{mb_done:.0f} MB")
 
             download_model(model, on_progress=on_progress)
             self._safe_call(bar.complete_task, task_id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import ClassVar
@@ -117,10 +118,8 @@ class LilbeeApp(App[None]):
 
         from lilbee.services import reset_services
 
-        try:
+        with contextlib.suppress(Exception):
             reset_services()
-        except Exception:
-            pass
         os._exit(1)
 
     def _switch_view(self, view_name: str) -> None:

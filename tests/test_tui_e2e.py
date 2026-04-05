@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible, Footer, Static
+from textual.widgets import Collapsible, Footer
 
 from lilbee.config import cfg
 
@@ -196,7 +196,6 @@ class TestModelSwitchSafety:
             bar._populating = False
 
             # Simulate model change
-            from textual.widgets import Select
 
             event = mock.MagicMock()
             event.value = "new-model.gguf"
@@ -313,7 +312,6 @@ class TestChatOnlyBanner:
 class TestDownloadProgress:
     def test_progress_poller_reports_file_size(self, tmp_path):
         """Progress poller must report bytes from .incomplete file."""
-        import threading
         import time
 
         from lilbee.catalog import _start_progress_poller
@@ -450,7 +448,9 @@ class TestTaskCenter:
 
             # Should have at least one collapsible
             collapsibles = app.screen.query(Collapsible)
-            assert len(collapsibles) >= 1, f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+            assert len(collapsibles) >= 1, (
+                f"Expected at least 1 Collapsible, got {len(collapsibles)}"
+            )
 
     async def test_task_center_renders_empty_state(self, _mock_resolve):
         """Task Center shows 'All quiet' when no tasks."""
@@ -468,10 +468,12 @@ class TestTaskCenter:
             # The task-list VerticalScroll should have children
             task_list = app.screen.query_one("#task-list")
             # Should have at least one child (the empty state Static)
-            assert len(task_list.children) >= 1, f"Expected at least 1 child, got {len(task_list.children)}"
+            assert len(task_list.children) >= 1, (
+                f"Expected at least 1 child, got {len(task_list.children)}"
+            )
 
 
-class TestDownloadProgress:
+class TestDownloadProgressCallback:
     @pytest.mark.slow
     def test_download_progress_callback_receives_cumulative_values(self, tmp_path):
         """Download Mistral and verify progress callbacks receive cumulative values."""

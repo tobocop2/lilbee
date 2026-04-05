@@ -131,11 +131,11 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
         """Download via catalog API with TUI-native progress (no Rich).
-        
+
         Runs in a worker thread to avoid blocking the UI. Progress is reported
         via callbacks rather than tqdm to avoid multiprocessing lock issues
         with Textual's worker threads.
-        
+
         Note: disable_progress_bars() is called in catalog.py during download.
         """
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
@@ -144,32 +144,33 @@ class SetupWizard(Screen[str | None]):
 
             last_update_time = 0
             last_pct = -1
-            
+
             def _on_progress(downloaded: int, total: int) -> None:
                 nonlocal last_update_time, last_pct
                 import time
+
                 current_time = time.time()
-                
+
                 # Throttle updates to every 100ms to avoid UI spam
                 if current_time - last_update_time < 0.1:
                     return
-                    
+
                 try:
                     mb_done = downloaded / (1024 * 1024)
-                    
+
                     if total > 0:
                         pct = min(int(downloaded * 100 / total), 100)
-                        
+
                         # Always update status with MB downloaded (more informative than %)
                         mb_total = total / (1024 * 1024)
                         last_update_time = current_time
-                        
+
                         # Update progress bar - but allow 0% to show if truly at start
                         # Only throttle if we're at same percentage AND > 0%
                         if pct == last_pct and pct > 0:
                             return
                         last_pct = pct
-                        
+
                         self.app.call_from_thread(self._update_progress, pct)
                         self.app.call_from_thread(
                             self._set_status,

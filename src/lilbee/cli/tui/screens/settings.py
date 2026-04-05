@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import fields as dc_fields
 from typing import ClassVar
 
 from textual.app import ComposeResult

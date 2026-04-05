@@ -559,7 +559,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, embed, vision = _classify_installed_models()
+            chat, embed, _vision = _classify_installed_models()
 
         assert "llama3:8b" in chat
         assert "nomic-embed-text:latest" in embed
@@ -579,7 +579,7 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, embed, vision = _classify_installed_models()
+            chat, _embed, _vision = _classify_installed_models()
 
         assert "custom-model.gguf" in chat
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Callable
+import contextlib
+from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -51,17 +52,13 @@ class TaskCenter(Screen[None]):
 
     def _on_queue_change(self) -> None:
         """Called when task queue changes - refresh the display."""
-        try:
+        with contextlib.suppress(Exception):
             self._refresh_tasks_safe()
-        except Exception:
-            pass
 
     def _refresh_tasks_safe(self) -> None:
         """Safely refresh tasks, catching any errors."""
-        try:
+        with contextlib.suppress(Exception):
             self._refresh_tasks()
-        except Exception:
-            pass
 
     def action_refresh_tasks(self) -> None:
         """Refresh the task list."""
