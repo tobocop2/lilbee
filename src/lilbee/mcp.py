@@ -246,6 +246,83 @@ def lilbee_reset() -> dict:
     return perform_reset().model_dump()
 
 
+@mcp.tool()
+def lilbee_wiki_lint(wiki_source: str = "") -> dict:
+    """Lint wiki pages for citation staleness, missing sources, and unmarked claims.
+
+    If wiki_source is provided, lint only that page. Otherwise, lint all wiki pages.
+
+    Args:
+        wiki_source: Path like "wiki/summaries/doc.md". Empty = lint all.
+    """
+    from lilbee.services import get_services
+    from lilbee.wiki_lint import lint_all, lint_wiki_page
+
+    store = get_services().store
+    if wiki_source:
+        issues = lint_wiki_page(wiki_source, store)
+    else:
+        report = lint_all(store)
+        issues = report.issues
+    return {
+        "command": "wiki_lint",
+        "issues": [
+            {
+                "wiki_source": i.wiki_source,
+                "severity": i.severity.value,
+                "message": i.message,
+            }
+            for i in issues
+        ],
+        "total": len(issues),
+    }
+
+
+@mcp.tool()
+def lilbee_wiki_citations(wiki_source: str) -> dict:
+    """Get all citations for a wiki page.
+
+    Args:
+        wiki_source: Wiki page path, e.g. "wiki/summaries/doc.md".
+    """
+    from lilbee.services import get_services
+
+    records = get_services().store.get_citations_for_wiki(wiki_source)
+    return {
+        "command": "wiki_citations",
+        "wiki_source": wiki_source,
+        "citations": [dict(r) for r in records],
+        "total": len(records),
+    }
+
+
+@mcp.tool()
+def lilbee_wiki_status() -> dict:
+    """Show wiki layer status: page counts, recent lint issues."""
+    from lilbee.wiki_lint import lint_all
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    if not wiki_root.exists():
+        return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
+
+    summaries = (
+        list((wiki_root / "summaries").rglob("*.md")) if (wiki_root / "summaries").exists() else []
+    )
+    drafts = list((wiki_root / "drafts").rglob("*.md")) if (wiki_root / "drafts").exists() else []
+
+    from lilbee.services import get_services
+
+    report = lint_all(get_services().store)
+    return {
+        "wiki_enabled": cfg.wiki,
+        "summaries": len(summaries),
+        "drafts": len(drafts),
+        "pages": len(summaries) + len(drafts),
+        "lint_errors": report.error_count,
+        "lint_warnings": report.warning_count,
+    }
+
+
 def clean(result: SearchChunk) -> dict[str, object]:
     """Convert SearchChunk to a JSON-friendly dict."""
     return result.model_dump(exclude={"vector"}, exclude_none=True)
