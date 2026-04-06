@@ -98,15 +98,16 @@ class ChatScreen(Screen[None]):
         self._input_history: list[str] = []
         self._history_index: int = -1
 
-    def _get_task_bar(self) -> TaskBar:
-        """Get the app-level TaskBar (created by LilbeeApp)."""
+    @property
+    def _task_bar(self) -> TaskBar:
+        """The app-level TaskBar (created by LilbeeApp)."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
 
         bar = getattr(self.app, "task_bar", None)
-        if not isinstance(bar, _TaskBar):
-            msg_text = "App does not have a TaskBar"
-            raise RuntimeError(msg_text)
-        return bar
+        if isinstance(bar, _TaskBar):
+            return bar
+        msg_text = "App does not have a TaskBar"
+        raise RuntimeError(msg_text)
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -286,7 +287,7 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Add {path.name}", "add")
         task_bar.queue.advance("add")
         self._run_add_background(path, task_id)
@@ -295,7 +296,7 @@ class ChatScreen(Screen[None]):
     def _run_add_background(self, path: Path, task_id: str) -> None:
         """Copy files and sync in a background thread."""
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.helpers import copy_files
@@ -357,7 +358,7 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Crawl {url}", "crawl")
         task_bar.queue.advance("crawl")
         self._run_crawl_background(url, depth, max_pages, task_id)
@@ -383,7 +384,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
@@ -551,10 +552,10 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            setattr(cfg, defn.cfg_attr, parsed)
+            setattr(cfg, key, parsed)
             persisted = str(parsed) if parsed is not None else ""
-            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
-            if defn.cfg_attr == "llm_provider":  # pragma: no cover
+            settings.set_value(cfg.data_root, key, persisted)
+            if key == "llm_provider":  # pragma: no cover
                 from lilbee.services import reset_services
 
                 reset_services()
@@ -720,7 +721,7 @@ class ChatScreen(Screen[None]):
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task("Sync documents", "sync")
         task_bar.queue.advance("sync")
         self._run_sync_worker(task_id)
@@ -738,7 +739,7 @@ class ChatScreen(Screen[None]):
         import asyncio
 
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         try:
             from lilbee.ingest import sync
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.screen import Screen
 from textual.signal import Signal
 
 from lilbee.cli.tui import messages as msg
@@ -36,23 +38,37 @@ DARK_THEMES = (
     "textual-dark",
 )
 
-MODES: dict[str, str] = {
-    "Chat": "lilbee.cli.tui.screens.chat.ChatScreen",
-    "Catalog": "lilbee.cli.tui.screens.catalog.CatalogScreen",
-    "Status": "lilbee.cli.tui.screens.status.StatusScreen",
-    "Settings": "lilbee.cli.tui.screens.settings.SettingsScreen",
-    "Tasks": "lilbee.cli.tui.screens.task_center.TaskCenter",
+
+def _make_catalog() -> Screen:
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    return CatalogScreen()
+
+
+def _make_status() -> Screen:
+    from lilbee.cli.tui.screens.status import StatusScreen
+
+    return StatusScreen()
+
+
+def _make_settings() -> Screen:
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    return SettingsScreen()
+
+
+def _make_tasks() -> Screen:
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    return TaskCenter()
+
+
+VIEWS: dict[str, Callable[[], Screen]] = {
+    "Catalog": _make_catalog,
+    "Status": _make_status,
+    "Settings": _make_settings,
+    "Tasks": _make_tasks,
 }
-
-
-def _load_screen(dotted_path: str) -> type:
-    """Import a screen class from a dotted module path."""
-    module_path, cls_name = dotted_path.rsplit(".", 1)
-    import importlib
-
-    mod = importlib.import_module(module_path)
-    cls: type = getattr(mod, cls_name)
-    return cls
 
 
 class LilbeeApp(App[None]):
@@ -149,19 +165,17 @@ class LilbeeApp(App[None]):
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view using mode-based navigation."""
-        dotted = MODES.get(view_name)
-        if dotted is None:
-            return
-
+        """Switch to a named view via lazy screen factories."""
         if view_name == "Chat":
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
                 self.switch_screen(ChatScreen(auto_sync=False))
         else:
-            screen_cls = _load_screen(dotted)
-            self.switch_screen(screen_cls())
+            factory = VIEWS.get(view_name)
+            if factory is None:
+                return
+            self.switch_screen(factory())
 
         self.active_view = view_name
         self.call_after_refresh(self._update_nav, view_name)

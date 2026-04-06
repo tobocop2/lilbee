@@ -471,7 +471,7 @@ async def test_settings_select_save():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
-        defn = SettingDef(cfg_attr="system_prompt", type=str, nullable=False, group="Generation")
+        defn = SettingDef(type=str, nullable=False, group="Generation")
         event = MagicMock()
         event.select.name = "test_select"
         event.value = "chosen"

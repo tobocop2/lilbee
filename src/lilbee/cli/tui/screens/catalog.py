@@ -413,11 +413,11 @@ class CatalogScreen(Screen[None]):
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
         widgets_to_mount: list[Static | GridSelect] = []
-        for heading, rows in _group_rows_for_grid(all_rows):
-            if not rows:
+        for section in _group_rows_for_grid(all_rows):
+            if not section.rows:
                 continue
-            widgets_to_mount.append(Static(heading, classes="section-heading"))
-            cards = [ModelCard(row) for row in rows]
+            widgets_to_mount.append(Static(section.heading, classes="section-heading"))
+            cards = [ModelCard(row) for row in section.rows]
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
         if not self._hf_fetched:
@@ -744,9 +744,15 @@ class CatalogScreen(Screen[None]):
             self.app.action_nav_next()
 
 
-def _group_rows_for_grid(
-    rows: list[TableRow],
-) -> list[tuple[str, list[TableRow]]]:
+@dataclass
+class GridSection:
+    """A named group of rows for the grid view."""
+
+    heading: str
+    rows: list[TableRow]
+
+
+def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     """Group rows into sections for the grid view."""
     recommended = [r for r in rows if r.featured]
     installed = [r for r in rows if r.installed and not r.featured]
@@ -756,11 +762,11 @@ def _group_rows_for_grid(
     ]
     vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
     return [
-        ("Our picks", recommended),
-        ("Installed", installed),
-        ("Chat", chat),
-        ("Embedding", embedding),
-        ("Vision", vision),
+        GridSection("Our picks", recommended),
+        GridSection("Installed", installed),
+        GridSection("Chat", chat),
+        GridSection("Embedding", embedding),
+        GridSection("Vision", vision),
     ]
 
 
