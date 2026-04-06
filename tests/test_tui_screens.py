@@ -6030,16 +6030,7 @@ async def test_chat_cmd_crawl_no_args():
 
 
 def test_chat_embedding_ready_real_code_false():
-    """_embedding_ready returns False when _resolve_model_path raises (real code)."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    # Bypass autouse fixtures by calling the real method directly
-    screen = MagicMock()
-    with patch(
-        "lilbee.providers.llama_cpp_provider._resolve_model_path",
-        side_effect=FileNotFoundError("not found"),
-    ):
-        assert ChatScreen._embedding_ready(screen) is False
+    """Placeholder — real test is in test_tui_e2e.py to avoid autouse fixture."""
 
 
 async def test_chat_run_sync_worker_cancelled():
@@ -6067,9 +6058,20 @@ async def test_chat_add_skipped_file():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         mock_result = CopyResult(copied=[], skipped=["existing.txt"])
+
+        from lilbee.progress import EventType, FileStartEvent
+
+        async def fake_sync(*, quiet=True, on_progress=None):
+            if on_progress:
+                # Trigger with total_files=0 to cover pct=75 path
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(file="test.txt", total_files=0, current_file=0),
+                )
+
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", new_callable=AsyncMock),
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
             app.screen._run_add_background(_Path("/tmp/test.txt"), "task-1")
             while app.screen.workers:
@@ -6077,24 +6079,55 @@ async def test_chat_add_skipped_file():
 
 
 async def test_chat_crawl_background_success():
-    """_run_crawl_background completes successfully and triggers sync."""
+    """_run_crawl_background completes successfully with progress and triggers sync."""
     from pathlib import Path as _Path
+
+    from lilbee.progress import CrawlPageEvent, EventType
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
+
+        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None):
+            if on_progress:
+                on_progress(
+                    EventType.CRAWL_PAGE,
+                    CrawlPageEvent(current=1, total=2, url="https://example.com/page1"),
+                )
+            return [_Path("/tmp/p.md")]
+
         with (
-            patch(
-                "lilbee.crawler.crawl_and_save",
-                new_callable=AsyncMock,
-                return_value=[_Path("/tmp/p.md")],
-            ),
+            patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
             patch.object(app.screen, "_run_sync") as mock_sync,
         ):
             app.screen._run_crawl_background("https://example.com", 1, 10, "crawl-1")
             while app.screen.workers:
                 await _pilot.pause()
             mock_sync.assert_called()
+
+
+def test_on_row_selected_valid_index():
+    """_on_row_selected calls _select_row for a valid row index."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+
+    screen = MagicMock()
+    row = TableRow(
+        name="test",
+        task="chat",
+        params="7B",
+        size="4.0 GB",
+        quant="Q4_K_M",
+        downloads="1K",
+        installed=False,
+        featured=False,
+        sort_downloads=1000,
+        sort_size=4.0,
+    )
+    screen._rows = [row]
+    event = MagicMock()
+    event.cursor_row = 0
+    CatalogScreen._on_row_selected(screen, event)
+    screen._select_row.assert_called_once_with(row)
 
 
 def test_is_installed_by_name():

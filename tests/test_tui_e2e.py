@@ -2331,3 +2331,19 @@ class TestSetupWizardGrid:
                     await pilot.pause()
                     await pilot.pause()
                     assert not isinstance(app.screen, SetupWizard)
+
+
+class TestChatEmbeddingReadyCoverage:
+    """Cover _embedding_ready exception path (lines 172-173 in chat.py)."""
+
+    def test_embedding_ready_returns_false_on_resolve_error(self):
+        """_embedding_ready returns False when _resolve_model_path raises."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        # Create an uninitialized ChatScreen and call _embedding_ready directly
+        screen = ChatScreen.__new__(ChatScreen)
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            side_effect=FileNotFoundError("not found"),
+        ):
+            assert ChatScreen._embedding_ready(screen) is False
