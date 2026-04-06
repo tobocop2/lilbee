@@ -48,10 +48,9 @@ class NavBar(Widget):
     def watch_mode_text(self, value: str) -> None:
         self._refresh_display()
 
-    app: LilbeeApp  # type: ignore[assignment]  # narrowed from App
-
     def on_mount(self) -> None:
-        self.active_view = self.app._active_view
+        if hasattr(self.app, "_active_view"):
+            self.active_view = self.app._active_view  # type: ignore[union-attr]
         self._refresh_display()
 
     def _refresh_display(self) -> None:
@@ -77,8 +76,8 @@ class NavBar(Widget):
     def on_click(self, event: Click) -> None:
         """Switch view when a view name in the bar is clicked."""
         view = _view_at_x(event.x)
-        if view is not None:
-            self.app._switch_view(view)
+        if view is not None and hasattr(self.app, "_switch_view"):
+            self.app._switch_view(view)  # type: ignore[union-attr]
 
 
 def _view_regions() -> list[tuple[int, int, str]]:
