@@ -45,11 +45,6 @@ def _make_model(
     )
 
 
-# ---------------------------------------------------------------------------
-# message.py
-# ---------------------------------------------------------------------------
-
-
 class _MsgApp(App):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -176,11 +171,6 @@ class TestAssistantMessageAsync:
             assert am._content_widget is None
 
 
-# ---------------------------------------------------------------------------
-# help_modal.py
-# ---------------------------------------------------------------------------
-
-
 class _HelpApp(App):
     def compose(self) -> ComposeResult:
         yield Static("bg")
@@ -212,11 +202,6 @@ class TestHelpModal:
             app.screen.action_close()
             await pilot.pause()
             assert len(app.screen_stack) == 1
-
-
-# ---------------------------------------------------------------------------
-# task_bar.py
-# ---------------------------------------------------------------------------
 
 
 class _TaskBarApp(App):
@@ -338,20 +323,15 @@ class TestTaskBar:
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
-        """TaskBar is accessible via app._task_bar from other screens."""
+        """TaskBar is accessible via app.task_bar from other screens."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            app._task_bar = bar  # type: ignore[attr-defined]
-            assert getattr(app, "_task_bar", None) is bar
-
-
-# ---------------------------------------------------------------------------
-# model_bar.py
-# ---------------------------------------------------------------------------
+            app.task_bar = bar
+            assert app.task_bar is bar
 
 
 class _ModelBarApp(App):
@@ -564,12 +544,11 @@ class TestClassifyInstalledModels:
         assert "llama3:8b" in chat
         assert "nomic-embed-text:latest" in embed
 
-    def test_legacy_gguf_added_as_chat(self, tmp_path) -> None:
+    def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        (cfg.models_dir / "custom-model.gguf").write_text("fake")
 
         with (
             mock.patch("lilbee.registry.ModelRegistry") as MockRegistry,
@@ -579,14 +558,11 @@ class TestClassifyInstalledModels:
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
-            chat, _embed, _vision = _classify_installed_models()
+            chat, embed, vision = _classify_installed_models()
 
-        assert "custom-model.gguf" in chat
-
-
-# ---------------------------------------------------------------------------
-# suggester.py
-# ---------------------------------------------------------------------------
+        assert chat == []
+        assert embed == []
+        assert vision == []
 
 
 class TestSlashSuggester:
@@ -739,11 +715,6 @@ class TestSlashSuggester:
         s = SlashSuggester(use_cache=False)
         with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
             assert s._get_document_names() == []
-
-
-# ---------------------------------------------------------------------------
-# autocomplete.py — pure functions
-# ---------------------------------------------------------------------------
 
 
 class TestGetCompletions:
@@ -965,11 +936,6 @@ class TestPathOptions:
         assert len(r) == 20
 
 
-# ---------------------------------------------------------------------------
-# autocomplete.py — CompletionOverlay widget
-# ---------------------------------------------------------------------------
-
-
 class _OverlayApp(App):
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1067,11 +1033,6 @@ class TestCompletionOverlay:
             assert len(overlay._options) == _MAX_VISIBLE
 
 
-# ---------------------------------------------------------------------------
-# task_queue.py (unit tests for queue logic)
-# ---------------------------------------------------------------------------
-
-
 class TestTaskQueue:
     def test_enqueue_and_advance(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
@@ -1134,6 +1095,21 @@ class TestTaskQueue:
         assert task.name == "B"
         assert len(q.active_tasks) == 2
 
+    def test_get_task_returns_task(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "A", "download")
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.name == "A"
+
+    def test_get_task_returns_none_for_unknown(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        assert q.get_task("nonexistent") is None
+
     def test_fail_task(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
@@ -1141,7 +1117,7 @@ class TestTaskQueue:
         tid = q.enqueue(lambda: None, "A", "download")
         q.advance()
         q.fail_task(tid, "oops")
-        task = q._tasks.get(tid)
+        task = q.get_task(tid)
         assert task is not None
         assert task.status == TaskStatus.FAILED
 
@@ -1306,11 +1282,6 @@ class TestTaskQueue:
         assert q.active_tasks[0].task_id == t2
 
 
-# ---------------------------------------------------------------------------
-# CompletionOverlay.cycle_prev
-# ---------------------------------------------------------------------------
-
-
 class TestCompletionOverlayCyclePrev:
     async def test_cycle_prev_wraps(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -1331,11 +1302,6 @@ class TestCompletionOverlayCyclePrev:
             await pilot.pause()
             overlay = app.query_one(CompletionOverlay)
             assert overlay.cycle_prev() is None
-
-
-# ---------------------------------------------------------------------------
-# setup_modal.py
-# ---------------------------------------------------------------------------
 
 
 class _SetupApp(App):
@@ -1375,20 +1341,21 @@ class TestSetupWizard:
     def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-        chat, embed = _scan_installed_models(tmp_path / "nonexistent")
+        cfg.models_dir = tmp_path / "nonexistent"
+        chat, embed = _scan_installed_models()
         assert chat == []
         assert embed == []
 
-    def test_scan_installed_models_splits_by_name(self, tmp_path) -> None:
+    def test_scan_installed_models_uses_registry(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _scan_installed_models
 
-        (tmp_path / "chat-model.gguf").touch()
-        (tmp_path / "nomic-embed-text.gguf").touch()
-        chat, embed = _scan_installed_models(tmp_path)
-        assert len(chat) == 1
-        assert len(embed) == 1
-        assert "chat" in chat[0].name.lower()
-        assert "embed" in embed[0].name.lower()
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        with mock.patch("lilbee.registry.ModelRegistry") as MockRegistry:
+            MockRegistry.return_value.list_installed.return_value = []
+            chat, embed = _scan_installed_models()
+        assert chat == []
+        assert embed == []
 
     def test_installed_row_compose(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _InstalledRow
@@ -1406,11 +1373,6 @@ class TestSetupWizard:
         row = _CatalogRow(model)
         children = list(row.compose())
         assert len(children) == 1
-
-
-# ---------------------------------------------------------------------------
-# catalog.py screen — HF grouping, empty tabs, size grouping
-# ---------------------------------------------------------------------------
 
 
 class TestAllTasksFetched:
@@ -1438,11 +1400,6 @@ class TestMatchesSearchWidget:
         assert _matches_search(row, "llama") is False
 
 
-# ---------------------------------------------------------------------------
-# command_registry.py — /login command
-# ---------------------------------------------------------------------------
-
-
 class TestLoginCommandRegistered:
     def test_login_in_registry(self) -> None:
         from lilbee.cli.tui.command_registry import COMMANDS, build_dispatch_dict
@@ -1451,36 +1408,6 @@ class TestLoginCommandRegistered:
         assert "/login" in names
         dispatch = build_dispatch_dict()
         assert dispatch["/login"] == "_cmd_login"
-
-
-# ---------------------------------------------------------------------------
-# settings.py — HF token field
-# ---------------------------------------------------------------------------
-
-
-class TestSettingsHfToken:
-    def test_get_hf_token_display_not_set(self, monkeypatch) -> None:
-        from lilbee.cli.tui.screens.settings import _get_hf_token_display
-
-        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
-        monkeypatch.delenv("HF_TOKEN", raising=False)
-        # Without any token set, should show "not set"
-        result = _get_hf_token_display()
-        assert isinstance(result, str)
-
-    def test_get_hf_token_display_from_env(self, monkeypatch) -> None:
-        from lilbee.cli.tui.screens.settings import _get_hf_token_display
-
-        monkeypatch.setenv("HF_TOKEN", "hf_abcdefghijklmnop")
-        result = _get_hf_token_display()
-        assert result.startswith("hf_a")
-        assert result.endswith("mnop")
-        assert "..." in result
-
-
-# ---------------------------------------------------------------------------
-# __init__.py — Ctrl-C clean shutdown
-# ---------------------------------------------------------------------------
 
 
 class TestRunTuiKeyboardInterrupt:
@@ -1507,11 +1434,6 @@ class TestRunTuiKeyboardInterrupt:
                 run_tui()
                 mock_shutdown.assert_called_once()
                 mock_reset.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# nav_bar.py — global docked navigation bar
-# ---------------------------------------------------------------------------
 
 
 class _NavBarApp(App):
@@ -1697,43 +1619,40 @@ class TestNavBarClickSupport:
         from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
 
         app = _NavBarApp()
-        app._switch_view = mock.Mock()
+        app.switch_view = mock.Mock()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
             regions = _view_regions()
             models_x = regions[1][0] + 1
-            bar.on_click(mock.Mock(x=models_x, y=0))
-            app._switch_view.assert_called_once_with("Models")
+            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
+                bar.on_click(mock.Mock(x=models_x, y=0))
+            app.switch_view.assert_called_once_with("Models")
 
     async def test_click_outside_views_does_nothing(self) -> None:
         from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
 
         app = _NavBarApp()
-        app._switch_view = mock.Mock()
+        app.switch_view = mock.Mock()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
             regions = _view_regions()
             past_end = regions[-1][1] + 10
-            bar.on_click(mock.Mock(x=past_end, y=0))
-            app._switch_view.assert_not_called()
+            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
+                bar.on_click(mock.Mock(x=past_end, y=0))
+            app.switch_view.assert_not_called()
 
-    async def test_click_without_switch_view_is_safe(self) -> None:
-        """Clicking on app without _switch_view does not crash."""
+    async def test_click_on_non_lilbee_app_is_safe(self) -> None:
+        """Clicking on app that is not LilbeeApp does not crash."""
         from lilbee.cli.tui.widgets.nav_bar import NavBar
 
         app = _NavBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(NavBar)
-            # App has no _switch_view -- should not raise
+            # App is not LilbeeApp -- isinstance check skips switch_view
             bar.on_click(mock.Mock(x=0, y=0))
-
-
-# ---------------------------------------------------------------------------
-# app.py — global NavBar composition and key bindings
-# ---------------------------------------------------------------------------
 
 
 class TestLilbeeAppGlobalNavBar:
@@ -1751,7 +1670,7 @@ class TestLilbeeAppGlobalNavBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav is not None
 
     async def test_nav_bar_default_is_chat(self) -> None:
@@ -1767,5 +1686,54 @@ class TestLilbeeAppGlobalNavBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav.active_view == "Chat"
+
+
+class TestPill:
+    def test_pill_from_string(self) -> None:
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("chat", "$primary", "$text")
+        text = str(result)
+        assert "chat" in text
+        assert "\u258c" in text  # left half-block
+        assert "\u2590" in text  # right half-block
+
+    def test_pill_from_content(self) -> None:
+        from textual.content import Content
+
+        from lilbee.cli.tui.pill import pill
+
+        content_input = Content("embed")
+        result = pill(content_input, "$secondary", "$text")
+        assert "embed" in str(result)
+
+    def test_pill_empty_string(self) -> None:
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("", "$primary", "$text")
+        text = str(result)
+        assert "\u258c" in text
+        assert "\u2590" in text
+
+    def test_pill_returns_content(self) -> None:
+        from textual.content import Content
+
+        from lilbee.cli.tui.pill import pill
+
+        result = pill("ok", "$success", "$text")
+        assert isinstance(result, Content)
+
+
+class TestEvents:
+    def test_model_changed_is_message(self) -> None:
+        from textual.message import Message
+
+        from lilbee.cli.tui.events import ModelChanged
+        from lilbee.models import ModelTask
+
+        msg = ModelChanged(ModelTask.CHAT, "qwen3:8b")
+        assert isinstance(msg, Message)
+        assert msg.role == ModelTask.CHAT
+        assert msg.name == "qwen3:8b"

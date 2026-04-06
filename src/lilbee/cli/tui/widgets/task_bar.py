@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label, ProgressBar, Static
 
-from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus
+from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class TaskBar(Static):
 
     def complete_task(self, task_id: str) -> None:
         """Mark task done, show brief 'done' flash, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.complete_task(task_id)
         self._refresh_display()
@@ -89,7 +89,7 @@ class TaskBar(Static):
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark task failed, show briefly, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.fail_task(task_id, detail)
         self._refresh_display()
@@ -97,7 +97,7 @@ class TaskBar(Static):
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel and remove a task."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.cancel(task_id)
         self._queue.remove_task(task_id)
@@ -189,11 +189,4 @@ class TaskBar(Static):
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:
-        icons = {
-            TaskStatus.ACTIVE: "\u25b8",
-            TaskStatus.DONE: "\u2713",
-            TaskStatus.FAILED: "\u2717",
-            TaskStatus.CANCELLED: "\u2212",
-            TaskStatus.QUEUED: "\u2022",
-        }
-        return icons.get(status, "\u25b8")
+        return STATUS_ICONS.get(status, "\u25b8")

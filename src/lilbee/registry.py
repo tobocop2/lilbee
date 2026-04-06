@@ -30,8 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from lilbee.models import ModelTask
 from lilbee.security import validate_path_within
-from lilbee.types import TASK_CHAT
 
 log = logging.getLogger(__name__)
 
@@ -323,4 +323,4 @@ def _match_catalog_entry(filename: str) -> CatalogMatch:
             return CatalogMatch(entry.name, entry.task, entry.hf_repo)
     # Fallback: strip extension and quant suffix for a reasonable name
     stem = filename.rsplit(".", 1)[0]
-    return CatalogMatch(stem, TASK_CHAT, "")
+    return CatalogMatch(stem, ModelTask.CHAT, "")

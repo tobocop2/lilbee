@@ -558,7 +558,7 @@ class TestCatalogKeybindings:
                 screen = CatalogScreen()
                 app.push_screen(screen)
                 await pilot.pause()
-                screen.action_pop_screen()
+                screen.action_go_back()
                 await pilot.pause()
                 assert not isinstance(app.screen, CatalogScreen)
 
@@ -610,7 +610,7 @@ class TestStatusKeybindings:
                 screen = StatusScreen()
                 app.push_screen(screen)
                 await pilot.pause()
-                screen.action_pop_screen()
+                screen.action_go_back()
                 await pilot.pause()
                 assert not isinstance(app.screen, StatusScreen)
 
@@ -640,11 +640,11 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.action_pop_screen()
+            screen.action_go_back()
             await pilot.pause()
             assert not isinstance(app.screen, SettingsScreen)
 
-    async def test_settings_j_k_navigates_table(self) -> None:
+    async def test_settings_j_k_scrolls(self) -> None:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
         app = _FullApp()
@@ -652,8 +652,8 @@ class TestSettingsKeybindings:
             screen = SettingsScreen()
             app.push_screen(screen)
             await pilot.pause()
-            screen.action_cursor_down()
-            screen.action_cursor_up()
+            screen.action_scroll_down()
+            screen.action_scroll_up()
 
 
 class TestHelpModal:
@@ -884,16 +884,7 @@ class TestThemeCommand:
             app.screen._handle_slash("/theme")
 
 
-# ---------------------------------------------------------------------------
-# Integration tests for real download progress (no mocks)
-# ---------------------------------------------------------------------------
-
-
-import pytest  # noqa: E402
-
-pytestmark = pytest.mark.slow
-
-
+@pytest.mark.slow
 class TestRealDownloadProgress:
     """Integration tests verifying real download progress works from HuggingFace.
 
@@ -1092,8 +1083,6 @@ class TestRealDownloadProgress:
                 # Set up our own progress tracking
                 def on_progress(downloaded, total):
                     progress_updates.append((downloaded, total))
-
-                # Patch download_model to use our callback
 
                 original_download(model)
 

@@ -353,6 +353,11 @@ class Config(BaseSettings):
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
+    @property
+    def model_defaults(self) -> Any:
+        """Per-model generation defaults (read-only). Set via apply_model_defaults()."""
+        return self._model_defaults
+
     def apply_model_defaults(self, defaults: Any) -> None:
         """Store per-model generation defaults for 3-layer merge."""
         object.__setattr__(self, "_model_defaults", defaults)

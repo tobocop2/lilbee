@@ -495,14 +495,14 @@ class TestListModels:
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
-        mock_list.return_value = ["qwen3:8b"]
+        mock_list.return_value = ["Qwen3 8B"]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
-        qwen_entry = next(m for m in catalog if m.name == "qwen3:8b")
+        qwen_entry = next(m for m in catalog if m.name == "Qwen3 8B")
         assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if m.name == "mistral:7b")
+        mistral_entry = next(m for m in catalog if m.name == "Mistral 7B Instruct")
         assert mistral_entry.installed is False
 
 

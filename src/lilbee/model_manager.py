@@ -9,8 +9,8 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.models import ModelTask
 from lilbee.security import validate_path_within
-from lilbee.types import TASK_CHAT, TASK_EMBEDDING, TASK_VISION
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class ModelManager:
         return self._list_litellm()
 
     def _list_native(self) -> list[str]:
-        """List native models from registry."""
+        """List native models from the registry only."""
         return sorted(f"{m.name}:{m.tag}" for m in self._registry.list_installed())
 
     def _list_litellm(self) -> list[str]:
@@ -201,7 +201,7 @@ class RemoteModel:
     """A model from the litellm backend with inferred task classification."""
 
     name: str
-    task: str  # TaskType value: "chat", "embedding", or "vision"
+    task: str  # "chat", "embedding", "vision"
     family: str
     parameter_size: str
     provider: str = "Remote"  # "Ollama", "OpenAI", "Anthropic", or "Remote"
@@ -228,11 +228,11 @@ def _classify_remote_task(name: str, family: str) -> str:
     """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
-        return TASK_EMBEDDING
+        return ModelTask.EMBEDDING
     name_lower = name.lower()
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
-        return TASK_VISION
-    return TASK_CHAT
+        return ModelTask.VISION
+    return ModelTask.CHAT
 
 
 def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
@@ -266,7 +266,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
 
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the litellm backend."""
-    return [m.name for m in classify_remote_models(base_url) if m.task == TASK_EMBEDDING]
+    return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
 
 
 _manager: ModelManager | None = None

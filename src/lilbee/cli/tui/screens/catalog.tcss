@@ -1,0 +1,47 @@
+/* Catalog screen — grid and list views */
+
+#catalog-grid {
+    height: 1fr;
+    overflow-y: auto;
+    padding: 0 1;
+}
+
+#catalog-table {
+    height: 1fr;
+}
+
+#sort-label {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#catalog-search {
+    dock: top;
+    margin: 0 1;
+}
+
+#model-detail {
+    height: 6;
+    padding: 1;
+    border-top: solid $surface-lighten-2;
+}
+
+.section-heading {
+    text-style: bold underline;
+    color: $text-muted;
+    padding: 1 0 0 2;
+}
+
+/* View toggle: hide inactive view */
+CatalogScreen.-grid-view #catalog-table { display: none; }
+CatalogScreen.-grid-view #sort-label { display: none; }
+CatalogScreen.-grid-view #model-detail { display: none; }
+CatalogScreen.-list-view #catalog-grid { display: none; }
+
+GridSelect {
+    height: auto;
+    padding: 0;
+    margin: 0 1;
+    grid-gutter: 0;
+}

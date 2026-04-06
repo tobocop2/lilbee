@@ -26,6 +26,15 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+STATUS_ICONS: dict[TaskStatus, str] = {
+    TaskStatus.QUEUED: "\u23f3",
+    TaskStatus.ACTIVE: "\u25b6",
+    TaskStatus.DONE: "\u2713",
+    TaskStatus.FAILED: "\u2717",
+    TaskStatus.CANCELLED: "\u2298",
+}
+
+
 @dataclass
 class Task:
     """A single unit of work in the queue."""
@@ -115,6 +124,11 @@ class TaskQueue:
             has_active = len(self._active_ids) > 0
             has_queued = any(len(q) > 0 for q in self._queues.values())
             return not has_active and not has_queued
+
+    def get_task(self, task_id: str) -> Task | None:
+        """Look up a task by ID. Returns None if not found."""
+        with self._lock:
+            return self._tasks.get(task_id)
 
     def enqueue(self, fn: Callable[[], None], name: str, task_type: str) -> str:
         """Add a task to the per-type queue. Returns a task_id."""

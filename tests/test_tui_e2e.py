@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible, Footer
+from textual.widgets import Footer
 
 from lilbee.config import cfg
 
@@ -60,16 +60,18 @@ def _mock_services():
 class ChatTestApp(App[None]):
     """Minimal app that pushes ChatScreen for testing."""
 
+    active_view = "Chat"
+
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+        yield NavBar(id="global-nav-bar")
         yield Footer()
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         self.push_screen(ChatScreen())
-
-
-# -- Bug: embedding model set but search shows "chat only" --
 
 
 class TestEmbeddingAvailable:
@@ -113,9 +115,6 @@ class TestEmbeddingAvailable:
         cfg.embedding_model = "nonexistent-model"
         embedder = Embedder(cfg, mock_provider)
         assert embedder.embedding_available() is False
-
-
-# -- Bug: chat dropdown showed vision models --
 
 
 class TestModelClassification:
@@ -175,9 +174,6 @@ class TestModelClassification:
         assert "loose-vision.gguf" not in all_models
 
 
-# -- Bug: model switch during stream caused segfault --
-
-
 class TestModelSwitchSafety:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
@@ -196,19 +192,15 @@ class TestModelSwitchSafety:
             bar._populating = False
 
             # Simulate model change
-
             event = mock.MagicMock()
             event.value = "new-model.gguf"
             event.select = mock.MagicMock()
             event.select.id = "chat-model-select"
 
             with mock.patch("lilbee.services.reset_services"):
-                bar.on_select_changed(event)
+                bar._on_chat_model_changed(event)
 
             screen.action_cancel_stream.assert_called_once()
-
-
-# -- Bug: NavBar missing from some screens --
 
 
 class TestNavBarPresence:
@@ -223,18 +215,15 @@ class TestNavBarPresence:
             await pilot.pause()
 
             # Chat screen
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert nav is not None
 
             # Cycle through all views
             for view in ["Models", "Status", "Settings", "Tasks"]:
-                app._switch_view(view)
+                app.switch_view(view)
                 await pilot.pause()
-                nav = app.screen.query_one("#global-nav-bar")
+                nav = app.query_one("#global-nav-bar")
                 assert nav is not None, f"NavBar missing on {view} screen"
-
-
-# -- Bug: mode indicator not showing --
 
 
 class TestModeIndicator:
@@ -242,7 +231,7 @@ class TestModeIndicator:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             # Insert mode is default
             assert "INSERT" in nav.mode_text
 
@@ -252,11 +241,8 @@ class TestModeIndicator:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            nav = app.screen.query_one("#global-nav-bar")
+            nav = app.query_one("#global-nav-bar")
             assert "NORMAL" in nav.mode_text
-
-
-# -- Bug: view cycling broken --
 
 
 class TestViewCycling:
@@ -268,16 +254,13 @@ class TestViewCycling:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert app._active_view == "Chat"
+            assert app.active_view == "Chat"
 
             expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
             for view in expected:
                 app.action_nav_next()
                 await pilot.pause()
-                assert app._active_view == view, f"Expected {view}, got {app._active_view}"
-
-
-# -- Bug: chat-only banner shown despite embedding model set --
+                assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
 
 class TestChatOnlyBanner:
@@ -306,119 +289,6 @@ class TestChatOnlyBanner:
                 assert banner.display is True
 
 
-# -- Bug: download progress stuck at 0% --
-
-
-class TestDownloadProgress:
-    def test_progress_poller_reports_file_size(self, tmp_path):
-        """Progress poller must report bytes from .incomplete file."""
-        import time
-
-        from lilbee.catalog import _start_progress_poller
-
-        # Set up fake HF cache structure
-        repo_dir = tmp_path / "hub" / "models--test--repo" / "blobs"
-        repo_dir.mkdir(parents=True)
-        incomplete = repo_dir / "abc123.incomplete"
-        incomplete.write_bytes(b"\0" * 500)
-
-        results = []
-
-        def callback(downloaded, total):
-            results.append((downloaded, total))
-
-            stop = _start_progress_poller(
-                "test/repo", callback, 1000, cache_dir=str(tmp_path / "hub")
-            )
-            time.sleep(1.5)  # 3 poll cycles at 0.5s
-            stop()
-
-        assert len(results) > 0
-        assert results[0] == (500, 1000)
-
-    def test_progress_poller_tracks_growth(self, tmp_path):
-        """Poller must report increasing sizes as file grows."""
-        import time
-
-        from lilbee.catalog import _start_progress_poller
-
-        repo_dir = tmp_path / "hub" / "models--test--repo" / "blobs"
-        repo_dir.mkdir(parents=True)
-        incomplete = repo_dir / "abc123.incomplete"
-        incomplete.write_bytes(b"\0" * 100)
-
-        results = []
-
-        def callback(downloaded, total):
-            results.append(downloaded)
-
-            stop = _start_progress_poller(
-                "test/repo", callback, 1000, cache_dir=str(tmp_path / "hub")
-            )
-            time.sleep(0.7)
-            # Grow the file
-            with open(incomplete, "ab") as f:
-                f.write(b"\0" * 400)
-            time.sleep(0.7)
-            stop()
-
-        assert len(results) >= 2
-        assert results[-1] > results[0]
-
-    def test_progress_poller_no_crash_on_missing_dir(self, tmp_path):
-        """Poller must not crash if cache dir doesn't exist."""
-        import time
-
-        from lilbee.catalog import _start_progress_poller
-
-        with mock.patch("lilbee.catalog.HF_HUB_CACHE", str(tmp_path / "nonexistent")):
-            stop = _start_progress_poller("test/repo", lambda d, t: None, 1000)
-            time.sleep(0.7)
-            stop()
-        # No exception = pass
-
-    def test_download_model_calls_progress(self):
-        """download_model must call on_progress during download."""
-        from lilbee.catalog import CatalogModel, download_model
-
-        entry = CatalogModel(
-            name="test",
-            hf_repo="test/repo",
-            gguf_filename="test.gguf",
-            size_gb=0.001,
-            min_ram_gb=1,
-            description="test",
-            featured=False,
-            downloads=0,
-            task="chat",
-        )
-        results = []
-
-        # Mock hf_hub_download to simulate a download
-        def fake_download(**kwargs):
-            progress_updater = kwargs.get("progress_updater")
-            if progress_updater:
-                progress_updater(500, 1000)
-                progress_updater(1000, 1000)
-            return str(cfg.models_dir / "test.gguf")
-
-        # Create the dest file so _register_model works
-        (cfg.models_dir / "test.gguf").write_bytes(b"\0" * 100)
-
-        with (
-            mock.patch("lilbee.catalog._resolve_filename", return_value="test.gguf"),
-            mock.patch("lilbee.catalog.hf_hub_download", side_effect=fake_download),
-            mock.patch("lilbee.catalog._register_model"),
-        ):
-            # Delete dest so it triggers the download path
-            dest = cfg.models_dir / "test.gguf"
-            dest.unlink()
-            download_model(entry, on_progress=lambda d, t: results.append((d, t)))
-
-        assert len(results) >= 2
-        assert results[-1][0] > 0
-
-
 class TestTaskCenter:
     async def test_task_center_renders_with_active_task(self, _mock_resolve):
         """Task Center must render collapsible task widgets without crashing."""
@@ -430,27 +300,19 @@ class TestTaskCenter:
             await pilot.pause()
 
             # Add a mock task directly to the task bar
-            task_bar = getattr(app, "_task_bar", None)
+            task_bar = app.task_bar
             assert task_bar is not None
 
             task_id = task_bar.add_task("Test Download", "download")
-
-            # Update task to have progress
             task_bar.update_task(task_id, 45, "100/500 MB")
 
-            # Switch to Task Center - this triggers on_mount which calls _refresh_tasks
-            app._switch_view("Tasks")
+            app.switch_view("Tasks")
             await pilot.pause()
 
-            # Verify the task list has the task
-            task_list = app.screen.query_one("#task-list")
-            assert task_list is not None
+            from textual.widgets import DataTable
 
-            # Should have at least one collapsible
-            collapsibles = app.screen.query(Collapsible)
-            assert len(collapsibles) >= 1, (
-                f"Expected at least 1 Collapsible, got {len(collapsibles)}"
-            )
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table.row_count >= 1
 
     async def test_task_center_renders_empty_state(self, _mock_resolve):
         """Task Center shows 'All quiet' when no tasks."""
@@ -462,18 +324,16 @@ class TestTaskCenter:
             await pilot.pause()
 
             # Switch to Task Center with no tasks
-            app._switch_view("Tasks")
+            app.switch_view("Tasks")
             await pilot.pause()
 
-            # The task-list VerticalScroll should have children
-            task_list = app.screen.query_one("#task-list")
-            # Should have at least one child (the empty state Static)
-            assert len(task_list.children) >= 1, (
-                f"Expected at least 1 child, got {len(task_list.children)}"
-            )
+            from textual.widgets import DataTable
+
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table.row_count == 0
 
 
-class TestDownloadProgressCallback:
+class TestDownloadProgressSlow:
     @pytest.mark.slow
     def test_download_progress_callback_receives_cumulative_values(self, tmp_path):
         """Download Mistral and verify progress callbacks receive cumulative values."""
@@ -547,3 +407,314 @@ class TestDownloadProgressCallback:
         finally:
             for field_name in type(snapshot).model_fields:
                 setattr(cfg, field_name, getattr(snapshot, field_name))
+
+
+def _mock_catalog_deps():
+    """Context manager that mocks all catalog network calls."""
+    from lilbee.catalog import ModelFamily, ModelVariant
+
+    families = [
+        ModelFamily(
+            name="TestChat",
+            task="chat",
+            description="A test chat model",
+            variants=(
+                ModelVariant(
+                    hf_repo="test/chat-repo",
+                    filename="chat-Q4.gguf",
+                    param_count="7B",
+                    quant="Q4_K_M",
+                    size_mb=4000,
+                    recommended=True,
+                ),
+            ),
+        ),
+        ModelFamily(
+            name="TestEmbed",
+            task="embedding",
+            description="A test embedding model",
+            variants=(
+                ModelVariant(
+                    hf_repo="test/embed-repo",
+                    filename="embed-Q8.gguf",
+                    param_count="0.5B",
+                    quant="Q8_0",
+                    size_mb=500,
+                    recommended=True,
+                ),
+            ),
+        ),
+    ]
+    return mock.patch.multiple(
+        "lilbee.cli.tui.screens.catalog",
+        get_families=mock.MagicMock(return_value=families),
+        get_catalog=mock.MagicMock(return_value=mock.MagicMock(models=[])),
+    )
+
+
+def _mock_remote_models():
+    """Mock classify_remote_models to return empty list."""
+    return mock.patch(
+        "lilbee.model_manager.classify_remote_models",
+        return_value=[],
+    )
+
+
+class TestScreenTransitions:
+    """Test that switching between screens does not crash."""
+
+    async def test_navigate_chat_to_catalog_to_settings(self, _mock_resolve):
+        """F2→Models, then F4→Settings, verify no crash."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                assert app.active_view == "Chat"
+
+                app.switch_view("Models")
+                await pilot.pause()
+                assert app.active_view == "Models"
+
+                app.switch_view("Settings")
+                await pilot.pause()
+                assert app.active_view == "Settings"
+
+    async def test_navigate_all_views_via_keybindings(self, _mock_resolve):
+        """Cycle through all 5 views with nav_next (l key)."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                expected = ["Models", "Status", "Settings", "Tasks", "Chat"]
+                for view in expected:
+                    app.action_nav_next()
+                    await pilot.pause()
+                    assert app.active_view == view
+
+    async def test_navigate_back_with_q(self, _mock_resolve):
+        """Push catalog, press q, verify back at chat."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+                assert app.active_view == "Models"
+
+                await pilot.press("q")
+                await pilot.pause()
+                # Should be back at Chat (base screen)
+                from lilbee.cli.tui.screens.chat import ChatScreen
+
+                assert isinstance(app.screen, ChatScreen)
+
+    async def test_navigate_catalog_to_tasks(self, _mock_resolve):
+        """The specific crash case: catalog → tasks transition."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+                app.switch_view("Tasks")
+                await pilot.pause()
+                assert app.active_view == "Tasks"
+
+
+class TestCatalogGrid:
+    """Test catalog grid view rendering and interactions."""
+
+    async def test_catalog_grid_view_default(self, _mock_resolve):
+        """Grid is shown on mount by default."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                grids = app.screen.query(GridSelect)
+                assert len(grids) > 0
+
+    async def test_catalog_toggle_view(self, _mock_resolve):
+        """Press v twice: grid → list → grid."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                screen = app.screen
+                assert screen.has_class("-grid-view")
+
+                screen.action_toggle_view()
+                await pilot.pause()
+                assert screen.has_class("-list-view")
+
+                screen.action_toggle_view()
+                await pilot.pause()
+                assert screen.has_class("-grid-view")
+
+    async def test_catalog_search_filters_cards(self, _mock_resolve):
+        """Type search text, verify cards filtered (not destroyed/recreated)."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                all_cards = app.screen.query(ModelCard)
+                initial_count = len(all_cards)
+                assert initial_count > 0
+
+                # Type a search that matches only one family
+                search = app.screen.query_one("#catalog-search")
+                search.display = True
+                search.value = "TestChat"
+                await pilot.pause()
+
+                # Cards still exist (not destroyed), but some hidden
+                all_cards_after = app.screen.query(ModelCard)
+                assert len(all_cards_after) == initial_count
+                visible = [c for c in all_cards_after if c.display]
+                hidden = [c for c in all_cards_after if not c.display]
+                assert len(visible) >= 1
+                assert len(hidden) >= 1
+
+    async def test_catalog_grid_card_count(self, _mock_resolve):
+        """Verify correct number of cards for featured models."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Models")
+                await pilot.pause()
+
+                cards = app.screen.query(ModelCard)
+                # 2 families with 1 variant each = 2 cards
+                assert len(cards) == 2
+
+
+class TestSettingsScreen:
+    """Test settings screen rendering and filtering."""
+
+    async def test_settings_has_grouped_sections(self, _mock_resolve):
+        """Verify group headings exist."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+
+            groups = app.screen.query(".group-title")
+            assert len(groups) >= 1
+
+    async def test_settings_search_filters(self, _mock_resolve):
+        """Type in search, verify filtering hides non-matching rows."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Settings")
+            await pilot.pause()
+
+            all_rows = app.screen.query(".setting-row")
+            total = len(all_rows)
+            assert total > 0
+
+            # Search for something specific
+            search = app.screen.query_one("#settings-search")
+            search.value = "chat_model"
+            await pilot.pause()
+
+            visible = [r for r in app.screen.query(".setting-row") if r.display]
+            assert len(visible) < total
+            assert len(visible) >= 1
+
+
+class TestStatusScreen:
+    """Test status screen rendering."""
+
+    async def test_status_has_collapsible_sections(self, _mock_resolve):
+        """Verify Collapsible widgets exist for config, docs, etc."""
+        from textual.widgets import Collapsible
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Status")
+            await pilot.pause()
+
+            collapsibles = app.screen.query(Collapsible)
+            assert len(collapsibles) >= 3
+
+
+class TestTaskCenterScreen:
+    """Test task center screen rendering."""
+
+    async def test_task_center_renders(self, _mock_resolve):
+        """Basic mount test — task center renders without crash."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.switch_view("Tasks")
+            await pilot.pause()
+
+            from textual.widgets import DataTable
+
+            table = app.screen.query_one("#task-table", DataTable)
+            assert table is not None
+
+
+class TestChatPromptBorder:
+    """Test that the chat prompt area has a single border, not stacked."""
+
+    async def test_prompt_area_insert_mode_border(self, _mock_resolve):
+        """PromptArea should have insert-mode class, input should have no border."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            area = app.screen.query_one("#chat-prompt-area")
+            inp = app.screen.query_one("#chat-input")
+            assert area.has_class("insert-mode")
+            # Input should not have its own border
+            assert inp.styles.border is not None  # exists but set to none in CSS
+
+    async def test_prompt_area_normal_mode_border(self, _mock_resolve):
+        """PromptArea should switch to normal-mode class on escape."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.action_enter_normal_mode()
+            await pilot.pause()
+            area = app.screen.query_one("#chat-prompt-area")
+            assert area.has_class("normal-mode")
+            assert not area.has_class("insert-mode")

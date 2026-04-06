@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -41,7 +41,7 @@ def _classify_installed_models() -> tuple[list[str], list[str], list[str]]:
 
 
 def _collect_native_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add native registry models to buckets, with fallback for loose .gguf files."""
+    """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
 
@@ -54,14 +54,6 @@ def _collect_native_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
             buckets.get(manifest.task, buckets["chat"]).append(name)
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
-    # Fallback: pick up loose .gguf files not covered by the registry
-    try:
-        for p in sorted(cfg.models_dir.glob("*.gguf")):
-            if p.is_file() and p.name not in seen and not _is_mmproj(p.name):
-                seen.add(p.name)
-                buckets["chat"].append(p.name)
-    except Exception:
-        log.debug("Could not scan models_dir for loose .gguf files", exc_info=True)
 
 
 def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
@@ -217,32 +209,53 @@ class ModelBar(Widget, can_focus=True):
 
         self._populating = False
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle model selection changes."""
+    @on(Select.Changed, "#chat-model-select")
+    def _on_chat_model_changed(self, event: Select.Changed) -> None:
+        """Handle chat model selection change."""
+        value = self._extract_value(event)
+        if value is None:
+            return
+        cfg.chat_model = value
+        settings.set_value(cfg.data_root, "chat_model", value)
+        self._after_model_change()
+
+    @on(Select.Changed, "#embed-model-select")
+    def _on_embed_model_changed(self, event: Select.Changed) -> None:
+        """Handle embedding model selection change."""
+        value = self._extract_value(event)
+        if value is None:
+            return
+        cfg.embedding_model = value
+        settings.set_value(cfg.data_root, "embedding_model", value)
+        self._after_model_change()
+
+    @on(Select.Changed, "#vision-model-select")
+    def _on_vision_model_changed(self, event: Select.Changed) -> None:
+        """Handle vision model selection change."""
         if self._populating:
             return
         if event.value is _DISABLED or event.value is None or str(event.value) == "":
-            if event.select.id == "vision-model-select":
-                cfg.vision_model = ""
-                settings.set_value(cfg.data_root, "vision_model", "")
+            cfg.vision_model = ""
+            settings.set_value(cfg.data_root, "vision_model", "")
             return
+        cfg.vision_model = str(event.value)
+        settings.set_value(cfg.data_root, "vision_model", cfg.vision_model)
+        self._after_model_change()
 
-        value = str(event.value)
-        if event.select.id == "chat-model-select":
-            cfg.chat_model = value
-            settings.set_value(cfg.data_root, "chat_model", value)
-        elif event.select.id == "embed-model-select":
-            cfg.embedding_model = value
-            settings.set_value(cfg.data_root, "embedding_model", value)
-        elif event.select.id == "vision-model-select":
-            cfg.vision_model = value
-            settings.set_value(cfg.data_root, "vision_model", value)
+    def _extract_value(self, event: Select.Changed) -> str | None:
+        """Extract a non-empty value from a Select.Changed event, or None to skip."""
+        if self._populating:
+            return None
+        if event.value is _DISABLED or event.value is None or str(event.value) == "":
+            return None
+        return str(event.value)
 
-        # Cancel any active stream before swapping models to prevent segfault
-        from lilbee.cli.tui.app import StreamingScreen
+    def _after_model_change(self) -> None:
+        """Shared post-change logic: cancel active stream and reset services."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen
-        if isinstance(screen, StreamingScreen) and screen._streaming:
+        if isinstance(screen, ChatScreen) and screen._streaming:
             screen.action_cancel_stream()
 
         from lilbee.services import reset_services

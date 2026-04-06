@@ -10,18 +10,20 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
+from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Label, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -29,7 +31,6 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -47,8 +48,29 @@ _MAX_HISTORY_MESSAGES = 200
 _FOCUSABLE_IDS = ("model-bar", "chat-log", "chat-input")
 
 
+class ChatStatusLine(Label):
+    """One-line status bar showing the current model as a pill badge."""
+
+    model_name: var[str] = var("")
+
+    def watch_model_name(self, name: str) -> None:
+        """Re-render when model name changes."""
+        if name:
+            self.update(pill(name, "$primary", "$text"))
+        else:
+            self.update("")
+
+
+class PromptArea(Vertical):
+    """Container for chat input that highlights on focus-within."""
+
+    pass
+
+
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
+
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "/ commands", show=True),
@@ -63,9 +85,9 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._auto_sync = auto_sync
+        self._auto_sync: bool = False
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._streaming = False
@@ -77,25 +99,34 @@ class ChatScreen(Screen[None]):
 
     def _get_task_bar(self) -> TaskBar:
         """Get the app-level TaskBar (created by LilbeeApp)."""
-        return self.app._task_bar  # type: ignore[attr-defined, no-any-return]
+        from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
+
+        bar = getattr(self.app, "task_bar", None)
+        if not isinstance(bar, _TaskBar):
+            msg_text = "App does not have a TaskBar"
+            raise RuntimeError(msg_text)
+        return bar
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
+        yield ChatStatusLine(id="chat-status-line")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
-        yield Input(
-            placeholder=msg.CHAT_INPUT_PLACEHOLDER,
-            id="chat-input",
-            suggester=SlashSuggester(use_cache=False),
-        )
+        with PromptArea(id="chat-prompt-area"):
+            yield Input(
+                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                id="chat-input",
+                suggester=SlashSuggester(use_cache=False),
+            )
 
     def on_mount(self) -> None:
+        self._auto_sync = getattr(self.app, "_auto_sync", False)
         self.query_one("#chat-input", Input).focus()
         self._update_input_style()
+        self._refresh_status_line()
         self.query_one("#chat-only-banner", Static).display = False
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
@@ -170,21 +201,30 @@ class ChatScreen(Screen[None]):
     def _update_input_style(self) -> None:
         """Toggle input border and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
+        area = self.query_one("#chat-prompt-area", PromptArea)
         if self._insert_mode:
             inp.remove_class("normal-mode")
             inp.add_class("insert-mode")
+            area.remove_class("normal-mode")
+            area.add_class("insert-mode")
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
+            area.remove_class("insert-mode")
+            area.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
         """Update the NavBar mode text to reflect the current mode."""
         try:
-            nav = self.query_one("#global-nav-bar", NavBar)
+            from lilbee.cli.tui.widgets.nav_bar import NavBar
+
+            nav = self.app.query_one("#global-nav-bar", NavBar)
             nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
         except Exception:
             pass
+
+    _INSERT_TRIGGERS = frozenset("iao")
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -193,27 +233,22 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
-            inp.focus()
-            inp.insert_text_at_cursor(event.character)
-            event.prevent_default()
-            event.stop()
-            return
-        if self._insert_mode:
-            return
-        if event.key == "enter":
-            self._enter_insert_mode()
-            event.prevent_default()
-            event.stop()
-            return
-        if event.character and event.character.isprintable() and len(event.key) == 1:
-            if event.character in "jkgG":
-                return
-            self._enter_insert_mode()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "chat-input":
+        if self._insert_mode:
+            if not inp.has_focus and event.is_printable and event.character:
+                inp.focus()
+                inp.insert_text_at_cursor(event.character)
+                event.prevent_default()
+                event.stop()
             return
+
+        if event.key == "enter" or (event.character and event.character in self._INSERT_TRIGGERS):
+            self._enter_insert_mode()
+            event.prevent_default()
+            event.stop()
+
+    @on(Input.Submitted, "#chat-input")
+    def _on_chat_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
@@ -384,7 +419,12 @@ class ChatScreen(Screen[None]):
         self.app.call_from_thread(self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
-        self.app.push_screen(CatalogScreen())
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Models")
+        else:
+            self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
         from lilbee.services import get_services
@@ -452,7 +492,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
-            self.app.push_screen(CatalogScreen())
+            self._cmd_catalog("")
 
     def _cmd_quit(self, _args: str) -> None:
         self.app.exit()
@@ -532,10 +572,20 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
-        self.app.push_screen(SettingsScreen())
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Settings")
+        else:
+            self.app.push_screen(SettingsScreen())
 
     def _cmd_status(self, _args: str) -> None:
-        self.app.push_screen(StatusScreen())
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):
+            self.app.switch_view("Status")
+        else:
+            self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
@@ -843,18 +893,23 @@ class ChatScreen(Screen[None]):
             self._history_index = -1
             inp.value = ""
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    @on(Input.Changed, "#chat-input")
+    def _on_chat_input_changed(self, event: Input.Changed) -> None:
         """Hide completion overlay when input changes manually."""
         if self._completing:
             return
-        if event.input.id == "chat-input":
-            overlay = self.query_one("#completion-overlay", CompletionOverlay)
-            if overlay.is_visible:
-                overlay.hide()
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        if overlay.is_visible:
+            overlay.hide()
 
     def _refresh_model_bar(self) -> None:
-        """Update the model status bar."""
+        """Update the model status bar and status line."""
         self.query_one("#model-bar", ModelBar).refresh_models()
+        self._refresh_status_line()
+
+    def _refresh_status_line(self) -> None:
+        """Update the status line pill with the current chat model."""
+        self.query_one("#chat-status-line", ChatStatusLine).model_name = cfg.chat_model
 
     def key_j(self) -> None:
         """Vim j: cycle focus to next widget in normal mode."""
