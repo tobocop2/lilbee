@@ -627,6 +627,29 @@ class TestAdaptiveFilterFinalPass:
         assert filtered[0].chunk == "moderate"
 
 
+class TestTableNamesAttributeError:
+    def test_fallback_to_list_when_no_tables_attr(self, store):
+        """_table_names falls back to list() when result has no .tables attribute."""
+        from lilbee.store import _table_names
+
+        mock_db = mock.MagicMock()
+        mock_db.list_tables.return_value = ["chunks", "sources"]
+        result = _table_names(mock_db)
+        assert result == ["chunks", "sources"]
+
+
+class TestSearchAdaptiveThresholdPath:
+    def test_search_uses_adaptive_filter_when_enabled(self, test_config, store):
+        """When adaptive_threshold is True, search calls _adaptive_filter."""
+        test_config.adaptive_threshold = True
+        records = _make_records(n=2)
+        store.add_chunks(records)
+        query_vec = [0.5] * test_config.embedding_dim
+        with mock.patch.object(store, "_adaptive_filter", return_value=[]) as mock_af:
+            store.search(query_vec, top_k=2)
+            mock_af.assert_called_once()
+
+
 class TestDeleteSourceNoneTable:
     def test_noop_when_no_table(self, store):
         """delete_source is a no-op when the sources table doesn't exist."""

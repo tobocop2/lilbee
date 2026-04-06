@@ -792,6 +792,58 @@ class TestLoadEmbedModel:
         mock_load.assert_called_once_with("/tmp/model.gguf", embedding=True)
 
 
+class TestWorkerNotStartedGuards:
+    """Cover all 'Worker not started' RuntimeError guards when _request_queue is None."""
+
+    def test_send_and_receive_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_embed(req)
+
+    def test_retry_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with mock.patch.object(wp, "restart"):
+            with pytest.raises(RuntimeError, match="Worker not started"):
+                wp._retry_embed(req)
+
+    def test_send_and_receive_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_vision(req)
+
+    def test_retry_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with mock.patch.object(wp, "restart"):
+            with pytest.raises(RuntimeError, match="Worker not started"):
+                wp._retry_vision(req)
+
+    def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._response_queue = None
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._get_response(timeout=1.0)
+
+    def test_load_model_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        with mock.patch.object(wp, "_ensure_started"):
+            with pytest.raises(RuntimeError, match="Worker not started"):
+                wp.load_model("test-model")
+
+
 class TestLoadVisionModel:
     def test_loads_model(self, config_snap: ConfigSnapshot) -> None:
         mock_llm = mock.MagicMock()

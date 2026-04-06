@@ -1152,3 +1152,36 @@ class TestModelPullProgressCancel:
 
         _on_progress({"status": "downloading"})
         assert sse.queue.empty()
+
+    async def test_cancel_during_pull_skips_later_progress(self):
+        """When cancel is set mid-pull, the real _on_progress returns early."""
+        import threading
+
+        cancel_barrier = threading.Event()
+        mock_manager = MagicMock()
+        progress_calls = []
+
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"status": "first"})
+                progress_calls.append("first")
+                # Wait for cancel to be set by the consumer
+                cancel_barrier.wait(timeout=2)
+                on_progress({"status": "second"})  # This hits line 703
+                progress_calls.append("second")
+
+        mock_manager.pull.side_effect = fake_pull
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+            gen = handlers.models_pull("test", source="native")
+            events = []
+            async for event in gen:
+                events.append(event)
+                if event and "first" in event:
+                    # Close the generator which sets cancel
+                    await gen.aclose()
+                    cancel_barrier.set()
+                    break
+            await asyncio.sleep(0.1)
+
+        # The "second" progress call should have been suppressed
+        assert not any("second" in e for e in events if e)

@@ -2241,6 +2241,25 @@ class TestCrawlProgressCallback:
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
             on_progress(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
 
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_crawl_callback_wrong_type_real_code(self, mock_crawl, isolated_env):
+        """Exercise the real _make_callback with a bad event type."""
+        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.progress import EventType, FileStartEvent
+
+        async def _fake_crawl(url, **kwargs):
+            cb = kwargs.get("on_progress")
+            if cb:
+                # Send wrong type for CRAWL_PAGE event
+                cb(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
+            return []
+
+        mock_crawl.side_effect = _fake_crawl
+        with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
+            _crawl_urls_blocking(
+                ["https://example.com"], crawl=False, depth=None, max_pages=None
+            )
+
 
 class TestLoginCommand:
     def test_login_already_logged_in_decline(self):

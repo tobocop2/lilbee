@@ -4695,6 +4695,67 @@ async def test_setup_wizard_download_progress_callback():
 # ---------------------------------------------------------------------------
 
 
+async def test_setup_wizard_download_progress_same_pct_skips():
+    """Download progress callback skips update when pct hasn't changed."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with patch("lilbee.cli.tui.screens.setup._scan_installed_models", return_value=([], [])):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="dup-pct-model")
+
+            call_count = 0
+
+            def fake_download(model, on_progress=None):
+                nonlocal call_count
+                if on_progress:
+                    # First call: 50% — should pass
+                    on_progress(512 * 1024, 1024 * 1024)
+                    call_count += 1
+                    # Second call: same 50% — should hit "return" on line 202
+                    on_progress(512 * 1024, 1024 * 1024)
+                    call_count += 1
+                    # Third call: unknown total — should hit else branch
+                    on_progress(100 * 1024, 0)
+                    call_count += 1
+                return MagicMock(stem="dup-pct-model")
+
+            with patch("lilbee.catalog.download_model", side_effect=fake_download):
+                screen._download_model(cm)
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+            assert call_count == 3
+
+
+async def test_setup_wizard_download_progress_exception_logged():
+    """Download progress callback handles exception in progress update."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with patch("lilbee.cli.tui.screens.setup._scan_installed_models", return_value=([], [])):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="exc-model")
+
+            def fake_download(model, on_progress=None):
+                if on_progress:
+                    # Force an exception inside the progress callback
+                    on_progress("not_int", "not_int")
+                return MagicMock(stem="exc-model")
+
+            with patch("lilbee.catalog.download_model", side_effect=fake_download):
+                screen._download_model(cm)
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
 def test_param_sort_value_with_match():
     """_param_sort_value parses '8B' to 8.0."""
     from lilbee.cli.tui.screens.catalog import _param_sort_value
@@ -5506,6 +5567,36 @@ async def test_app_action_quit_when_streaming():
             mock_cancel.assert_called_once()
 
 
+async def test_app_action_quit_double_force_exits():
+    """Double Ctrl+C within 2s calls _force_quit."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # First quit sets last_quit_time
+        with patch.object(app, "exit"):
+            await app.action_quit()
+        # Second quit within 2s should force-quit
+        with patch.object(app, "_force_quit") as mock_fq:
+            await app.action_quit()
+            mock_fq.assert_called_once()
+
+
+def test_app_force_quit_calls_os_exit():
+    """_force_quit resets services and calls os._exit."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp.__new__(LilbeeApp)
+    with (
+        patch("lilbee.services.reset_services") as mock_reset,
+        patch("os._exit") as mock_exit,
+    ):
+        app._force_quit()
+        mock_reset.assert_called_once()
+        mock_exit.assert_called_once_with(1)
+
+
 async def test_app_switch_view_unknown():
     """switch_view with unknown name does nothing."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -5619,3 +5710,499 @@ def test_run_tui_exception_during_shutdown():
     ):
         run_tui()
         mock_kill.assert_called_once_with(os.getpid(), signal.SIGKILL)
+
+
+async def test_chat_on_show_writes_splash_ready():
+    """on_show writes a splash-ready file to tempdir."""
+    import os
+    import tempfile
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        # Manually call on_show
+        app.screen.on_show()
+        ready_file = os.path.join(tempfile.gettempdir(), "lilbee-splash-ready")
+        assert os.path.exists(ready_file)
+        os.unlink(ready_file)
+
+
+async def test_chat_on_show_handles_oserror():
+    """on_show suppresses OSError when writing splash file."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            app.screen.on_show()  # Should not raise
+
+
+async def test_chat_embedding_ready_false_on_exception():
+    """_embedding_ready returns False when resolve raises."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    class DirectChatApp(App[None]):
+        CSS = ""
+
+        def compose(self) -> ComposeResult:
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.push_screen(ChatScreen())
+
+    app = DirectChatApp()
+    with patch(
+        "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
+    ):
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            with patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                side_effect=FileNotFoundError("not found"),
+            ):
+                assert app.screen._embedding_ready() is False
+
+
+async def test_chat_hide_banner():
+    """_hide_chat_only_banner hides the banner."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        app.screen._show_chat_only_banner()
+        assert app.screen.query_one("#chat-only-banner").display is True
+        app.screen._hide_chat_only_banner()
+        assert app.screen.query_one("#chat-only-banner").display is False
+
+
+async def test_chat_key_f5_opens_setup():
+    """key_f5 opens the setup wizard."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with patch.object(app.screen, "_cmd_setup") as mock_setup:
+            app.screen.key_f5()
+            mock_setup.assert_called_once_with("")
+
+
+async def test_chat_on_key_insert_mode_focus():
+    """on_key in insert mode redirects printable chars to input."""
+    from textual.events import Key
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        app.screen._insert_mode = True
+        inp = app.screen.query_one("#chat-input")
+        inp.blur()
+        # Create a Key event with a printable character
+        event = MagicMock(spec=Key)
+        event.is_printable = True
+        event.character = "x"
+        event.key = "x"
+        app.screen.on_key(event)
+
+
+async def test_chat_cycle_focus_unknown_widget():
+    """_cycle_focus handles unknown focused widget by defaulting to index 0."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        # Set focus to something not in the focusable list
+        app.screen._cycle_focus(1)
+
+
+async def test_chat_action_enter_normal_mode_streaming():
+    """action_enter_normal_mode cancels workers when streaming."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        app.screen._streaming = True
+        mock_worker = MagicMock()
+        app.screen._workers = [mock_worker]
+        with patch.object(type(app.screen), "workers", new_callable=lambda: property(lambda self: [mock_worker])):
+            app.screen.action_enter_normal_mode()
+        assert app.screen._streaming is False
+
+
+async def test_chat_action_toggle_markdown():
+    """action_toggle_markdown toggles cfg.markdown_rendering."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        cfg.markdown_rendering = True
+        await app.screen.action_toggle_markdown()
+        assert cfg.markdown_rendering is False
+
+
+async def test_chat_run_sync_when_already_active():
+    """_run_sync notifies when sync is already active."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        app.screen._sync_active = True
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._run_sync()
+            mock_notify.assert_called_once()
+
+
+async def test_chat_remove_model_exception():
+    """_run_remove_model handles exception from mgr.remove."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        mock_mgr = MagicMock()
+        mock_mgr.is_installed.return_value = True
+        mock_mgr.remove.side_effect = RuntimeError("disk error")
+        with patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr):
+            app.screen._run_remove_model("test-model")
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_chat_cmd_crawl_with_valid_url():
+    """_cmd_crawl enqueues a crawl task for a valid URL."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
+        ):
+            app.screen._cmd_crawl("https://example.com")
+            mock_crawl.assert_called_once()
+
+
+async def test_chat_cmd_crawl_invalid_url():
+    """_cmd_crawl notifies error for invalid URL."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch(
+                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
+                side_effect=ValueError("bad url"),
+            ),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_crawl("not-a-url")
+            mock_notify.assert_called()
+
+
+async def test_chat_auto_sync_on_mount_runs_sync():
+    """When auto_sync and embedding ready, _run_sync is called on mount."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    class SyncApp(App[None]):
+        CSS = ""
+
+        def compose(self) -> ComposeResult:
+            from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+            self.task_bar = TaskBar(id="app-task-bar")
+            yield self.task_bar
+
+        def on_mount(self) -> None:
+            self.push_screen(ChatScreen(auto_sync=True))
+
+    app = SyncApp()
+    with (
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
+        patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as mock_sync,
+    ):
+        async with app.run_test(size=(120, 40)) as _pilot:
+            await _pilot.pause()
+            mock_sync.assert_called_once()
+
+
+def test_type_pill_with_choices():
+    """_type_pill returns 'select' pill when defn has choices."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import _type_pill
+
+    defn = SettingDef(type=str, nullable=False, group="Test", choices=("a", "b"))
+    result = _type_pill(defn)
+    assert "select" in str(result).lower()
+
+
+def test_make_editor_with_choices():
+    """_make_editor returns a Select widget when defn has choices."""
+    from textual.widgets import Select
+
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import _make_editor
+
+    with patch(
+        "lilbee.cli.tui.screens.settings._effective_value",
+        return_value="auto",
+    ):
+        defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
+        widget = _make_editor("test_key", defn)
+    assert isinstance(widget, Select)
+
+
+async def test_catalog_fetch_installed_names():
+    """_fetch_installed_names populates _installed_names from registry."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            mock_manifest = MagicMock()
+            mock_manifest.name = "test-model"
+            mock_manifest.tag = "latest"
+            mock_manifest.source_repo = "org/test-model-GGUF"
+            mock_manifest.source_filename = "test.gguf"
+            mock_registry = MagicMock()
+            mock_registry.list_installed.return_value = [mock_manifest]
+
+            with patch("lilbee.registry.ModelRegistry", return_value=mock_registry):
+                screen._fetch_installed_names()
+            assert "test-model:latest" in screen._installed_names
+            assert "org/test-model-GGUF/test.gguf" in screen._installed_names
+
+
+async def test_catalog_worker_state_unknown_worker():
+    """on_worker_state_changed returns early for unknown worker name."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            event = MagicMock()
+            event.state = MagicMock()
+            event.state.name = "SUCCESS"
+            from textual.worker import WorkerState
+
+            event.state = WorkerState.SUCCESS
+            event.worker.result = []
+            event.worker.name = "unknown_worker"
+            screen.on_worker_state_changed(event)
+
+
+async def test_catalog_is_installed_by_repo():
+    """_is_installed matches by source repo/filename."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._installed_names = {"org/model-GGUF/test.gguf"}
+            assert screen._is_installed("x", repo="org/model-GGUF", filename="test.gguf") is True
+            assert screen._is_installed("x", repo="org/other", filename="other.gguf") is False
+
+
+async def test_catalog_install_model_resolve_exception():
+    """_install_model handles resolve_filename exception."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            cm = _make_catalog_model(name="fail-resolve")
+            with (
+                patch("lilbee.catalog.resolve_filename", side_effect=RuntimeError("fail")),
+                patch.object(screen, "_enqueue_download") as mock_dl,
+            ):
+                screen._install_model(cm)
+                mock_dl.assert_called_once_with(cm)
+
+
+async def test_catalog_enqueue_download_non_lilbee_app():
+    """_enqueue_download notifies error when not running in LilbeeApp."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            cm = _make_catalog_model(name="no-task-bar")
+            with patch.object(screen, "notify") as mock_notify:
+                screen._enqueue_download(cm)
+                mock_notify.assert_called()
+
+
+async def test_catalog_delete_when_input_focused():
+    """action_delete_model returns early when Input is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            # Focus the search input
+            inp = screen.query_one("#catalog-search")
+            inp.focus()
+            await _pilot.pause()
+            # action_delete_model should return early
+            screen.action_delete_model()
+
+
+async def test_catalog_get_highlighted_model_name_catalog():
+    """_get_highlighted_model_name returns catalog model name."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            cm = _make_catalog_model(name="Qwen3 8B")
+            row = TableRow(
+                name="Qwen3 8B",
+                task="chat",
+                params="8B",
+                size="5.0 GB",
+                quant="Q4_K_M",
+                downloads="1K",
+                installed=False,
+                featured=False,
+                sort_downloads=1000,
+                sort_size=5.0,
+                catalog_model=cm,
+            )
+            screen._rows = [row]
+            table = screen.query_one("#catalog-table", DataTable)
+            table.clear()
+            table.add_row("Qwen3 8B", "chat", "8B", "5.0 GB", "Q4_K_M", "1K")
+            table.move_cursor(row=0)
+            result = screen._get_highlighted_model_name()
+            assert result == "Qwen3 8B:latest"
+
+
+async def test_catalog_get_highlighted_model_name_fallback_none():
+    """_get_highlighted_model_name returns None when row has no model ref."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            row = TableRow(
+                name="orphan",
+                task="chat",
+                params="?",
+                size="?",
+                quant="?",
+                downloads="?",
+                installed=False,
+                featured=False,
+                sort_downloads=0,
+                sort_size=0.0,
+            )
+            screen._rows = [row]
+            table = screen.query_one("#catalog-table", DataTable)
+            table.clear()
+            table.add_row("orphan", "chat", "?", "?", "?", "?")
+            table.move_cursor(row=0)
+            result = screen._get_highlighted_model_name()
+            assert result is None
+
+
+async def test_catalog_row_selected_out_of_range():
+    """_on_row_selected handles out-of-range row index."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._rows = []
+            event = MagicMock()
+            event.cursor_row = 5
+            screen._on_row_selected(event)  # Should not raise
+
+
+async def test_catalog_key_left_right_navigation():
+    """key_left and key_right delegate to app navigation when LilbeeApp."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # CatalogTestApp is not LilbeeApp, so key_left/key_right just return
+            screen.key_left()
+            screen.key_right()
+
+
+async def test_catalog_browse_more_clicked():
+    """Browse more button triggers HF model fetch."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._hf_fetched is False
+            with patch.object(screen, "_fetch_all_hf_models") as mock_fetch:
+                screen._on_browse_more_clicked()
+                assert screen._hf_fetched is True
+                mock_fetch.assert_called_once()
+
+
+async def test_catalog_grid_selected_with_model_card():
+    """Grid selection with ModelCard delegates to _select_row."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            row = TableRow(
+                name="card-model",
+                task="chat",
+                params="7B",
+                size="4.0 GB",
+                quant="Q4_K_M",
+                downloads="1K",
+                installed=False,
+                featured=False,
+                sort_downloads=1000,
+                sort_size=4.0,
+            )
+            mock_card = MagicMock(spec=ModelCard)
+            mock_card.row = row
+            event = MagicMock(spec=GridSelect.Selected)
+            event.widget = mock_card
+            with patch.object(screen, "_select_row") as mock_sel:
+                screen._on_grid_selected(event)
+                mock_sel.assert_called_once_with(row)

@@ -2029,6 +2029,34 @@ class TestEmbedWorker:
             fut.result()
 
 
+class TestDispatchBatchGetEmbedLlmError:
+    def test_get_embed_llm_failure_sets_exception_on_all_futures(
+        self, mock_llama_cpp: mock.MagicMock
+    ) -> None:
+        """When _get_embed_llm raises, all futures in the batch get the exception."""
+        from concurrent.futures import Future
+
+        from lilbee.providers.llama_cpp_provider import _EmbedRequest
+
+        provider = _make_provider_no_thread()
+
+        with mock.patch.object(
+            provider, "_get_embed_llm", side_effect=RuntimeError("model not found")
+        ):
+            fut1: Future[list[list[float]]] = Future()
+            fut2: Future[list[list[float]]] = Future()
+            batch = [
+                _EmbedRequest(texts=["a"], future=fut1),
+                _EmbedRequest(texts=["b"], future=fut2),
+            ]
+            provider._dispatch_batch(batch)
+
+        with pytest.raises(RuntimeError, match="model not found"):
+            fut1.result()
+        with pytest.raises(RuntimeError, match="model not found"):
+            fut2.result()
+
+
 class TestLockedStreamIteratorException:
     def test_next_releases_lock_on_exception(self) -> None:
         """_LockedStreamIterator releases lock when inner stream raises."""

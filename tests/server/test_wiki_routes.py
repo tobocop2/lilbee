@@ -425,6 +425,23 @@ class TestHelpers:
         assert _find_page("summaries/../../../etc/passwd") is None
 
 
+class TestGeneratePathTraversalDirect:
+    """Test the path validation inside wiki_generate_route directly."""
+
+    async def test_generate_invalid_source_path_returns_404(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Ensure validate_path_within ValueError is caught and returns 404."""
+        cfg.wiki = True
+        monkeypatch.setattr(
+            "lilbee.server.wiki.validate_path_within",
+            lambda *a: (_ for _ in ()).throw(ValueError("path traversal")),
+        )
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/generate/legit-source.txt", headers=_h())
+        assert resp.status_code == 404
+
+
 class TestPydanticModels:
     def test_wiki_page_summary_defaults(self):
         from lilbee.server.models import WikiPageSummary

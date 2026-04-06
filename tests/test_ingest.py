@@ -1356,3 +1356,57 @@ class TestConceptIndexing:
 
         result = await sync(quiet=True)
         assert "graph_none_test.txt" in result.added
+
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_concepts_unavailable_skips_rebuild(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """When concepts_available() returns False, _rebuild_concept_clusters is a no-op."""
+        cfg.concept_graph = True
+        (isolated_env / "unavail_rebuild.txt").write_text("Content for unavailable test.")
+
+        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+            from lilbee.ingest import sync
+
+            result = await sync(quiet=True)
+        assert "unavail_rebuild.txt" in result.added
+        mock_svc.concepts.rebuild_clusters.assert_not_called()
+
+    @mock.patch(
+        "kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result()
+    )
+    async def test_concepts_unavailable_skips_indexing(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """When concepts_available() returns False, _index_concepts is a no-op."""
+        cfg.concept_graph = True
+        (isolated_env / "unavail_index.txt").write_text("Content for unavailable index test.")
+
+        with mock.patch("lilbee.concepts.concepts_available", return_value=False):
+            from lilbee.ingest import sync
+
+            result = await sync(quiet=True)
+        assert "unavail_index.txt" in result.added
+        mock_svc.concepts.extract_concepts_batch.assert_not_called()
+
+
+class TestUnsupportedFileInSync:
+    async def test_classify_none_raises_value_error(self, isolated_env, mock_svc):
+        """When classify_file returns None for a discovered file, sync raises ValueError."""
+        mystery = isolated_env / "mystery.bin"
+        mystery.write_bytes(b"\x00\x01\x02")
+
+        # discover_files includes the file, but classify_file returns None
+        with (
+            mock.patch(
+                "lilbee.ingest.discover_files",
+                return_value={"mystery.bin": mystery},
+            ),
+            mock.patch("lilbee.ingest.classify_file", return_value=None),
+        ):
+            from lilbee.ingest import sync
+
+            with pytest.raises(ValueError, match="Unsupported file slipped through"):
+                await sync(quiet=True)
