@@ -31,6 +31,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.status_bar import StatusBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -85,9 +86,9 @@ class ChatScreen(Screen[None]):
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
-        self._auto_sync: bool = False
+        self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
         self._streaming = False
@@ -97,15 +98,16 @@ class ChatScreen(Screen[None]):
         self._input_history: list[str] = []
         self._history_index: int = -1
 
-    def _get_task_bar(self) -> TaskBar:
-        """Get the app-level TaskBar (created by LilbeeApp)."""
+    @property
+    def _task_bar(self) -> TaskBar:
+        """The app-level TaskBar (created by LilbeeApp)."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
 
         bar = getattr(self.app, "task_bar", None)
-        if not isinstance(bar, _TaskBar):
-            msg_text = "App does not have a TaskBar"
-            raise RuntimeError(msg_text)
-        return bar
+        if isinstance(bar, _TaskBar):
+            return bar
+        msg_text = "App does not have a TaskBar"
+        raise RuntimeError(msg_text)
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -121,9 +123,9 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
+        yield StatusBar()
 
     def on_mount(self) -> None:
-        self._auto_sync = getattr(self.app, "_auto_sync", False)
         self.query_one("#chat-input", Input).focus()
         self._update_input_style()
         self._refresh_status_line()
@@ -188,6 +190,9 @@ class ChatScreen(Screen[None]):
 
     def key_f5(self) -> None:
         """Open the setup wizard."""
+        self._cmd_setup("")
+
+    def _cmd_setup(self, _args: str) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
@@ -215,16 +220,12 @@ class ChatScreen(Screen[None]):
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
-        """Update the NavBar mode text to reflect the current mode."""
+        """Update the StatusBar mode text to reflect the current mode."""
         try:
-            from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-            nav = self.app.query_one("#global-nav-bar", NavBar)
-            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
+            bar = self.query_one(StatusBar)
+            bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
         except Exception:
             pass
-
-    _INSERT_TRIGGERS = frozenset("iao")
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -233,7 +234,6 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-
         if self._insert_mode:
             if not inp.has_focus and event.is_printable and event.character:
                 inp.focus()
@@ -241,11 +241,11 @@ class ChatScreen(Screen[None]):
                 event.prevent_default()
                 event.stop()
             return
-
-        if event.key == "enter" or (event.character and event.character in self._INSERT_TRIGGERS):
+        if event.key == "enter" or (event.character and event.character in "iao"):
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
+            return
 
     @on(Input.Submitted, "#chat-input")
     def _on_chat_submitted(self, event: Input.Submitted) -> None:
@@ -288,7 +288,7 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Add {path.name}", "add")
         task_bar.queue.advance("add")
         self._run_add_background(path, task_id)
@@ -297,7 +297,7 @@ class ChatScreen(Screen[None]):
     def _run_add_background(self, path: Path, task_id: str) -> None:
         """Copy files and sync in a background thread."""
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.helpers import copy_files
@@ -359,7 +359,7 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Crawl {url}", "crawl")
         task_bar.queue.advance("crawl")
         self._run_crawl_background(url, depth, max_pages, task_id)
@@ -385,7 +385,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
@@ -417,12 +417,7 @@ class ChatScreen(Screen[None]):
         self.app.call_from_thread(self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Models")
-        else:
-            self.app.push_screen(CatalogScreen())
+        self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
         from lilbee.services import get_services
@@ -490,7 +485,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
-            self._cmd_catalog("")
+            self.app.push_screen(CatalogScreen())
 
     def _cmd_quit(self, _args: str) -> None:
         self.app.exit()
@@ -558,10 +553,10 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            setattr(cfg, defn.cfg_attr, parsed)
+            setattr(cfg, key, parsed)
             persisted = str(parsed) if parsed is not None else ""
-            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
-            if defn.cfg_attr == "llm_provider":  # pragma: no cover
+            settings.set_value(cfg.data_root, key, persisted)
+            if key == "llm_provider":  # pragma: no cover
                 from lilbee.services import reset_services
 
                 reset_services()
@@ -570,20 +565,10 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Settings")
-        else:
-            self.app.push_screen(SettingsScreen())
+        self.app.push_screen(SettingsScreen())
 
     def _cmd_status(self, _args: str) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):
-            self.app.switch_view("Status")
-        else:
-            self.app.push_screen(StatusScreen())
+        self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
@@ -737,7 +722,7 @@ class ChatScreen(Screen[None]):
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task("Sync documents", "sync")
         task_bar.queue.advance("sync")
         self._run_sync_worker(task_id)
@@ -755,7 +740,7 @@ class ChatScreen(Screen[None]):
         import asyncio
 
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         try:
             from lilbee.ingest import sync
 

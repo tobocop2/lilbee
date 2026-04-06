@@ -13,8 +13,9 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
+from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import DataTable, Input, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -155,7 +156,7 @@ def _row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:
-        parts.append("*")
+        parts.append("\u2605")
     parts.append(row.name)
     if row.installed:
         parts.append("[installed]")
@@ -216,13 +217,14 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield Footer()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -412,13 +414,26 @@ class CatalogScreen(Screen[None]):
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
         widgets_to_mount: list[Static | GridSelect] = []
-        for heading, rows in _group_rows_for_grid(all_rows):
-            if not rows:
+        for section in _group_rows_for_grid(all_rows):
+            if not section.rows:
                 continue
-            widgets_to_mount.append(Static(heading, classes="section-heading"))
-            cards = [ModelCard(row) for row in rows]
+            widgets_to_mount.append(Static(section.heading, classes="section-heading"))
+            cards = [ModelCard(row) for row in section.rows]
             grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
             widgets_to_mount.append(grid)
+        if not self._hf_fetched:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_BROWSE_MORE,
+                    classes="grid-cta browse-more-hf",
+                )
+            )
+        widgets_to_mount.append(
+            Static(
+                msg.CATALOG_VIEW_TOGGLE_GRID,
+                classes="grid-cta view-toggle-cta",
+            )
+        )
         container.mount_all(widgets_to_mount)
 
     def _filter_grid(self) -> None:
@@ -436,6 +451,13 @@ class CatalogScreen(Screen[None]):
                 has_visible = any(c.display for c in grid.children)
                 child.display = has_visible
                 grid.display = has_visible
+
+    @on(Click, ".browse-more-hf")
+    def _on_browse_more_clicked(self) -> None:
+        """Fetch all models when the browse-more card is clicked."""
+        if not self._hf_fetched:
+            self._hf_fetched = True
+            self._fetch_all_hf_models()
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
@@ -465,7 +487,8 @@ class CatalogScreen(Screen[None]):
         n_total = len(self._rows)
         more = "+" if self._hf_has_more else ""
         self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  Showing {n_total}{more} models"
+            f"Sort: {self._sort_column} ({direction})  |  "
+            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
         )
 
     @on(DataTable.HeaderSelected, "#catalog-table")
@@ -599,7 +622,7 @@ class CatalogScreen(Screen[None]):
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+        if isinstance(self.app, LilbeeApp):
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
@@ -723,9 +746,15 @@ class CatalogScreen(Screen[None]):
             self.app.action_nav_next()
 
 
-def _group_rows_for_grid(
-    rows: list[TableRow],
-) -> list[tuple[str, list[TableRow]]]:
+@dataclass
+class GridSection:
+    """A named group of rows for the grid view."""
+
+    heading: str
+    rows: list[TableRow]
+
+
+def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     """Group rows into sections for the grid view."""
     recommended = [r for r in rows if r.featured]
     installed = [r for r in rows if r.installed and not r.featured]
@@ -735,11 +764,11 @@ def _group_rows_for_grid(
     ]
     vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
     return [
-        ("Recommended", recommended),
-        ("Installed", installed),
-        ("Chat", chat),
-        ("Embedding", embedding),
-        ("Vision", vision),
+        GridSection(msg.HEADING_OUR_PICKS, recommended),
+        GridSection(msg.HEADING_INSTALLED, installed),
+        GridSection(ModelTask.CHAT.capitalize(), chat),
+        GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
+        GridSection(ModelTask.VISION.capitalize(), vision),
     ]
 
 

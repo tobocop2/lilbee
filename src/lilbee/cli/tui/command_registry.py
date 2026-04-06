@@ -80,7 +80,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/reset", "_cmd_reset", args_hint="confirm", help_text="Factory reset"),
     SlashCommand("/status", "_cmd_status", help_text="Knowledge base status"),
     SlashCommand("/settings", "_cmd_settings", help_text="View/change settings"),
-    SlashCommand("/models", "_cmd_catalog", aliases=("/m",), help_text="Browse models"),
+    SlashCommand("/models", "_cmd_catalog", aliases=("/m",), help_text="Browse catalog"),
+    SlashCommand("/setup", "_cmd_setup", help_text="Run setup wizard"),
     SlashCommand(
         "/remove",
         "_cmd_remove",

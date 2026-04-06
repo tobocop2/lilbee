@@ -59,6 +59,8 @@ EMBEDDING_MISSING = (
 # -- Shared / cross-screen ----------------------------------------------------
 
 THEME_SET = "Theme: {name}"
+HEADING_OUR_PICKS = "Our picks"
+HEADING_INSTALLED = "Installed"
 
 # -- Catalog screen ------------------------------------------------------------
 
@@ -76,6 +78,9 @@ CATALOG_DELETED = "Deleted {name}"
 CATALOG_DELETE_FAILED = "Delete failed: {error}"
 CATALOG_NO_MATCH = "No models match your filters."
 CATALOG_FILTER_PLACEHOLDER = "Filter models... ( Esc to close)"
+CATALOG_VIEW_TOGGLE_GRID = "Press v for full list view \u00b7 / to search"
+CATALOG_VIEW_TOGGLE_TABLE = "Press v for card view"
+CATALOG_BROWSE_MORE = "Browse more models \u2192"
 
 # -- Chat screen ---------------------------------------------------------------
 
@@ -105,16 +110,17 @@ SETUP_SKIP_BUTTON = "Skip \u2014 chat only (no document search)"
 SETUP_CONFIRM_BUTTON = "Confirm"
 SETUP_INSTALLED_LABEL = "Installed locally:"
 SETUP_FEATURED_LABEL = "Featured models (download):"
+SETUP_BROWSE_CATALOG = "Browse full catalog"
 SETUP_CONNECTING = "Connecting to HuggingFace..."
 SETUP_INSTALLED_STATUS = "{name} installed!"
 SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 
-# -- Navigation bar ------------------------------------------------------------
+# -- Status bar ----------------------------------------------------------------
 
-NAV_VIEWS: list[str] = ["Chat", "Models", "Status", "Settings", "Tasks"]
-NAV_HELP_QUIT = "  [dim]click/h/l[/] Nav  [dim]?[/] Help  [dim]^c[/] Quit"
-MODE_NORMAL = "-- NORMAL --"
-MODE_INSERT = "-- INSERT --"
+NAV_VIEWS: list[str] = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
+STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
+MODE_NORMAL = "NORMAL"
+MODE_INSERT = "INSERT"
 
 # -- Help modal ----------------------------------------------------------------
 

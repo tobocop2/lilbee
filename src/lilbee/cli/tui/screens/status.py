@@ -11,7 +11,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Collapsible, DataTable, Footer, Header, Static
+from textual.widgets import Collapsible, DataTable, Static
 
 from lilbee.cli.tui.pill import pill
 from lilbee.config import cfg
@@ -93,7 +93,8 @@ class StatusScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
             Collapsible(DataTable(id="docs-table"), title="Documents", id="docs-section"),
@@ -101,7 +102,7 @@ class StatusScreen(Screen[None]):
             Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             id="status-scroll",
         )
-        yield Footer()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self._load_config()
@@ -151,7 +152,7 @@ class StatusScreen(Screen[None]):
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+        if isinstance(self.app, LilbeeApp):
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

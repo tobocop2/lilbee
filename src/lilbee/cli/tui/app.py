@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -15,7 +16,6 @@ from textual.signal import Signal
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.events import ModelChanged
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -38,34 +38,36 @@ DARK_THEMES = (
 )
 
 
-def _get_chat_screen() -> Screen:
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    return ChatScreen()
-
-
-def _get_catalog_screen() -> Screen:
+def _make_catalog() -> Screen:
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     return CatalogScreen()
 
 
-def _get_status_screen() -> Screen:
+def _make_status() -> Screen:
     from lilbee.cli.tui.screens.status import StatusScreen
 
     return StatusScreen()
 
 
-def _get_settings_screen() -> Screen:
+def _make_settings() -> Screen:
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     return SettingsScreen()
 
 
-def _get_tasks_screen() -> Screen:
+def _make_tasks() -> Screen:
     from lilbee.cli.tui.screens.task_center import TaskCenter
 
     return TaskCenter()
+
+
+VIEWS: dict[str, Callable[[], Screen]] = {
+    "Catalog": _make_catalog,
+    "Status": _make_status,
+    "Settings": _make_settings,
+    "Tasks": _make_tasks,
+}
 
 
 class LilbeeApp(App[None]):
@@ -75,22 +77,6 @@ class LilbeeApp(App[None]):
     CSS_PATH = Path(__file__).parent / "app.tcss"
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
-
-    MODES = {  # noqa: RUF012
-        "chat": _get_chat_screen,
-        "models": _get_catalog_screen,
-        "status": _get_status_screen,
-        "settings": _get_settings_screen,
-        "tasks": _get_tasks_screen,
-    }
-
-    _MODE_FOR_VIEW: ClassVar[dict[str, str]] = {
-        "Chat": "chat",
-        "Models": "models",
-        "Status": "status",
-        "Settings": "settings",
-        "Tasks": "tasks",
-    }
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("question_mark", "push_help", "? help", show=True),
@@ -117,13 +103,16 @@ class LilbeeApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
+        yield from ()  # screens compose their own StatusBar
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
         self.mount(self.task_bar)
-        self.switch_mode("chat")
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        self.push_screen(ChatScreen(auto_sync=self._auto_sync))
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
@@ -175,21 +164,19 @@ class LilbeeApp(App[None]):
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view using Textual modes."""
-        mode_name = self._MODE_FOR_VIEW.get(view_name)
-        if mode_name is None:
-            return
-        self.switch_mode(mode_name)
-        self.active_view = view_name
-        self._update_nav(view_name)
+        """Switch to a named view via lazy screen factories."""
+        if view_name == "Chat":
+            from lilbee.cli.tui.screens.chat import ChatScreen
 
-    def _update_nav(self, view_name: str) -> None:
-        """Update the app-level NavBar after a mode switch."""
-        try:
-            nav = self.query_one("#global-nav-bar", NavBar)
-            nav.active_view = view_name
-        except Exception:
-            log.debug("NavBar update failed", exc_info=True)
+            if not isinstance(self.screen, ChatScreen):
+                self.switch_screen(ChatScreen(auto_sync=False))
+        else:
+            factory = VIEWS.get(view_name)
+            if factory is None:
+                return
+            self.switch_screen(factory())
+
+        self.active_view = view_name
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal
