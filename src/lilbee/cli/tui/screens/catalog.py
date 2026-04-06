@@ -486,7 +486,8 @@ class CatalogScreen(Screen[None]):
         n_total = len(self._rows)
         more = "+" if self._hf_has_more else ""
         self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  Showing {n_total}{more} models"
+            f"Sort: {self._sort_column} ({direction})  |  "
+            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
         )
 
     @on(DataTable.HeaderSelected, "#catalog-table")

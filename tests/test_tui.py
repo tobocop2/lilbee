@@ -616,7 +616,7 @@ class TestMinimalFooter:
         visible = self._visible_bindings(LilbeeApp.BINDINGS)
         assert any("help" in d.lower() for d in visible)
         assert any("quit" in d.lower() or "cancel" in d.lower() for d in visible)
-        assert not any(d == "Models" for d in visible)
+        assert not any(d == "Catalog" for d in visible)
         assert not any(d == "Status" for d in visible)
         assert not any(d == "Settings" for d in visible)
         assert not any(d == "Theme" for d in visible)
