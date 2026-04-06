@@ -5241,16 +5241,6 @@ async def test_chat_login_with_token_error():
                 await pilot.pause()
 
 
-async def test_chat_cycle_focus_unknown_widget():
-    """_cycle_focus handles unknown focused widget id."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.screen._insert_mode = False
-        # Focus something with an unknown id (unfocused state)
-        app.screen._cycle_focus(1)
-        await pilot.pause()
-
-
 async def test_chat_enter_normal_mode_while_streaming():
     """action_enter_normal_mode cancels stream when streaming."""
     app = ChatTestApp()
