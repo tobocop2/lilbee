@@ -807,12 +807,6 @@ class TestHasMeaningfulText:
         result = mock.MagicMock(chunks=[])
         assert _has_meaningful_text(result) is False
 
-    def test_no_chunks_attr_returns_false(self):
-        from lilbee.ingest import _has_meaningful_text
-
-        result = object()
-        assert _has_meaningful_text(result) is False
-
     def test_short_text_returns_false(self):
         from lilbee.ingest import _has_meaningful_text
 

@@ -609,11 +609,11 @@ class TestListInstalledModels:
     def test_exclude_vision_filters_vision_catalog(self, mock_svc):
         mock_svc.provider.list_models.return_value = [
             "llama3:latest",
-            "maternion/LightOnOCR-2:latest",
+            "LightOnOCR-2",
         ]
         result = list_installed_models(exclude_vision=True)
         assert result == ["llama3:latest"]
-        assert "maternion/LightOnOCR-2:latest" not in result
+        assert "LightOnOCR-2" not in result
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:

@@ -136,7 +136,13 @@ def _default(
     level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
     if log_level is not None:
         level_str = log_level.upper()
-    level = getattr(logging, level_str, logging.WARNING)
+    _LOG_LEVELS = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+    }
+    level = _LOG_LEVELS.get(level_str, logging.WARNING)
     logging.basicConfig(
         level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
     )
