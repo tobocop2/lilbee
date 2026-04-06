@@ -97,6 +97,16 @@ CHAT_RENDERING = "Rendering: {label}"
 SETTINGS_READ_ONLY = "read-only"
 SETTINGS_INVALID_VALUE = "Invalid value: {error}"
 
+# -- Wiki screen ---------------------------------------------------------------
+
+WIKI_EMPTY_STATE = "No wiki pages found"
+WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
+WIKI_NO_CONTENT = "Select a page to view"
+WIKI_TYPE_HEADINGS: dict[str, str] = {
+    "summary": "Summaries",
+    "concept": "Concepts",
+}
+
 # -- App -----------------------------------------------------------------------
 
 APP_CANCELLED = "Cancelled"

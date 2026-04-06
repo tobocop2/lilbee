@@ -32,7 +32,12 @@ _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
     """Snapshot and restore cfg for every test."""
+    from lilbee.cli.tui import messages as _msg
+    from lilbee.cli.tui.app import VIEWS as _views
+
     snapshot = cfg.model_copy()
+    nav_snapshot = list(_msg.NAV_VIEWS)
+    views_snapshot = dict(_views)
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
@@ -44,6 +49,9 @@ def _isolated_cfg(tmp_path):
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+    _msg.NAV_VIEWS[:] = nav_snapshot
+    _views.clear()
+    _views.update(views_snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -2035,9 +2043,7 @@ async def test_catalog_grid_cache_skips_rebuild():
             first_key = screen._grid_cache_key
             assert first_key != ()
 
-            with patch.object(
-                screen.query_one("#catalog-grid"), "remove_children"
-            ) as mock_remove:
+            with patch.object(screen.query_one("#catalog-grid"), "remove_children") as mock_remove:
                 screen._refresh_grid()
                 mock_remove.assert_not_called()
             assert screen._grid_cache_key == first_key
@@ -3875,3 +3881,322 @@ async def test_settings_group_titles_present():
         await pilot.pause()
         titles = app.screen.query(".group-title")
         assert len(titles) >= 2
+
+
+class WikiTestApp(App[None]):
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Footer
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
+        self.push_screen(WikiScreen())
+
+
+def _create_wiki_page(wiki_root, subdir, slug, title, content_body="Some content"):
+    """Create a wiki markdown file with frontmatter."""
+    d = wiki_root / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    page = d / f"{slug}.md"
+    page.write_text(
+        f"---\ntitle: {title}\ngenerated_at: 2025-01-01\nsource_count: 3\n"
+        f"faithfulness_score: 0.85\n---\n{content_body}\n"
+    )
+    return page
+
+
+class TestWikiScreenCompose:
+    async def test_composes_with_status_bar(self):
+        """WikiScreen includes a StatusBar widget."""
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from lilbee.cli.tui.widgets.status_bar import StatusBar
+
+            bars = app.screen.query(StatusBar)
+            assert len(bars) == 1
+
+    async def test_has_sidebar_and_content(self):
+        """WikiScreen has sidebar and main content areas."""
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Input, OptionList
+
+            assert app.screen.query_one("#wiki-sidebar") is not None
+            assert app.screen.query_one("#wiki-main") is not None
+            assert app.screen.query_one("#wiki-search", Input) is not None
+            assert app.screen.query_one("#wiki-page-list", OptionList) is not None
+
+
+class TestWikiScreenEmptyState:
+    async def test_shows_empty_when_wiki_disabled(self):
+        """Shows empty state message when cfg.wiki is False."""
+        cfg.wiki = False
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import OptionList
+
+            from lilbee.cli.tui import messages as msg
+
+            option_list = app.screen.query_one("#wiki-page-list", OptionList)
+            assert option_list.option_count == 1
+            assert msg.WIKI_EMPTY_STATE in str(option_list.get_option_at_index(0).prompt)
+
+    async def test_shows_empty_when_no_pages(self, tmp_path):
+        """Shows empty state when wiki is enabled but no pages exist."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        cfg.data_dir.mkdir(parents=True)
+        wiki_dir = cfg.data_dir / cfg.wiki_dir
+        wiki_dir.mkdir()
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import OptionList
+
+            option_list = app.screen.query_one("#wiki-page-list", OptionList)
+            assert option_list.option_count >= 1
+
+
+class TestWikiScreenWithPages:
+    async def test_lists_pages(self, tmp_path):
+        """WikiScreen lists pages when wiki data exists."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "test-doc", "Test Document")
+        _create_wiki_page(wiki_root, "concepts", "some-concept", "Some Concept")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import OptionList
+
+            option_list = app.screen.query_one("#wiki-page-list", OptionList)
+            assert option_list.option_count >= 2
+
+    async def test_displays_selected_page_content(self, tmp_path):
+        """Selecting a page renders its content."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(
+            wiki_root, "summaries", "my-page", "My Page", "# Hello World\nSome text here."
+        )
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            screen._display_page("summaries/my-page")
+            await pilot.pause()
+
+            header = app.screen.query_one("#wiki-page-header", Static)
+            header_text = header.content
+            assert "My Page" in header_text
+
+    async def test_displays_faithfulness_in_header(self, tmp_path):
+        """Page header shows faithfulness score from frontmatter."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "scored-page", "Scored Page")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            screen._display_page("summaries/scored-page")
+            await pilot.pause()
+
+            header = app.screen.query_one("#wiki-page-header", Static)
+            header_text = header.content
+            assert "85%" in header_text
+
+
+class TestWikiScreenSearch:
+    async def test_search_filters_pages(self, tmp_path):
+        """Search input filters the page list."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "alpha-doc", "Alpha Document")
+        _create_wiki_page(wiki_root, "summaries", "beta-doc", "Beta Document")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            search = app.screen.query_one("#wiki-search", TextualInput)
+            search.value = "Alpha"
+            await pilot.pause()
+            assert "summaries/alpha-doc" in screen._page_slugs
+            assert "summaries/beta-doc" not in screen._page_slugs
+
+    async def test_escape_clears_search(self, tmp_path):
+        """Escape clears search text when search has a value."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "test-page", "Test Page")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            search = app.screen.query_one("#wiki-search", TextualInput)
+            search.value = "something"
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert search.value == ""
+
+
+class TestWikiScreenNavigation:
+    async def test_go_back_pops_screen(self):
+        """Pressing q pops the wiki screen in a non-LilbeeApp context."""
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("q")
+
+    async def test_vim_keys(self):
+        """Vim navigation keys work on the option list."""
+        cfg.wiki = True
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("j")
+            await pilot.press("k")
+            await pilot.press("g")
+            await pilot.press("G")
+
+    async def test_focus_search(self, tmp_path):
+        """Pressing / focuses the search input."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "page-one", "Page One")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("slash")
+            await pilot.pause()
+            from textual.widgets import Input as TextualInput
+
+            assert app.screen.query_one("#wiki-search", TextualInput).has_focus
+
+
+class TestWikiViewRegistration:
+    def test_wiki_not_in_views_when_disabled(self):
+        """Wiki view is not registered when cfg.wiki is False."""
+        from lilbee.cli.tui.app import VIEWS
+
+        cfg.wiki = False
+        assert "Wiki" not in VIEWS or cfg.wiki
+
+    async def test_wiki_in_views_when_enabled(self):
+        """Wiki view is registered in VIEWS when LilbeeApp mounts with cfg.wiki=True."""
+        from lilbee.cli.tui.app import VIEWS, LilbeeApp
+
+        cfg.wiki = True
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            assert "Wiki" in VIEWS
+
+    async def test_wiki_in_nav_views_when_enabled(self):
+        """Wiki appears in NAV_VIEWS when cfg.wiki is True."""
+        from lilbee.cli.tui import messages as m
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.wiki = True
+        if "Wiki" in m.NAV_VIEWS:
+            m.NAV_VIEWS.remove("Wiki")
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            assert "Wiki" in m.NAV_VIEWS
+
+    async def test_wiki_not_in_nav_views_when_disabled(self):
+        """Wiki does not appear in NAV_VIEWS when cfg.wiki is False."""
+        from lilbee.cli.tui import messages as m
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.wiki = False
+        if "Wiki" in m.NAV_VIEWS:
+            m.NAV_VIEWS.remove("Wiki")
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            assert "Wiki" not in m.NAV_VIEWS
+
+
+class TestWikiFormatPageHeader:
+    def test_basic_header(self):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        result = _format_page_header("Title", "summary", 3, "2025-01-01", 0.85)
+        assert "Title" in result
+        assert "summary" in result
+        assert "3 sources" in result
+        assert "85%" in result
+
+    def test_no_faithfulness(self):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        result = _format_page_header("Title", "concept", 0, "", None)
+        assert "Title" in result
+        assert "%" not in result
+
+    def test_no_sources(self):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        result = _format_page_header("Title", "concept", 0, "2025-01-01", None)
+        assert "sources" not in result
+
+
+class TestWikiGroupPages:
+    def test_groups_by_type(self):
+        from lilbee.cli.tui.screens.wiki import _group_pages
+        from lilbee.wiki.browse import WikiPageInfo
+
+        pages = [
+            WikiPageInfo("s/a", "A", "summary", 1, ""),
+            WikiPageInfo("c/b", "B", "concept", 2, ""),
+            WikiPageInfo("s/c", "C", "summary", 1, ""),
+        ]
+        groups = _group_pages(pages)
+        types = [g[0] for g in groups]
+        assert types == ["summary", "concept"]
+        assert len(groups[0][1]) == 2
+        assert len(groups[1][1]) == 1
+
+    def test_empty_pages(self):
+        from lilbee.cli.tui.screens.wiki import _group_pages
+
+        assert _group_pages([]) == []
+
+
+class TestWikiDisplayPageMissing:
+    async def test_display_nonexistent_page(self, tmp_path):
+        """Displaying a nonexistent page shows placeholder."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        wiki_root.mkdir(parents=True)
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            screen._display_page("summaries/nonexistent")
+            await pilot.pause()
+            header = app.screen.query_one("#wiki-page-header", Static)
+            assert header.content == ""

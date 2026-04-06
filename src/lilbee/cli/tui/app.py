@@ -62,6 +62,12 @@ def _make_tasks() -> Screen:
     return TaskCenter()
 
 
+def _make_wiki() -> Screen:
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    return WikiScreen()
+
+
 VIEWS: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
@@ -109,6 +115,11 @@ class LilbeeApp(App[None]):
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
         self.mount(self.task_bar)
+
+        if cfg.wiki and "Wiki" not in VIEWS:
+            VIEWS["Wiki"] = _make_wiki
+        if cfg.wiki and "Wiki" not in msg.NAV_VIEWS:
+            msg.NAV_VIEWS.append("Wiki")
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
