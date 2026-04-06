@@ -10,12 +10,12 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label, ProgressBar, Static
 
-from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus
+from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
 
 log = logging.getLogger(__name__)
 
 _DONE_FLASH_SECONDS = 1.0
-_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_INTERVAL = 0.1
 
 
@@ -81,7 +81,7 @@ class TaskBar(Static):
 
     def complete_task(self, task_id: str) -> None:
         """Mark task done, show brief 'done' flash, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.complete_task(task_id)
         self._refresh_display()
@@ -89,7 +89,7 @@ class TaskBar(Static):
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark task failed, show briefly, then remove."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.fail_task(task_id, detail)
         self._refresh_display()
@@ -97,7 +97,7 @@ class TaskBar(Static):
 
     def cancel_task(self, task_id: str) -> None:
         """Cancel and remove a task."""
-        task = self._queue._tasks.get(task_id)
+        task = self._queue.get_task(task_id)
         task_type = task.task_type if task else None
         self._queue.cancel(task_id)
         self._queue.remove_task(task_id)
@@ -128,12 +128,6 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             self.app.call_from_thread(self._refresh_display)
 
-    def _update_nav_bar_task_text(self, text: str) -> None:
-        """Push task status into the NavBar indicator."""
-        with contextlib.suppress(Exception):
-            nav = self.app.screen.query_one("#global-nav-bar")
-            nav.active_task_text = text  # type: ignore[attr-defined]
-
     def _refresh_display(self) -> None:
         """Update widget contents based on queue state."""
         active_list = self._queue.active_tasks
@@ -141,7 +135,6 @@ class TaskBar(Static):
 
         if not active_list and not queued:
             self.display = False
-            self._update_nav_bar_task_text("")
             return
 
         self.display = True
@@ -153,8 +146,6 @@ class TaskBar(Static):
         if active_list:
             primary = active_list[0]
             self._render_active_task(primary, active_label, progress_bar)
-            nav_text = self._build_nav_text(active_list)
-            self._update_nav_bar_task_text(nav_text)
         else:
             active_label.display = False
             progress_bar.display = False
@@ -180,20 +171,5 @@ class TaskBar(Static):
         progress_bar.display = True
 
     @staticmethod
-    def _build_nav_text(active_list: list[Task]) -> str:
-        """Build a one-line summary of all active tasks for the NavBar."""
-        parts = []
-        for t in active_list:
-            parts.append(f"{t.name} {t.progress}%")
-        return "\u25b6 " + " | ".join(parts)
-
-    @staticmethod
     def _status_icon(status: TaskStatus) -> str:
-        icons = {
-            TaskStatus.ACTIVE: "\u25b8",
-            TaskStatus.DONE: "\u2713",
-            TaskStatus.FAILED: "\u2717",
-            TaskStatus.CANCELLED: "\u2212",
-            TaskStatus.QUEUED: "\u2022",
-        }
-        return icons.get(status, "\u25b8")
+        return STATUS_ICONS.get(status, "▸")

@@ -10,18 +10,20 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
+from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Input, Static
+from textual.widgets import Input, Label, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
+from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
@@ -29,7 +31,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_bar import NavBar
+from lilbee.cli.tui.widgets.status_bar import StatusBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -47,8 +49,29 @@ _MAX_HISTORY_MESSAGES = 200
 _FOCUSABLE_IDS = ("model-bar", "chat-log", "chat-input")
 
 
+class ChatStatusLine(Label):
+    """One-line status bar showing the current model as a pill badge."""
+
+    model_name: var[str] = var("")
+
+    def watch_model_name(self, name: str) -> None:
+        """Re-render when model name changes."""
+        if name:
+            self.update(pill(name, "$primary", "$text"))
+        else:
+            self.update("")
+
+
+class PromptArea(Vertical):
+    """Container for chat input that highlights on focus-within."""
+
+    pass
+
+
 class ChatScreen(Screen[None]):
     """Primary chat interface with streaming LLM responses."""
+
+    CSS_PATH = "chat.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("slash", "focus_commands", "/ commands", show=True),
@@ -75,27 +98,37 @@ class ChatScreen(Screen[None]):
         self._input_history: list[str] = []
         self._history_index: int = -1
 
-    def _get_task_bar(self) -> TaskBar:
-        """Get the app-level TaskBar (created by LilbeeApp)."""
-        return self.app._task_bar  # type: ignore[attr-defined, no-any-return]
+    @property
+    def _task_bar(self) -> TaskBar:
+        """The app-level TaskBar (created by LilbeeApp)."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
+
+        bar = getattr(self.app, "task_bar", None)  # test apps lack task_bar
+        if isinstance(bar, _TaskBar):
+            return bar
+        msg_text = "App does not have a TaskBar"
+        raise RuntimeError(msg_text)
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
         yield CompletionOverlay(id="completion-overlay")
+        yield ChatStatusLine(id="chat-status-line")
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
-        yield Input(
-            placeholder=msg.CHAT_INPUT_PLACEHOLDER,
-            id="chat-input",
-            suggester=SlashSuggester(use_cache=False),
-        )
+        with PromptArea(id="chat-prompt-area"):
+            yield Input(
+                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                id="chat-input",
+                suggester=SlashSuggester(use_cache=False),
+            )
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self._update_input_style()
+        self._refresh_status_line()
         self.query_one("#chat-only-banner", Static).display = False
         if self._needs_setup():
             from lilbee.cli.tui.screens.setup import SetupWizard
@@ -157,6 +190,9 @@ class ChatScreen(Screen[None]):
 
     def key_f5(self) -> None:
         """Open the setup wizard."""
+        self._cmd_setup("")
+
+    def _cmd_setup(self, _args: str) -> None:
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         self.app.push_screen(SetupWizard(), self._on_setup_complete)
@@ -170,21 +206,26 @@ class ChatScreen(Screen[None]):
     def _update_input_style(self) -> None:
         """Toggle input border and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
+        area = self.query_one("#chat-prompt-area", PromptArea)
         if self._insert_mode:
             inp.remove_class("normal-mode")
             inp.add_class("insert-mode")
+            area.remove_class("normal-mode")
+            area.add_class("insert-mode")
         else:
             inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
+            area.remove_class("insert-mode")
+            area.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
-        """Update the NavBar mode text to reflect the current mode."""
-        try:
-            nav = self.query_one("#global-nav-bar", NavBar)
-            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
-        except Exception:
-            pass
+        """Update the StatusBar mode text to reflect the current mode."""
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            bar = self.query_one(StatusBar)
+            bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -193,27 +234,21 @@ class ChatScreen(Screen[None]):
         if not isinstance(event, Key):
             return
         inp = self.query_one("#chat-input", Input)
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
-            inp.focus()
-            inp.insert_text_at_cursor(event.character)
-            event.prevent_default()
-            event.stop()
-            return
         if self._insert_mode:
+            if not inp.has_focus and event.is_printable and event.character:
+                inp.focus()
+                inp.insert_text_at_cursor(event.character)
+                event.prevent_default()
+                event.stop()
             return
-        if event.key == "enter":
+        if event.key == "enter" or (event.character and event.character in "iao"):
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
             return
-        if event.character and event.character.isprintable() and len(event.key) == 1:
-            if event.character in "jkgG":
-                return
-            self._enter_insert_mode()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "chat-input":
-            return
+    @on(Input.Submitted, "#chat-input")
+    def _on_chat_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
@@ -253,7 +288,7 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Add {path.name}", "add")
         task_bar.queue.advance("add")
         self._run_add_background(path, task_id)
@@ -262,7 +297,7 @@ class ChatScreen(Screen[None]):
     def _run_add_background(self, path: Path, task_id: str) -> None:
         """Copy files and sync in a background thread."""
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
         try:
             from lilbee.cli.helpers import copy_files
@@ -283,7 +318,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     if data.total_files:
                         pct = 50 + int(data.current_file * 50 / data.total_files)
                     else:
@@ -324,7 +360,7 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task(f"Crawl {url}", "crawl")
         task_bar.queue.advance("crawl")
         self._run_crawl_background(url, depth, max_pages, task_id)
@@ -350,7 +386,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
@@ -359,7 +395,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.CRAWL_PAGE:
                     from lilbee.progress import CrawlPageEvent
 
-                    assert isinstance(data, CrawlPageEvent)
+                    if not isinstance(data, CrawlPageEvent):
+                        raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                     pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                     detail = f"[{data.current}/{data.total}]: {data.url}"
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
@@ -518,10 +555,10 @@ class ChatScreen(Screen[None]):
                 parsed = None
             else:
                 parsed = defn.type(value)
-            setattr(cfg, defn.cfg_attr, parsed)
+            setattr(cfg, key, parsed)
             persisted = str(parsed) if parsed is not None else ""
-            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
-            if defn.cfg_attr == "llm_provider":  # pragma: no cover
+            settings.set_value(cfg.data_root, key, persisted)
+            if key == "llm_provider":  # pragma: no cover
                 from lilbee.services import reset_services
 
                 reset_services()
@@ -538,7 +575,7 @@ class ChatScreen(Screen[None]):
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
-        if args and isinstance(self.app, LilbeeApp):
+        if args and isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:
@@ -687,7 +724,7 @@ class ChatScreen(Screen[None]):
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         task_id = task_bar.add_task("Sync documents", "sync")
         task_bar.queue.advance("sync")
         self._run_sync_worker(task_id)
@@ -705,7 +742,7 @@ class ChatScreen(Screen[None]):
         import asyncio
 
         self._sync_active = True
-        task_bar = self._get_task_bar()
+        task_bar = self._task_bar
         try:
             from lilbee.ingest import sync
 
@@ -715,7 +752,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=data.current_file,
@@ -840,18 +878,23 @@ class ChatScreen(Screen[None]):
             self._history_index = -1
             inp.value = ""
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    @on(Input.Changed, "#chat-input")
+    def _on_chat_input_changed(self, event: Input.Changed) -> None:
         """Hide completion overlay when input changes manually."""
         if self._completing:
             return
-        if event.input.id == "chat-input":
-            overlay = self.query_one("#completion-overlay", CompletionOverlay)
-            if overlay.is_visible:
-                overlay.hide()
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        if overlay.is_visible:
+            overlay.hide()
 
     def _refresh_model_bar(self) -> None:
-        """Update the model status bar."""
+        """Update the model status bar and status line."""
         self.query_one("#model-bar", ModelBar).refresh_models()
+        self._refresh_status_line()
+
+    def _refresh_status_line(self) -> None:
+        """Update the status line pill with the current chat model."""
+        self.query_one("#chat-status-line", ChatStatusLine).model_name = cfg.chat_model
 
     def key_j(self) -> None:
         """Vim j: cycle focus to next widget in normal mode."""

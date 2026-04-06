@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.models import ModelTask
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
@@ -227,11 +228,11 @@ def _classify_remote_task(name: str, family: str) -> str:
     """Classify a remote model as chat, embedding, or vision."""
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES):
-        return "embedding"
+        return ModelTask.EMBEDDING
     name_lower = name.lower()
     if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
-        return "vision"
-    return "chat"
+        return ModelTask.VISION
+    return ModelTask.CHAT
 
 
 def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
@@ -265,7 +266,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
 
 def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> list[str]:
     """Return names of models classified as embedding from the litellm backend."""
-    return [m.name for m in classify_remote_models(base_url) if m.task == "embedding"]
+    return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
 
 
 _manager: ModelManager | None = None

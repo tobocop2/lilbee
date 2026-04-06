@@ -1,0 +1,19 @@
+#status-scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+
+Collapsible {
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+#config-info, #arch-info, #storage-info {
+    padding: 1 1;
+    height: auto;
+}
+
+#docs-table {
+    height: auto;
+    max-height: 20;
+}

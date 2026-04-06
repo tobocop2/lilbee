@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console
@@ -14,7 +15,18 @@ from rich.table import Table
 from lilbee import settings
 from lilbee.config import cfg
 
+
+class ModelTask(StrEnum):
+    """Task classification for models."""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    VISION = "vision"
+
+
 log = logging.getLogger(__name__)
+
+FEATURED_STAR = "★"
 
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2
@@ -44,21 +56,36 @@ def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
     return tuple(ModelInfo(m.name, m.size_gb, m.min_ram_gb, m.description) for m in featured)
 
 
-# Derived from catalog.py's featured lists — single source of truth
-def _build_model_catalog() -> tuple[ModelInfo, ...]:
-    from lilbee.catalog import FEATURED_CHAT
-
-    return _catalog_from_featured(FEATURED_CHAT)
-
-
-def _build_vision_catalog() -> tuple[ModelInfo, ...]:
-    from lilbee.catalog import FEATURED_VISION
-
-    return _catalog_from_featured(FEATURED_VISION)
+# Lazy singletons — resolved on first access to break the circular import
+# between models.py (imports ModelTask) and catalog.py (imports from models).
+_model_catalog: tuple[ModelInfo, ...] | None = None
+_vision_catalog: tuple[ModelInfo, ...] | None = None
 
 
-MODEL_CATALOG: tuple[ModelInfo, ...] = _build_model_catalog()
-VISION_CATALOG: tuple[ModelInfo, ...] = _build_vision_catalog()
+def _get_model_catalog() -> tuple[ModelInfo, ...]:
+    global _model_catalog
+    if _model_catalog is None:
+        from lilbee.catalog import FEATURED_CHAT
+
+        _model_catalog = _catalog_from_featured(FEATURED_CHAT)
+    return _model_catalog
+
+
+def _get_vision_catalog() -> tuple[ModelInfo, ...]:
+    global _vision_catalog
+    if _vision_catalog is None:
+        from lilbee.catalog import FEATURED_VISION
+
+        _vision_catalog = _catalog_from_featured(FEATURED_VISION)
+    return _vision_catalog
+
+
+def __getattr__(name: str) -> tuple[ModelInfo, ...]:
+    if name == "MODEL_CATALOG":
+        return _get_model_catalog()
+    if name == "VISION_CATALOG":
+        return _get_vision_catalog()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_system_ram_gb() -> float:
@@ -104,8 +131,8 @@ def get_free_disk_gb(path: Path) -> float:
 
 def pick_default_model(ram_gb: float) -> ModelInfo:
     """Choose the largest catalog model that fits in *ram_gb*."""
-    best = MODEL_CATALOG[0]
-    for model in MODEL_CATALOG:
+    best = _get_model_catalog()[0]
+    for model in _get_model_catalog():
         if model.min_ram_gb <= ram_gb:
             best = model
     return best
@@ -113,7 +140,7 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 
 def _model_download_size_gb(model: str) -> float:
     """Estimated download size for a model."""
-    catalog_sizes = {m.name: m.size_gb for m in MODEL_CATALOG}
+    catalog_sizes = {m.name: m.size_gb for m in _get_model_catalog()}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
@@ -131,7 +158,7 @@ def display_model_picker(
     table.add_column("Size", justify="right")
     table.add_column("Description")
 
-    for idx, model in enumerate(MODEL_CATALOG, 1):
+    for idx, model in enumerate(_get_model_catalog(), 1):
         num_str = str(idx)
         name = model.name
         size_str = f"{model.size_gb:.1f} GB"
@@ -154,7 +181,7 @@ def display_model_picker(
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
     console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
@@ -162,7 +189,7 @@ def display_model_picker(
 
 def pick_default_vision_model() -> ModelInfo:
     """Return the recommended vision model (first catalog entry, best quality)."""
-    return VISION_CATALOG[0]
+    return _get_vision_catalog()[0]
 
 
 def display_vision_picker(
@@ -178,7 +205,7 @@ def display_vision_picker(
     table.add_column("Size", justify="right")
     table.add_column("Description")
 
-    for idx, model in enumerate(VISION_CATALOG, 1):
+    for idx, model in enumerate(_get_vision_catalog(), 1):
         num_str = str(idx)
         name = model.name
         size_str = f"{model.size_gb:.1f} GB"
@@ -188,7 +215,7 @@ def display_vision_picker(
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
 
         if is_recommended:
-            name = f"[bold]{name} \u2605[/bold]"
+            name = f"[bold]{name} {FEATURED_STAR}[/bold]"
             desc = f"[bold]{desc}[/bold]"
             num_str = f"[bold]{num_str}[/bold]"
 
@@ -201,7 +228,7 @@ def display_vision_picker(
     console.print("[bold]Select a vision OCR model for scanned PDF extraction:[/bold]\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
     console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
@@ -211,7 +238,7 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
-    default_idx = list(MODEL_CATALOG).index(recommended) + 1
+    default_idx = list(_get_model_catalog()).index(recommended) + 1
 
     while True:
         try:
@@ -225,13 +252,13 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         try:
             choice = int(raw)
         except ValueError:
-            sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
+            sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
             continue
 
-        if 1 <= choice <= len(MODEL_CATALOG):
-            return MODEL_CATALOG[choice - 1]
+        if 1 <= choice <= len(_get_model_catalog()):
+            return _get_model_catalog()[choice - 1]
 
-        sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
+        sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
 
 
 def validate_disk_and_pull(
@@ -328,7 +355,7 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
         embed_base = cfg.embedding_model.split(":")[0]
         models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
         if exclude_vision:
-            vision_names = {m.name for m in VISION_CATALOG}
+            vision_names = {m.name for m in _get_vision_catalog()}
             models = [m for m in models if m not in vision_names]
         return models
     except Exception:

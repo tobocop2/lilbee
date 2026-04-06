@@ -1,0 +1,43 @@
+/* lilbee TUI layout — colors come from Textual's built-in theme system */
+
+#task-bar {
+    dock: bottom;
+    height: auto;
+    max-height: 5;
+    padding: 0 1;
+}
+
+ListView {
+    height: 1fr;
+}
+
+TabbedContent > ContentSwitcher {
+    height: 1fr;
+}
+
+HelpModal > Vertical {
+    width: 70;
+    height: auto;
+    max-height: 80%;
+    border: thick $surface-lighten-2;
+    padding: 1 2;
+}
+
+HelpModal {
+    align: center middle;
+}
+
+#edit-bar {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+}
+
+#setup-title {
+    text-style: bold;
+    padding: 1 0;
+    text-align: center;
+}
+#setup-skip {
+    margin: 1 0 0 0;
+}

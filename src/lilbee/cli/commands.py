@@ -315,7 +315,8 @@ def _crawl_urls_blocking(
             def _make_callback(_t: TaskID = ptask) -> DetailedProgressCallback:
                 def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
-                        assert isinstance(data, CrawlPageEvent)
+                        if not isinstance(data, CrawlPageEvent):
+                            raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                         progress.update(
                             _t, description=f"Crawled {data.current}/{data.total}: {data.url}"
                         )
