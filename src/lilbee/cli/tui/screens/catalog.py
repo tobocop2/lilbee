@@ -331,15 +331,18 @@ class CatalogScreen(Screen[None]):
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
-        if event.worker.name == _WORKER_FETCH_HF and isinstance(result, list):
+        if not isinstance(result, list):
+            return
+        name = event.worker.name
+        if name == _WORKER_FETCH_HF:
             self._hf_models = result
-            self._refresh_view()
-        elif event.worker.name == _WORKER_FETCH_MORE_HF and isinstance(result, list):
+        elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
-            self._refresh_view()
-        elif event.worker.name == _WORKER_FETCH_REMOTE and isinstance(result, list):
+        elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
-            self._refresh_view()
+        else:
+            return
+        self._refresh_view()
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
