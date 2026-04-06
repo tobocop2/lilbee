@@ -20,9 +20,11 @@ from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
-from lilbee.wiki.shared import make_slug
+from lilbee.wiki.shared import MIN_CLUSTER_SOURCES, PageTarget, make_slug
 
 log = logging.getLogger(__name__)
+
+_MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
 _SUMMARY_PROMPT = """\
 You are a knowledge compiler. Given the source chunks below from a single document, \
@@ -232,8 +234,9 @@ def _diff_summary(old_text: str, new_text: str) -> str:
         tofile="new",
     )
     lines = list(diff)
-    if len(lines) > 20:
-        return "\n".join(lines[:20]) + f"\n... ({len(lines) - 20} more lines)"
+    if len(lines) > _MAX_DIFF_PREVIEW_LINES:
+        extra = len(lines) - _MAX_DIFF_PREVIEW_LINES
+        return "\n".join(lines[:_MAX_DIFF_PREVIEW_LINES]) + f"\n... ({extra} more lines)"
     return "\n".join(lines)
 
 
@@ -262,9 +265,10 @@ def _verify_citations(
     citation_records: list[CitationRecord],
     chunks: list[SearchChunk],
     label: str,
+    config: Config,
 ) -> list[CitationRecord]:
     """Filter citation records, keeping only those whose excerpts are in the chunks."""
-    wiki_prefix = cfg.wiki_dir + "/"
+    wiki_prefix = config.wiki_dir + "/"
     all_chunk_text = " ".join(c.chunk for c in chunks)
     verified: list[CitationRecord] = []
     for rec in citation_records:
@@ -355,22 +359,19 @@ def _assemble_content(
 
 def _persist_and_finalize(
     content: str,
-    wiki_root: Path,
-    subdir: str,
-    slug: str,
-    wiki_source: str,
+    target: PageTarget,
     verified: list[CitationRecord],
-    page_type: str,
-    label: str,
     source_names: list[str],
     store: Store,
     config: Config,
 ) -> Path:
     """Write page to disk, persist citations, update index and log."""
-    page_path = _write_page(wiki_root, subdir, slug, content, config.wiki_drift_threshold)
+    page_path = _write_page(
+        target.wiki_root, target.subdir, target.slug, content, config.wiki_drift_threshold
+    )
     for rec in verified:
-        rec["wiki_source"] = wiki_source
-    store.delete_citations_for_wiki(wiki_source)
+        rec["wiki_source"] = target.wiki_source
+    store.delete_citations_for_wiki(target.wiki_source)
     store.add_citations(verified)
 
     if config.wiki_prune_raw:
@@ -380,7 +381,11 @@ def _persist_and_finalize(
     from lilbee.wiki.index import append_wiki_log, update_wiki_index
 
     update_wiki_index(config)
-    append_wiki_log("generated", f"{page_type} page for {label} -> {subdir}/{slug}.md", config)
+    append_wiki_log(
+        "generated",
+        f"{target.page_type} page for {target.label} -> {target.subdir}/{target.slug}.md",
+        config,
+    )
     return page_path
 
 
@@ -410,7 +415,7 @@ def _generate_page(
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
-    verified = _verify_citations(citation_resolver(parsed_citations), chunks, label)
+    verified = _verify_citations(citation_resolver(parsed_citations), chunks, label, config)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
         return None
@@ -426,25 +431,20 @@ def _generate_page(
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
 
     wiki_root = config.data_root / config.wiki_dir
-    wiki_source = f"{config.wiki_dir}/{subdir}/{slug}.md"
-    page_path = _persist_and_finalize(
-        full_content,
-        wiki_root,
-        subdir,
-        slug,
-        wiki_source,
-        verified,
-        page_type,
-        label,
-        source_names,
-        store,
-        config,
+    target = PageTarget(
+        wiki_root=wiki_root,
+        subdir=subdir,
+        slug=slug,
+        wiki_source=f"{config.wiki_dir}/{subdir}/{slug}.md",
+        page_type=page_type,
+        label=label,
     )
+    page_path = _persist_and_finalize(full_content, target, verified, source_names, store, config)
 
     log.info(
         "Generated wiki page for %s -> %s (score=%.2f, citations=%d)",
         label,
-        subdir,
+        target.subdir,
         score,
         len(verified),
     )
@@ -623,7 +623,7 @@ def _generate_for_cluster(
         if chunks:
             chunks_by_source[name] = chunks
 
-    if len(chunks_by_source) < 3:
+    if len(chunks_by_source) < MIN_CLUSTER_SOURCES:
         return None
 
     return _generate_synthesis_page(label, source_names, chunks_by_source, provider, store, config)
@@ -646,7 +646,7 @@ def generate_synthesis_pages(
         config = cfg
 
     graph = ConceptGraph(config, store)
-    cluster_sources = graph.get_cluster_sources(min_sources=3)
+    cluster_sources = graph.get_cluster_sources(min_sources=MIN_CLUSTER_SOURCES)
     if not cluster_sources:
         log.info("No concept clusters span 3+ sources, skipping synthesis")
         return []

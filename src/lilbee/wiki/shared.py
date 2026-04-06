@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
 SUBDIR_TO_TYPE: dict[str, str] = {
     "summaries": "summary",
@@ -15,6 +19,18 @@ SUBDIR_TO_TYPE: dict[str, str] = {
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
+
+
+@dataclass(frozen=True)
+class PageTarget:
+    """Grouping of page location fields for wiki generation."""
+
+    wiki_root: Path
+    subdir: str
+    slug: str
+    wiki_source: str
+    page_type: str
+    label: str
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:

@@ -373,31 +373,31 @@ class TestHelpers:
         assert _slug_from_path(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
 
     def test_list_md_files_empty(self, tmp_path: Path):
-        from lilbee.wiki.browse import _list_md_files
+        from lilbee.wiki.browse import list_md_files
 
-        assert _list_md_files(tmp_path / "nonexistent") == []
+        assert list_md_files(tmp_path / "nonexistent") == []
 
     def test_list_md_files_filters(self, tmp_path: Path):
-        from lilbee.wiki.browse import _list_md_files
+        from lilbee.wiki.browse import list_md_files
 
         (tmp_path / "a.md").write_text("x")
         (tmp_path / "b.txt").write_text("y")
         (tmp_path / "c.md").write_text("z")
-        result = _list_md_files(tmp_path)
+        result = list_md_files(tmp_path)
         assert len(result) == 2
         assert all(p.suffix == ".md" for p in result)
 
-    def test_build_summary_no_frontmatter(self, tmp_path: Path):
-        from lilbee.server.wiki import _build_summary
+    def test_build_page_info_no_frontmatter(self, tmp_path: Path):
+        from lilbee.wiki.browse import build_page_info
 
         subdir = tmp_path / "summaries"
         subdir.mkdir()
         page = subdir / "my-doc.md"
         page.write_text("# Just a heading\n")
-        summary = _build_summary(page, tmp_path)
-        assert summary["title"] == "My Doc"
-        assert summary["source_count"] == 0
-        assert summary["created_at"] == ""
+        info = build_page_info(page, tmp_path)
+        assert info.title == "My Doc"
+        assert info.source_count == 0
+        assert info.created_at == ""
 
     def test_wiki_root(self, isolated_env: Path):
         from lilbee.server.wiki import _wiki_root
@@ -433,20 +433,15 @@ class TestPydanticModels:
         assert s.source_count == 0
         assert s.created_at == ""
 
-    def test_wiki_citation_defaults(self):
-        from lilbee.server.models import WikiCitation
+    def test_wiki_citation_record_defaults(self):
+        from lilbee.server.models import WikiCitationRecord
 
-        c = WikiCitation(citation_key="src1", claim_type="fact", source_filename="doc.txt")
+        c = WikiCitationRecord(
+            wiki_source="wiki/summaries/doc.md",
+            citation_key="src1",
+            source_filename="doc.txt",
+        )
         assert c.page_start == 0
         assert c.excerpt == ""
-
-    def test_lint_issue(self):
-        from lilbee.server.models import LintIssue
-
-        issue = LintIssue(
-            wiki_source="page.md",
-            citation_key="src1",
-            status="stale_hash",
-            message="Source changed",
-        )
-        assert issue.status == "stale_hash"
+        assert c.wiki_chunk_index == 0
+        assert c.created_at == ""

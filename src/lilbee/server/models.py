@@ -247,26 +247,21 @@ class WikiPageSummary(BaseModel):
     created_at: str = ""
 
 
-class WikiCitation(BaseModel):
-    """A citation linking a wiki claim to a source location."""
+class WikiCitationRecord(BaseModel):
+    """A citation record from the store, used in reverse lookup responses."""
 
-    citation_key: str
+    wiki_source: str = ""
+    wiki_chunk_index: int = 0
+    citation_key: str = ""
     claim_type: str = "fact"
     source_filename: str = ""
+    source_hash: str = ""
     page_start: int = 0
     page_end: int = 0
     line_start: int = 0
     line_end: int = 0
     excerpt: str = ""
-
-
-class LintIssue(BaseModel):
-    """A single lint finding for a wiki page."""
-
-    wiki_source: str
-    citation_key: str = ""
-    status: str = "valid"
-    message: str = ""
+    created_at: str = ""
 
 
 class WikiPageDetail(BaseModel):

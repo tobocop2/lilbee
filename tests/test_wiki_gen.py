@@ -173,7 +173,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test")
+        verified = _verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
     def test_drops_unmatched_excerpts(self):
@@ -196,7 +196,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test")
+        verified = _verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
     def test_keeps_inference_citations(self):
@@ -219,7 +219,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test")
+        verified = _verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 1
 
     def test_skips_wiki_sourced_citations(self):
@@ -242,7 +242,7 @@ class TestVerifyCitations:
                 "created_at": "now",
             }
         ]
-        verified = _verify_citations(recs, chunks, "test")
+        verified = _verify_citations(recs, chunks, "test", cfg)
         assert len(verified) == 0
 
 

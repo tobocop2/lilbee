@@ -13,6 +13,7 @@ from lilbee import services as svc_mod
 from lilbee.config import cfg
 from lilbee.security import validate_path_within
 from lilbee.server.models import (
+    WikiCitationRecord,
     WikiCitationsResult,
     WikiGenerateResult,
     WikiLintResult,
@@ -76,13 +77,13 @@ async def wiki_drafts_route() -> list[dict[str, Any]]:
 @get("/api/wiki/citations")
 async def wiki_citations_reverse_route(
     source: str = Parameter(query="source", default=""),
-) -> list[dict[str, Any]]:
+) -> list[WikiCitationRecord]:
     """Reverse citation lookup: which wiki pages cite a given source."""
     _require_wiki()
     if not source:
         return []
     records = svc_mod.get_services().store.get_citations_for_source(source)
-    return [dict(r) for r in records]
+    return [WikiCitationRecord(**r) for r in records]
 
 
 @get("/api/wiki/lint/{task_id:str}")
@@ -157,9 +158,7 @@ async def wiki_prune_route() -> WikiPruneResult:
     _require_wiki()
     report = prune_mod.prune_wiki(svc_mod.get_services().store)
     return WikiPruneResult(
-        records=[
-            WikiPruneRecordResponse(**r.to_dict()) for r in report.records
-        ],
+        records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
         flagged=report.flagged_count,
     )

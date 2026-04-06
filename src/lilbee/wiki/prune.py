@@ -18,7 +18,8 @@ from pathlib import Path
 
 from lilbee.config import Config, cfg
 from lilbee.store import Store
-from lilbee.wiki.lint import IssueSeverity, lint_wiki_page
+from lilbee.wiki.lint import IssueType, lint_wiki_page
+from lilbee.wiki.shared import MIN_CLUSTER_SOURCES
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ def _check_cluster_below_threshold(
     wiki_source: str,
     store: Store,
     documents_dir: Path,
-    min_sources: int = 3,
+    min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
     if "/concepts/" not in wiki_source:
@@ -128,12 +129,8 @@ def _check_stale_majority(
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    stale_count = sum(
-        1
-        for i in issues
-        if i.severity == IssueSeverity.WARNING
-        and ("stale hash" in i.message.lower() or "excerpt not found" in i.message.lower())
-    )
+    _STALE_TYPES = {IssueType.STALE_HASH, IssueType.EXCERPT_MISSING}
+    stale_count = sum(1 for i in issues if i.issue_type in _STALE_TYPES)
     return stale_count / len(citations) > config.wiki_stale_citation_threshold
 
 
@@ -159,7 +156,11 @@ def _evaluate_page(
         )
     if _check_cluster_below_threshold(wiki_source, store, config.documents_dir):
         return _archive_and_record(
-            wiki_source, wiki_root, store, config, "concept cluster below 3 live sources"
+            wiki_source,
+            wiki_root,
+            store,
+            config,
+            f"concept cluster below {MIN_CLUSTER_SOURCES} live sources",
         )
     if _check_stale_majority(wiki_source, store, config):
         return PruneRecord(
