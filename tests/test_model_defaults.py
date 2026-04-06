@@ -17,10 +17,14 @@ from lilbee.model_defaults import (
 
 @pytest.fixture(autouse=True)
 def _isolated_defaults(tmp_path):
-    """Snapshot config and clear model defaults cache for each test."""
+    """Snapshot config and clear model defaults cache for each test.
+
+    Resets all generation-option fields to None so tests aren't affected
+    by the user's local config.toml (e.g. temperature=0.6).
+    """
     snapshot = cfg.model_copy()
     cfg.apply_model_defaults(None)
-    # Reset generation option fields so user config.toml doesn't leak into tests
+    # Reset user-configurable generation fields so toml values don't leak
     cfg.temperature = None
     cfg.top_p = None
     cfg.top_k_sampling = None
