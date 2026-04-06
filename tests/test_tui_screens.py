@@ -4708,19 +4708,22 @@ async def test_setup_wizard_download_progress_same_pct_skips():
             cm = _make_catalog_model(name="dup-pct-model")
 
             call_count = 0
+            # Each call to time.time() returns a value 1.0 apart to bypass the 0.1s throttle
+            time_values = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
 
             def fake_download(model, on_progress=None):
                 nonlocal call_count
                 if on_progress:
-                    # First call: 50% — should pass
-                    on_progress(512 * 1024, 1024 * 1024)
-                    call_count += 1
-                    # Second call: same 50% — should hit "return" on line 202
-                    on_progress(512 * 1024, 1024 * 1024)
-                    call_count += 1
-                    # Third call: unknown total — should hit else branch
-                    on_progress(100 * 1024, 0)
-                    call_count += 1
+                    with patch("time.time", side_effect=time_values):
+                        # First call: 50% — should pass (time=0.0)
+                        on_progress(512 * 1024, 1024 * 1024)
+                        call_count += 1
+                        # Second call: same 50% — should hit "return" on line 202 (time=1.0)
+                        on_progress(512 * 1024, 1024 * 1024)
+                        call_count += 1
+                        # Third call: unknown total — should hit else branch (time=2.0)
+                        on_progress(100 * 1024, 0)
+                        call_count += 1
                 return MagicMock(stem="dup-pct-model")
 
             with patch("lilbee.catalog.download_model", side_effect=fake_download):
@@ -5736,30 +5739,17 @@ async def test_chat_on_show_handles_oserror():
             app.screen.on_show()  # Should not raise
 
 
-async def test_chat_embedding_ready_false_on_exception():
+def test_chat_embedding_ready_false_on_exception():
     """_embedding_ready returns False when resolve raises."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
-    class DirectChatApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    app = DirectChatApp()
+    # Call the real (unpatched) method directly — bypasses the autouse fixture
+    screen = ChatScreen.__new__(ChatScreen)
     with patch(
-        "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
+        "lilbee.providers.llama_cpp_provider._resolve_model_path",
+        side_effect=FileNotFoundError("not found"),
     ):
-        async with app.run_test(size=(120, 40)) as _pilot:
-            await _pilot.pause()
-            with patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
-                side_effect=FileNotFoundError("not found"),
-            ):
-                assert app.screen._embedding_ready() is False
+        assert ChatScreen._embedding_ready(screen) is False
 
 
 async def test_chat_hide_banner():
@@ -5801,13 +5791,25 @@ async def test_chat_on_key_insert_mode_focus():
         app.screen.on_key(event)
 
 
-async def test_chat_cycle_focus_unknown_widget():
+def test_chat_cycle_focus_unknown_widget():
     """_cycle_focus handles unknown focused widget by defaulting to index 0."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        # Set focus to something not in the focusable list
-        app.screen._cycle_focus(1)
+    from lilbee.cli.tui.screens.chat import ChatScreen, _FOCUSABLE_IDS
+
+    screen = MagicMock()
+    screen.focused = MagicMock(id="nonexistent-widget")
+    screen.query_one = MagicMock()
+    ChatScreen._cycle_focus(screen, 1)
+    screen.query_one.assert_called_once_with(f"#{_FOCUSABLE_IDS[1]}")
+
+def test_chat_cycle_focus_no_focused_widget():
+    """_cycle_focus handles None focused widget."""
+    from lilbee.cli.tui.screens.chat import ChatScreen, _FOCUSABLE_IDS
+
+    screen = MagicMock()
+    screen.focused = None
+    screen.query_one = MagicMock()
+    ChatScreen._cycle_focus(screen, 1)
+    screen.query_one.assert_called_once_with(f"#{_FOCUSABLE_IDS[1]}")
 
 
 async def test_chat_action_enter_normal_mode_streaming():
@@ -5824,9 +5826,16 @@ async def test_chat_action_enter_normal_mode_streaming():
 
 
 async def test_chat_action_toggle_markdown():
-    """action_toggle_markdown toggles cfg.markdown_rendering."""
+    """action_toggle_markdown toggles cfg.markdown_rendering and rebuilds messages."""
+    from lilbee.cli.tui.widgets.message import AssistantMessage
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        # Add an assistant message to the chat log so the rebuild loop fires
+        chat_log = app.screen.query_one("#chat-log")
+        msg_widget = AssistantMessage()
+        await chat_log.mount(msg_widget)
         await _pilot.pause()
         cfg.markdown_rendering = True
         await app.screen.action_toggle_markdown()
@@ -5914,6 +5923,107 @@ async def test_chat_auto_sync_on_mount_runs_sync():
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
             mock_sync.assert_called_once()
+
+
+async def test_chat_on_key_non_key_event_returns():
+    """on_key returns early for non-Key events."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        # Pass a non-Key object
+        app.screen.on_key("not_a_key_event")  # Should not raise
+
+
+async def test_chat_cycle_focus_negative_direction():
+    """_cycle_focus handles negative direction (backwards)."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        # Focus something in the focusable list first
+        app.screen.query_one("#chat-log").focus()
+        await _pilot.pause()
+        app.screen._cycle_focus(-1)  # Should cycle backward
+
+
+async def test_chat_cmd_setup_opens_wizard():
+    """_cmd_setup pushes SetupWizard screen."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        with patch("lilbee.cli.tui.screens.setup._scan_installed_models", return_value=([], [])):
+            app.screen._cmd_setup("")
+            await _pilot.pause()
+            assert isinstance(app.screen, SetupWizard)
+
+
+async def test_catalog_enqueue_download_in_lilbee_app():
+    """_enqueue_download works with a real LilbeeApp."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            cm = _make_catalog_model(name="enqueue-test")
+            with patch.object(screen, "_run_download"):
+                screen._enqueue_download(cm)
+
+
+async def test_catalog_key_left_in_lilbee_app():
+    """key_left delegates to nav_prev in LilbeeApp."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            with patch.object(app, "action_nav_prev") as mock_prev:
+                screen.key_left()
+                mock_prev.assert_called_once()
+
+
+async def test_catalog_key_right_in_lilbee_app():
+    """key_right delegates to nav_next in LilbeeApp."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            with patch.object(app, "action_nav_next") as mock_next:
+                screen.key_right()
+                mock_next.assert_called_once()
+
+
+async def test_catalog_select_row_out_of_range():
+    """_on_row_selected returns early for out-of-range cursor_row."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._rows = []
+            event = MagicMock()
+            event.cursor_row = -1
+            screen._on_row_selected(event)  # Should not raise
 
 
 def test_type_pill_with_choices():
@@ -6206,3 +6316,5 @@ async def test_catalog_grid_selected_with_model_card():
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
                 mock_sel.assert_called_once_with(row)
+
+
