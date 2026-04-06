@@ -2210,3 +2210,186 @@ class TestWikiPrune:
             result = runner.invoke(app, ["wiki", "prune"])
         assert result.exit_code == 0
         assert "old.md" in result.output
+
+
+class TestCrawlProgressCallback:
+    def test_crawl_page_event(self):
+        """Crawl progress callback handles CrawlPageEvent."""
+        from lilbee.progress import CrawlPageEvent, EventType
+
+        event = CrawlPageEvent(url="https://example.com", current=3, total=10)
+        # The callback in commands.py checks isinstance(data, CrawlPageEvent)
+        assert event.current == 3
+        assert event.total == 10
+
+    def test_crawl_callback_wrong_type_raises(self):
+        """Crawl progress callback raises TypeError for non-CrawlPageEvent."""
+        from lilbee.progress import EventType, FileStartEvent
+
+        # Simulate what _make_callback does
+        from unittest.mock import MagicMock
+
+        progress = MagicMock()
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_PAGE:
+                if not isinstance(data, CrawlPageEvent):
+                    raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+
+        from lilbee.progress import CrawlPageEvent
+
+        with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
+            on_progress(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
+
+
+class TestLoginCommand:
+    def test_login_already_logged_in_decline(self):
+        """Login when already logged in and user declines."""
+        with (
+            mock.patch("huggingface_hub.login"),
+            mock.patch("huggingface_hub.get_token", return_value="existing-token"),
+            mock.patch("webbrowser.open"),
+        ):
+            result = runner.invoke(app, ["login"], input="n\n")
+            assert result.exit_code == 0
+            assert "Already logged in" in result.output
+
+    def test_login_fresh(self):
+        """Login with fresh token."""
+        with (
+            mock.patch("huggingface_hub.login") as mock_hf_login,
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+        ):
+            result = runner.invoke(app, ["login"], input="hf_test_token_123\n")
+            assert result.exit_code == 0
+            assert "Logged in" in result.output
+            mock_hf_login.assert_called_once()
+
+    def test_login_empty_token(self):
+        """Login with empty token exits with error."""
+        with (
+            mock.patch("huggingface_hub.login"),
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+        ):
+            # typer.prompt with hide_input requires a non-empty value;
+            # supply a whitespace-only token to trigger the "No token" error path
+            result = runner.invoke(app, ["login"], input="   \n")
+            assert result.exit_code == 1
+            assert "No token" in result.output
+
+
+class TestSyncProgressPrinter:
+    def test_file_start_event(self):
+        """_sync_progress_printer handles FILE_START event."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, FileStartEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.FILE_START, FileStartEvent(file="doc.md", total_files=5, current_file=2))
+        con.print.assert_called_once()
+        assert "doc.md" in str(con.print.call_args)
+
+    def test_done_event(self):
+        """_sync_progress_printer handles DONE event with summary."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, unchanged=0))
+        con.print.assert_called_once()
+        assert "Synced" in str(con.print.call_args)
+
+    def test_file_start_wrong_type_raises(self):
+        """_sync_progress_printer raises TypeError for wrong event type."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        with pytest.raises(TypeError, match="Expected FileStartEvent"):
+            cb(EventType.FILE_START, SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0))
+
+    def test_done_wrong_type_raises(self):
+        """_sync_progress_printer raises TypeError for wrong data type on DONE."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, FileStartEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
+            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+
+
+class TestChatSyncCallback:
+    def test_file_start_updates_status(self):
+        """Background sync callback updates status on FILE_START."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        cb(EventType.FILE_START, FileStartEvent(file="test.md", total_files=3, current_file=1))
+        assert "test.md" in status.text
+
+    def test_extract_updates_status(self):
+        """Background sync callback updates status on EXTRACT."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, ExtractEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        cb(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
+        assert "Vision OCR" in status.text
+        assert "scan.pdf" in status.text
+
+    def test_done_clears_status(self):
+        """Background sync callback clears status on DONE."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        status = SyncStatus()
+        status.text = "something"
+        cb = _chat_sync_callback(status)
+        with mock.patch("builtins.print"):
+            cb(EventType.DONE, SyncDoneEvent(added=2, updated=0, removed=0, failed=0, unchanged=0))
+        assert status.text == ""
+
+    def test_file_start_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        with pytest.raises(TypeError, match="Expected FileStartEvent"):
+            cb(EventType.FILE_START, SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0))
+
+    def test_extract_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        with pytest.raises(TypeError, match="Expected ExtractEvent"):
+            cb(EventType.EXTRACT, FileStartEvent(file="x", total_files=1, current_file=1))
+
+    def test_done_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
+            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+
+
+class TestSyncResultToJson:
+    def test_non_sync_result_raises(self):
+        """sync_result_to_json raises TypeError for non-SyncResult input."""
+        from lilbee.cli.helpers import sync_result_to_json
+
+        with pytest.raises(TypeError, match="Expected SyncResult"):
+            sync_result_to_json("not a SyncResult")

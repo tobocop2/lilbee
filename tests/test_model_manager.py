@@ -27,28 +27,49 @@ class TestModelSource:
         assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.LITELLM}
 
 
+def _install_registry_model(
+    models_dir: Path,
+    tmp_path: Path,
+    name: str,
+    data: bytes,
+    repo: str = "org/repo",
+) -> None:
+    """Helper: create HF cache blob and install a model into the registry."""
+    import hashlib
+
+    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+
+    digest = hashlib.sha256(data).hexdigest()
+    cache_dir = models_dir / f"models--{repo.replace('/', '--')}"
+    blob_dir = cache_dir / "blobs"
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    (blob_dir / digest).write_bytes(data)
+
+    source = tmp_path / f"{name}.gguf"
+    source.write_bytes(data)
+
+    registry = ModelRegistry(models_dir)
+    ref = ModelRef(name=name)
+    manifest = ModelManifest(
+        name=name,
+        tag="latest",
+        size_bytes=len(data),
+        task="chat",
+        source_repo=repo,
+        source_filename=f"{name}.gguf",
+        downloaded_at="2026-01-01T00:00:00+00:00",
+    )
+    registry.install(ref, source, manifest)
+
+
 class TestModelManagerListInstalled:
     def test_native_lists_registered_models(self, tmp_path: Path) -> None:
         from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        registry = ModelRegistry(models_dir)
-
-        for name in ("llama3-8b", "mistral-7b"):
-            source = tmp_path / f"{name}.gguf"
-            source.write_bytes(b"fake-model-data")
-            ref = ModelRef(name=name)
-            manifest = ModelManifest(
-                name=name,
-                tag="latest",
-                size_bytes=15,
-                task="chat",
-                source_repo="org/repo",
-                source_filename=f"{name}.gguf",
-                downloaded_at="2026-01-01T00:00:00+00:00",
-            )
-            registry.install(ref, source, manifest)
+        _install_registry_model(models_dir, tmp_path, "llama3-8b", b"llama3-data")
+        _install_registry_model(models_dir, tmp_path, "mistral-7b", b"mistral-data")
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         result = mgr.list_installed(ModelSource.NATIVE)
@@ -108,21 +129,7 @@ class TestModelManagerListInstalled:
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        registry = ModelRegistry(models_dir)
-
-        source = tmp_path / "native-model.gguf"
-        source.write_bytes(b"fake-model")
-        ref = ModelRef(name="native-model")
-        manifest = ModelManifest(
-            name="native-model",
-            tag="latest",
-            size_bytes=10,
-            task="chat",
-            source_repo="org/repo",
-            source_filename="native-model.gguf",
-            downloaded_at="2026-01-01T00:00:00+00:00",
-        )
-        registry.install(ref, source, manifest)
+        _install_registry_model(models_dir, tmp_path, "native-model", b"native-data")
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "remote-model:latest"}]}
@@ -140,21 +147,7 @@ class TestModelManagerListInstalled:
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        registry = ModelRegistry(models_dir)
-
-        source = tmp_path / "llama3.gguf"
-        source.write_bytes(b"fake-model")
-        ref = ModelRef(name="llama3")
-        manifest = ModelManifest(
-            name="llama3",
-            tag="latest",
-            size_bytes=10,
-            task="chat",
-            source_repo="org/repo",
-            source_filename="llama3.gguf",
-            downloaded_at="2026-01-01T00:00:00+00:00",
-        )
-        registry.install(ref, source, manifest)
+        _install_registry_model(models_dir, tmp_path, "llama3", b"llama3-dedup-data")
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": [{"name": "llama3:latest"}]}
@@ -581,26 +574,9 @@ class TestIsNativePathTraversal:
 class TestIsNativeRegistry:
     def test_is_native_true_when_in_registry(self, tmp_path: Path) -> None:
         """_is_native returns True when model exists in registry."""
-
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
-
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        registry = ModelRegistry(models_dir)
-
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"registry-model-data")
-        ref = ModelRef(name="my-reg-model")
-        manifest = ModelManifest(
-            name="my-reg-model",
-            tag="latest",
-            size_bytes=len(b"registry-model-data"),
-            task="chat",
-            source_repo="org/repo",
-            source_filename="model.gguf",
-            downloaded_at="2026-01-01T00:00:00+00:00",
-        )
-        registry.install(ref, source, manifest)
+        _install_registry_model(models_dir, tmp_path, "my-reg-model", b"registry-model-data")
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr._is_native("my-reg-model") is True
@@ -609,26 +585,13 @@ class TestIsNativeRegistry:
 class TestRemoveNativeRegistry:
     def test_remove_native_from_registry(self, tmp_path: Path) -> None:
         """_remove_native removes model from registry."""
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
+        from lilbee.registry import ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
+        _install_registry_model(models_dir, tmp_path, "removable", b"registry-model-data")
+
         registry = ModelRegistry(models_dir)
-
-        source = tmp_path / "model.gguf"
-        source.write_bytes(b"registry-model-data")
-        ref = ModelRef(name="removable")
-        manifest = ModelManifest(
-            name="removable",
-            tag="latest",
-            size_bytes=len(b"registry-model-data"),
-            task="chat",
-            source_repo="org/repo",
-            source_filename="model.gguf",
-            downloaded_at="2026-01-01T00:00:00+00:00",
-        )
-        registry.install(ref, source, manifest)
-
         mgr = ModelManager(models_dir, "http://localhost:11434")
         assert mgr._remove_native("removable") is True
         assert not registry.is_installed("removable")

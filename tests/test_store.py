@@ -591,3 +591,43 @@ class TestCitationCrud:
         store.add_citations([_make_citation()])
         store.drop_all()
         assert store.get_citations_for_wiki("wiki/summaries/doc.md") == []
+
+
+class TestHybridSearchDirect:
+    def test_returns_search_chunks(self, store, test_config):
+        """_hybrid_search returns SearchChunk instances from hybrid query."""
+        records = _make_records(n=3)
+        store.add_chunks(records)
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=3, query_text="chunk number")
+        assert all(isinstance(r, SearchChunk) for r in results)
+
+
+class TestAdaptiveFilterFinalPass:
+    def test_final_pass_at_cap(self, store):
+        """When widening exceeds cap, final pass at cap still filters correctly."""
+        results = [
+            SearchChunk(
+                source="a.md",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="moderate",
+                chunk_index=0,
+                vector=[0.1],
+                distance=0.95,
+            ),
+        ]
+        # initial_threshold=0.3, step=0.2 -> 0.3, 0.5, 0.7, 0.9 then cap=1.0 final pass
+        filtered = store._adaptive_filter(results, top_k=1, initial_threshold=0.3)
+        assert len(filtered) == 1
+        assert filtered[0].chunk == "moderate"
+
+
+class TestDeleteSourceNoneTable:
+    def test_noop_when_no_table(self, store):
+        """delete_source is a no-op when the sources table doesn't exist."""
+        store.delete_source("nonexistent.md")  # Should not raise

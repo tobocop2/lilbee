@@ -1093,3 +1093,87 @@ class TestStructuredQueryWikiRaw:
         get_services().searcher._search_structured("raw", "test", 5)
         mock_svc.store.search.assert_called_once()
         assert mock_svc.store.search.call_args[1]["chunk_type"] == "raw"
+
+
+class TestDirectMessagesNoEmbed:
+    def test_builds_system_history_user(self, mock_svc):
+        """_direct_messages builds [system, ...history, user] when no embedding."""
+        searcher = get_services().searcher
+        history = [
+            {"role": "user", "content": "prev"},
+            {"role": "assistant", "content": "prev answer"},
+        ]
+        msgs = searcher._direct_messages("new question", history=history)
+        assert msgs[0]["role"] == "system"
+        assert msgs[1]["content"] == "prev"
+        assert msgs[2]["content"] == "prev answer"
+        assert msgs[3]["content"] == "new question"
+
+    def test_no_history(self, mock_svc):
+        msgs = get_services().searcher._direct_messages("q")
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "system"
+        assert msgs[1]["role"] == "user"
+
+
+class TestAskRawNoEmbed:
+    def test_direct_llm_when_no_embedding(self, mock_svc):
+        """ask_raw without embedding calls LLM directly with warning prefix."""
+        mock_svc.embedder.embedding_available.return_value = False
+        mock_svc.provider.chat.return_value = "direct answer"
+
+        searcher = Searcher(
+            cfg,
+            mock_svc.provider,
+            mock_svc.store,
+            mock_svc.embedder,
+            mock_svc.reranker,
+            mock_svc.concepts,
+        )
+        result = searcher.ask_raw("hello")
+        assert "Chat only" in result.answer
+        assert "direct answer" in result.answer
+        assert result.sources == []
+
+
+class TestAskStreamNoEmbed:
+    def test_streams_directly_when_no_embedding(self, mock_svc):
+        """ask_stream without embedding streams from LLM directly."""
+        mock_svc.embedder.embedding_available.return_value = False
+        mock_svc.provider.chat.return_value = iter(["chunk1", "chunk2"])
+
+        searcher = Searcher(
+            cfg,
+            mock_svc.provider,
+            mock_svc.store,
+            mock_svc.embedder,
+            mock_svc.reranker,
+            mock_svc.concepts,
+        )
+        tokens = list(searcher.ask_stream("hello"))
+        combined = "".join(st.content for st in tokens)
+        assert "Chat only" in combined
+        assert "chunk1" in combined
+        assert "chunk2" in combined
+
+    def test_stream_handles_connection_error(self, mock_svc):
+        """ask_stream without embedding handles ConnectionError gracefully."""
+        mock_svc.embedder.embedding_available.return_value = False
+
+        def failing():
+            yield "partial"
+            raise ConnectionError("lost")
+
+        mock_svc.provider.chat.return_value = failing()
+
+        searcher = Searcher(
+            cfg,
+            mock_svc.provider,
+            mock_svc.store,
+            mock_svc.embedder,
+            mock_svc.reranker,
+            mock_svc.concepts,
+        )
+        tokens = list(searcher.ask_stream("hello"))
+        combined = "".join(st.content for st in tokens)
+        assert "Connection lost" in combined

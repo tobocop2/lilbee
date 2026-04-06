@@ -21,18 +21,49 @@ from pydantic import BaseModel
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 
+from tqdm.auto import tqdm as _base_tqdm
+
 log = logging.getLogger(__name__)
 
 HF_API_URL = "https://huggingface.co/api/models"
 
 
+class _CallbackProgressBar(_base_tqdm):
+    """tqdm subclass that forwards progress to a plain callback."""
+
+    _callback = None
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        kwargs.pop("name", None)
+        kwargs["disable"] = True
+        super().__init__(*args, **kwargs)
+        self._cumulative = 0
+
+    def update(self, n: float = 1) -> bool | None:
+        self._cumulative += n
+        if self._callback is not None:
+            self._callback(int(self._cumulative), self.total)
+        return None
+
+
+def _make_progress_tqdm_class(callback: Any) -> type[_base_tqdm]:
+    """Build a tqdm_class that forwards updates to callback(downloaded, total)."""
+
+    class _Cls(_CallbackProgressBar):
+        _callback = staticmethod(callback)
+
+    return _Cls
+
+
 class DownloadConfig(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
     repo_id: str
     filename: str
     token: str | None
     force_download: bool = True
     cache_dir: str | None = None
-    progress_updater: Any = None
+    tqdm_class: Any = None
 
 
 _DEFAULT_TIMEOUT = 30.0
@@ -491,7 +522,7 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             filename=filename,
             token=token,
             cache_dir=str(cfg.models_dir),
-            progress_updater=on_progress,
+            tqdm_class=_make_progress_tqdm_class(on_progress) if on_progress else None,
         )
 
         try:

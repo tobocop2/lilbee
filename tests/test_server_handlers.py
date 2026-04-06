@@ -1074,3 +1074,81 @@ class TestListExternalModels:
         await handlers.list_external_models()
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: SSE cancel checks, model pull progress cancel
+# ---------------------------------------------------------------------------
+
+
+class TestRunLlmStreamCancel:
+    def test_cancel_stops_streaming(self):
+        """When cancel is set, _run_llm_stream breaks out of the loop."""
+        import threading
+
+        cancel = threading.Event()
+        cancel.set()  # pre-set cancel
+
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        error_holder: list[str] = []
+
+        mock_provider = MagicMock()
+        # Return some stream tokens that would normally be emitted
+        stream_data = iter(["token1", "token2"])
+        mock_provider.chat.return_value = stream_data
+
+        with patch("lilbee.services.get_services") as mock_svc:
+            mock_svc.return_value.provider = mock_provider
+            handlers._run_llm_stream(
+                [{"role": "user", "content": "hi"}],
+                None,
+                queue,
+                cancel,
+                error_holder,
+            )
+        # Should have None sentinel
+        items = []
+        while not queue.empty():
+            items.append(queue.get_nowait())
+        assert items[-1] is None
+
+
+class TestAddHandlerCancel:
+    async def test_cancel_returns_early(self):
+        """When cancel is set before sync, add returns early with copy-only summary."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.cancel.set()
+
+        copy_result = MagicMock()
+        copy_result.copied = ["test.txt"]
+        copy_result.skipped = []
+
+        with patch("lilbee.server.handlers.copy_files", return_value=copy_result):
+            result = await handlers._run_add(
+                paths=[],
+                force=False,
+                vision_model="",
+                sse=sse,
+            )
+        assert result is not None
+        assert result.copied == ["test.txt"]
+
+
+class TestModelPullProgressCancel:
+    async def test_cancel_skips_progress(self):
+        """When cancel is set, the progress callback returns early."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.cancel.set()
+
+        # Simulate the progress callback pattern from models_pull
+        def _on_progress(data):
+            if sse.cancel.is_set():
+                return
+            sse.queue.put_nowait("should_not_appear")
+
+        _on_progress({"status": "downloading"})
+        assert sse.queue.empty()

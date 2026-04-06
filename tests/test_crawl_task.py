@@ -93,6 +93,15 @@ class TestMakeProgressUpdater:
         assert task.pages_crawled == 0
         assert task.pages_total is None
 
+    def test_wrong_event_type_raises(self):
+        """Passing wrong data type for CRAWL_PAGE raises TypeError."""
+        from lilbee.progress import FileStartEvent
+
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
+        updater = make_progress_updater(task)
+        with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
+            updater(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
+
 
 class TestRunCrawl:
     @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)

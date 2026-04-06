@@ -530,27 +530,29 @@ class TestDownloadModel:
         assert len(progress_calls) == 1
         assert progress_calls[0][0] == progress_calls[0][1]
 
-    def test_progress_updater_callback_invoked(
+    def test_tqdm_class_callback_invoked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """progress_updater callback is invoked by hf_hub_download."""
+        """tqdm_class-based callback is invoked during download."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
-            progress_updater = kwargs.get("progress_updater")
-            if progress_updater:
-                progress_updater(100, 1000)
-                progress_updater(200, 1000)
+            tqdm_class = kwargs.get("tqdm_class")
+            if tqdm_class:
+                bar = tqdm_class(total=1000)
+                bar.update(100)
+                bar.update(100)
+                bar.close()
             return result
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
 
-        progress_calls: list[tuple[int, int]] = []
+        progress_calls: list[tuple[int, int | None]] = []
 
-        def on_progress(downloaded: int, total: int) -> None:
+        def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
         download_model(entry, on_progress=on_progress)
@@ -571,21 +573,24 @@ class TestDownloadModel:
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
-        progress_calls: list[tuple[int, int]] = []
+        progress_calls: list[tuple[int, int | None]] = []
 
         def fake_with_progress(**kwargs: Any) -> str:
-            progress_updater = kwargs.get("progress_updater")
-            if progress_updater:
-                progress_updater(500, 1000)
-                progress_updater(1000, 1000)
+            tqdm_class = kwargs.get("tqdm_class")
+            if tqdm_class:
+                bar = tqdm_class(total=1000)
+                bar.update(500)
+                bar.update(500)
+                bar.close()
             return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_with_progress)
 
-        def on_progress(downloaded: int, total: int) -> None:
+        def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
         download_model(entry, on_progress=on_progress)
+        # 2 tqdm updates + 1 final 100% call from download_model
         assert len(progress_calls) == 3
         assert progress_calls[-1] == (322122547, 322122547)
 
@@ -1417,45 +1422,77 @@ class TestFormatSizeMb:
 
 
 class TestDownloadProgressCallback:
-    """Tests for download progress callback infrastructure."""
+    """Tests for tqdm_class-based progress callback infrastructure."""
 
-    def test_progress_updater_param_exists_in_hf_hub_download(self) -> None:
-        """Verify huggingface_hub accepts progress_updater parameter."""
+    def test_tqdm_class_param_exists_in_hf_hub_download(self) -> None:
+        """Verify huggingface_hub accepts tqdm_class parameter."""
         import inspect
 
         from huggingface_hub import hf_hub_download
 
         sig = inspect.signature(hf_hub_download)
-        assert "progress_updater" in sig.parameters
+        assert "tqdm_class" in sig.parameters
 
-    def test_download_config_has_progress_updater_field(self) -> None:
-        """Verify DownloadConfig accepts progress_updater."""
-        from lilbee.catalog import DownloadConfig
+    def test_download_config_has_tqdm_class_field(self) -> None:
+        """Verify DownloadConfig accepts tqdm_class."""
+        from lilbee.catalog import DownloadConfig, _make_progress_tqdm_class
 
         config = DownloadConfig(
             repo_id="test/test",
             filename="test.gguf",
             token="test",
-            progress_updater=lambda x, y: None,
+            tqdm_class=_make_progress_tqdm_class(lambda x, y: None),
         )
-        assert config.progress_updater is not None
+        assert config.tqdm_class is not None
 
-    def test_progress_updater_is_bare_callable(self) -> None:
-        """Verify progress_updater accepts a bare callable, not a list."""
-        from lilbee.catalog import DownloadConfig
+    def test_callback_tqdm_class_forwards_updates(self) -> None:
+        """Verify _make_progress_tqdm_class forwards tqdm updates to callback."""
+        from lilbee.catalog import _make_progress_tqdm_class
 
-        calls: list[tuple[int, int]] = []
+        calls: list[tuple[int, int | None]] = []
 
-        def user_callback(downloaded: int, total: int) -> None:
+        def user_callback(downloaded: int, total: int | None) -> None:
             calls.append((downloaded, total))
 
-        config = DownloadConfig(
-            repo_id="test/test",
-            filename="test.gguf",
-            token="test",
-            progress_updater=user_callback,
-        )
+        cls = _make_progress_tqdm_class(user_callback)
+        bar = cls(total=200)
+        bar.update(100)
+        bar.update(100)
+        bar.close()
 
-        assert config.progress_updater is not None
-        config.progress_updater(100, 200)
-        assert calls == [(100, 200)]
+        assert calls == [(100, 200), (200, 200)]
+
+
+class TestRegisterModelFailure:
+    def test_manifest_install_exception_is_logged(self, tmp_path: Path) -> None:
+        """When registry.install raises, _register_model logs but doesn't crash."""
+        from unittest.mock import patch
+
+        from lilbee.catalog import CatalogModel, _register_model
+        from lilbee.config import cfg
+
+        entry = CatalogModel(
+            name="Test Model",
+            hf_repo="user/test",
+            gguf_filename="test.gguf",
+            size_gb=1.0,
+            min_ram_gb=2,
+            description="test",
+            featured=False,
+            downloads=0,
+            task="chat",
+        )
+        file_path = tmp_path / "test.gguf"
+        file_path.write_bytes(b"fake")
+
+        old_models_dir = cfg.models_dir
+        cfg.models_dir = tmp_path
+        try:
+            with patch(
+                "lilbee.registry.ModelRegistry.install",
+                side_effect=RuntimeError("disk full"),
+            ):
+                # Should not raise
+                _register_model(entry, file_path)
+        finally:
+            cfg.models_dir = old_models_dir
