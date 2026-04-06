@@ -28,11 +28,13 @@ def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         if event_type == EventType.FILE_START:
-            assert isinstance(data, FileStartEvent)
+            if not isinstance(data, FileStartEvent):
+                raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
             m = theme.MUTED
             con.print(f"[{m}]Syncing [{data.current_file}/{data.total_files}]: {data.file}[/{m}]")
         elif event_type == EventType.DONE:
-            assert isinstance(data, SyncDoneEvent)
+            if not isinstance(data, SyncDoneEvent):
+                raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
             summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
             if summary:
                 con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
@@ -108,18 +110,21 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         queue_suffix = f" (+{status.pending} queued)" if status.pending > 0 else ""
         if event_type == EventType.FILE_START:
-            assert isinstance(data, FileStartEvent)
+            if not isinstance(data, FileStartEvent):
+                raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
             status.text = (
                 f"⟳ Syncing [{data.current_file}/{data.total_files}]: {data.file}{queue_suffix}"
             )
         elif event_type == EventType.EXTRACT:
-            assert isinstance(data, ExtractEvent)
+            if not isinstance(data, ExtractEvent):
+                raise TypeError(f"Expected ExtractEvent, got {type(data).__name__}")
             status.text = (
                 f"⟳ Vision OCR [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
             )
         elif event_type == EventType.DONE:
             status.clear()
-            assert isinstance(data, SyncDoneEvent)
+            if not isinstance(data, SyncDoneEvent):
+                raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
             summary = _format_sync_summary(data.added, data.updated, data.removed, data.failed)
             if summary:
                 print(f"✓ Synced: {summary}")

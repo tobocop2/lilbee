@@ -1,0 +1,50 @@
+#setup-title {
+    text-style: bold;
+    text-align: center;
+    padding: 1 0;
+}
+
+#setup-step-label {
+    text-align: center;
+    padding: 0 0 1 0;
+    color: $text-muted;
+}
+
+#setup-grid-container {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#setup-status {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#setup-progress {
+    height: 1;
+    margin: 0 1;
+}
+
+#setup-browse {
+    margin: 0 1;
+    width: 100%;
+}
+
+#setup-skip {
+    margin: 0 1;
+    width: 100%;
+}
+
+.section-heading {
+    text-style: bold underline;
+    color: $text-muted;
+    padding: 1 0 0 2;
+}
+
+GridSelect {
+    height: auto;
+    padding: 0;
+    margin: 0 1;
+    grid-gutter: 0;
+}

@@ -1,18 +1,21 @@
-"""Catalog screen -- browse and install models via a single DataTable."""
+"""Catalog screen -- browse and install models via grid or list view."""
 
 from __future__ import annotations
 
 import contextlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import VerticalScroll
+from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import DataTable, Input, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -24,14 +27,20 @@ from lilbee.catalog import (
     get_families,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.widgets.nav_bar import NavBar
+from lilbee.cli.tui.widgets.grid_select import GridSelect
+from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
+from lilbee.models import FEATURED_STAR, ModelTask
 
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
-_ALL_TASKS = ("chat", "embedding", "vision")
+_ALL_TASKS = tuple(ModelTask)
+
+_WORKER_FETCH_HF = "fetch_hf_models"
+_WORKER_FETCH_MORE_HF = "fetch_more_hf"
+_WORKER_FETCH_REMOTE = "fetch_remote_models"
 
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
@@ -40,21 +49,6 @@ def _parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
     match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
     return f"{match.group(1)}B" if match else "--"
-
-
-def _parse_param_size(name: str) -> str:
-    """Extract parameter size category from model name."""
-    match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
-    if not match:
-        return "unknown"
-    size = float(match.group(1))
-    if size <= 3:
-        return "Small (<=3B)"
-    if size <= 8:
-        return "Medium (3-8B)"
-    if size <= 30:
-        return "Large (8-30B)"
-    return "Extra Large (30B+)"
 
 
 def _format_downloads(n: int) -> str:
@@ -166,7 +160,7 @@ def _row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:
-        parts.append("*")
+        parts.append(FEATURED_STAR)
     parts.append(row.name)
     if row.installed:
         parts.append("[installed]")
@@ -191,11 +185,14 @@ def _param_sort_value(params: str) -> float:
 
 
 class CatalogScreen(Screen[None]):
-    """Model catalog with a single sortable DataTable."""
+    """Model catalog with grid (default) and list views."""
+
+    CSS_PATH = "catalog.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "pop_screen", "Back", show=True),
-        Binding("escape", "pop_screen", "Back", show=False),
+        Binding("q", "go_back", "Back", show=True),
+        Binding("escape", "go_back", "Back", show=False),
+        Binding("v", "toggle_view", "View", show=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("d", "delete_model", "Delete", show=True),
         Binding("x", "delete_model", "Delete", show=False),
@@ -220,15 +217,19 @@ class CatalogScreen(Screen[None]):
         self._sort_ascending: bool = True
         self._pending_delete: str | None = None
         self._installed_names: set[str] = set()
+        self._grid_view: bool = True
+        self._hf_fetched: bool = False
+        self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Static("", id="sort-label", shrink=True)
+        yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield Footer()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -236,8 +237,8 @@ class CatalogScreen(Screen[None]):
         for col in COLUMNS:
             table.add_column(col, key=col)
         self._fetch_installed_names()
-        self._refresh_table()
-        self._fetch_all_hf_models()
+        self.add_class("-grid-view")
+        self._refresh_grid()
         self._fetch_remote_models()
 
     def _fetch_installed_names(self) -> None:
@@ -253,27 +254,47 @@ class CatalogScreen(Screen[None]):
                 if m.source_repo and m.source_filename:
                     self._installed_names.add(f"{m.source_repo}/{m.source_filename}")
 
+    def action_toggle_view(self) -> None:
+        """Toggle between grid and list view."""
+        if self._grid_view:
+            self._grid_view = False
+            self.remove_class("-grid-view")
+            self.add_class("-list-view")
+            if not self._hf_fetched:
+                self._hf_fetched = True
+                self._fetch_all_hf_models()
+            self._refresh_table()
+            with contextlib.suppress(Exception):
+                self.query_one("#catalog-table", DataTable).focus()
+        else:
+            self._grid_view = True
+            self.remove_class("-list-view")
+            self.add_class("-grid-view")
+            self._refresh_grid()
+
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
         filter_input = self.query_one("#catalog-search", Input)
         filter_input.display = True
         filter_input.focus()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        """Filter models when input changes."""
-        if event.input.id == "catalog-search":
+    @on(Input.Changed, "#catalog-search")
+    def _on_search_changed(self, event: Input.Changed) -> None:
+        """Filter models when search input changes."""
+        if self._grid_view:
+            self._filter_grid()
+        else:
             self._refresh_table()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted, "#catalog-search")
+    def _on_search_submitted(self, event: Input.Submitted) -> None:
         """Close filter on Enter."""
-        if event.input.id == "catalog-search":
-            event.input.display = False
-            with contextlib.suppress(Exception):
-                self.query_one("#catalog-table", DataTable).focus()
+        event.input.display = False
+        with contextlib.suppress(Exception):
+            self.query_one("#catalog-table", DataTable).focus()
 
-    @work(thread=True)
-    def _fetch_all_hf_models(self) -> list[CatalogModel]:
-        """Fetch HF models for all task types and merge results."""
+    def _fetch_hf_page(self) -> list[CatalogModel]:
+        """Fetch one page of HF models for all task types (runs in worker thread)."""
         all_models: list[CatalogModel] = []
         seen_repos: set[str] = set()
         for task in _ALL_TASKS:
@@ -290,44 +311,38 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
         return all_models
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_HF)
+    def _fetch_all_hf_models(self) -> list[CatalogModel]:
+        """Fetch HF models for all task types (replaces current list)."""
+        return self._fetch_hf_page()
+
+    @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
         return classify_remote_models(cfg.litellm_base_url)
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
-        """Fetch next page of HF models for all task types."""
-        all_models: list[CatalogModel] = []
-        seen_repos: set[str] = set()
-        for task in _ALL_TASKS:
-            result = get_catalog(
-                task=task,
-                featured=False,
-                limit=_HF_PAGE_SIZE,
-                offset=self._hf_offset,
-            )
-            for m in result.models:
-                if not m.featured and m.hf_repo not in seen_repos:
-                    seen_repos.add(m.hf_repo)
-                    all_models.append(m)
-        self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
-        return all_models
+        """Fetch next page of HF models for all task types (extends current list)."""
+        return self._fetch_hf_page()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
-        if event.worker.name == "_fetch_all_hf_models" and isinstance(result, list):
+        if not isinstance(result, list):
+            return
+        name = event.worker.name
+        if name == _WORKER_FETCH_HF:
             self._hf_models = result
-            self._refresh_table()
-        elif event.worker.name == "_fetch_more_hf" and isinstance(result, list):
+        elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
-            self._refresh_table()
-        elif event.worker.name == "_fetch_remote_models" and isinstance(result, list):
+        elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
-            self._refresh_table()
+        else:
+            return
+        self._refresh_view()
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
@@ -391,6 +406,77 @@ class CatalogScreen(Screen[None]):
             reverse=not self._sort_ascending,
         )
 
+    def _refresh_view(self) -> None:
+        """Refresh the active view (grid or list)."""
+        if self._grid_view:
+            self._refresh_grid()
+        else:
+            self._refresh_table()
+
+    def _refresh_grid(self) -> None:
+        """Rebuild the grid view with all cards (called when data changes)."""
+        family_rows = self._build_family_rows("")
+        remote_rows = self._build_remote_rows("")
+        hf_rows = self._build_hf_rows("") if self._hf_fetched else []
+        all_rows = family_rows + remote_rows + hf_rows
+        row_key = tuple((r.name, r.installed) for r in all_rows)
+        if self._grid_cache_key == row_key:
+            return
+        self._grid_cache_key = row_key
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.remove_children()
+        widgets_to_mount: list[Static | GridSelect] = []
+        for section in _group_rows_for_grid(all_rows):
+            if not section.rows:
+                continue
+            widgets_to_mount.append(Static(section.heading, classes="section-heading"))
+            cards = [ModelCard(row) for row in section.rows]
+            grid = GridSelect(*cards, min_column_width=30, max_column_width=50)
+            widgets_to_mount.append(grid)
+        if not self._hf_fetched:
+            widgets_to_mount.append(
+                Static(
+                    msg.CATALOG_BROWSE_MORE,
+                    classes="grid-cta browse-more-hf",
+                )
+            )
+        widgets_to_mount.append(
+            Static(
+                msg.CATALOG_VIEW_TOGGLE_GRID,
+                classes="grid-cta view-toggle-cta",
+            )
+        )
+        container.mount_all(widgets_to_mount)
+
+    def _filter_grid(self) -> None:
+        """Filter visible cards by search text without recreating widgets."""
+        search = self._get_search_text()
+        for card in self.query(ModelCard):
+            card.display = _matches_search(card.row, search)
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        children = list(container.children)
+        for i, child in enumerate(children):
+            if not child.has_class("section-heading"):
+                continue
+            grid = children[i + 1] if i + 1 < len(children) else None
+            if isinstance(grid, GridSelect):
+                has_visible = any(c.display for c in grid.children)
+                child.display = has_visible
+                grid.display = has_visible
+
+    @on(Click, ".browse-more-hf")
+    def _on_browse_more_clicked(self) -> None:
+        """Fetch all models when the browse-more card is clicked."""
+        if not self._hf_fetched:
+            self._hf_fetched = True
+            self._fetch_all_hf_models()
+
+    @on(GridSelect.Selected)
+    def _on_grid_selected(self, event: GridSelect.Selected) -> None:
+        """Handle model selection from the grid view."""
+        if isinstance(event.widget, ModelCard):
+            self._select_row(event.widget.row)
+
     def _refresh_table(self) -> None:
         """Rebuild the DataTable from current data."""
         self._rows = self._sort_rows(self._build_rows())
@@ -413,10 +499,12 @@ class CatalogScreen(Screen[None]):
         n_total = len(self._rows)
         more = "+" if self._hf_has_more else ""
         self.query_one("#sort-label", Static).update(
-            f"Sort: {self._sort_column} ({direction})  |  Showing {n_total}{more} models"
+            f"Sort: {self._sort_column} ({direction})  |  "
+            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
         )
 
-    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+    @on(DataTable.HeaderSelected, "#catalog-table")
+    def _on_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Sort by the clicked column header, toggling asc/desc."""
         col_key = str(event.column_key)
         if col_key == self._sort_column:
@@ -426,7 +514,8 @@ class CatalogScreen(Screen[None]):
             self._sort_ascending = True
         self._refresh_table()
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    @on(DataTable.RowSelected, "#catalog-table")
+    def _on_row_selected(self, event: DataTable.RowSelected) -> None:
         """Install/select the model on the highlighted row."""
         row_index = event.cursor_row
         if row_index < 0 or row_index >= len(self._rows):
@@ -465,30 +554,48 @@ class CatalogScreen(Screen[None]):
         self._install_model(entry)
 
     def _install_model(self, model: CatalogModel) -> None:
-        from lilbee.catalog import _resolve_filename
+        from lilbee.catalog import resolve_filename
 
         try:
-            filename = _resolve_filename(model)
+            filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
                 self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.name))
                 return
         except Exception:
-            pass  # Can't resolve filename -- proceed with download
+            log.debug("Could not resolve filename", exc_info=True)
 
         self._enqueue_download(model)
 
     def _enqueue_download(self, model: CatalogModel) -> None:
-        """Enqueue a model download in the ChatScreen's TaskBar."""
-        task_bar = getattr(self.app, "_task_bar", None)
-        if task_bar is None:
+        """Enqueue a model download in the app's TaskBar."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
-
+        task_bar = self.app.task_bar
         task_id = task_bar.add_task(f"Downloading {model.name}", "download")
         task_bar.queue.advance("download")
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
         self._run_download(model, task_id, task_bar)
+
+    def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
+        """Build a progress callback that reports download progress to the TaskBar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        tb: TaskBar = bar  # type: ignore[assignment]
+
+        def on_progress(downloaded: int, total: int) -> None:
+            mb_done = downloaded / (1024 * 1024)
+            if total > 0:
+                pct = min(int(downloaded * 100 / total), 100)
+                mb_total = total / (1024 * 1024)
+                self._safe_call(tb.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB")
+            else:
+                self._safe_call(tb.update_task, task_id, 0, f"{mb_done:.0f} MB")
+
+        return on_progress
 
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
@@ -499,22 +606,7 @@ class CatalogScreen(Screen[None]):
         bar: TaskBar = task_bar  # type: ignore[assignment]
 
         try:
-
-            def on_progress(downloaded: int, total: int) -> None:
-                mb_done = downloaded / (1024 * 1024)
-                if total > 0:
-                    pct = min(int(downloaded * 100 / total), 100)
-                    mb_total = total / (1024 * 1024)
-                    self._safe_call(
-                        bar.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB"
-                    )
-                else:
-                    # Total unknown - just show MB downloaded
-                    self._safe_call(
-                        bar.update_task, task_id, 0, f"{mb_done:.0f} MB"
-                    )
-
-            download_model(model, on_progress=on_progress)
+            download_model(model, on_progress=self._make_progress_callback(task_id, bar))
             self._safe_call(bar.complete_task, task_id)
             self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
         except PermissionError:
@@ -539,8 +631,13 @@ class CatalogScreen(Screen[None]):
                 exc_info=True,
             )
 
-    def action_pop_screen(self) -> None:
-        self.app.pop_screen()
+    def action_go_back(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.app.switch_view("Chat")
+        else:
+            self.app.pop_screen()
 
     def action_delete_model(self) -> None:
         """Delete an installed model. First press asks confirmation, second confirms."""
@@ -604,43 +701,43 @@ class CatalogScreen(Screen[None]):
             )
 
     def _refresh_after_delete(self) -> None:
-        """Re-fetch remote models and refresh table after deletion."""
+        """Re-fetch remote models and refresh after deletion."""
         self._fetch_installed_names()
-        self._refresh_table()
+        self._refresh_view()
         self._fetch_remote_models()
 
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         self.query_one("#catalog-table", DataTable).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         self.query_one("#catalog-table", DataTable).action_cursor_up()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         table.move_cursor(row=0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input):
+        if isinstance(self.focused, Input) or self._grid_view:
             return
         table = self.query_one("#catalog-table", DataTable)
         if self._rows:
@@ -648,11 +745,43 @@ class CatalogScreen(Screen[None]):
 
     def key_left(self) -> None:
         """Navigate to previous view instead of switching tabs."""
-        self.app.action_nav_prev()
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.app.action_nav_prev()
 
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
-        self.app.action_nav_next()
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.app.action_nav_next()
+
+
+@dataclass
+class GridSection:
+    """A named group of rows for the grid view."""
+
+    heading: str
+    rows: list[TableRow]
+
+
+def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
+    """Group rows into sections for the grid view."""
+    recommended = [r for r in rows if r.featured]
+    installed = [r for r in rows if r.installed and not r.featured]
+    chat = [r for r in rows if r.task == ModelTask.CHAT and not r.featured and not r.installed]
+    embedding = [
+        r for r in rows if r.task == ModelTask.EMBEDDING and not r.featured and not r.installed
+    ]
+    vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
+    return [
+        GridSection(msg.HEADING_OUR_PICKS, recommended),
+        GridSection(msg.HEADING_INSTALLED, installed),
+        GridSection(ModelTask.CHAT.capitalize(), chat),
+        GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
+        GridSection(ModelTask.VISION.capitalize(), vision),
+    ]
 
 
 def _matches_search(row: TableRow, search: str) -> bool:

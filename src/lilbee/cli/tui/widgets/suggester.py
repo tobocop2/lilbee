@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from textual.suggester import Suggester
 
+from lilbee.cli.settings_map import SETTINGS_MAP
+from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import command_names
 
 _SLASH_COMMANDS = command_names()
@@ -75,8 +77,6 @@ class SlashSuggester(Suggester):
         return names
 
     def _get_setting_names(self) -> list[str]:
-        from lilbee.cli.settings_map import SETTINGS_MAP
-
         return list(SETTINGS_MAP.keys())
 
     def _get_document_names(self) -> list[str]:
@@ -89,6 +89,4 @@ class SlashSuggester(Suggester):
             return []
 
     def _get_theme_names(self) -> list[str]:
-        from lilbee.cli.tui.app import DARK_THEMES
-
         return list(DARK_THEMES)

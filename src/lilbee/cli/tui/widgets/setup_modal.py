@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -71,7 +71,8 @@ class SetupModal(ModalScreen[str | None]):
             yield ProgressBar(total=100, show_eta=False, id="setup-progress")
             yield Label("", id="setup-status")
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
+    @on(ListView.Selected, "#embed-picker")
+    def _on_embed_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _RemoteRow):
             self.dismiss(item.remote_name)

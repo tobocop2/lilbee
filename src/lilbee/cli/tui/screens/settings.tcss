@@ -1,0 +1,68 @@
+SettingsScreen {
+    #settings-search {
+        dock: top;
+        margin: 0 1;
+    }
+
+    #settings-scroll {
+        padding: 0 1;
+    }
+
+    .setting-group {
+        border: tall $secondary-muted;
+        padding: 0 1;
+        margin-bottom: 1;
+
+        &:focus-within {
+            border: tall $secondary;
+        }
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .group-title {
+        color: $primary;
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+
+    .setting-row {
+        margin-bottom: 1;
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .setting-title {
+        padding: 0 0 0 1;
+        text-style: bold;
+    }
+
+    .setting-help {
+        color: $text-muted;
+        padding: 0 0 0 1;
+    }
+
+    .setting-editor {
+        margin: 0 0 0 0;
+    }
+
+    Input, Select SelectCurrent, Checkbox {
+        border: tall black 20%;
+
+        &:focus {
+            border: tall $primary;
+        }
+    }
+
+    Select:focus > SelectCurrent {
+        border: tall $primary;
+    }
+
+    Input.-invalid {
+        border: tall $error 60%;
+    }
+}

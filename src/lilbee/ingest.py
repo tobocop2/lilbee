@@ -590,7 +590,8 @@ async def sync(
             break
 
         content_type = classify_file(path)
-        assert content_type is not None, f"Unsupported file slipped through discovery: {name}"
+        if content_type is None:
+            raise ValueError(f"Unsupported file slipped through discovery: {name}")
 
         current_hash = file_hash(path)
         old_hash = existing_sources.get(name)
