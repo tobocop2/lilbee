@@ -93,7 +93,7 @@ class LilbeeApp(App[None]):
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
-        self.active_view = "Chat"
+        self.active_view = msg.DEFAULT_VIEW
         self._theme_index = 0
         self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")

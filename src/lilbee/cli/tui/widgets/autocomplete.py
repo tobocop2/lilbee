@@ -13,6 +13,8 @@ from textual.containers import Vertical
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
+from lilbee.cli.settings_map import SETTINGS_MAP
+from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import command_names
 
 log = logging.getLogger(__name__)
@@ -69,8 +71,6 @@ def _vision_options() -> list[str]:
 
 
 def _setting_options() -> list[str]:
-    from lilbee.cli.settings_map import SETTINGS_MAP
-
     return list(SETTINGS_MAP.keys())
 
 
@@ -85,8 +85,6 @@ def _document_options() -> list[str]:
 
 
 def _theme_options() -> list[str]:
-    from lilbee.cli.tui.app import DARK_THEMES
-
     return list(DARK_THEMES)
 
 

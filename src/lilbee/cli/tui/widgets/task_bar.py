@@ -15,7 +15,7 @@ from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
 log = logging.getLogger(__name__)
 
 _DONE_FLASH_SECONDS = 1.0
-_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_INTERVAL = 0.1
 
 
@@ -172,4 +172,4 @@ class TaskBar(Static):
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:
-        return STATUS_ICONS.get(status, "\u25b8")
+        return STATUS_ICONS.get(status, "▸")

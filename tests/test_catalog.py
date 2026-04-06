@@ -1,21 +1,14 @@
 """Tests for catalog.py — model catalog, HF API fetching, filtering, downloading."""
 
-import os
-import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-# Add local huggingface_hub for development testing
-_HF_HUB_PATH = "/Users/tobias/projects/huggingface_hub/src"
-if os.path.isdir(_HF_HUB_PATH) and _HF_HUB_PATH not in sys.path:
-    sys.path.insert(0, _HF_HUB_PATH)
+import httpx
+import pytest
 
-import httpx  # noqa: E402
-import pytest  # noqa: E402
-
-from lilbee import catalog  # noqa: E402
-from lilbee.catalog import (  # noqa: E402
+from lilbee import catalog
+from lilbee.catalog import (
     FEATURED_ALL,
     FEATURED_CHAT,
     FEATURED_EMBEDDING,

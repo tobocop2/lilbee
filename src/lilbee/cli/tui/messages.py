@@ -117,7 +117,8 @@ SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 
 # -- Status bar ----------------------------------------------------------------
 
-NAV_VIEWS: list[str] = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
+DEFAULT_VIEW = "Chat"
+NAV_VIEWS: list[str] = [DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks"]
 STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"

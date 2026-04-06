@@ -5,8 +5,8 @@ Ported from toad (https://github.com/batrachianai/toad).
 
 from textual.content import Content
 
-PILL_LEFT = "\u258c"  # left half block
-PILL_RIGHT = "\u2590"  # right half block
+PILL_LEFT = "▌"  # left half block
+PILL_RIGHT = "▐"  # right half block
 
 
 def pill(text: Content | str, background: str, foreground: str) -> Content:

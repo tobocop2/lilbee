@@ -20,7 +20,8 @@ class LilbeeCommandProvider(Provider):
     def _app(self) -> LilbeeApp:
         from lilbee.cli.tui.app import LilbeeApp
 
-        assert isinstance(self.screen.app, LilbeeApp)
+        if not isinstance(self.screen.app, LilbeeApp):
+            raise TypeError(f"Expected LilbeeApp, got {type(self.screen.app).__name__}")
         return self.screen.app
 
     async def search(self, query: str) -> Hits:

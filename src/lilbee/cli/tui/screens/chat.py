@@ -221,11 +221,11 @@ class ChatScreen(Screen[None]):
 
     def _update_mode_indicator(self) -> None:
         """Update the StatusBar mode text to reflect the current mode."""
-        try:
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
             bar = self.query_one(StatusBar)
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
-        except Exception:
-            pass
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -318,7 +318,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     if data.total_files:
                         pct = 50 + int(data.current_file * 50 / data.total_files)
                     else:
@@ -394,7 +395,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.CRAWL_PAGE:
                     from lilbee.progress import CrawlPageEvent
 
-                    assert isinstance(data, CrawlPageEvent)
+                    if not isinstance(data, CrawlPageEvent):
+                        raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                     pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                     detail = f"[{data.current}/{data.total}]: {data.url}"
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
@@ -750,7 +752,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=data.current_file,

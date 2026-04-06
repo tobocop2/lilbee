@@ -70,7 +70,8 @@ def make_progress_updater(task: CrawlTask) -> DetailedProgressCallback:
 
     def _on_progress(event_type: EventType, data: ProgressEvent) -> None:
         if event_type == EventType.CRAWL_PAGE:
-            assert isinstance(data, CrawlPageEvent)
+            if not isinstance(data, CrawlPageEvent):
+                raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
             task.pages_crawled = data.current
             task.pages_total = data.total
 

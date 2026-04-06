@@ -10,6 +10,9 @@ from textual.widgets import DataTable, Footer, Static
 
 from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import (
+    _WORKER_FETCH_HF,
+    _WORKER_FETCH_MORE_HF,
+    _WORKER_FETCH_REMOTE,
     TableRow,
     _catalog_to_row,
     _format_downloads,
@@ -1866,7 +1869,7 @@ async def test_catalog_worker_hf_success():
             from textual.worker import WorkerState
 
             mock_worker = MagicMock()
-            mock_worker.name = "_fetch_all_hf_models"
+            mock_worker.name = _WORKER_FETCH_HF
             mock_worker.result = [_make_catalog_model(name="hf-model-7B")]
             mock_event = MagicMock()
             mock_event.state = WorkerState.SUCCESS
@@ -1888,7 +1891,7 @@ async def test_catalog_worker_remote_success():
             from textual.worker import WorkerState
 
             mock_worker = MagicMock()
-            mock_worker.name = "_fetch_remote_models"
+            mock_worker.name = _WORKER_FETCH_REMOTE
             mock_worker.result = [_make_remote_model()]
             mock_event = MagicMock()
             mock_event.state = WorkerState.SUCCESS
@@ -1911,7 +1914,7 @@ async def test_catalog_worker_more_hf_success():
             from textual.worker import WorkerState
 
             mock_worker = MagicMock()
-            mock_worker.name = "_fetch_more_hf"
+            mock_worker.name = _WORKER_FETCH_MORE_HF
             mock_worker.result = [_make_catalog_model(name="new-7B")]
             mock_event = MagicMock()
             mock_event.state = WorkerState.SUCCESS
@@ -2015,6 +2018,29 @@ async def test_catalog_fetch_more_hf_worker():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
+
+
+async def test_catalog_grid_cache_skips_rebuild():
+    """Second _refresh_grid call with same data skips DOM rebuild."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+
+            screen._refresh_grid()
+            first_key = screen._grid_cache_key
+            assert first_key != ()
+
+            with patch.object(
+                screen.query_one("#catalog-grid"), "remove_children"
+            ) as mock_remove:
+                screen._refresh_grid()
+                mock_remove.assert_not_called()
+            assert screen._grid_cache_key == first_key
 
 
 async def test_chat_stream_response_worker(mock_svc):

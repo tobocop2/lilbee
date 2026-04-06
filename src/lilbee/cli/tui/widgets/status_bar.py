@@ -16,6 +16,8 @@ _MODE_STYLES: dict[str, str] = {
     msg.MODE_INSERT: "bold white on dark_green",
 }
 
+_DEFAULT_MODE_STYLE = "bold white on dark_red"
+
 
 class StatusBar(Widget):
     """Persistent bottom bar: mode indicator + view tabs + binding hints."""
@@ -24,6 +26,7 @@ class StatusBar(Widget):
     StatusBar {
         dock: bottom;
         height: 1;
+        width: 100%;
         background: $surface;
     }
     StatusBar > Static {
@@ -31,14 +34,14 @@ class StatusBar(Widget):
     }
     """
 
-    active_view: reactive[str] = reactive("Chat")
+    active_view: reactive[str] = reactive(msg.DEFAULT_VIEW)
     mode_text: reactive[str] = reactive("")
 
     def compose(self) -> ComposeResult:
         yield Static(id="status-bar-content")
 
     def on_mount(self) -> None:
-        self.active_view = getattr(self.app, "active_view", "Chat")
+        self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
         self._refresh()
 
     def watch_active_view(self, value: str) -> None:
@@ -50,7 +53,7 @@ class StatusBar(Widget):
     def _refresh(self) -> None:
         parts: list[str] = []
         if self.mode_text:
-            style = _MODE_STYLES.get(self.mode_text, "bold white on dark_green")
+            style = _MODE_STYLES.get(self.mode_text, _DEFAULT_MODE_STYLE)
             parts.append(f"[{style}] {self.mode_text} [/] ")
         for name in _VIEWS:
             if name == self.active_view:
