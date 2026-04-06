@@ -118,7 +118,7 @@ class SetupWizard(Screen[str | None]):
             installed_rows = [_installed_name_to_row(n, task) for n in installed_names]
             widgets_to_mount.append(
                 Static(
-                    msg.SETUP_INSTALLED_HEADING,
+                    msg.HEADING_INSTALLED,
                     classes="section-heading",
                 )
             )
@@ -134,7 +134,7 @@ class SetupWizard(Screen[str | None]):
         featured_rows = [_catalog_to_row(m, installed=False) for m in featured_models]
         widgets_to_mount.append(
             Static(
-                msg.SETUP_OUR_PICKS_HEADING,
+                msg.HEADING_OUR_PICKS,
                 classes="section-heading",
             )
         )

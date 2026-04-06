@@ -59,6 +59,8 @@ EMBEDDING_MISSING = (
 # -- Shared / cross-screen ----------------------------------------------------
 
 THEME_SET = "Theme: {name}"
+HEADING_OUR_PICKS = "Our picks"
+HEADING_INSTALLED = "Installed"
 
 # -- Catalog screen ------------------------------------------------------------
 
@@ -108,8 +110,6 @@ SETUP_SKIP_BUTTON = "Skip \u2014 chat only (no document search)"
 SETUP_CONFIRM_BUTTON = "Confirm"
 SETUP_INSTALLED_LABEL = "Installed locally:"
 SETUP_FEATURED_LABEL = "Featured models (download):"
-SETUP_OUR_PICKS_HEADING = "Our picks"
-SETUP_INSTALLED_HEADING = "Installed"
 SETUP_BROWSE_CATALOG = "Browse full catalog"
 SETUP_CONNECTING = "Connecting to HuggingFace..."
 SETUP_INSTALLED_STATUS = "{name} installed!"

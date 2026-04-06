@@ -763,11 +763,11 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
     ]
     vision = [r for r in rows if r.task == ModelTask.VISION and not r.featured and not r.installed]
     return [
-        GridSection("Our picks", recommended),
-        GridSection("Installed", installed),
-        GridSection("Chat", chat),
-        GridSection("Embedding", embedding),
-        GridSection("Vision", vision),
+        GridSection(msg.HEADING_OUR_PICKS, recommended),
+        GridSection(msg.HEADING_INSTALLED, installed),
+        GridSection(ModelTask.CHAT.capitalize(), chat),
+        GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
+        GridSection(ModelTask.VISION.capitalize(), vision),
     ]
 
 
