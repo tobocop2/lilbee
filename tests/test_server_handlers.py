@@ -1157,18 +1157,18 @@ class TestModelPullProgressCancel:
         """When cancel is set mid-pull, the real _on_progress returns early."""
         import threading
 
+        from lilbee.server.handlers import SseStream
+
         cancel_barrier = threading.Event()
         mock_manager = MagicMock()
-        progress_calls = []
+        sse_ref: list[SseStream] = []
 
         def fake_pull(model, source, *, on_progress=None):
             if on_progress:
                 on_progress({"status": "first"})
-                progress_calls.append("first")
                 # Wait for cancel to be set by the consumer
                 cancel_barrier.wait(timeout=2)
                 on_progress({"status": "second"})  # This hits line 703
-                progress_calls.append("second")
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
@@ -1177,11 +1177,10 @@ class TestModelPullProgressCancel:
             async for event in gen:
                 events.append(event)
                 if event and "first" in event:
-                    # Close the generator which sets cancel
                     await gen.aclose()
+                    # After aclose, cancel is guaranteed to be set
                     cancel_barrier.set()
                     break
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.15)  # Let the thread complete
 
-        # The "second" progress call should have been suppressed
         assert not any("second" in e for e in events if e)

@@ -4708,8 +4708,8 @@ async def test_setup_wizard_download_progress_same_pct_skips():
             cm = _make_catalog_model(name="dup-pct-model")
 
             call_count = 0
-            # Each call to time.time() returns a value 1.0 apart to bypass the 0.1s throttle
-            time_values = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            # Values must be > 0.1 apart to bypass throttle (last_update_time starts at 0.0)
+            time_values = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
 
             def fake_download(model, on_progress=None):
                 nonlocal call_count
@@ -6074,6 +6074,35 @@ async def test_chat_add_skipped_file():
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
             app.screen._run_add_background(_Path("/tmp/test.txt"), "task-1")
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_chat_add_sync_progress_wrong_type():
+    """_run_add_background sync progress raises TypeError for non-FileStartEvent."""
+    from pathlib import Path as _Path
+
+    from lilbee.cli.helpers import CopyResult
+    from lilbee.progress import CrawlPageEvent, EventType
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        mock_result = CopyResult(copied=[_Path("/tmp/ok.txt")], skipped=[])
+
+        async def fake_sync(*, quiet=True, on_progress=None):
+            if on_progress:
+                # Send wrong event type for FILE_START — triggers TypeError guard
+                on_progress(
+                    EventType.FILE_START,
+                    CrawlPageEvent(current=1, total=1, url="https://x.com"),
+                )
+
+        with (
+            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+        ):
+            app.screen._run_add_background(_Path("/tmp/test.txt"), "task-wrong")
             while app.screen.workers:
                 await _pilot.pause()
 
