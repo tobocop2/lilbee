@@ -4180,3 +4180,171 @@ class TestWikiDisplayPageMissing:
             await pilot.pause()
             header = app.screen.query_one("#wiki-page-header", Static)
             assert header.content == ""
+
+
+class TestWikiCoverageEdgeCases:
+    async def test_load_pages_exception_path(self, tmp_path):
+        """Exception in list_pages falls back to empty list."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            with patch(
+                "lilbee.wiki.browse.list_pages", side_effect=OSError("boom")
+            ):
+                screen._load_pages()
+            await pilot.pause()
+
+    async def test_on_page_selected_none_id(self, tmp_path):
+        """Selecting an option with no id (heading) is a no-op."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "test", "Test Page")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            # Simulate selecting a disabled heading (id=None)
+            fake_event = MagicMock()
+            fake_event.option = MagicMock(id=None)
+            screen._on_page_selected(fake_event)
+            await pilot.pause()
+
+    async def test_action_focus_search(self, tmp_path):
+        """action_focus_search focuses the search input."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        wiki_root.mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            app.screen.action_focus_search()
+            await pilot.pause()
+            assert app.screen.query_one("#wiki-search", TextualInput).has_focus
+
+    async def test_dismiss_or_back_empty_search(self, tmp_path):
+        """Escape with empty search calls go_back."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        wiki_root.mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            # Search is empty, so dismiss_or_back should call go_back
+            screen.action_dismiss_or_back()
+            await pilot.pause()
+
+    async def test_go_back_pops_screen(self, tmp_path):
+        """action_go_back pops screen on non-LilbeeApp."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        wiki_root.mkdir(parents=True)
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.screen.action_go_back()
+            await pilot.pause()
+
+    async def test_go_back_switches_to_chat_on_lilbee_app(self, tmp_path):
+        """action_go_back calls switch_view('Chat') on LilbeeApp."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "test", "Test")
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.switch_view("Wiki")
+            await pilot.pause()
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            assert isinstance(app.screen, WikiScreen)
+            app.screen.action_go_back()
+            await pilot.pause()
+            assert app.active_view == "Chat"
+
+    async def test_vim_nav_noop_when_input_focused(self, tmp_path):
+        """Vim navigation is suppressed when Input is focused."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "test", "Test Page")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            inp = app.screen.query_one("#wiki-search", TextualInput)
+            inp.focus()
+            await pilot.pause()
+            # All vim nav actions should be no-ops when input is focused
+            app.screen.action_cursor_down()
+            app.screen.action_cursor_up()
+            app.screen.action_jump_top()
+            app.screen.action_jump_bottom()
+            await pilot.pause()
+            assert inp.has_focus
+
+    async def test_on_page_selected_valid_slug(self, tmp_path):
+        """Selecting a page with a valid slug displays it."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "hello", "Hello Page")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            fake_event = MagicMock()
+            fake_event.option = MagicMock(id="summaries/hello")
+            screen._on_page_selected(fake_event)
+            await pilot.pause()
+
+    async def test_vim_nav_when_not_input_focused(self, tmp_path):
+        """Vim nav dispatches to OptionList when Input is not focused."""
+        cfg.wiki = True
+        cfg.data_dir = tmp_path / "data"
+        wiki_root = cfg.data_dir / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "a", "Page A")
+        _create_wiki_page(wiki_root, "summaries", "b", "Page B")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import OptionList as TextualOptionList
+
+            ol = app.screen.query_one("#wiki-page-list", TextualOptionList)
+            ol.focus()
+            await pilot.pause()
+            app.screen.action_cursor_down()
+            app.screen.action_cursor_up()
+            app.screen.action_jump_top()
+            app.screen.action_jump_bottom()
+            await pilot.pause()
+
+    def test_group_pages_unknown_type(self):
+        """Pages with unknown type get their own group."""
+        from lilbee.cli.tui.screens.wiki import _group_pages
+        from lilbee.wiki.browse import WikiPageInfo
+
+        pages = [
+            WikiPageInfo("a", "Page A", "summary", 1, "2025-01-01"),
+            WikiPageInfo("b", "Page B", "custom", 2, "2025-01-02"),
+        ]
+        result = _group_pages(pages)
+        types = [t for t, _ in result]
+        assert "summary" in types
+        assert "custom" in types

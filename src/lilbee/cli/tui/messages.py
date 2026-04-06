@@ -139,6 +139,8 @@ def get_nav_views() -> list[str]:
     if cfg.wiki:
         views.append("Wiki")
     return views
+
+
 STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
@@ -177,6 +179,14 @@ HELP_TEXT_TEMPLATE = """\
   ^d / ^u        Half-page down / up
   Enter          Install / select model
   q / Escape     Back
+
+  [bold]Wiki[/bold]
+  j / k          Navigate page list
+  g / G          Jump to top / bottom
+  /              Focus search
+  Escape         Clear search / back
+  Enter          Open selected page
+  q              Back
 
   [bold]Settings / Status / Tasks[/bold]
   j / k          Navigate rows
