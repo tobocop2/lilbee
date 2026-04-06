@@ -350,38 +350,38 @@ class TestFrontmatterParsing:
 
 class TestHelpers:
     def test_page_type_from_summaries(self, tmp_path: Path):
-        from lilbee.server.wiki import _page_type_from_path
+        from lilbee.wiki.browse import _page_type_from_path
 
         assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
 
     def test_page_type_from_concepts(self, tmp_path: Path):
-        from lilbee.server.wiki import _page_type_from_path
+        from lilbee.wiki.browse import _page_type_from_path
 
         assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "concept"
 
     def test_page_type_unknown(self, tmp_path: Path):
-        from lilbee.server.wiki import _page_type_from_path
+        from lilbee.wiki.browse import _page_type_from_path
 
         assert _page_type_from_path(tmp_path / "x.md", tmp_path) == "unknown"
 
     def test_page_type_unrelated_path(self, tmp_path: Path):
-        from lilbee.server.wiki import _page_type_from_path
+        from lilbee.wiki.browse import _page_type_from_path
 
         other = Path("/completely/different")
         assert _page_type_from_path(other / "x.md", tmp_path) == "unknown"
 
     def test_slug_from_path(self, tmp_path: Path):
-        from lilbee.server.wiki import _slug_from_path
+        from lilbee.wiki.browse import _slug_from_path
 
         assert _slug_from_path(tmp_path / "summaries" / "doc.md", tmp_path) == "summaries/doc"
 
     def test_list_md_files_empty(self, tmp_path: Path):
-        from lilbee.server.wiki import _list_md_files
+        from lilbee.wiki.browse import _list_md_files
 
         assert _list_md_files(tmp_path / "nonexistent") == []
 
     def test_list_md_files_filters(self, tmp_path: Path):
-        from lilbee.server.wiki import _list_md_files
+        from lilbee.wiki.browse import _list_md_files
 
         (tmp_path / "a.md").write_text("x")
         (tmp_path / "b.txt").write_text("y")

@@ -317,6 +317,47 @@ def lilbee_wiki_status() -> dict[str, Any]:
 
 
 @mcp.tool()
+def lilbee_wiki_list() -> dict[str, Any]:
+    """List all wiki pages (summaries and concepts) with metadata.
+
+    Returns page slugs, titles, types, source counts, and creation dates.
+    """
+    if not cfg.wiki:
+        return {"error": "wiki not enabled"}
+    from dataclasses import asdict
+
+    from lilbee.wiki.browse import list_pages
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    pages = list_pages(wiki_root)
+    return {
+        "command": "wiki_list",
+        "pages": [asdict(p) for p in pages],
+        "total": len(pages),
+    }
+
+
+@mcp.tool()
+def lilbee_wiki_read(slug: str) -> dict[str, Any]:
+    """Read a wiki page's content and frontmatter by slug.
+
+    Args:
+        slug: Page slug like "summaries/my-doc" or "concepts/typing".
+    """
+    if not cfg.wiki:
+        return {"error": "wiki not enabled"}
+    from dataclasses import asdict
+
+    from lilbee.wiki.browse import read_page
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    result = read_page(wiki_root, slug)
+    if result is None:
+        return {"error": f"wiki page not found: {slug}"}
+    return {"command": "wiki_read", **asdict(result)}
+
+
+@mcp.tool()
 def lilbee_wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
 

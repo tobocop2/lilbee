@@ -23,7 +23,9 @@ from lilbee.mcp import (
     lilbee_sync,
     lilbee_wiki_citations,
     lilbee_wiki_lint,
+    lilbee_wiki_list,
     lilbee_wiki_prune,
+    lilbee_wiki_read,
     lilbee_wiki_status,
     main,
 )
@@ -591,6 +593,82 @@ class TestWikiPrune:
         assert result["archived"] == 0
         assert result["flagged"] == 0
         assert result["records"] == []
+
+
+class TestLilbeeWikiList:
+    def test_wiki_disabled(self):
+        cfg.wiki = False
+        result = lilbee_wiki_list()
+        assert "error" in result
+        assert result["error"] == "wiki not enabled"
+
+    def test_empty_wiki(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        result = lilbee_wiki_list()
+        assert result["command"] == "wiki_list"
+        assert result["pages"] == []
+        assert result["total"] == 0
+
+    def test_with_pages(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        wiki_root = isolated_env / "wiki"
+        summaries = wiki_root / "summaries"
+        summaries.mkdir(parents=True)
+        (summaries / "doc-a.md").write_text(
+            "---\ntitle: Doc A\nsources: [x.md]\n---\n# Doc A\n", encoding="utf-8"
+        )
+        concepts = wiki_root / "concepts"
+        concepts.mkdir(parents=True)
+        (concepts / "typing.md").write_text("# Typing\n", encoding="utf-8")
+        result = lilbee_wiki_list()
+        assert result["total"] == 2
+        slugs = {p["slug"] for p in result["pages"]}
+        assert "summaries/doc-a" in slugs
+        assert "concepts/typing" in slugs
+
+
+class TestLilbeeWikiRead:
+    def test_wiki_disabled(self):
+        cfg.wiki = False
+        result = lilbee_wiki_read("summaries/test")
+        assert "error" in result
+        assert result["error"] == "wiki not enabled"
+
+    def test_existing_page(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        wiki_root = isolated_env / "wiki"
+        summaries = wiki_root / "summaries"
+        summaries.mkdir(parents=True)
+        (summaries / "my-doc.md").write_text(
+            "---\ntitle: My Doc\nsources: [a.txt]\n---\n# My Doc\nBody.\n", encoding="utf-8"
+        )
+        result = lilbee_wiki_read("summaries/my-doc")
+        assert result["command"] == "wiki_read"
+        assert result["slug"] == "summaries/my-doc"
+        assert result["title"] == "My Doc"
+        assert "Body." in result["content"]
+        assert result["frontmatter"]["title"] == "My Doc"
+
+    def test_missing_page(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        result = lilbee_wiki_read("summaries/nope")
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    def test_path_traversal(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        result = lilbee_wiki_read("../../etc/passwd")
+        assert "error" in result
 
 
 class TestMcpSubcommand:

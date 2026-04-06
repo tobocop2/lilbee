@@ -1,5 +1,12 @@
 """Wiki layer — LLM-maintained synthesis pages with citation provenance."""
 
+from lilbee.wiki.browse import (
+    WikiPageContent,
+    WikiPageInfo,
+    find_page,
+    list_pages,
+    read_page,
+)
 from lilbee.wiki.citation import (
     CitationStatus,
     ParsedCitation,
@@ -18,16 +25,21 @@ __all__ = [
     "SUBDIR_TO_TYPE",
     "CitationStatus",
     "ParsedCitation",
+    "WikiPageContent",
+    "WikiPageInfo",
     "append_wiki_log",
+    "find_page",
     "find_unmarked_claims",
     "generate_summary_page",
     "generate_synthesis_pages",
     "lint_all",
     "lint_wiki_page",
+    "list_pages",
     "make_slug",
     "parse_frontmatter",
     "parse_wiki_citations",
     "prune_wiki",
+    "read_page",
     "render_citation_block",
     "update_wiki_index",
     "verify_citation",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +25,15 @@ from lilbee.server.models import (
 from lilbee.wiki import gen as gen_mod
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
-from lilbee.wiki.index import parse_source_count, update_wiki_index
-from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
+from lilbee.wiki.browse import (
+    WikiPageInfo,
+    _build_page_info,
+    _list_md_files,
+    find_page,
+    list_pages,
+    read_page,
+)
+from lilbee.wiki.index import update_wiki_index
 
 
 def _wiki_root() -> Path:
@@ -41,57 +47,27 @@ def _require_wiki() -> None:
         raise NotFoundException(detail="wiki not enabled")
 
 
-def _list_md_files(directory: Path) -> list[Path]:
-    """Return sorted markdown files in a directory (non-recursive)."""
-    if not directory.is_dir():
-        return []
-    return sorted(directory.glob("*.md"))
-
-
-def _page_type_from_path(path: Path, wiki_root: Path) -> str:
-    """Determine page type from its location relative to wiki root."""
-    try:
-        relative = path.relative_to(wiki_root)
-    except ValueError:
-        return "unknown"
-    parts = relative.parts
-    if len(parts) >= 2:
-        return SUBDIR_TO_TYPE.get(parts[0], "unknown")
-    return "unknown"
-
-
-def _slug_from_path(path: Path, wiki_root: Path) -> str:
-    """Build a URL slug from a wiki page path."""
-    relative = path.relative_to(wiki_root)
-    return str(relative.with_suffix("")).replace("\\", "/")
-
-
 def _find_page(slug: str) -> Path | None:
-    """Resolve a slug to a wiki page path, or None if not found."""
-    candidate = _wiki_root() / f"{slug}.md"
-    try:
-        validate_path_within(candidate, _wiki_root())
-    except ValueError:
-        return None
-    return candidate if candidate.is_file() else None
+    """Resolve a slug to a wiki page path via the browse module."""
+    return find_page(_wiki_root(), slug)
 
 
 def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
-    """Build a WikiPageSummary from a markdown file on disk."""
-    text = path.read_text(encoding="utf-8")
-    fm = parse_frontmatter(text)
-    slug = _slug_from_path(path, wiki_root)
-    title = fm.get("title", path.stem.replace("-", " ").title())
-    page_type = _page_type_from_path(path, wiki_root)
-    source_count = parse_source_count(text)
-    raw_at = fm.get("generated_at", "")
-    created_at = raw_at.isoformat() if isinstance(raw_at, (datetime, date)) else str(raw_at)
+    """Build a WikiPageSummary from a markdown file on disk.
+
+    Delegates to browse._build_page_info and converts to pydantic.
+    """
+    return _summary_from_info(_build_page_info(path, wiki_root))
+
+
+def _summary_from_info(info: WikiPageInfo) -> WikiPageSummary:
+    """Convert a browse WikiPageInfo to a server WikiPageSummary."""
     return WikiPageSummary(
-        slug=slug,
-        title=title,
-        page_type=page_type,
-        source_count=source_count,
-        created_at=created_at,
+        slug=info.slug,
+        title=info.title,
+        page_type=info.page_type,
+        source_count=info.source_count,
+        created_at=info.created_at,
     )
 
 
@@ -109,11 +85,8 @@ async def wiki_list_route() -> list[dict[str, Any]]:
     if index_path.is_file():
         update_wiki_index()
 
-    pages: list[WikiPageSummary] = []
-    for subdir in ("summaries", "concepts"):
-        for path in _list_md_files(root / subdir):
-            pages.append(_build_summary(path, root))
-    return [p.model_dump() for p in pages]
+    pages = list_pages(root)
+    return [_summary_from_info(p).model_dump() for p in pages]
 
 
 @get("/api/wiki/drafts")
@@ -123,7 +96,7 @@ async def wiki_drafts_route() -> list[dict[str, Any]]:
     root = _wiki_root()
     drafts: list[WikiPageSummary] = []
     for path in _list_md_files(root / "drafts"):
-        drafts.append(_build_summary(path, root))
+        drafts.append(_summary_from_info(_build_page_info(path, root)))
     return [d.model_dump() for d in drafts]
 
 
@@ -154,15 +127,13 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     if slug.endswith("/citations"):
         real_slug = slug.removesuffix("/citations")
         return _citations_for_slug(real_slug)
-    path = _find_page(slug)
-    if path is None:
+    result = read_page(_wiki_root(), slug)
+    if result is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
-    text = path.read_text(encoding="utf-8")
-    fm = parse_frontmatter(text)
     return WikiPageDetail(
-        slug=slug,
-        title=fm.get("title", path.stem.replace("-", " ").title()),
-        content=text,
+        slug=result.slug,
+        title=result.title,
+        content=result.content,
     )
 
 
