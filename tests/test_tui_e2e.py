@@ -11,7 +11,6 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Footer
 
 from lilbee.config import cfg
 
@@ -60,13 +59,8 @@ def _mock_services():
 class ChatTestApp(App[None]):
     """Minimal app that pushes ChatScreen for testing."""
 
-    active_view = "Chat"
-
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        yield NavBar(id="global-nav-bar")
-        yield Footer()
+        yield from ()
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -203,46 +197,50 @@ class TestModelSwitchSafety:
             screen.action_cancel_stream.assert_called_once()
 
 
-class TestNavBarPresence:
+class TestStatusBarPresence:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
-    async def test_navbar_on_all_screens(self, _fam, _cat, _mock_resolve):
-        """NavBar must exist on every screen."""
+    async def test_status_bar_on_all_screens(self, _fam, _cat, _mock_resolve):
+        """StatusBar must exist on every screen."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
 
             # Chat screen
-            nav = app.query_one("#global-nav-bar")
-            assert nav is not None
+            bar = app.screen.query_one(StatusBar)
+            assert bar is not None
 
             # Cycle through all views
             for view in ["Catalog", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
-                nav = app.query_one("#global-nav-bar")
-                assert nav is not None, f"NavBar missing on {view} screen"
+                bar = app.screen.query_one(StatusBar)
+                assert bar is not None, f"StatusBar missing on {view} screen"
 
 
 class TestModeIndicator:
     async def test_insert_mode_on_startup(self, _mock_resolve):
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
-            # Insert mode is default
-            assert "INSERT" in nav.mode_text
+            bar = app.screen.query_one(StatusBar)
+            assert "INSERT" in bar.mode_text
 
     async def test_normal_mode_on_escape(self, _mock_resolve):
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
-            assert "NORMAL" in nav.mode_text
+            bar = app.screen.query_one(StatusBar)
+            assert "NORMAL" in bar.mode_text
 
 
 class TestViewCycling:

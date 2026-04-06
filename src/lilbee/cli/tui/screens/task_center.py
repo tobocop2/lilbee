@@ -9,7 +9,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Static
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskStatus
@@ -57,17 +57,18 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Static("Background Tasks", id="task-center-title")
         yield DataTable(id="task-table", cursor_type="row")
         yield Static("", id="task-detail")
-        yield Footer()
+        yield StatusBar()
 
     def action_go_back(self) -> None:
         """Go back to the Chat screen."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

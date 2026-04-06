@@ -1439,249 +1439,91 @@ class TestRunTuiKeyboardInterrupt:
                 mock_reset.assert_called_once()
 
 
-class _NavBarApp(App):
+class _StatusBarApp(App):
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        yield NavBar(id="nav-bar")
+        yield StatusBar()
 
 
-class TestNavBar:
+class TestStatusBar:
     async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
+        app = _StatusBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(NavBar)
+            bar = app.query_one(StatusBar)
             assert bar is not None
 
     async def test_default_active_view_is_chat(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
+        app = _StatusBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(NavBar)
+            bar = app.query_one(StatusBar)
             assert bar.active_view == "Chat"
 
     async def test_watch_active_view_updates_display(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
+        app = _StatusBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(NavBar)
+            bar = app.query_one(StatusBar)
             bar.active_view = "Catalog"
             await pilot.pause()
-            # Just verify it doesn't crash and updates
             assert bar.active_view == "Catalog"
 
-    async def test_all_views_shown_in_display(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        app = _NavBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Just verify the NavBar composes successfully with all views
-            bar = app.query_one(NavBar)
-            assert bar.active_view == "Chat"
-
     async def test_set_active_view_to_status(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
+        app = _StatusBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(NavBar)
+            bar = app.query_one(StatusBar)
             bar.active_view = "Status"
             await pilot.pause()
             assert bar.active_view == "Status"
 
-    async def test_active_task_text_shown(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+    async def test_mode_text_updates(self) -> None:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
+        app = _StatusBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(NavBar)
-            bar.active_task_text = "\u25b6 Sync 60%"
+            bar = app.query_one(StatusBar)
+            bar.mode_text = msg.MODE_NORMAL
             await pilot.pause()
-            assert bar.active_task_text == "\u25b6 Sync 60%"
+            assert bar.mode_text == msg.MODE_NORMAL
 
-    async def test_active_task_text_clears(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+    async def test_dock_bottom_in_css(self) -> None:
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-        app = _NavBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            bar.active_task_text = "\u25b6 Sync 60%"
-            await pilot.pause()
-            bar.active_task_text = ""
-            await pilot.pause()
-            assert bar.active_task_text == ""
+        assert "dock: bottom" in StatusBar.DEFAULT_CSS
 
-    async def test_dock_top_in_css(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+    async def test_nav_views_contains_all_screens(self) -> None:
+        from lilbee.cli.tui import messages as msg
 
-        assert "dock: top" in NavBar.DEFAULT_CSS
+        for name in ("Chat", "Catalog", "Status", "Settings", "Tasks"):
+            assert name in msg.NAV_VIEWS
 
-    async def test_tasks_highlighted_when_active_task(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+    async def test_default_view_is_first(self) -> None:
+        from lilbee.cli.tui import messages as msg
 
-        app = _NavBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            bar.active_view = "Chat"
-            bar.active_task_text = "Downloading..."
-            await pilot.pause()
-            content = app.query_one("#nav-bar-content", Static)
-            assert "[bold yellow]Tasks[/]" in content.content
-
-    async def test_tasks_not_highlighted_without_active_task(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        app = _NavBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            bar.active_view = "Chat"
-            bar.active_task_text = ""
-            await pilot.pause()
-            content = app.query_one("#nav-bar-content", Static)
-            assert "[bold yellow]Tasks[/]" not in content.content
-
-    async def test_view_index_0_is_chat(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
-
-        assert _VIEWS[0] == "Chat"
-
-    async def test_view_index_3_is_settings(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
-
-        assert _VIEWS[3] == "Settings"
-
-    async def test_view_index_4_is_tasks(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _VIEWS
-
-        assert _VIEWS[4] == "Tasks"
+        assert msg.NAV_VIEWS[0] == msg.DEFAULT_VIEW
 
 
-class TestNavBarClickSupport:
-    def test_view_regions_covers_all_views(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _VIEWS, _view_regions
-
-        regions = _view_regions()
-        assert len(regions) == len(_VIEWS)
-        for (start, end, name), expected in zip(regions, _VIEWS, strict=True):
-            assert name == expected
-            assert end - start == len(name) + 2
-
-    def test_view_regions_are_contiguous(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_regions
-
-        regions = _view_regions()
-        assert regions[0][0] == 0
-        for i in range(1, len(regions)):
-            assert regions[i][0] == regions[i - 1][1]
-
-    def test_view_at_x_returns_chat_at_zero(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
-
-        assert _view_at_x(0) == "Chat"
-
-    def test_view_at_x_returns_catalog(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
-
-        regions = _view_regions()
-        catalog_start = regions[1][0]
-        assert _view_at_x(catalog_start) == "Catalog"
-
-    def test_view_at_x_returns_last_view(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
-
-        regions = _view_regions()
-        last_start = regions[-1][0]
-        assert _view_at_x(last_start) == "Tasks"
-
-    def test_view_at_x_returns_none_past_end(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_at_x, _view_regions
-
-        regions = _view_regions()
-        past_end = regions[-1][1]
-        assert _view_at_x(past_end) is None
-
-    def test_view_at_x_returns_none_for_negative(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import _view_at_x
-
-        assert _view_at_x(-1) is None
-
-    async def test_click_calls_switch_view(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
-
-        app = _NavBarApp()
-        app.switch_view = mock.Mock()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            regions = _view_regions()
-            models_x = regions[1][0] + 1
-            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
-                bar.on_click(mock.Mock(x=models_x, y=0))
-            app.switch_view.assert_called_once_with("Catalog")
-
-    async def test_click_outside_views_does_nothing(self) -> None:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar, _view_regions
-
-        app = _NavBarApp()
-        app.switch_view = mock.Mock()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            regions = _view_regions()
-            past_end = regions[-1][1] + 10
-            with mock.patch("lilbee.cli.tui.app.LilbeeApp", type(app)):
-                bar.on_click(mock.Mock(x=past_end, y=0))
-            app.switch_view.assert_not_called()
-
-    async def test_click_on_non_lilbee_app_is_safe(self) -> None:
-        """Clicking on app that is not LilbeeApp does not crash."""
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        app = _NavBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(NavBar)
-            # App is not LilbeeApp -- isinstance check skips switch_view
-            bar.on_click(mock.Mock(x=0, y=0))
-
-
-class TestLilbeeAppGlobalNavBar:
-    async def test_screen_composes_global_nav_bar(self) -> None:
+class TestLilbeeAppStatusBar:
+    async def test_screen_composes_status_bar(self) -> None:
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Pop any setup wizard that may appear
-            while not isinstance(app.screen, ChatScreen):
-                app.pop_screen()
-                await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
-            assert nav is not None
-
-    async def test_nav_bar_default_is_chat(self) -> None:
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
-        cfg.vision_model = ""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -1689,8 +1531,25 @@ class TestLilbeeAppGlobalNavBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            nav = app.query_one("#global-nav-bar")
-            assert nav.active_view == "Chat"
+            bar = app.screen.query_one(StatusBar)
+            assert bar is not None
+
+    async def test_status_bar_default_is_chat(self) -> None:
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            bar = app.screen.query_one(StatusBar)
+            assert bar.active_view == "Chat"
 
 
 class TestPill:

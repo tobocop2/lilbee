@@ -27,11 +27,11 @@ class TaskStatus(StrEnum):
 
 
 STATUS_ICONS: dict[TaskStatus, str] = {
-    TaskStatus.QUEUED: "\u23f3",
-    TaskStatus.ACTIVE: "\u25b6",
-    TaskStatus.DONE: "\u2713",
-    TaskStatus.FAILED: "\u2717",
-    TaskStatus.CANCELLED: "\u2298",
+    TaskStatus.QUEUED: "⏳",
+    TaskStatus.ACTIVE: "▶",
+    TaskStatus.DONE: "✓",
+    TaskStatus.FAILED: "✗",
+    TaskStatus.CANCELLED: "⊘",
 }
 
 

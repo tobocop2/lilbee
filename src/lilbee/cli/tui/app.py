@@ -16,7 +16,6 @@ from textual.signal import Signal
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.events import ModelChanged
-from lilbee.cli.tui.widgets.nav_bar import NavBar
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -94,7 +93,7 @@ class LilbeeApp(App[None]):
     def __init__(self, *, auto_sync: bool = False) -> None:
         super().__init__()
         self._auto_sync = auto_sync
-        self.active_view = "Chat"
+        self.active_view = msg.DEFAULT_VIEW
         self._theme_index = 0
         self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
@@ -104,7 +103,7 @@ class LilbeeApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
-        yield NavBar(id="global-nav-bar")
+        yield from ()  # screens compose their own StatusBar
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
@@ -178,15 +177,6 @@ class LilbeeApp(App[None]):
             self.switch_screen(factory())
 
         self.active_view = view_name
-        self.call_after_refresh(self._update_nav, view_name)
-
-    def _update_nav(self, view_name: str) -> None:
-        """Update the app-level NavBar after the new screen has mounted."""
-        try:
-            nav = self.query_one("#global-nav-bar", NavBar)
-            nav.active_view = view_name
-        except Exception:
-            log.debug("NavBar update failed", exc_info=True)
 
     def action_push_help(self) -> None:
         from lilbee.cli.tui.widgets.help_modal import HelpModal

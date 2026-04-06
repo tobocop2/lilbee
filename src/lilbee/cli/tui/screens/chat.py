@@ -31,7 +31,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_bar import NavBar
+from lilbee.cli.tui.widgets.status_bar import StatusBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -103,7 +103,7 @@ class ChatScreen(Screen[None]):
         """The app-level TaskBar (created by LilbeeApp)."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
 
-        bar = getattr(self.app, "task_bar", None)
+        bar = getattr(self.app, "task_bar", None)  # test apps lack task_bar
         if isinstance(bar, _TaskBar):
             return bar
         msg_text = "App does not have a TaskBar"
@@ -123,6 +123,7 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
@@ -219,12 +220,12 @@ class ChatScreen(Screen[None]):
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
-        """Update the NavBar mode text to reflect the current mode."""
-        try:
-            nav = self.app.query_one("#global-nav-bar", NavBar)
-            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
-        except Exception:
-            pass
+        """Update the StatusBar mode text to reflect the current mode."""
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            bar = self.query_one(StatusBar)
+            bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: object) -> None:
         """Handle key events: vim mode and typing from chat log."""
@@ -317,7 +318,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     if data.total_files:
                         pct = 50 + int(data.current_file * 50 / data.total_files)
                     else:
@@ -393,7 +395,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.CRAWL_PAGE:
                     from lilbee.progress import CrawlPageEvent
 
-                    assert isinstance(data, CrawlPageEvent)
+                    if not isinstance(data, CrawlPageEvent):
+                        raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                     pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                     detail = f"[{data.current}/{data.total}]: {data.url}"
                     self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
@@ -572,7 +575,7 @@ class ChatScreen(Screen[None]):
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
-        if args and isinstance(self.app, LilbeeApp):
+        if args and isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:
@@ -749,7 +752,8 @@ class ChatScreen(Screen[None]):
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
-                    assert isinstance(data, FileStartEvent)
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
                     pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=data.current_file,

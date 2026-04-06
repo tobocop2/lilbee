@@ -12,7 +12,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import Checkbox, Footer, Header, Input, Select, Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 from lilbee import settings
 from lilbee.cli.settings_map import SETTINGS_MAP, SettingDef
@@ -128,14 +128,15 @@ class SettingsScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Input(
             placeholder="Filter settings...",
             id="settings-search",
         )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
-        yield Footer()
+        yield StatusBar()
 
     def _compose_groups(self) -> ComposeResult:
         """Yield grouped setting sections."""
@@ -223,7 +224,7 @@ class SettingsScreen(Screen[None]):
             self._refresh_help(key, defn)
             from lilbee.cli.tui.app import LilbeeApp
 
-            if isinstance(self.app, LilbeeApp):
+            if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
                 self.app.settings_changed_signal.publish((key, parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")

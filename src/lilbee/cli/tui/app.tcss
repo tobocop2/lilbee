@@ -1,30 +1,9 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
-#global-nav-bar {
-    dock: bottom;
-    height: 1;
-    width: 100%;
-}
-
 #task-bar {
     dock: bottom;
     height: auto;
     max-height: 5;
-    padding: 0 1;
-}
-
-#model-detail, #setting-detail {
-    height: 6;
-    padding: 1;
-    border-top: solid $surface-lighten-2;
-}
-
-#catalog-search {
-    dock: top;
-    margin: 0 1;
-}
-
-.model-row-text {
     padding: 0 1;
 }
 

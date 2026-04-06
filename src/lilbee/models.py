@@ -26,6 +26,8 @@ class ModelTask(StrEnum):
 
 log = logging.getLogger(__name__)
 
+FEATURED_STAR = "★"
+
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2
 
@@ -179,7 +181,7 @@ def display_model_picker(
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
     console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
@@ -213,7 +215,7 @@ def display_vision_picker(
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
 
         if is_recommended:
-            name = f"[bold]{name} \u2605[/bold]"
+            name = f"[bold]{name} {FEATURED_STAR}[/bold]"
             desc = f"[bold]{desc}[/bold]"
             num_str = f"[bold]{num_str}[/bold]"
 
@@ -226,7 +228,7 @@ def display_vision_picker(
     console.print("[bold]Select a vision OCR model for scanned PDF extraction:[/bold]\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
     console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended

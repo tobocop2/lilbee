@@ -15,7 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import DataTable, Input, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -31,12 +31,16 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
-from lilbee.models import ModelTask
+from lilbee.models import FEATURED_STAR, ModelTask
 
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
 _ALL_TASKS = tuple(ModelTask)
+
+_WORKER_FETCH_HF = "fetch_hf_models"
+_WORKER_FETCH_MORE_HF = "fetch_more_hf"
+_WORKER_FETCH_REMOTE = "fetch_remote_models"
 
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
@@ -156,7 +160,7 @@ def _row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:
-        parts.append("\u2605")
+        parts.append(FEATURED_STAR)
     parts.append(row.name)
     if row.installed:
         parts.append("[installed]")
@@ -215,15 +219,17 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
         self._hf_fetched: bool = False
+        self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield Footer()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -305,18 +311,18 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
         return all_models
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_HF)
     def _fetch_all_hf_models(self) -> list[CatalogModel]:
         """Fetch HF models for all task types (replaces current list)."""
         return self._fetch_hf_page()
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
         return classify_remote_models(cfg.litellm_base_url)
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
         """Fetch next page of HF models for all task types (extends current list)."""
         return self._fetch_hf_page()
@@ -325,15 +331,18 @@ class CatalogScreen(Screen[None]):
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
-        if event.worker.name == "_fetch_all_hf_models" and isinstance(result, list):
+        if not isinstance(result, list):
+            return
+        name = event.worker.name
+        if name == _WORKER_FETCH_HF:
             self._hf_models = result
-            self._refresh_view()
-        elif event.worker.name == "_fetch_more_hf" and isinstance(result, list):
+        elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
-            self._refresh_view()
-        elif event.worker.name == "_fetch_remote_models" and isinstance(result, list):
+        elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
-            self._refresh_view()
+        else:
+            return
+        self._refresh_view()
 
     def _get_search_text(self) -> str:
         return self.query_one("#catalog-search", Input).value.strip().lower()
@@ -406,12 +415,16 @@ class CatalogScreen(Screen[None]):
 
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
-        container = self.query_one("#catalog-grid", VerticalScroll)
-        container.remove_children()
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
+        row_key = tuple((r.name, r.installed) for r in all_rows)
+        if self._grid_cache_key == row_key:
+            return
+        self._grid_cache_key = row_key
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.remove_children()
         widgets_to_mount: list[Static | GridSelect] = []
         for section in _group_rows_for_grid(all_rows):
             if not section.rows:
@@ -558,7 +571,7 @@ class CatalogScreen(Screen[None]):
         """Enqueue a model download in the app's TaskBar."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if not isinstance(self.app, LilbeeApp):
+        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
         task_bar = self.app.task_bar
@@ -621,7 +634,7 @@ class CatalogScreen(Screen[None]):
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
@@ -734,14 +747,14 @@ class CatalogScreen(Screen[None]):
         """Navigate to previous view instead of switching tabs."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.action_nav_prev()
 
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.action_nav_next()
 
 

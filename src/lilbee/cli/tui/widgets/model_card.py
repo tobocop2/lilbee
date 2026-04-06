@@ -14,7 +14,7 @@ from lilbee.models import ModelTask
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
 
-MIDDLE_DOT = "\u00b7"
+MIDDLE_DOT = "·"
 
 _TASK_COLORS: dict[str, str] = {
     ModelTask.CHAT: "$primary",
@@ -60,7 +60,7 @@ def _build_specs(params: str, quant: str, size: str) -> Content:
 def _build_status(row: TableRow) -> Content | None:
     """Build the status pill for installed or download count."""
     if row.installed:
-        return pill("installed", "$success", "white")
+        return pill("installed", "$success", "$text")
     if row.sort_downloads > 0:
-        return Content.styled(f"\u2193 {row.downloads}", "$text-muted")
+        return Content.styled(f"↓ {row.downloads}", "$text-muted")
     return None
