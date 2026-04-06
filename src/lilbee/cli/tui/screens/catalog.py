@@ -15,7 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import DataTable, Input, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
@@ -217,13 +217,14 @@ class CatalogScreen(Screen[None]):
         self._hf_fetched: bool = False
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
+
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield Footer()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False

@@ -128,12 +128,6 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             self.app.call_from_thread(self._refresh_display)
 
-    def _update_nav_bar_task_text(self, text: str) -> None:
-        """Push task status into the NavBar indicator."""
-        with contextlib.suppress(Exception):
-            nav = self.app.screen.query_one("#global-nav-bar")
-            nav.active_task_text = text  # type: ignore[attr-defined]
-
     def _refresh_display(self) -> None:
         """Update widget contents based on queue state."""
         active_list = self._queue.active_tasks
@@ -141,7 +135,6 @@ class TaskBar(Static):
 
         if not active_list and not queued:
             self.display = False
-            self._update_nav_bar_task_text("")
             return
 
         self.display = True
@@ -153,8 +146,6 @@ class TaskBar(Static):
         if active_list:
             primary = active_list[0]
             self._render_active_task(primary, active_label, progress_bar)
-            nav_text = self._build_nav_text(active_list)
-            self._update_nav_bar_task_text(nav_text)
         else:
             active_label.display = False
             progress_bar.display = False
@@ -178,14 +169,6 @@ class TaskBar(Static):
         label.display = True
         progress_bar.update(total=100, progress=task.progress)
         progress_bar.display = True
-
-    @staticmethod
-    def _build_nav_text(active_list: list[Task]) -> str:
-        """Build a one-line summary of all active tasks for the NavBar."""
-        parts = []
-        for t in active_list:
-            parts.append(f"{t.name} {t.progress}%")
-        return "\u25b6 " + " | ".join(parts)
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:

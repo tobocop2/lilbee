@@ -31,7 +31,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.nav_bar import NavBar
+from lilbee.cli.tui.widgets.status_bar import StatusBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -123,6 +123,7 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
+        yield StatusBar()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
@@ -219,10 +220,10 @@ class ChatScreen(Screen[None]):
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
-        """Update the NavBar mode text to reflect the current mode."""
+        """Update the StatusBar mode text to reflect the current mode."""
         try:
-            nav = self.app.query_one("#global-nav-bar", NavBar)
-            nav.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
+            bar = self.query_one(StatusBar)
+            bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
         except Exception:
             pass
 

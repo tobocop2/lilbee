@@ -817,10 +817,7 @@ class ChatTestApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
-
-        yield NavBar(id="global-nav-bar")
-        yield Footer()
+        yield from ()
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -3163,15 +3160,15 @@ async def test_app_nav_prev_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Chat"
+        assert app.active_view == "Chat"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Tasks"
+        assert app.active_view == "Tasks"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Settings"
+        assert app.active_view == "Settings"
 
 
 async def test_app_nav_next_cycles_views():
@@ -3184,15 +3181,15 @@ async def test_app_nav_next_cycles_views():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Chat"
+        assert app.active_view == "Chat"
 
         app.action_nav_next()
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Catalog"
+        assert app.active_view == "Catalog"
 
         app.action_nav_next()
         await pilot.pause()
-        assert app.query_one("#global-nav-bar").active_view == "Status"
+        assert app.active_view == "Status"
 
 
 async def test_app_nav_switches_all_views():
@@ -3579,37 +3576,37 @@ async def test_app_switch_to_tasks():
 
 
 async def test_chat_mode_indicator_shows_normal():
-    """NavBar shows '-- NORMAL --' when entering normal mode."""
+    """StatusBar shows NORMAL when entering normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar", NavBar)
-        assert nav.mode_text == msg.MODE_NORMAL
+        bar = app.screen.query_one(StatusBar)
+        assert bar.mode_text == msg.MODE_NORMAL
 
 
 async def test_chat_mode_indicator_shows_insert():
-    """NavBar shows '-- INSERT --' when returning to insert mode."""
+    """StatusBar shows INSERT when returning to insert mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.nav_bar import NavBar
+        from lilbee.cli.tui.widgets.status_bar import StatusBar
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         app.screen._enter_insert_mode()
         await pilot.pause()
-        nav = app.query_one("#global-nav-bar", NavBar)
-        assert nav.mode_text == msg.MODE_INSERT
+        bar = app.screen.query_one(StatusBar)
+        assert bar.mode_text == msg.MODE_INSERT
 
 
 async def test_chat_up_down_cycle_focus_in_normal_mode():
@@ -3676,13 +3673,13 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
         assert inp.value == "world"
 
 
-def test_navbar_mode_text_reactive_declared():
-    """NavBar declares a mode_text reactive."""
+def test_statusbar_mode_text_reactive_declared():
+    """StatusBar declares a mode_text reactive."""
     from textual.reactive import Reactive
 
-    from lilbee.cli.tui.widgets.nav_bar import NavBar
+    from lilbee.cli.tui.widgets.status_bar import StatusBar
 
-    reactives = {name for name, val in vars(NavBar).items() if isinstance(val, Reactive)}
+    reactives = {name for name, val in vars(StatusBar).items() if isinstance(val, Reactive)}
     assert "mode_text" in reactives
 
 

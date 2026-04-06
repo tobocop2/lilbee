@@ -115,12 +115,12 @@ SETUP_CONNECTING = "Connecting to HuggingFace..."
 SETUP_INSTALLED_STATUS = "{name} installed!"
 SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 
-# -- Navigation bar ------------------------------------------------------------
+# -- Status bar ----------------------------------------------------------------
 
 NAV_VIEWS: list[str] = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
-NAV_HELP_QUIT = "  [dim]click/h/l[/] Nav  [dim]?[/] Help  [dim]^c[/] Quit"
-MODE_NORMAL = "-- NORMAL --"
-MODE_INSERT = "-- INSERT --"
+STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
+MODE_NORMAL = "NORMAL"
+MODE_INSERT = "INSERT"
 
 # -- Help modal ----------------------------------------------------------------
 
