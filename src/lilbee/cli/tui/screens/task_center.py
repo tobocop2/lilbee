@@ -64,10 +64,10 @@ class TaskCenter(Screen[None]):
         yield Footer()
 
     def action_go_back(self) -> None:
-        """Go back to the chat view."""
+        """Go back to the Chat screen."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+        if isinstance(self.app, LilbeeApp):
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

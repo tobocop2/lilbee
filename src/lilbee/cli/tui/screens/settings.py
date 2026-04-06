@@ -34,15 +34,15 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
 
 
-def _effective_value(cfg_attr: str) -> str:
+def _effective_value(key: str) -> str:
     """Return the effective value for a setting, including model defaults."""
-    user_value = getattr(cfg, cfg_attr, None)
+    user_value = getattr(cfg, key, None)
     if user_value is not None:
         return str(user_value)
     defaults = cfg.model_defaults
     if defaults is None:
         return "None"
-    defaults_key = _DEFAULTS_REMAP.get(cfg_attr, cfg_attr)
+    defaults_key = _DEFAULTS_REMAP.get(key, key)
     default_val = getattr(defaults, defaults_key, None)
     if default_val is not None:
         return f"{default_val} (model default)"
@@ -64,9 +64,9 @@ def _type_pill(defn: SettingDef) -> Content:
     return pill(type_name, bg, fg)
 
 
-def _help_content(defn: SettingDef) -> Content:
+def _help_content(key: str, defn: SettingDef) -> Content:
     """Build help text with default value hint."""
-    value = _effective_value(defn.cfg_attr)
+    value = _effective_value(key)
     parts: list[Content | tuple[str, str]] = []
     if defn.help_text:
         parts.append(Content(defn.help_text))
@@ -85,7 +85,7 @@ def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
 
 def _make_editor(key: str, defn: SettingDef) -> Input | Checkbox | Select[str]:
     """Create the appropriate editor widget for a setting."""
-    value = _effective_value(defn.cfg_attr)
+    value = _effective_value(key)
     if defn.choices:
         return _make_select(key, defn, value)
     if defn.type is bool:
@@ -156,7 +156,7 @@ class SettingsScreen(Screen[None]):
                 Content.assemble(Content(key + "  "), _type_pill(defn)),
                 classes="setting-title",
             )
-            yield Static(_help_content(defn), classes="setting-help")
+            yield Static(_help_content(key, defn), classes="setting-help")
             if defn.writable:
                 yield _make_editor(key, defn)
 
@@ -184,7 +184,7 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = event.value.strip()
-        current = str(getattr(cfg, defn.cfg_attr, ""))
+        current = str(getattr(cfg, name, ""))
         if raw == current:
             return
         self._persist_value(name, defn, raw)
@@ -216,9 +216,9 @@ class SettingsScreen(Screen[None]):
         """Parse, apply, and persist a setting value."""
         try:
             parsed = self._parse_value(defn, raw)
-            setattr(cfg, defn.cfg_attr, parsed)
+            setattr(cfg, key, parsed)
             persisted = str(parsed) if parsed is not None else ""
-            settings.set_value(cfg.data_root, defn.cfg_attr, persisted)
+            settings.set_value(cfg.data_root, key, persisted)
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
             self._refresh_help(key, defn)
             from lilbee.cli.tui.app import LilbeeApp
@@ -241,14 +241,14 @@ class SettingsScreen(Screen[None]):
         try:
             row = self.query_one(f"#row-{key}", VerticalGroup)
             help_widget = row.query_one(".setting-help", Static)
-            help_widget.update(_help_content(defn))
+            help_widget.update(_help_content(key, defn))
         except Exception:
             log.debug("Failed to refresh help for %s", key, exc_info=True)
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp) and len(self.app.screen_stack) <= 1:
+        if isinstance(self.app, LilbeeApp):
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

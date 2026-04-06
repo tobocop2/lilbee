@@ -38,7 +38,8 @@ class LilbeeCommandProvider(Provider):
     def _get_commands(self) -> list[tuple[str, str, Any]]:
         app = self._app
         commands: list[tuple[str, str, Any]] = [
-            ("Open model catalog", "Browse and install models", lambda: app.switch_view("Models")),
+            ("Open catalog", "Browse and install models", lambda: app.switch_view("Catalog")),
+            ("Run setup wizard", "Configure chat and embedding models", self._action_setup),
             ("Open status", "Knowledge base status", lambda: app.switch_view("Status")),
             ("Open settings", "View and change settings", lambda: app.switch_view("Settings")),
             ("Open task center", "Monitor background tasks", lambda: app.switch_view("Tasks")),
@@ -144,6 +145,11 @@ class LilbeeCommandProvider(Provider):
         from lilbee.cli.helpers import get_version
 
         self.screen.app.notify(f"lilbee {get_version()}")
+
+    def _action_setup(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.screen.app.push_screen(SetupWizard())
 
     def _action_noop(self) -> None:
         self.screen.app.notify("Type '/reset confirm' in chat to reset")

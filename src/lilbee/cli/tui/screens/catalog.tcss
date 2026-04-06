@@ -28,9 +28,9 @@
 }
 
 .section-heading {
-    text-style: bold underline;
+    text-style: bold;
     color: $text-muted;
-    padding: 1 0 0 2;
+    padding: 1 1 0 2;
 }
 
 /* View toggle: hide inactive view */
@@ -44,4 +44,78 @@ GridSelect {
     padding: 0;
     margin: 0 1;
     grid-gutter: 0;
+    border: round $secondary 50%;
+    keyline: none;
+
+    &.-highlight {
+        background: $panel;
+        border: tall $primary 30%;
+    }
+
+    &:focus * {
+        &.-highlight {
+            background: $panel;
+            border: tall $primary;
+        }
+    }
+}
+
+ModelCard {
+    height: auto;
+    border: tall transparent;
+    padding: 0 1;
+    pointer: pointer;
+
+    &:hover {
+        background: $panel;
+    }
+
+    #card-header {
+        grid-size: 3 1;
+        grid-columns: 1fr auto auto;
+        height: auto;
+    }
+
+    #card-name {
+        text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    #card-pick {
+        width: auto;
+        margin: 0 1 0 0;
+    }
+
+    #card-task {
+        text-align: right;
+    }
+
+    #card-info {
+        text-style: dim;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    #card-status {
+        text-style: dim;
+    }
+}
+
+.grid-cta {
+    text-align: center;
+    text-style: bold;
+    padding: 1 2;
+    margin: 1 2;
+    border: tall $surface-lighten-2;
+    color: $text;
+}
+
+.browse-more-hf {
+    color: $primary;
+}
+
+.browse-more-hf:hover {
+    background: $panel;
+    border: tall $primary;
 }
