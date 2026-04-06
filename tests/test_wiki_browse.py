@@ -7,11 +7,11 @@ from pathlib import Path
 from lilbee.wiki.browse import (
     WikiPageContent,
     WikiPageInfo,
-    _build_page_info,
-    _list_md_files,
     _page_type_from_path,
     _slug_from_path,
+    build_page_info,
     find_page,
+    list_md_files,
     list_pages,
     read_page,
 )
@@ -38,25 +38,44 @@ _FM_PAGE = (
 _NO_FM_PAGE = "# Plain Heading\n\nNo frontmatter here.\n"
 
 
+class TestWikiPageInfoToDict:
+    def test_round_trip(self):
+        info = WikiPageInfo(
+            slug="summaries/doc",
+            title="My Doc",
+            page_type="summary",
+            source_count=3,
+            created_at="2026-01-01",
+        )
+        d = info.to_dict()
+        assert d == {
+            "slug": "summaries/doc",
+            "title": "My Doc",
+            "page_type": "summary",
+            "source_count": 3,
+            "created_at": "2026-01-01",
+        }
+
+
 class TestListMdFiles:
     def test_empty_dir(self, tmp_path: Path):
-        assert _list_md_files(tmp_path) == []
+        assert list_md_files(tmp_path) == []
 
     def test_nonexistent_dir(self, tmp_path: Path):
-        assert _list_md_files(tmp_path / "nope") == []
+        assert list_md_files(tmp_path / "nope") == []
 
     def test_filters_non_md(self, tmp_path: Path):
         (tmp_path / "a.md").write_text("x")
         (tmp_path / "b.txt").write_text("y")
         (tmp_path / "c.md").write_text("z")
-        result = _list_md_files(tmp_path)
+        result = list_md_files(tmp_path)
         assert len(result) == 2
         assert all(p.suffix == ".md" for p in result)
 
     def test_sorted(self, tmp_path: Path):
         (tmp_path / "z.md").write_text("z")
         (tmp_path / "a.md").write_text("a")
-        result = _list_md_files(tmp_path)
+        result = list_md_files(tmp_path)
         assert [p.name for p in result] == ["a.md", "z.md"]
 
 
@@ -92,7 +111,7 @@ class TestSlugFromPath:
 class TestBuildPageInfo:
     def test_with_frontmatter(self, tmp_path: Path):
         path = _write_page(tmp_path, "summaries", "my-doc", _FM_PAGE)
-        info = _build_page_info(path, tmp_path)
+        info = build_page_info(path, tmp_path)
         assert isinstance(info, WikiPageInfo)
         assert info.slug == "summaries/my-doc"
         assert info.title == "My Title"
@@ -102,7 +121,7 @@ class TestBuildPageInfo:
 
     def test_without_frontmatter(self, tmp_path: Path):
         path = _write_page(tmp_path, "summaries", "plain", _NO_FM_PAGE)
-        info = _build_page_info(path, tmp_path)
+        info = build_page_info(path, tmp_path)
         assert info.title == "Plain"
         assert info.source_count == 0
         assert info.created_at == ""
@@ -110,7 +129,7 @@ class TestBuildPageInfo:
     def test_date_object_in_frontmatter(self, tmp_path: Path):
         content = "---\ntitle: Dated\ngenerated_at: 2026-01-15\n---\nBody\n"
         path = _write_page(tmp_path, "concepts", "dated", content)
-        info = _build_page_info(path, tmp_path)
+        info = build_page_info(path, tmp_path)
         assert info.created_at == "2026-01-15"
         assert info.page_type == "concept"
 

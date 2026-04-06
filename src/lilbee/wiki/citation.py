@@ -160,12 +160,16 @@ def _is_content_line(stripped: str) -> bool:
 def _format_source_ref(rec: CitationRecord) -> str:
     """Format a CitationRecord into a human-readable footnote reference."""
     ref = rec["source_filename"]
-    if rec["page_start"] or rec["page_end"]:
+    has_page = rec["page_start"] is not None and rec["page_start"] > 0
+    has_page_end = rec["page_end"] is not None and rec["page_end"] > 0
+    has_line = rec["line_start"] is not None and rec["line_start"] > 0
+    has_line_end = rec["line_end"] is not None and rec["line_end"] > 0
+    if has_page or has_page_end:
         if rec["page_start"] == rec["page_end"]:
             ref += f", page {rec['page_start']}"
         else:
             ref += f", pages {rec['page_start']}-{rec['page_end']}"
-    elif rec["line_start"] or rec["line_end"]:
+    elif has_line or has_line_end:
         ref += f", lines {rec['line_start']}-{rec['line_end']}"
     return ref
 

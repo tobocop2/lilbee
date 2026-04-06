@@ -18,13 +18,22 @@ _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
-    """Extract YAML frontmatter fields from a wiki page string."""
-    if not text.startswith("---"):
+    """Extract YAML frontmatter fields from a wiki page string.
+
+    Uses line-by-line scanning so ``---`` inside YAML content is not
+    mistaken for the closing delimiter.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
         return {}
-    end = text.find("---", 3)
-    if end == -1:
+    end_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
         return {}
-    block = text[3:end]
+    block = "\n".join(lines[1:end_idx])
     try:
         return yaml.safe_load(block) or {}
     except yaml.YAMLError:

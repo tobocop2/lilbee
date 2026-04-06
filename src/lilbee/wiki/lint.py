@@ -111,9 +111,10 @@ def _lint_citation(
     return None
 
 
-def _lint_model_changed(wiki_source: str, wiki_path: Path, config: Config) -> LintIssue | None:
+def _lint_model_changed(
+    wiki_source: str, text: str, config: Config
+) -> LintIssue | None:
     """Flag pages whose generated_by model differs from the current chat model."""
-    text = wiki_path.read_text(encoding="utf-8", errors="replace")
     generated_by = parse_frontmatter(text).get("generated_by", "")
     if not generated_by:
         return None
@@ -129,10 +130,9 @@ def _lint_model_changed(wiki_source: str, wiki_path: Path, config: Config) -> Li
     return None
 
 
-def _lint_unmarked(wiki_source: str, wiki_path: Path) -> list[LintIssue]:
+def _lint_unmarked(wiki_source: str, text: str) -> list[LintIssue]:
     """Find unmarked claims in a wiki page."""
-    markdown = wiki_path.read_text(encoding="utf-8", errors="replace")
-    unmarked = find_unmarked_claims(markdown)
+    unmarked = find_unmarked_claims(text)
     return [
         LintIssue(
             wiki_source=wiki_source,
@@ -164,8 +164,9 @@ def lint_wiki_page(
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     wiki_path = wiki_root / relative
     if wiki_path.exists():
-        issues.extend(_lint_unmarked(wiki_source, wiki_path))
-        model_issue = _lint_model_changed(wiki_source, wiki_path, config)
+        text = wiki_path.read_text(encoding="utf-8", errors="replace")
+        issues.extend(_lint_unmarked(wiki_source, text))
+        model_issue = _lint_model_changed(wiki_source, text, config)
         if model_issue is not None:
             issues.append(model_issue)
 
@@ -181,6 +182,7 @@ def lint_changed_sources(
 
     Intended to run automatically after sync.
     """
+    # TODO: wire into sync pipeline
     if config is None:
         config = cfg
     report = LintReport()
@@ -217,9 +219,13 @@ def lint_all(
     if not wiki_root.exists():
         return report
 
-    for md_path in sorted(wiki_root.rglob("*.md")):
-        relative = md_path.relative_to(wiki_root)
-        wiki_source = f"{config.wiki_dir}/{relative}"
-        report.issues.extend(lint_wiki_page(wiki_source, store, config))
+    for subdir in ("summaries", "concepts"):
+        subdir_path = wiki_root / subdir
+        if not subdir_path.is_dir():
+            continue
+        for md_path in sorted(subdir_path.glob("*.md")):
+            relative = md_path.relative_to(wiki_root)
+            wiki_source = f"{config.wiki_dir}/{relative}"
+            report.issues.extend(lint_wiki_page(wiki_source, store, config))
 
     return report

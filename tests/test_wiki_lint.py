@@ -196,7 +196,7 @@ class TestLintAll:
         )
         write_wiki_page(
             tmp_path,
-            "drafts",
+            "concepts",
             "b",
             "Another unmarked claim.\n",
         )
@@ -204,6 +204,14 @@ class TestLintAll:
         store.get_citations_for_wiki.return_value = []
         report = lint_all(store)
         assert report.warning_count >= 2
+
+    def test_ignores_drafts_and_archive(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "drafts", "d", "Unmarked in draft.\n")
+        write_wiki_page(tmp_path, "archive", "a", "Unmarked in archive.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        assert report.issues == []
 
     def test_no_wiki_dir_returns_empty(self, tmp_path: Path):
         store = MagicMock(spec=Store)
@@ -250,38 +258,23 @@ class TestParseFrontmatter:
 
 
 class TestLintModelChanged:
-    def test_same_model_no_issue(self, tmp_path: Path):
-        page = write_wiki_page(
-            tmp_path,
-            "summaries",
-            "doc",
-            "---\ngenerated_by: test-model\n---\n\n# Doc\n",
-        )
-        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+    def test_same_model_no_issue(self):
+        text = "---\ngenerated_by: test-model\n---\n\n# Doc\n"
+        result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is None
 
-    def test_different_model_flags_issue(self, tmp_path: Path):
-        page = write_wiki_page(
-            tmp_path,
-            "summaries",
-            "doc",
-            "---\ngenerated_by: old-model\n---\n\n# Doc\n",
-        )
-        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+    def test_different_model_flags_issue(self):
+        text = "---\ngenerated_by: old-model\n---\n\n# Doc\n"
+        result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None
         assert result.severity == IssueSeverity.WARNING
         assert "model_changed" in result.message
         assert "old-model" in result.message
         assert "test-model" in result.message
 
-    def test_no_frontmatter_no_issue(self, tmp_path: Path):
-        page = write_wiki_page(
-            tmp_path,
-            "summaries",
-            "doc",
-            "# No frontmatter\n\nJust content.\n",
-        )
-        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+    def test_no_frontmatter_no_issue(self):
+        text = "# No frontmatter\n\nJust content.\n"
+        result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is None
 
     def test_model_changed_in_lint_wiki_page(self, tmp_path: Path):
@@ -297,14 +290,9 @@ class TestLintModelChanged:
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         assert any("model_changed" in i.message for i in issues)
 
-    def test_model_changed_does_not_trigger_regen(self, tmp_path: Path):
+    def test_model_changed_does_not_trigger_regen(self):
         """Model change is a warning, not an error — no auto-regeneration."""
-        page = write_wiki_page(
-            tmp_path,
-            "summaries",
-            "doc",
-            "---\ngenerated_by: old-model\n---\n\n# Doc\n",
-        )
-        result = _lint_model_changed("wiki/summaries/doc.md", page, cfg)
+        text = "---\ngenerated_by: old-model\n---\n\n# Doc\n"
+        result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None
         assert result.severity == IssueSeverity.WARNING  # warning, not error

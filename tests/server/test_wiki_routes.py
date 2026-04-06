@@ -266,13 +266,10 @@ class TestWikiEnabled:
         assert body["warnings"] == 0
         assert body["issues"] == []
 
-    async def test_lint_status_stub(self):
+    async def test_lint_status_returns_501(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["task_id"] == "task-abc"
-        assert body["status"] == "not_implemented"
+        assert resp.status_code == 501
 
     async def test_generate_returns_result(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -398,9 +395,9 @@ class TestHelpers:
         page = subdir / "my-doc.md"
         page.write_text("# Just a heading\n")
         summary = _build_summary(page, tmp_path)
-        assert summary.title == "My Doc"
-        assert summary.source_count == 0
-        assert summary.created_at == ""
+        assert summary["title"] == "My Doc"
+        assert summary["source_count"] == 0
+        assert summary["created_at"] == ""
 
     def test_wiki_root(self, isolated_env: Path):
         from lilbee.server.wiki import _wiki_root

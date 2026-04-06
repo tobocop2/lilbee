@@ -48,6 +48,12 @@ class TestParseFrontmatter:
 
         assert isinstance(result["generated_at"], datetime.date)
 
+    def test_triple_dash_inside_yaml_not_confused_for_delimiter(self):
+        text = "---\ntitle: Hello\ndesc: 'has --- inside'\n---\nBody"
+        result = parse_frontmatter(text)
+        assert result["title"] == "Hello"
+        assert "---" in result["desc"]
+
 
 class TestMakeSlug:
     def test_spaces_to_dashes(self):

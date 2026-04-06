@@ -153,6 +153,23 @@ class TestRenderCitationBlock:
     def test_renders_empty_list(self):
         assert render_citation_block([]) == ""
 
+    def test_page_zero_treated_as_no_location(self):
+        """page_start=0 should not produce a 'page 0' reference."""
+        records = [
+            _citation_record(
+                source_filename="doc.txt",
+                excerpt="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+            ),
+        ]
+        result = render_citation_block(records)
+        assert "[^src1]: doc.txt\n" in result
+        assert "page" not in result
+        assert "lines" not in result
+
 
 class TestVerifyCitation:
     def test_valid_when_excerpt_found(self):

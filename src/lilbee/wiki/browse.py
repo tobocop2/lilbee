@@ -22,6 +22,16 @@ class WikiPageInfo:
     source_count: int
     created_at: str
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict suitable for JSON responses."""
+        return {
+            "slug": self.slug,
+            "title": self.title,
+            "page_type": self.page_type,
+            "source_count": self.source_count,
+            "created_at": self.created_at,
+        }
+
 
 @dataclass
 class WikiPageContent:
@@ -33,7 +43,7 @@ class WikiPageContent:
     frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
-def _list_md_files(directory: Path) -> list[Path]:
+def list_md_files(directory: Path) -> list[Path]:
     """Return sorted markdown files in a directory (non-recursive)."""
     if not directory.is_dir():
         return []
@@ -58,7 +68,7 @@ def _slug_from_path(path: Path, wiki_root: Path) -> str:
     return str(relative.with_suffix("")).replace("\\", "/")
 
 
-def _build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
+def build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
     """Build a WikiPageInfo from a markdown file on disk."""
     text = path.read_text(encoding="utf-8")
     fm = parse_frontmatter(text)
@@ -95,9 +105,14 @@ def list_pages(wiki_root: Path) -> list[WikiPageInfo]:
     """List all wiki pages from summaries/ and concepts/ subdirectories."""
     pages: list[WikiPageInfo] = []
     for subdir in ("summaries", "concepts"):
-        for path in _list_md_files(wiki_root / subdir):
-            pages.append(_build_page_info(path, wiki_root))
+        for path in list_md_files(wiki_root / subdir):
+            pages.append(build_page_info(path, wiki_root))
     return pages
+
+
+def list_draft_pages(wiki_root: Path) -> list[WikiPageInfo]:
+    """List draft pages that failed the quality gate."""
+    return [build_page_info(path, wiki_root) for path in list_md_files(wiki_root / "drafts")]
 
 
 def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:

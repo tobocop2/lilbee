@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from litestar import get, post
-from litestar.exceptions import NotFoundException
+from litestar.exceptions import HTTPException, NotFoundException
 from litestar.params import Parameter
 
 from lilbee import services as svc_mod
@@ -16,9 +16,7 @@ from lilbee.server.models import (
     WikiCitationsResult,
     WikiGenerateResult,
     WikiLintResult,
-    WikiLintStatusResult,
     WikiPageDetail,
-    WikiPageSummary,
     WikiPruneRecordResponse,
     WikiPruneResult,
 )
@@ -26,10 +24,8 @@ from lilbee.wiki import gen as gen_mod
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
 from lilbee.wiki.browse import (
-    WikiPageInfo,
-    _build_page_info,
-    _list_md_files,
     find_page,
+    list_draft_pages,
     list_pages,
     read_page,
 )
@@ -52,25 +48,6 @@ def _find_page(slug: str) -> Path | None:
     return find_page(_wiki_root(), slug)
 
 
-def _build_summary(path: Path, wiki_root: Path) -> WikiPageSummary:
-    """Build a WikiPageSummary from a markdown file on disk.
-
-    Delegates to browse._build_page_info and converts to pydantic.
-    """
-    return _summary_from_info(_build_page_info(path, wiki_root))
-
-
-def _summary_from_info(info: WikiPageInfo) -> WikiPageSummary:
-    """Convert a browse WikiPageInfo to a server WikiPageSummary."""
-    return WikiPageSummary(
-        slug=info.slug,
-        title=info.title,
-        page_type=info.page_type,
-        source_count=info.source_count,
-        created_at=info.created_at,
-    )
-
-
 @get("/api/wiki")
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
@@ -86,18 +63,14 @@ async def wiki_list_route() -> list[dict[str, Any]]:
         update_wiki_index()
 
     pages = list_pages(root)
-    return [_summary_from_info(p).model_dump() for p in pages]
+    return [p.to_dict() for p in pages]
 
 
 @get("/api/wiki/drafts")
 async def wiki_drafts_route() -> list[dict[str, Any]]:
     """List draft pages that failed the quality gate."""
     _require_wiki()
-    root = _wiki_root()
-    drafts: list[WikiPageSummary] = []
-    for path in _list_md_files(root / "drafts"):
-        drafts.append(_summary_from_info(_build_page_info(path, root)))
-    return [d.model_dump() for d in drafts]
+    return [p.to_dict() for p in list_draft_pages(_wiki_root())]
 
 
 @get("/api/wiki/citations")
@@ -113,10 +86,10 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/lint/{task_id:str}")
-async def wiki_lint_status_route(task_id: str) -> WikiLintStatusResult:
+async def wiki_lint_status_route(task_id: str) -> None:
     """Poll lint task status by task ID."""
     _require_wiki()
-    return WikiLintStatusResult(task_id=task_id)
+    raise HTTPException(status_code=501, detail="lint task polling not implemented")
 
 
 @get("/api/wiki/{slug:path}")
