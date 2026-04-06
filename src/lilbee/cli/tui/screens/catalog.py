@@ -31,12 +31,16 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
-from lilbee.models import ModelTask
+from lilbee.models import FEATURED_STAR, ModelTask
 
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
 _ALL_TASKS = tuple(ModelTask)
+
+_WORKER_FETCH_HF = "fetch_hf_models"
+_WORKER_FETCH_MORE_HF = "fetch_more_hf"
+_WORKER_FETCH_REMOTE = "fetch_remote_models"
 
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
@@ -156,7 +160,7 @@ def _row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:
-        parts.append("\u2605")
+        parts.append(FEATURED_STAR)
     parts.append(row.name)
     if row.installed:
         parts.append("[installed]")
@@ -215,6 +219,7 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
         self._hf_fetched: bool = False
+        self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.status_bar import StatusBar
@@ -306,18 +311,18 @@ class CatalogScreen(Screen[None]):
         self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
         return all_models
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_HF)
     def _fetch_all_hf_models(self) -> list[CatalogModel]:
         """Fetch HF models for all task types (replaces current list)."""
         return self._fetch_hf_page()
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_REMOTE)
     def _fetch_remote_models(self) -> list[RemoteModel]:
         from lilbee.model_manager import classify_remote_models
 
         return classify_remote_models(cfg.litellm_base_url)
 
-    @work(thread=True)
+    @work(thread=True, name=_WORKER_FETCH_MORE_HF)
     def _fetch_more_hf(self) -> list[CatalogModel]:
         """Fetch next page of HF models for all task types (extends current list)."""
         return self._fetch_hf_page()
@@ -326,13 +331,13 @@ class CatalogScreen(Screen[None]):
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
-        if event.worker.name == "_fetch_all_hf_models" and isinstance(result, list):
+        if event.worker.name == _WORKER_FETCH_HF and isinstance(result, list):
             self._hf_models = result
             self._refresh_view()
-        elif event.worker.name == "_fetch_more_hf" and isinstance(result, list):
+        elif event.worker.name == _WORKER_FETCH_MORE_HF and isinstance(result, list):
             self._hf_models.extend(result)
             self._refresh_view()
-        elif event.worker.name == "_fetch_remote_models" and isinstance(result, list):
+        elif event.worker.name == _WORKER_FETCH_REMOTE and isinstance(result, list):
             self._remote_models = result
             self._refresh_view()
 
@@ -407,12 +412,16 @@ class CatalogScreen(Screen[None]):
 
     def _refresh_grid(self) -> None:
         """Rebuild the grid view with all cards (called when data changes)."""
-        container = self.query_one("#catalog-grid", VerticalScroll)
-        container.remove_children()
         family_rows = self._build_family_rows("")
         remote_rows = self._build_remote_rows("")
         hf_rows = self._build_hf_rows("") if self._hf_fetched else []
         all_rows = family_rows + remote_rows + hf_rows
+        row_key = tuple((r.name, r.installed) for r in all_rows)
+        if self._grid_cache_key == row_key:
+            return
+        self._grid_cache_key = row_key
+        container = self.query_one("#catalog-grid", VerticalScroll)
+        container.remove_children()
         widgets_to_mount: list[Static | GridSelect] = []
         for section in _group_rows_for_grid(all_rows):
             if not section.rows:
