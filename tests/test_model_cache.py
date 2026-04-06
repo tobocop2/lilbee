@@ -225,7 +225,7 @@ def test_cache_entry_touch() -> None:
         estimated_bytes=100,
     )
     old = entry.last_used
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows timer resolution is ~15.6ms
     entry.touch()
     assert entry.last_used > old
 

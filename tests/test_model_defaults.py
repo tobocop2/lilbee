@@ -20,6 +20,14 @@ def _isolated_defaults(tmp_path):
     """Snapshot config and clear model defaults cache for each test."""
     snapshot = cfg.model_copy()
     cfg.apply_model_defaults(None)
+    # Reset generation option fields so user config.toml doesn't leak into tests
+    cfg.temperature = None
+    cfg.top_p = None
+    cfg.top_k_sampling = None
+    cfg.repeat_penalty = None
+    cfg.num_ctx = None
+    cfg.seed = None
+    cfg.max_tokens = None
     clear_cache()
     yield
     clear_cache()

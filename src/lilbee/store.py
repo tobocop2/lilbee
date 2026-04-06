@@ -9,7 +9,7 @@ from typing import TypedDict
 
 import lancedb
 import pyarrow as pa
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lilbee.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
@@ -35,6 +35,13 @@ class SearchChunk(BaseModel):
     source: str
     content_type: str
     chunk_type: str = "raw"
+
+    @field_validator("chunk_type", mode="before")
+    @classmethod
+    def _coerce_none_chunk_type(cls, v: str | None) -> str:
+        """LanceDB rows from before the chunk_type column was added return None."""
+        return v if v is not None else "raw"
+
     page_start: int
     page_end: int
     line_start: int

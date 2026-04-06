@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 import pexpect
+import pytest
+
+_HAS_PTY = hasattr(pexpect, "spawn")
 
 
 def _run_lilbee(
@@ -27,6 +30,7 @@ def _run_lilbee(
     )
 
 
+@pytest.mark.skipif(not _HAS_PTY, reason="pexpect.spawn requires Unix PTY")
 class TestSplashE2EWithPTY:
     """Tests using pexpect to simulate a real TTY."""
 

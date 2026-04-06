@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -39,6 +40,7 @@ class TestStartStop:
     def test_stop_zero_is_noop(self) -> None:
         stop(0)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="os.fork not available on Windows")
     def test_start_stops_work(self) -> None:
         """Verify the animation starts and stops cleanly."""
         with (
@@ -49,6 +51,7 @@ class TestStartStop:
             assert pid > 0
             stop(pid)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="os.fork not available on Windows")
     def test_start_with_ready_file(self, tmp_path: pytest.TempPathFactory) -> None:
         """Verify start() accepts ready_file parameter."""
         ready_file = tmp_path / "ready"

@@ -4193,9 +4193,7 @@ class TestWikiCoverageEdgeCases:
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            with patch(
-                "lilbee.wiki.browse.list_pages", side_effect=OSError("boom")
-            ):
+            with patch("lilbee.wiki.browse.list_pages", side_effect=OSError("boom")):
                 screen._load_pages()
             await pilot.pause()
 

@@ -478,6 +478,22 @@ class TestChunkTypeField:
         )
         assert chunk.chunk_type == "raw"
 
+    def test_search_chunk_none_chunk_type_coerced_to_raw(self):
+        """LanceDB rows from before the chunk_type column return None."""
+        chunk = SearchChunk(
+            source="a.md",
+            content_type="text",
+            chunk_type=None,
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="text",
+            chunk_index=0,
+            vector=[0.1],
+        )
+        assert chunk.chunk_type == "raw"
+
 
 class TestSourceTypeField:
     def test_source_type_defaults_to_document(self, store):

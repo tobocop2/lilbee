@@ -367,8 +367,10 @@ class TestLlamaCppProvider:
         from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
         cfg.models_dir = models_dir
+        # Use a platform-appropriate absolute path that doesn't exist
+        fake_path = str(models_dir / "nonexistent" / "model.gguf")
         with pytest.raises(ProviderError, match="Model file not found"):
-            _resolve_model_path("/nonexistent/model.gguf")
+            _resolve_model_path(fake_path)
 
     def test_embed_caches_llm(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
