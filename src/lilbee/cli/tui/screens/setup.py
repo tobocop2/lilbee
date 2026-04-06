@@ -162,7 +162,7 @@ class SetupWizard(Screen[str | None]):
     def _on_browse_catalog(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.dismiss("skipped")
             self.app.call_later(lambda: self.app.switch_view("Catalog"))
 

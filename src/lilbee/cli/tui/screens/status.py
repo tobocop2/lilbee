@@ -152,7 +152,7 @@ class StatusScreen(Screen[None]):
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

@@ -103,7 +103,7 @@ class ChatScreen(Screen[None]):
         """The app-level TaskBar (created by LilbeeApp)."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
 
-        bar = getattr(self.app, "task_bar", None)
+        bar = getattr(self.app, "task_bar", None)  # test apps lack task_bar
         if isinstance(bar, _TaskBar):
             return bar
         msg_text = "App does not have a TaskBar"
@@ -575,7 +575,7 @@ class ChatScreen(Screen[None]):
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
-        if args and isinstance(self.app, LilbeeApp):
+        if args and isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:

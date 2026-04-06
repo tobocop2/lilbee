@@ -20,7 +20,7 @@ class LilbeeCommandProvider(Provider):
     def _app(self) -> LilbeeApp:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if not isinstance(self.screen.app, LilbeeApp):
+        if not isinstance(self.screen.app, LilbeeApp):  # test apps aren't LilbeeApp
             raise TypeError(f"Expected LilbeeApp, got {type(self.screen.app).__name__}")
         return self.screen.app
 

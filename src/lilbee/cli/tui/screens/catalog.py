@@ -571,7 +571,7 @@ class CatalogScreen(Screen[None]):
         """Enqueue a model download in the app's TaskBar."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if not isinstance(self.app, LilbeeApp):
+        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
         task_bar = self.app.task_bar
@@ -634,7 +634,7 @@ class CatalogScreen(Screen[None]):
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()
@@ -747,14 +747,14 @@ class CatalogScreen(Screen[None]):
         """Navigate to previous view instead of switching tabs."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.action_nav_prev()
 
     def key_right(self) -> None:
         """Navigate to next view instead of switching tabs."""
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.action_nav_next()
 
 

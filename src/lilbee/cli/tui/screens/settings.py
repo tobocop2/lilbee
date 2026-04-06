@@ -224,7 +224,7 @@ class SettingsScreen(Screen[None]):
             self._refresh_help(key, defn)
             from lilbee.cli.tui.app import LilbeeApp
 
-            if isinstance(self.app, LilbeeApp):
+            if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
                 self.app.settings_changed_signal.publish((key, parsed))
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
