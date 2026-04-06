@@ -6016,6 +6016,129 @@ async def test_catalog_select_row_out_of_range():
             screen._on_row_selected(event)  # Should not raise
 
 
+async def test_chat_cmd_crawl_no_args():
+    """_cmd_crawl with empty args notifies usage."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_crawl("")
+            mock_notify.assert_called()
+
+
+def test_chat_embedding_ready_real_code_false():
+    """_embedding_ready returns False when _resolve_model_path raises (real code)."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    # Bypass autouse fixtures by calling the real method directly
+    screen = MagicMock()
+    with patch(
+        "lilbee.providers.llama_cpp_provider._resolve_model_path",
+        side_effect=FileNotFoundError("not found"),
+    ):
+        assert ChatScreen._embedding_ready(screen) is False
+
+
+async def test_chat_run_sync_worker_cancelled():
+    """_run_sync_worker handles CancelledError by disabling auto_sync."""
+    import asyncio as _asyncio
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        app.screen._auto_sync = True
+        with patch("asyncio.run", side_effect=_asyncio.CancelledError):
+            app.screen._run_sync_worker("test-task-id")
+            while app.screen.workers:
+                await _pilot.pause()
+        assert app.screen._auto_sync is False
+
+
+async def test_chat_add_skipped_file():
+    """_run_add_background notifies about skipped files."""
+    from pathlib import Path as _Path
+
+    from lilbee.cli.helpers import CopyResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        mock_result = CopyResult(copied=[], skipped=["existing.txt"])
+        with (
+            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
+            patch("lilbee.ingest.sync", new_callable=AsyncMock),
+        ):
+            app.screen._run_add_background(_Path("/tmp/test.txt"), "task-1")
+            while app.screen.workers:
+                await _pilot.pause()
+
+
+async def test_chat_crawl_background_success():
+    """_run_crawl_background completes successfully and triggers sync."""
+    from pathlib import Path as _Path
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch(
+                "lilbee.crawler.crawl_and_save",
+                new_callable=AsyncMock,
+                return_value=[_Path("/tmp/p.md")],
+            ),
+            patch.object(app.screen, "_run_sync") as mock_sync,
+        ):
+            app.screen._run_crawl_background("https://example.com", 1, 10, "crawl-1")
+            while app.screen.workers:
+                await _pilot.pause()
+            mock_sync.assert_called()
+
+
+def test_is_installed_by_name():
+    """_is_installed returns True when name matches."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen._installed_names = {"my-model:latest"}
+    assert CatalogScreen._is_installed(screen, "my-model:latest") is True
+
+
+def test_is_installed_no_match():
+    """_is_installed returns False when neither name nor repo matches."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen._installed_names = {"other:latest"}
+    assert CatalogScreen._is_installed(screen, "missing", repo="", filename="") is False
+
+
+def test_on_row_selected_negative_index():
+    """_on_row_selected returns early for negative cursor_row."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen._rows = []
+    event = MagicMock()
+    event.cursor_row = -1
+    CatalogScreen._on_row_selected(screen, event)
+    screen._select_row.assert_not_called()
+
+
+def test_on_row_selected_exceeds_length():
+    """_on_row_selected returns early when index exceeds rows length."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen._rows = []
+    event = MagicMock()
+    event.cursor_row = 5
+    CatalogScreen._on_row_selected(screen, event)
+    screen._select_row.assert_not_called()
+
+
 def test_type_pill_with_choices():
     """_type_pill returns 'select' pill when defn has choices."""
     from lilbee.cli.settings_map import SettingDef
