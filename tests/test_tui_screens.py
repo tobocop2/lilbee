@@ -32,12 +32,7 @@ _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
     """Snapshot and restore cfg for every test."""
-    from lilbee.cli.tui import messages as _msg
-    from lilbee.cli.tui.app import VIEWS as _views
-
     snapshot = cfg.model_copy()
-    nav_snapshot = list(_msg.NAV_VIEWS)
-    views_snapshot = dict(_views)
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
@@ -49,9 +44,6 @@ def _isolated_cfg(tmp_path):
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-    _msg.NAV_VIEWS[:] = nav_snapshot
-    _views.clear()
-    _views.update(views_snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -4096,44 +4088,32 @@ class TestWikiScreenNavigation:
 
 class TestWikiViewRegistration:
     def test_wiki_not_in_views_when_disabled(self):
-        """Wiki view is not registered when cfg.wiki is False."""
-        from lilbee.cli.tui.app import VIEWS
+        """Wiki view is not in get_views() when cfg.wiki is False."""
+        from lilbee.cli.tui.app import get_views
 
         cfg.wiki = False
-        assert "Wiki" not in VIEWS or cfg.wiki
+        assert "Wiki" not in get_views()
 
-    async def test_wiki_in_views_when_enabled(self):
-        """Wiki view is registered in VIEWS when LilbeeApp mounts with cfg.wiki=True."""
-        from lilbee.cli.tui.app import VIEWS, LilbeeApp
-
-        cfg.wiki = True
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            assert "Wiki" in VIEWS
-
-    async def test_wiki_in_nav_views_when_enabled(self):
-        """Wiki appears in NAV_VIEWS when cfg.wiki is True."""
-        from lilbee.cli.tui import messages as m
-        from lilbee.cli.tui.app import LilbeeApp
+    def test_wiki_in_views_when_enabled(self):
+        """Wiki view is in get_views() when cfg.wiki is True."""
+        from lilbee.cli.tui.app import get_views
 
         cfg.wiki = True
-        if "Wiki" in m.NAV_VIEWS:
-            m.NAV_VIEWS.remove("Wiki")
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            assert "Wiki" in m.NAV_VIEWS
+        assert "Wiki" in get_views()
 
-    async def test_wiki_not_in_nav_views_when_disabled(self):
-        """Wiki does not appear in NAV_VIEWS when cfg.wiki is False."""
-        from lilbee.cli.tui import messages as m
-        from lilbee.cli.tui.app import LilbeeApp
+    def test_wiki_in_nav_views_when_enabled(self):
+        """Wiki appears in get_nav_views() when cfg.wiki is True."""
+        from lilbee.cli.tui.messages import get_nav_views
+
+        cfg.wiki = True
+        assert "Wiki" in get_nav_views()
+
+    def test_wiki_not_in_nav_views_when_disabled(self):
+        """Wiki does not appear in get_nav_views() when cfg.wiki is False."""
+        from lilbee.cli.tui.messages import get_nav_views
 
         cfg.wiki = False
-        if "Wiki" in m.NAV_VIEWS:
-            m.NAV_VIEWS.remove("Wiki")
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            assert "Wiki" not in m.NAV_VIEWS
+        assert "Wiki" not in get_nav_views()
 
 
 class TestWikiFormatPageHeader:

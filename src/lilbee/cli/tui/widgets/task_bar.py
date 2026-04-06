@@ -158,6 +158,8 @@ class TaskBar(Static):
         else:
             queued_label.display = False
 
+        self.refresh()
+
     def _render_active_task(self, task: Task, label: Label, progress_bar: ProgressBar) -> None:
         """Render a single active task into the label and progress bar."""
         if task.status == TaskStatus.ACTIVE:

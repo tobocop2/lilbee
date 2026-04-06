@@ -1505,15 +1505,16 @@ class TestStatusBar:
         assert "dock: bottom" in StatusBar.DEFAULT_CSS
 
     async def test_nav_views_contains_all_screens(self) -> None:
-        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.messages import get_nav_views
 
+        views = get_nav_views()
         for name in ("Chat", "Catalog", "Status", "Settings", "Tasks"):
-            assert name in msg.NAV_VIEWS
+            assert name in views
 
     async def test_default_view_is_first(self) -> None:
         from lilbee.cli.tui import messages as msg
 
-        assert msg.NAV_VIEWS[0] == msg.DEFAULT_VIEW
+        assert msg.get_nav_views()[0] == msg.DEFAULT_VIEW
 
 
 class TestLilbeeAppStatusBar:

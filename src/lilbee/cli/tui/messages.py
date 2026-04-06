@@ -128,7 +128,17 @@ SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 # -- Status bar ----------------------------------------------------------------
 
 DEFAULT_VIEW = "Chat"
-NAV_VIEWS: list[str] = [DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks"]
+_BASE_NAV_VIEWS: list[str] = [DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks"]
+
+
+def get_nav_views() -> list[str]:
+    """Return the active nav view names, including Wiki when enabled."""
+    from lilbee.config import cfg
+
+    views = list(_BASE_NAV_VIEWS)
+    if cfg.wiki:
+        views.append("Wiki")
+    return views
 STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"

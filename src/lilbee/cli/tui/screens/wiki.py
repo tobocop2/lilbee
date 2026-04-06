@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from lilbee.wiki.browse import WikiPageInfo
 
 from textual import on
 from textual.app import ComposeResult
@@ -22,7 +25,7 @@ log = logging.getLogger(__name__)
 
 def _wiki_root() -> Path:
     """Resolve the wiki root directory from config."""
-    return Path(cfg.data_dir) / cfg.wiki_dir
+    return cfg.data_dir / cfg.wiki_dir
 
 
 def _format_page_header(
@@ -227,21 +230,18 @@ class WikiScreen(Screen[None]):
 
 
 def _group_pages(
-    pages: list[object],
-) -> list[tuple[str, list[object]]]:
+    pages: list[WikiPageInfo],
+) -> list[tuple[str, list[WikiPageInfo]]]:
     """Group pages by page_type, maintaining order: summaries first, then concepts."""
-    from collections import OrderedDict
-
-    groups: OrderedDict[str, list[object]] = OrderedDict()
+    groups: dict[str, list[WikiPageInfo]] = {}
     type_order = ["summary", "concept"]
     for t in type_order:
-        group = [p for p in pages if getattr(p, "page_type", "") == t]
+        group = [p for p in pages if p.page_type == t]
         if group:
             groups[t] = group
     for p in pages:
-        pt = getattr(p, "page_type", "unknown")
-        if pt not in groups:
-            groups[pt] = []
-        if pt not in type_order:
-            groups[pt].append(p)
+        if p.page_type not in groups:
+            groups[p.page_type] = []
+        if p.page_type not in type_order:
+            groups[p.page_type].append(p)
     return [(k, v) for k, v in groups.items() if v]

@@ -68,12 +68,20 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
-VIEWS: dict[str, Callable[[], Screen]] = {
+_BASE_VIEWS: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
 }
+
+
+def get_views() -> dict[str, Callable[[], Screen]]:
+    """Return the active view factories, including wiki when enabled."""
+    views = dict(_BASE_VIEWS)
+    if cfg.wiki:
+        views["Wiki"] = _make_wiki
+    return views
 
 
 class LilbeeApp(App[None]):
@@ -115,11 +123,6 @@ class LilbeeApp(App[None]):
         self.title = f"lilbee — {cfg.chat_model}"
         self.theme = _DEFAULT_THEME
         self.mount(self.task_bar)
-
-        if cfg.wiki and "Wiki" not in VIEWS:
-            VIEWS["Wiki"] = _make_wiki
-        if cfg.wiki and "Wiki" not in msg.NAV_VIEWS:
-            msg.NAV_VIEWS.append("Wiki")
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -182,7 +185,7 @@ class LilbeeApp(App[None]):
             if not isinstance(self.screen, ChatScreen):
                 self.switch_screen(ChatScreen(auto_sync=False))
         else:
-            factory = VIEWS.get(view_name)
+            factory = get_views().get(view_name)
             if factory is None:
                 return
             self.switch_screen(factory())
@@ -196,12 +199,12 @@ class LilbeeApp(App[None]):
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view (h or left arrow)."""
-        view_names = msg.NAV_VIEWS
+        view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx - 1) % len(view_names)])
 
     def action_nav_next(self) -> None:
         """Navigate to next view (l or right arrow)."""
-        view_names = msg.NAV_VIEWS
+        view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx + 1) % len(view_names)])

@@ -9,8 +9,6 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 
-_VIEWS = msg.NAV_VIEWS
-
 _MODE_STYLES: dict[str, str] = {
     msg.MODE_NORMAL: "bold white on dark_blue",
     msg.MODE_INSERT: "bold white on dark_green",
@@ -55,7 +53,7 @@ class StatusBar(Widget):
         if self.mode_text:
             style = _MODE_STYLES.get(self.mode_text, _DEFAULT_MODE_STYLE)
             parts.append(f"[{style}] {self.mode_text} [/] ")
-        for name in _VIEWS:
+        for name in msg.get_nav_views():
             if name == self.active_view:
                 parts.append(f"[bold reverse] {name} [/]")
             else:
