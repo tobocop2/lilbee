@@ -2366,14 +2366,17 @@ class TestSetupWizardGrid:
 class TestChatEmbeddingReadyCoverage:
     """Cover _embedding_ready exception path (lines 172-173 in chat.py)."""
 
-    def test_embedding_ready_returns_false_on_resolve_error(self):
+    async def test_embedding_ready_returns_false_on_resolve_error(self, _mock_resolve):
         """_embedding_ready returns False when _resolve_model_path raises."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        # Create an uninitialized ChatScreen and call _embedding_ready directly
-        screen = ChatScreen.__new__(ChatScreen)
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            side_effect=FileNotFoundError("not found"),
-        ):
-            assert ChatScreen._embedding_ready(screen) is False
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            with mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                side_effect=FileNotFoundError("not found"),
+            ):
+                assert screen._embedding_ready() is False

@@ -1476,7 +1476,7 @@ class TestWorkerProcessNoneResponses:
     def test_send_and_receive_embed_none_retries(self) -> None:
         from lilbee.providers.worker_process import EmbedRequest, EmbedResponse, WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1499,7 +1499,7 @@ class TestWorkerProcessNoneResponses:
     def test_retry_embed_none_raises(self) -> None:
         from lilbee.providers.worker_process import EmbedRequest, WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1516,7 +1516,7 @@ class TestWorkerProcessNoneResponses:
     def test_send_and_receive_vision_none_retries(self) -> None:
         from lilbee.providers.worker_process import VisionRequest, VisionResponse, WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1538,7 +1538,7 @@ class TestWorkerProcessNoneResponses:
     def test_retry_vision_none_raises(self) -> None:
         from lilbee.providers.worker_process import VisionRequest, WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
         wp._response_queue = mock.MagicMock()
         wp._process = mock.MagicMock()
@@ -1555,7 +1555,7 @@ class TestWorkerProcessNoneResponses:
     def test_get_response_dead_worker_returns_none(self) -> None:
         from lilbee.providers.worker_process import WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._response_queue = mock.MagicMock()
         wp._response_queue.get.side_effect = Exception("empty")
         wp._process = mock.MagicMock()
@@ -1567,7 +1567,7 @@ class TestWorkerProcessNoneResponses:
     def test_load_model_sends_request(self) -> None:
         from lilbee.providers.worker_process import LoadModelRequest, WorkerProcess
 
-        wp = WorkerProcess.__new__(WorkerProcess)
+        wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
         wp._started = True
         wp._process = mock.MagicMock()
@@ -1624,19 +1624,12 @@ class TestFilterOptions:
 
 def _make_provider_no_thread() -> object:
     """Create a LlamaCppProvider without starting the embed thread."""
-    import queue as q
-    import threading
-
     from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
-    provider = LlamaCppProvider.__new__(LlamaCppProvider)
+    with mock.patch("threading.Thread.start"):
+        provider = LlamaCppProvider()
     provider._cache = mock.MagicMock()
-    provider._vision_llm = None
-    provider._embed_queue = q.Queue()
-    provider._chat_lock = threading.Lock()
     provider._embed_thread = mock.MagicMock()
-    provider._subprocess_worker = None
-    provider._subprocess_enabled = False
     return provider
 
 
@@ -1951,21 +1944,18 @@ class TestLlamaCppProviderMethods:
 class TestEmbedWorker:
     def test_embed_worker_dispatches_batch(self) -> None:
         """_embed_worker processes items and dispatches them."""
-        import queue as q
-        import threading
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
 
-        provider = LlamaCppProvider.__new__(LlamaCppProvider)
-        provider._embed_queue = q.Queue()
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
         provider._cache = mock.MagicMock()
-        provider._vision_llm = None
-        provider._chat_lock = threading.Lock()
-        provider._subprocess_worker = None
-        provider._subprocess_enabled = False
 
-        # Put a request and then a shutdown sentinel
+        # Clear the queue and put a request + shutdown sentinel
+        while not provider._embed_queue.empty():
+            provider._embed_queue.get_nowait()
+
         fut: Future[list[list[float]]] = Future()
         provider._embed_queue.put(_EmbedRequest(texts=["hello"], future=fut))
         provider._embed_queue.put(None)  # shutdown signal
@@ -1980,19 +1970,17 @@ class TestEmbedWorker:
 
     def test_embed_worker_shutdown_during_batch(self) -> None:
         """_embed_worker exits when None received during batching."""
-        import queue as q
-        import threading
         from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
 
-        provider = LlamaCppProvider.__new__(LlamaCppProvider)
-        provider._embed_queue = q.Queue()
+        with mock.patch("threading.Thread.start"):
+            provider = LlamaCppProvider()
         provider._cache = mock.MagicMock()
-        provider._vision_llm = None
-        provider._chat_lock = threading.Lock()
-        provider._subprocess_worker = None
-        provider._subprocess_enabled = False
+
+        # Clear the queue and put a request + shutdown
+        while not provider._embed_queue.empty():
+            provider._embed_queue.get_nowait()
 
         fut: Future[list[list[float]]] = Future()
         provider._embed_queue.put(_EmbedRequest(texts=["a"], future=fut))

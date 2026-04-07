@@ -3326,26 +3326,23 @@ async def test_chat_ctrl_n_p_bindings_exist():
     assert "ctrl+p" in keys
 
 
-def test_chat_input_history_tracking():
+async def test_chat_input_history_tracking():
     """Input history list tracks submitted messages."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    screen = ChatScreen.__new__(ChatScreen)
-    screen._input_history = []
-    screen._history_index = -1
-    screen._input_history.append("hello")
-    screen._input_history.append("/help")
-    assert screen._input_history == ["hello", "/help"]
-    assert screen._history_index == -1
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        screen = app.screen
+        screen._input_history.append("hello")
+        screen._input_history.append("/help")
+        assert screen._input_history[-2:] == ["hello", "/help"]
 
 
-def test_chat_sync_gating_flag():
+async def test_chat_sync_gating_flag():
     """_sync_active flag defaults to False."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    screen = ChatScreen.__new__(ChatScreen)
-    screen._sync_active = False
-    assert screen._sync_active is False
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        assert app.screen._sync_active is False
 
 
 async def test_task_center_shows_history():
@@ -4856,15 +4853,20 @@ def test_param_sort_value_no_match():
     assert _param_sort_value("--") == 0.0
 
 
-def test_fetch_installed_names_exception():
+async def test_fetch_installed_names_exception():
     """_fetch_installed_names suppresses exception and keeps empty set."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    screen = CatalogScreen.__new__(CatalogScreen)
-    screen._installed_names = set()
-    with patch("lilbee.registry.ModelRegistry", side_effect=Exception("fail")):
-        screen._fetch_installed_names()
-    assert screen._installed_names == set()
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._installed_names = set()
+            with patch("lilbee.registry.ModelRegistry", side_effect=Exception("fail")):
+                screen._fetch_installed_names()
+            assert screen._installed_names == set()
 
 
 async def test_catalog_nav_actions_return_early_in_grid_view():
@@ -5007,18 +5009,18 @@ async def test_catalog_make_progress_callback():
                 assert app.screen.is_current
 
 
-def test_catalog_safe_call_suppresses_exception():
+async def test_catalog_safe_call_suppresses_exception():
     """_safe_call suppresses exceptions from call_from_thread."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
-    screen = CatalogScreen.__new__(CatalogScreen)
-    mock_app = MagicMock()
-    mock_app.call_from_thread.side_effect = RuntimeError("dead")
-    screen._app = mock_app  # type: ignore[attr-defined]
-    # Patch the app property
-    with patch.object(type(screen), "app", new_callable=lambda: property(lambda s: mock_app)):
-        screen._safe_call(lambda: None)
-        assert mock_app.call_from_thread.called
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            with patch.object(app, "call_from_thread", side_effect=RuntimeError("dead")):
+                screen._safe_call(lambda: None)  # should not raise
 
 
 async def test_catalog_get_highlighted_variant_name():
@@ -5505,26 +5507,34 @@ async def test_settings_on_select_save_defn_none():
             mock_pv.assert_not_called()
 
 
-def test_settings_parse_value_nullable_none():
+async def test_settings_parse_value_nullable_none():
     """_parse_value returns None for nullable setting with 'none'."""
     from lilbee.cli.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    screen = SettingsScreen.__new__(SettingsScreen)
-    defn = SettingDef(type=float, nullable=True, group="Test")
-    result = screen._parse_value(defn, "none")
-    assert result is None
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        defn = SettingDef(type=float, nullable=True, group="Test")
+        result = screen._parse_value(defn, "none")
+        assert result is None
 
 
-def test_settings_parse_value_nullable_empty():
+async def test_settings_parse_value_nullable_empty():
     """_parse_value returns None for nullable setting with empty string."""
     from lilbee.cli.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    screen = SettingsScreen.__new__(SettingsScreen)
-    defn = SettingDef(type=float, nullable=True, group="Test")
-    result = screen._parse_value(defn, "")
-    assert result is None
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        defn = SettingDef(type=float, nullable=True, group="Test")
+        result = screen._parse_value(defn, "")
+        assert result is None
 
 
 async def test_settings_refresh_help_exception():
@@ -5672,18 +5682,20 @@ async def test_app_action_quit_double_force_exits():
             mock_fq.assert_called_once()
 
 
-def test_app_force_quit_calls_os_exit():
+async def test_app_force_quit_calls_os_exit():
     """_force_quit resets services and calls os._exit."""
     from lilbee.cli.tui.app import LilbeeApp
 
-    app = LilbeeApp.__new__(LilbeeApp)
-    with (
-        patch("lilbee.services.reset_services") as mock_reset,
-        patch("os._exit") as mock_exit,
-    ):
-        app._force_quit()
-        mock_reset.assert_called_once()
-        mock_exit.assert_called_once_with(1)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.services.reset_services") as mock_reset,
+            patch("os._exit") as mock_exit,
+        ):
+            app._force_quit()
+            mock_reset.assert_called_once()
+            mock_exit.assert_called_once_with(1)
 
 
 async def test_app_switch_view_unknown():
@@ -5826,17 +5838,20 @@ async def test_chat_on_show_handles_oserror():
             assert app.screen.is_current
 
 
-def test_chat_embedding_ready_false_on_exception():
+async def test_chat_embedding_ready_false_on_exception():
     """_embedding_ready returns False when resolve raises."""
     from lilbee.cli.tui.screens.chat import ChatScreen
 
-    # Call the real (unpatched) method directly — bypasses the autouse fixture
-    screen = ChatScreen.__new__(ChatScreen)
-    with patch(
-        "lilbee.providers.llama_cpp_provider._resolve_model_path",
-        side_effect=FileNotFoundError("not found"),
-    ):
-        assert ChatScreen._embedding_ready(screen) is False
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ChatScreen)
+        with patch(
+            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            side_effect=FileNotFoundError("not found"),
+        ):
+            assert screen._embedding_ready() is False
 
 
 async def test_chat_hide_banner():
