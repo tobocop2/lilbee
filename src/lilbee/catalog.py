@@ -69,9 +69,16 @@ _DEFAULT_TIMEOUT = 30.0
 
 @dataclass(frozen=True)
 class CatalogModel:
-    """A model entry in the catalog."""
+    """A model entry in the catalog.
 
-    name: str
+    Identity follows Ollama conventions: name is a lowercase slug (model family),
+    tag is the variant (param count, version, etc.). The canonical reference is
+    ``name:tag`` (e.g. ``qwen3:0.6b``).  ``display_name`` is the human label.
+    """
+
+    name: str  # family slug: "qwen3", "nomic-embed-text"
+    tag: str  # variant: "0.6b", "v1.5"
+    display_name: str  # UI label: "Qwen3 0.6B"
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -80,6 +87,12 @@ class CatalogModel:
     featured: bool
     downloads: int
     task: str
+    recommended: bool = False  # :latest alias target for this family
+
+    @property
+    def ref(self) -> str:
+        """Canonical ``name:tag`` identifier (e.g. ``qwen3:0.6b``)."""
+        return f"{self.name}:{self.tag}"
 
 
 @dataclass(frozen=True)
@@ -129,6 +142,8 @@ def _load_featured() -> tuple[
         return tuple(
             CatalogModel(
                 name=m["name"],
+                tag=m.get("tag", "latest"),
+                display_name=m.get("display_name", m["name"]),
                 hf_repo=m["hf_repo"],
                 gguf_filename=m["gguf_filename"],
                 size_gb=m["size_gb"],
@@ -137,6 +152,7 @@ def _load_featured() -> tuple[
                 featured=True,
                 downloads=0,
                 task=task,
+                recommended=m.get("recommended", False),
             )
             for m in data.get(task, [])
         )
@@ -183,43 +199,38 @@ def _extract_quant(filename: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def _catalog_to_variant(model: CatalogModel, *, recommended: bool = False) -> ModelVariant:
+def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
     """Convert a CatalogModel to a ModelVariant."""
-    m = re.search(r"(\d+\.?\d*B)", model.name, re.IGNORECASE)
-    param_count = m.group(1) if m else ""
+    m = re.search(r"(\d+\.?\d*B)", model.display_name, re.IGNORECASE)
+    param_count = m.group(1) if m else model.tag
     return ModelVariant(
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
         param_count=param_count,
         quant=_extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
-        recommended=recommended,
+        recommended=model.recommended,
     )
 
 
 def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFamily]:
-    """Group CatalogModels into families by extracted family name."""
+    """Group CatalogModels into families by name (slug)."""
     groups: dict[str, list[CatalogModel]] = {}
     order: list[str] = []
     for m in models:
-        family = _extract_family_name(m.name)
-        if family not in groups:
-            order.append(family)
-        groups.setdefault(family, []).append(m)
+        if m.name not in groups:
+            order.append(m.name)
+        groups.setdefault(m.name, []).append(m)
 
     families: list[ModelFamily] = []
     for name in order:
         members = groups[name]
-        variants: list[ModelVariant] = []
-        for i, m in enumerate(members):
-            recommended = len(members) > 1 and i == len(members) - 1
-            variants.append(_catalog_to_variant(m, recommended=recommended))
-        description = members[0].description
+        variants = [_catalog_to_variant(m) for m in members]
         families.append(
             ModelFamily(
-                name=name,
+                name=members[0].display_name,
                 task=task,
-                description=description,
+                description=members[0].description,
                 variants=tuple(variants),
             )
         )
@@ -322,9 +333,13 @@ def _fetch_hf_models(
         # Estimate size from siblings (empty on list API, populated on detail)
         size_gb = _estimate_size_from_siblings(item.get("siblings", []))
         task = _pipeline_to_task(item.get("pipeline_tag", ""))
+        repo_name = repo_id.split("/")[-1]
+        slug = repo_name.lower().replace(" ", "-")
         models.append(
             CatalogModel(
-                name=repo_id.split("/")[-1],
+                name=slug,
+                tag="latest",
+                display_name=repo_name,
                 hf_repo=repo_id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
@@ -403,6 +418,7 @@ def get_catalog(
             m
             for m in all_models
             if search_lower in m.name.lower()
+            or search_lower in m.display_name.lower()
             or search_lower in m.hf_repo.lower()
             or search_lower in m.description.lower()
         ]
@@ -416,9 +432,9 @@ def get_catalog(
     if installed is not None and model_manager is not None:
         installed_models = _get_installed_models(model_manager)
         if installed:
-            all_models = [m for m in all_models if m.name in installed_models]
+            all_models = [m for m in all_models if m.ref in installed_models]
         else:
-            all_models = [m for m in all_models if m.name not in installed_models]
+            all_models = [m for m in all_models if m.ref not in installed_models]
 
     # Filter by featured status
     if featured is not None:
@@ -482,12 +498,30 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     return sorted(models, key=key_fn, reverse=reverse)
 
 
-# Maps model names to catalog display names for lookup
-def find_catalog_entry(name: str) -> CatalogModel | None:
-    """Find a featured model by display name (case-insensitive)."""
-    name_lower = name.lower()
+def find_catalog_entry(query: str) -> CatalogModel | None:
+    """Find a featured model by ref, name, or display name (case-insensitive).
+
+    Matches against ``name:tag``, bare ``name`` (returns recommended variant),
+    or ``display_name``.
+    """
+    query_lower = query.lower()
+    # Exact ref match (e.g. "qwen3:0.6b")
     for model in FEATURED_ALL:
-        if model.name.lower() == name_lower:
+        if model.ref == query_lower:
+            return model
+    # Bare name match — return recommended variant for that family
+    family_match: CatalogModel | None = None
+    for model in FEATURED_ALL:
+        if model.name == query_lower:
+            if model.recommended:
+                return model
+            if family_match is None:
+                family_match = model
+    if family_match is not None:
+        return family_match
+    # Display name fallback
+    for model in FEATURED_ALL:
+        if model.display_name.lower() == query_lower:
             return model
     return None
 
@@ -555,10 +589,11 @@ def _register_model(entry: CatalogModel, file_path: Path) -> None:
     from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
-    ref = ModelRef(name=entry.name, tag="latest")
+    ref = ModelRef(name=entry.name, tag=entry.tag)
     manifest = ModelManifest(
         name=entry.name,
-        tag="latest",
+        tag=entry.tag,
+        display_name=entry.display_name,
         size_bytes=file_path.stat().st_size,
         task=entry.task,
         source_repo=entry.hf_repo,
@@ -567,7 +602,9 @@ def _register_model(entry: CatalogModel, file_path: Path) -> None:
     )
     try:
         registry.install(ref, file_path, manifest)
-        log.info("Registered %s:%s in manifest", entry.name, "latest")
+        log.info("Registered %s in manifest", ref)
+        if entry.recommended:
+            registry.write_latest_alias(ref)
     except Exception:
         log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
 
@@ -807,7 +844,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
     """Enrich catalog models with display names, quality tiers, and install status."""
     enriched: list[EnrichedModel] = []
     for m in result.models:
-        is_installed = m.name in installed_names
+        is_installed = m.ref in installed_names
         enriched.append(
             EnrichedModel(
                 name=m.name,
@@ -819,7 +856,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 featured=m.featured,
                 downloads=m.downloads,
                 task=m.task,
-                display_name=clean_display_name(m.hf_repo),
+                display_name=m.display_name or clean_display_name(m.hf_repo),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
                 installed=is_installed,
                 source="litellm" if is_installed else "native",
