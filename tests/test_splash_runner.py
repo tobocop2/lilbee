@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from unittest.mock import patch
@@ -98,7 +99,49 @@ def test_animation_loop_exits_on_closed_pipe():
 
     from lilbee._splash_runner import animation_loop
 
-    # Should return quickly since pipe is closed
+    animation_loop(r)
+    os.close(r)
+
+
+@patch("lilbee._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee._splash_runner.FRAME_INTERVAL", 0)
+@patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
+def test_animation_loop_renders_frames():
+    """animation_loop renders at least one frame before pipe closes."""
+
+    from lilbee._splash_runner import animation_loop
+
+    r, w = os.pipe()
+    writes: list[bytes] = []
+
+    original_write = os.write
+
+    def capture_write(fd: int, data: bytes) -> int:
+        if fd == 2:
+            writes.append(data)
+            # Close pipe after first frame to stop the loop
+            if len(writes) >= 2:
+                with contextlib.suppress(OSError):
+                    os.close(w)
+        return original_write(fd, data)
+
+    with patch("os.write", side_effect=capture_write):
+        animation_loop(r)
+
+    with contextlib.suppress(OSError):
+        os.close(r)
+    assert len(writes) >= 1
+
+
+@patch("lilbee._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee._splash_runner.FRAME_INTERVAL", 0)
+@patch("os.write", side_effect=OSError("broken"))
+def test_animation_loop_handles_write_error(_mock_write: object):
+    """animation_loop handles OSError during rendering."""
+    from lilbee._splash_runner import animation_loop
+
+    r, w = os.pipe()
+    os.close(w)
     animation_loop(r)
     os.close(r)
 
