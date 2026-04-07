@@ -654,3 +654,34 @@ class TestDeleteSourceNoneTable:
     def test_noop_when_no_table(self, store):
         """delete_source is a no-op when the sources table doesn't exist."""
         store.delete_source("nonexistent.md")  # Should not raise
+
+
+class TestSuppressLancedbThreadError:
+    """Tests for the threading.excepthook that silences lancedb shutdown noise."""
+
+    def test_suppresses_lancedb_thread(self):
+        """Errors from LanceDB background threads are silently dropped."""
+        import threading
+
+        from lilbee.store import _suppress_lancedb_thread_error
+
+        lance_thread = threading.Thread(target=lambda: None, name="LanceDBBackgroundEventLoop")
+        args = threading.ExceptHookArgs(
+            (RuntimeError, RuntimeError("shutdown"), None, lance_thread)
+        )
+        # Should return without calling original hook — no exception raised
+        _suppress_lancedb_thread_error(args)
+
+    @mock.patch("lilbee.store._original_excepthook")
+    def test_propagates_non_lancedb_thread(self, mock_hook):
+        """Errors from other threads are forwarded to the original excepthook."""
+        import threading
+
+        from lilbee.store import _suppress_lancedb_thread_error
+
+        other_thread = threading.Thread(target=lambda: None, name="SomeOtherThread")
+        args = threading.ExceptHookArgs(
+            (RuntimeError, RuntimeError("real error"), None, other_thread)
+        )
+        _suppress_lancedb_thread_error(args)
+        mock_hook.assert_called_once_with(args)
