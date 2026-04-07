@@ -458,7 +458,7 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_help(self, _args: str) -> None:
-        self.app.action_push_help()
+        self.app.action_show_help_panel()
 
     def _cmd_login(self, args: str) -> None:
         token = args.strip()

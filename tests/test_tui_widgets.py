@@ -176,32 +176,26 @@ class _HelpApp(App):
         yield Static("bg")
 
     def key_f1(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        self.push_screen(HelpModal())
+        self.action_show_help_panel()
 
 
-class TestHelpModal:
-    async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+class TestHelpPanel:
+    async def test_show_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            # The modal should be visible
-            assert len(app.screen_stack) == 2
+            assert app.screen.query("HelpPanel")
 
-    async def test_action_close_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+    async def test_hide_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            app.screen.action_close()
+            assert app.screen.query("HelpPanel")
+            app.action_hide_help_panel()
             await pilot.pause()
-            assert len(app.screen_stack) == 1
+            assert not app.screen.query("HelpPanel")
 
 
 class _TaskBarApp(App):

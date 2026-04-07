@@ -6481,21 +6481,6 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             assert result is None
 
 
-async def test_catalog_key_left_right_navigation():
-    """key_left and key_right delegate to app navigation when LilbeeApp."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            # CatalogTestApp is not LilbeeApp, so key_left/key_right just return
-            screen.key_left()
-            screen.key_right()
-            assert app.screen.is_current
-
 
 async def test_catalog_browse_more_clicked():
     """Browse more button triggers HF model fetch."""

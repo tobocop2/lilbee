@@ -191,9 +191,10 @@ class LilbeeApp(App[None]):
         self.active_view = view_name
 
     def action_push_help(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        self.push_screen(HelpModal())
+        if self.screen.query("HelpPanel"):
+            self.action_hide_help_panel()
+        else:
+            self.action_show_help_panel()
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""

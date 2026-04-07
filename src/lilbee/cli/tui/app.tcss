@@ -30,16 +30,28 @@ Footer > .footer-key--description {
     padding: 0 1 0 0;
 }
 
-HelpModal > Vertical {
-    width: 70;
-    height: auto;
-    max-height: 80%;
-    border: thick $surface-lighten-2;
-    padding: 1 2;
+HelpPanel {
+    border-left: solid $surface-lighten-2;
+    padding-right: 0;
 }
 
-HelpModal {
-    align: center middle;
+HelpPanel #widget-help {
+    border: round $secondary;
+    background: transparent;
+    margin-top: 0;
+    padding: 0 0;
+}
+
+HelpPanel #widget-help MarkdownBlock {
+    padding: 0 1;
+}
+
+HelpPanel #widget-help MarkdownH2 {
+    margin: 0 0 1 0;
+}
+
+HelpPanel #widget-help MarkdownBlock:last-child {
+    margin: 0 0 0 0;
 }
 
 #edit-bar {
