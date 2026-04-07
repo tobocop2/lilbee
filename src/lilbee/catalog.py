@@ -6,6 +6,7 @@ Three levels:
 3. Combined catalog — featured first, then HF results
 """
 
+import functools
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ from tqdm.auto import tqdm as _base_tqdm
 
 from lilbee.config import cfg
 from lilbee.models import ModelTask
+from lilbee.registry import DEFAULT_TAG
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +124,8 @@ class ModelVariant:
 class ModelFamily:
     """A group of related model variants (e.g. Qwen3 in multiple sizes)."""
 
-    name: str
+    slug: str  # family slug for building refs: "qwen3"
+    name: str  # display name: "Qwen3"
     task: str
     description: str
     variants: tuple[ModelVariant, ...]
@@ -142,7 +145,7 @@ def _load_featured() -> tuple[
         return tuple(
             CatalogModel(
                 name=m["name"],
-                tag=m.get("tag", "latest"),
+                tag=m.get("tag", DEFAULT_TAG),
                 display_name=m.get("display_name", m["name"]),
                 hf_repo=m["hf_repo"],
                 gguf_filename=m["gguf_filename"],
@@ -175,6 +178,7 @@ VISION_MMPROJ_FILES: dict[str, str] = {
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
+_PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
 
 def _extract_family_name(model_name: str) -> str:
@@ -201,7 +205,7 @@ def _extract_quant(filename: str) -> str:
 
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
     """Convert a CatalogModel to a ModelVariant."""
-    m = re.search(r"(\d+\.?\d*B)", model.display_name, re.IGNORECASE)
+    m = _PARAM_COUNT_RE.search(model.display_name)
     param_count = m.group(1) if m else model.tag
     return ModelVariant(
         hf_repo=model.hf_repo,
@@ -223,14 +227,16 @@ def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFa
         groups.setdefault(m.name, []).append(m)
 
     families: list[ModelFamily] = []
-    for name in order:
-        members = groups[name]
+    for slug in order:
+        members = groups[slug]
+        representative = next((m for m in members if m.recommended), members[0])
         variants = [_catalog_to_variant(m) for m in members]
         families.append(
             ModelFamily(
-                name=members[0].display_name,
+                slug=slug,
+                name=_extract_family_name(representative.display_name),
                 task=task,
-                description=members[0].description,
+                description=representative.description,
                 variants=tuple(variants),
             )
         )
@@ -338,7 +344,7 @@ def _fetch_hf_models(
         models.append(
             CatalogModel(
                 name=slug,
-                tag="latest",
+                tag=DEFAULT_TAG,
                 display_name=repo_name,
                 hf_repo=repo_id,
                 gguf_filename="*.gguf",
@@ -498,32 +504,31 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     return sorted(models, key=key_fn, reverse=reverse)
 
 
+@functools.cache
+def _build_catalog_index() -> tuple[
+    dict[str, CatalogModel], dict[str, CatalogModel], dict[str, CatalogModel]
+]:
+    """Build lookup indexes for find_catalog_entry (cached after first call)."""
+    by_ref: dict[str, CatalogModel] = {}
+    by_name: dict[str, CatalogModel] = {}
+    by_display: dict[str, CatalogModel] = {}
+    for m in FEATURED_ALL:
+        by_ref[m.ref] = m
+        if m.name not in by_name or m.recommended:
+            by_name[m.name] = m
+        by_display.setdefault(m.display_name.lower(), m)
+    return by_ref, by_name, by_display
+
+
 def find_catalog_entry(query: str) -> CatalogModel | None:
     """Find a featured model by ref, name, or display name (case-insensitive).
 
-    Matches against ``name:tag``, bare ``name`` (returns recommended variant),
-    or ``display_name``.
+    Resolution order: exact ``name:tag`` → bare ``name`` (recommended variant)
+    → ``display_name``.
     """
-    query_lower = query.lower()
-    # Exact ref match (e.g. "qwen3:0.6b")
-    for model in FEATURED_ALL:
-        if model.ref == query_lower:
-            return model
-    # Bare name match — return recommended variant for that family
-    family_match: CatalogModel | None = None
-    for model in FEATURED_ALL:
-        if model.name == query_lower:
-            if model.recommended:
-                return model
-            if family_match is None:
-                family_match = model
-    if family_match is not None:
-        return family_match
-    # Display name fallback
-    for model in FEATURED_ALL:
-        if model.display_name.lower() == query_lower:
-            return model
-    return None
+    by_ref, by_name, by_display = _build_catalog_index()
+    q = query.lower()
+    return by_ref.get(q) or by_name.get(q) or by_display.get(q)
 
 
 def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:

@@ -17,6 +17,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
+from lilbee.models import ModelTask
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
@@ -37,9 +38,9 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         embed: list[str] = []
         for m in registry.list_installed():
             name = f"{m.name}:{m.tag}"
-            if m.task == "embedding":
+            if m.task == ModelTask.EMBEDDING:
                 embed.append(name)
-            elif m.task == "chat":
+            elif m.task == ModelTask.CHAT:
                 chat.append(name)
         return sorted(chat), sorted(embed)
     except Exception:
@@ -109,12 +110,12 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_CHAT)
             installed_names = self._chat_installed
             featured_models = FEATURED_CHAT
-            task = "chat"
+            task = ModelTask.CHAT
         else:
             label.update(msg.SETUP_STEP_EMBED)
             installed_names = self._embed_installed
             featured_models = FEATURED_EMBEDDING
-            task = "embedding"
+            task = ModelTask.EMBEDDING
 
         from lilbee.cli.tui.screens.catalog import _catalog_to_row
 

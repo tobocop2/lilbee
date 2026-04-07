@@ -39,6 +39,8 @@ _HASH_ALGORITHM = "sha256"
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
 _REF_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9 ._/-]+$")
 
+DEFAULT_TAG = "latest"
+
 
 def _validate_ref_segment(segment: str, label: str) -> str:
     """Validate that a model ref segment contains only safe characters.
@@ -58,7 +60,7 @@ class ModelRef:
     """Parsed model reference like 'qwen3:8b' or 'nomic-embed-text:latest'."""
 
     name: str
-    tag: str = "latest"
+    tag: str = DEFAULT_TAG
 
     @classmethod
     def parse(cls, s: str) -> ModelRef:
@@ -198,7 +200,7 @@ class ModelRegistry:
             return
         latest = ModelManifest(
             name=manifest.name,
-            tag="latest",
+            tag=DEFAULT_TAG,
             size_bytes=manifest.size_bytes,
             task=manifest.task,
             source_repo=manifest.source_repo,
@@ -207,7 +209,7 @@ class ModelRegistry:
             blob=manifest.blob,
             display_name=manifest.display_name,
         )
-        self._write_manifest(ModelRef(name=ref.name, tag="latest"), latest)
+        self._write_manifest(ModelRef(name=ref.name, tag=DEFAULT_TAG), latest)
 
     def remove(self, ref: str | ModelRef) -> bool:
         """Remove a model manifest. Does NOT delete cache files (managed by HF)."""
@@ -280,7 +282,7 @@ class ModelRegistry:
             )
             self._write_manifest(ref, manifest)
             # Also write :latest alias for legacy models
-            if tag != "latest":
+            if tag != DEFAULT_TAG:
                 self.write_latest_alias(ref)
             log.info("Migrated legacy model %s -> %s", path.name, ref)
             count += 1
@@ -350,4 +352,4 @@ def _match_catalog_entry(filename: str) -> CatalogMatch:
             return CatalogMatch(entry.name, entry.tag, entry.task, entry.hf_repo)
     # Fallback: strip extension and quant suffix for a reasonable name
     stem = filename.rsplit(".", 1)[0]
-    return CatalogMatch(stem, "latest", ModelTask.CHAT, "")
+    return CatalogMatch(stem, DEFAULT_TAG, ModelTask.CHAT, "")

@@ -37,9 +37,11 @@ MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 def ensure_tag(name: str) -> str:
     """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``)."""
+    from lilbee.registry import DEFAULT_TAG
+
     if not name or ":" in name:
         return name
-    return f"{name}:latest"
+    return f"{name}:{DEFAULT_TAG}"
 
 
 @dataclass(frozen=True)
@@ -210,7 +212,7 @@ def display_vision_picker(
 
     for idx, model in enumerate(_get_vision_catalog(), 1):
         num_str = str(idx)
-        name = model.name
+        name = model.display_name
         size_str = f"{model.size_gb:.1f} GB"
         desc = model.description
 

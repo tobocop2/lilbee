@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from lilbee.catalog import CatalogModel
+from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
 
@@ -2191,8 +2192,8 @@ class TestModelBarAdditional:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("Qwen3 8B", "qwen3:8b"), ("Llama 7B", "llama:7b")],
-                [("test-embed", "test-embed")],
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("test-embed", "test-embed")],
                 [],
             )
             await pilot.pause()
@@ -2231,9 +2232,9 @@ class TestModelBarAdditional:
             bar = app.query_one(ModelBar)
             # vision model configured but not in scanned list
             bar._populate(
-                [("test-model", "test-model")],
-                [("test-embed", "test-embed")],
-                [("Llava 7B", "llava:7b")],
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b")],
             )
             await pilot.pause()
             from textual.widgets import Select
@@ -2252,8 +2253,8 @@ class TestModelBarAdditional:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("test-model", "test-model")],
-                [("test-embed", "test-embed")],
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
                 [],
             )
             await pilot.pause()
@@ -2276,7 +2277,7 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options([("new-embed", "new-embed")])
+            embed_sel.set_options([ModelOption("new-embed", "new-embed")])
             with (
                 mock.patch("lilbee.settings.set_value"),
                 mock.patch("lilbee.services.reset_services"),
@@ -2296,8 +2297,8 @@ class TestModelBarAdditional:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("test-model", "test-model")],
-                [("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
                 [],
             )
             await pilot.pause()
@@ -2307,13 +2308,32 @@ class TestModelBarAdditional:
             assert embed_sel.value == "nomic:latest"
 
 
+class TestSyncSelectPrepend:
+    """Cover _sync_select branch: current value not in scanned options."""
+
+    def test_current_value_prepended_when_not_in_options(self) -> None:
+        """When Select holds a value absent from the new options, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        # Mock a Select widget that retains its value after set_options
+        sel = mock.MagicMock()
+        sel.value = "custom:latest"
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, opts)
+        # Prepended the missing value and called set_options twice
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("custom:latest", "custom:latest")
+        assert sel.value == "custom:latest"
+
+
 class TestCollectNativeModelsError:
     def test_exception_suppressed(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_native_models
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        buckets: dict[str, list[tuple[str, str]]] = {
+        buckets: dict[str, list[ModelOption]] = {
             "chat": [],
             "embedding": [],
             "vision": [],
@@ -2329,7 +2349,7 @@ class TestCollectNativeModelsError:
     def test_collect_remote_models_exception_suppressed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
 
-        buckets: dict[str, list[tuple[str, str]]] = {
+        buckets: dict[str, list[ModelOption]] = {
             "chat": [],
             "embedding": [],
             "vision": [],
@@ -2576,9 +2596,9 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("test-model", "test-model"), ("other", "other")],
-                [("test-embed", "test-embed"), ("nomic", "nomic")],
-                [("Llava 7B", "llava:7b")],
+                [ModelOption("test-model", "test-model"), ModelOption("other", "other")],
+                [ModelOption("test-embed", "test-embed"), ModelOption("nomic", "nomic")],
+                [ModelOption("Llava 7B", "llava:7b")],
             )
             await pilot.pause()
             from textual.widgets import Select
@@ -2618,8 +2638,8 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("test-model", "test-model")],
-                [("test-embed", "test-embed")],
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
                 [],
             )
             await pilot.pause()
@@ -2640,9 +2660,9 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [("test-model", "test-model")],
-                [("test-embed", "test-embed")],
-                [("Llava 7B", "llava:7b"), ("Moondream", "moondream:latest")],
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b"), ModelOption("Moondream", "moondream:latest")],
             )
             await pilot.pause()
             from textual.widgets import Select
@@ -2650,17 +2670,13 @@ class TestModelBarPopulateBranches:
             vision_sel = app.query_one("#vision-model-select", Select)
             assert vision_sel.value == "llava:7b"
 
-    async def test_populate_value_not_in_new_options(self) -> None:
-        """Cover lines 179, 183, 189, 193, 198-201: value retained but not in scanned list.
-
-        After set_options, Textual may auto-select the first option, but we can
-        intercept to simulate a retained value that isn't in the new options.
-        """
+    async def test_populate_retains_matching_value(self) -> None:
+        """When current value matches a scanned model, it's preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
-        cfg.vision_model = "llava:custom"
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = "llava:7b"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2671,47 +2687,15 @@ class TestModelBarPopulateBranches:
             embed_sel = app.query_one("#embed-model-select", Select)
             vision_sel = app.query_one("#vision-model-select", Select)
 
-            # Monkey-patch set_options to also force a custom value afterward,
-            # simulating the case where the widget retains a value not in the
-            # new option list (e.g. from a previous configure step).
-            patched_vals = [
-                (chat_sel, "custom-chat:latest"),
-                (embed_sel, "custom-embed:latest"),
-                (vision_sel, "custom-vision:latest"),
-            ]
-            call_counts: dict[int, int] = {}
-
-            for sel, cfg_val in patched_vals:
-                sel_id = id(sel)
-                call_counts[sel_id] = 0
-                orig_fn = sel.set_options
-
-                def make_patched(s, orig, val, sid):
-                    def patched(opts):
-                        orig(opts)
-                        call_counts[sid] += 1
-                        # Only on the FIRST set_options call, force the custom value.
-                        # The second call (line 180/190/200) has the value in opts.
-                        if call_counts[sid] == 1:
-                            # Add the value to the option list and set it
-                            opts_with_val = [(val, val), *list(opts)]
-                            orig(opts_with_val)
-                            s.value = val
-
-                    return patched
-
-                sel.set_options = make_patched(sel, orig_fn, cfg_val, sel_id)  # type: ignore[assignment]
-
             bar._populate(
-                [("Qwen3 8B", "qwen3:8b"), ("Llama 7B", "llama:7b")],
-                [("Nomic Embed Text", "nomic:latest")],
-                [("Llava 7B", "llava:7b")],
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Llava 7B", "llava:7b")],
             )
             await pilot.pause()
-            # Each select should now have the custom value prepended and selected
-            assert chat_sel.value == "custom-chat:latest"
-            assert embed_sel.value == "custom-embed:latest"
-            assert vision_sel.value == "custom-vision:latest"
+            assert chat_sel.value == "qwen3:8b"
+            assert embed_sel.value == "nomic:latest"
+            assert vision_sel.value == "llava:7b"
 
     async def test_populate_blank_value_with_models_available(self) -> None:
         """Cover lines 183, 193: value is empty but models list is non-empty.
@@ -2754,8 +2738,8 @@ class TestModelBarPopulateBranches:
                 sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
 
             bar._populate(
-                [("Qwen3 8B", "qwen3:8b")],
-                [("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Qwen3 8B", "qwen3:8b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
                 [],
             )
             await pilot.pause()

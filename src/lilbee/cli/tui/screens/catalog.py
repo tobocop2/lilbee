@@ -46,8 +46,10 @@ COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
 def _parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
-    match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
-    return f"{match.group(1)}B" if match else "--"
+    from lilbee.catalog import _PARAM_COUNT_RE
+
+    match = _PARAM_COUNT_RE.search(name)
+    return match.group(1) if match else "--"
 
 
 def _format_downloads(n: int) -> str:
@@ -114,7 +116,7 @@ def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRo
         installed=installed,
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
-        ref=f"{f.name.lower()}:{v.param_count.lower()}",
+        ref=f"{f.slug}:{v.param_count.lower()}",
         variant=v,
         family=f,
     )
@@ -369,7 +371,7 @@ class CatalogScreen(Screen[None]):
         for fam in self._families:
             for v in fam.variants:
                 installed = self._is_installed(
-                    f"{fam.name}:{v.param_count}", repo=v.hf_repo, filename=v.filename
+                    f"{fam.slug}:{v.param_count.lower()}", repo=v.hf_repo, filename=v.filename
                 )
                 row = _variant_to_row(v, fam, installed)
                 if _matches_search(row, search):
@@ -549,7 +551,7 @@ class CatalogScreen(Screen[None]):
         """Convert a variant back to a CatalogModel and trigger install."""
         tag = variant.param_count.lower()
         entry = CatalogModel(
-            name=family.name.lower(),
+            name=family.slug,
             tag=tag,
             display_name=f"{family.name} {variant.param_count}",
             hf_repo=variant.hf_repo,

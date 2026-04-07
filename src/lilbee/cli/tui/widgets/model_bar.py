@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -12,6 +13,7 @@ from textual.widgets import Label, Select
 
 from lilbee import settings
 from lilbee.config import cfg
+from lilbee.models import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -20,38 +22,43 @@ _DISABLED = Select.NULL
 _MMPROJ_MARKER = "mmproj"
 
 
+class ModelOption(NamedTuple):
+    """A selectable model with display label and config ref."""
+
+    label: str  # human-readable name for the dropdown
+    ref: str  # name:tag identity for config persistence
+
+
 def _is_mmproj(name: str) -> bool:
     """Return True if a model name refers to an mmproj projection file."""
     return _MMPROJ_MARKER in name.lower()
 
 
-def _classify_installed_models() -> tuple[
-    list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]
-]:
+def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption], list[ModelOption]]:
     """Classify installed models into (chat, embedding, vision) lists.
-
-    Each entry is ``(display_label, ref)`` where *ref* is the ``name:tag``
-    identity used for config and *display_label* is the human label shown
-    in Select dropdowns.
 
     Uses registry manifests for native models and the litellm backend's
     /api/tags metadata for remote models. Filters out mmproj files.
     """
-    buckets: dict[str, list[tuple[str, str]]] = {"chat": [], "embedding": [], "vision": []}
+    buckets: dict[str, list[ModelOption]] = {
+        ModelTask.CHAT: [],
+        ModelTask.EMBEDDING: [],
+        ModelTask.VISION: [],
+    }
     seen: set[str] = set()
 
     _collect_native_models(buckets, seen)
     _collect_remote_models(buckets, seen)
 
     return (
-        sorted(buckets["chat"], key=lambda t: t[1]),
-        sorted(buckets["embedding"], key=lambda t: t[1]),
-        sorted(buckets["vision"], key=lambda t: t[1]),
+        sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
+        sorted(buckets[ModelTask.EMBEDDING], key=lambda o: o.ref),
+        sorted(buckets[ModelTask.VISION], key=lambda o: o.ref),
     )
 
 
-def _collect_native_models(buckets: dict[str, list[tuple[str, str]]], seen: set[str]) -> None:
-    """Add native registry models to buckets as (display_label, ref) tuples."""
+def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+    """Add native registry models to buckets."""
     try:
         from lilbee.registry import ModelRegistry
 
@@ -62,13 +69,15 @@ def _collect_native_models(buckets: dict[str, list[tuple[str, str]]], seen: set[
                 continue
             seen.add(ref)
             label = manifest.display_name or ref
-            buckets.get(manifest.task, buckets["chat"]).append((label, ref))
+            buckets.get(manifest.task, buckets[ModelTask.CHAT]).append(
+                ModelOption(label=label, ref=ref)
+            )
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
 
-def _collect_remote_models(buckets: dict[str, list[tuple[str, str]]], seen: set[str]) -> None:
-    """Add remote (litellm) models to buckets as (display_label, ref) tuples."""
+def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+    """Add remote (litellm) models to buckets."""
     try:
         from lilbee.model_manager import classify_remote_models
 
@@ -76,9 +85,31 @@ def _collect_remote_models(buckets: dict[str, list[tuple[str, str]]], seen: set[
             if model.name in seen or _is_mmproj(model.name):
                 continue
             seen.add(model.name)
-            buckets.get(model.task, buckets["chat"]).append((model.name, model.name))
+            buckets.get(model.task, buckets[ModelTask.CHAT]).append(
+                ModelOption(label=model.name, ref=model.name)
+            )
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
+
+
+def _sync_select(sel: Select, opts: list[ModelOption], models: list[ModelOption]) -> None:
+    """Set options and value for a model Select widget.
+
+    Preserves the current value if it's in the options. Otherwise picks the
+    first available model. If the current value isn't in the options, prepends
+    it so it remains selectable.
+    """
+    sel.set_options(opts)
+    current = str(sel.value) if sel.value != _DISABLED else ""
+    if current:
+        if not any(o.ref == current for o in opts):
+            opts.insert(0, ModelOption(current, current))
+            sel.set_options(opts)
+        sel.value = current
+    elif models:
+        sel.value = models[0].ref
+    elif opts:
+        sel.value = opts[0].ref
 
 
 class ModelBar(Widget, can_focus=True):
@@ -158,71 +189,39 @@ class ModelBar(Widget, can_focus=True):
 
     def _populate(
         self,
-        chat_models: list[tuple[str, str]],
-        embed_models: list[tuple[str, str]],
-        vision_models: list[tuple[str, str]],
+        chat_models: list[ModelOption],
+        embed_models: list[ModelOption],
+        vision_models: list[ModelOption],
     ) -> None:
-        """Populate Select widgets from scanned models (main thread).
-
-        Each model entry is ``(display_label, ref)`` where *ref* is the
-        ``name:tag`` value persisted to config.
-        """
+        """Populate Select widgets from scanned models (main thread)."""
         self._populating = True
 
         chat_sel = self.query_one("#chat-model-select", Select)
         embed_sel = self.query_one("#embed-model-select", Select)
         vision_sel = self.query_one("#vision-model-select", Select)
 
-        chat_opts = list(chat_models) if chat_models else [("(none)", "")]
-        embed_opts = list(embed_models) if embed_models else [("(none)", "")]
-        vision_opts = list(vision_models)
+        chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
+        embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
 
-        chat_sel.set_options(chat_opts)
-        embed_sel.set_options(embed_opts)
-        vision_sel.set_options(vision_opts)
-
-        current_chat = str(chat_sel.value) if chat_sel.value != Select.NULL else ""
-        current_embed = str(embed_sel.value) if embed_sel.value != Select.NULL else ""
-        current_vision = str(vision_sel.value) if vision_sel.value != Select.NULL else ""
-
-        has_chat_model = bool(current_chat)
-        has_embed_model = bool(current_embed)
-        has_vision_model = bool(current_vision)
-
-        if has_chat_model:
-            if not any(v == current_chat for _, v in chat_opts):
-                chat_opts.insert(0, (current_chat, current_chat))
-            chat_sel.set_options(chat_opts)
-            chat_sel.value = current_chat
-        elif chat_models:
-            chat_sel.value = chat_models[0][1]
-        elif chat_opts:
-            chat_sel.value = chat_opts[0][1]
-
-        if has_embed_model:
-            if not any(v == current_embed for _, v in embed_opts):
-                embed_opts.insert(0, (current_embed, current_embed))
-            embed_sel.set_options(embed_opts)
-            embed_sel.value = current_embed
-        elif embed_models:
-            embed_sel.value = embed_models[0][1]
-        elif embed_opts:
-            embed_sel.value = embed_opts[0][1]
-
-        if has_vision_model:
-            if not any(v == current_vision for _, v in vision_opts):
-                vision_opts.insert(0, (current_vision, current_vision))
-            vision_sel.set_options(vision_opts)
-            vision_sel.value = current_vision
-        elif cfg.vision_model:
-            if not any(v == cfg.vision_model for _, v in vision_opts):
-                vision_opts.insert(0, (cfg.vision_model, cfg.vision_model))
-            vision_sel.set_options(vision_opts)
-            vision_sel.value = cfg.vision_model
-        else:
-            vision_sel.value = _DISABLED
+        _sync_select(chat_sel, chat_opts, chat_models)
+        _sync_select(embed_sel, embed_opts, embed_models)
+        self._sync_vision_select(vision_sel, vision_models)
 
         self._populating = False
+
+    def _sync_vision_select(self, sel: Select, models: list[ModelOption]) -> None:
+        """Sync vision Select with extra fallback to cfg.vision_model."""
+        opts = list(models)
+        current = str(sel.value) if sel.value != _DISABLED else ""
+        target = current or cfg.vision_model
+        if target:
+            if not any(o.ref == target for o in opts):
+                opts.insert(0, ModelOption(target, target))
+            sel.set_options(opts)
+            sel.value = target
+        else:
+            sel.set_options(opts)
+            sel.value = _DISABLED
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:

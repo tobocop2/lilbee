@@ -916,14 +916,15 @@ class TestModelVariantDataclass:
 
 class TestModelFamilyDataclass:
     def test_frozen(self) -> None:
-        f = ModelFamily("Qwen3", "chat", "desc", ())
+        f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="desc", variants=())
         with pytest.raises(AttributeError):
             f.name = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
         v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
-        f = ModelFamily("Qwen3", "chat", "Fast", (v,))
+        f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="Fast", variants=(v,))
         assert f.name == "Qwen3"
+        assert f.slug == "qwen3"
         assert f.task == "chat"
         assert len(f.variants) == 1
 

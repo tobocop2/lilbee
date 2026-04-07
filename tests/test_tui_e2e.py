@@ -133,21 +133,27 @@ class TestModelClassification:
         mock_manifests[1].name = "Nomic Embed"
         mock_manifests[2].name = "LightOnOCR"
 
+        from lilbee.cli.tui.widgets.model_bar import ModelOption
+
         with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models") as mock_native:
 
             def fill_buckets(buckets, seen):
                 for m in mock_manifests:
-                    name = f"{m.name}:{m.tag}"
-                    buckets.get(m.task, buckets["chat"]).append(name)
-                    seen.add(name)
+                    ref = f"{m.name}:{m.tag}"
+                    label = m.display_name or ref
+                    buckets.get(m.task, buckets["chat"]).append(ModelOption(label, ref))
+                    seen.add(ref)
 
             mock_native.side_effect = fill_buckets
             with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
                 chat, embed, vision = _classify_installed_models()
 
-        assert "Qwen3:latest" in chat
-        assert "Nomic Embed:latest" in embed
-        assert "LightOnOCR:latest" in vision
+        chat_refs = [o.ref for o in chat]
+        embed_refs = [o.ref for o in embed]
+        vision_refs = [o.ref for o in vision]
+        assert "Qwen3:latest" in chat_refs
+        assert "Nomic Embed:latest" in embed_refs
+        assert "LightOnOCR:latest" in vision_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -415,6 +421,7 @@ def _mock_catalog_deps():
 
     families = [
         ModelFamily(
+            slug="testchat",
             name="TestChat",
             task="chat",
             description="A test chat model",
@@ -430,6 +437,7 @@ def _mock_catalog_deps():
             ),
         ),
         ModelFamily(
+            slug="testembed",
             name="TestEmbed",
             task="embedding",
             description="A test embedding model",

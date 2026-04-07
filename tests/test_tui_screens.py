@@ -127,7 +127,7 @@ class TestParseParamLabel:
         assert _parse_param_label("nomic-embed-text") == "--"
 
     def test_case_insensitive(self):
-        assert _parse_param_label("model-3b-chat") == "3B"
+        assert _parse_param_label("model-3b-chat") == "3b"
 
 
 class TestFormatDownloads:
@@ -4916,6 +4916,7 @@ async def test_catalog_select_variant_row():
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
@@ -4947,6 +4948,7 @@ async def test_catalog_install_variant_creates_catalog_model():
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
@@ -5049,6 +5051,7 @@ async def test_catalog_get_highlighted_variant_name():
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
