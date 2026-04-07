@@ -17,7 +17,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Footer, Input, Label, Static
+from textual.widgets import Footer, Input, Label, Select, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
@@ -97,6 +97,7 @@ class ChatScreen(Screen[None]):
         Binding("down", "history_next", "Down", show=False),
         Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
+        Binding("m", "focus_model_bar", "Models", show=True),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
 
@@ -773,6 +774,15 @@ class ChatScreen(Screen[None]):
         if not inp.value.startswith("/"):
             inp.value = "/"
             inp.action_end()
+
+    def action_focus_model_bar(self) -> None:
+        """Focus the first Select in the model bar (normal mode only)."""
+        if self._insert_mode:
+            raise SkipAction()
+        try:
+            self.query_one("#chat-model-select", Select).focus()
+        except Exception:
+            pass
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

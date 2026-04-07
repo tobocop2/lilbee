@@ -70,7 +70,7 @@ def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
         log.debug("Could not classify remote models", exc_info=True)
 
 
-class ModelBar(Widget, can_focus=True):
+class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
     DEFAULT_CSS = """
