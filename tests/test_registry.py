@@ -501,9 +501,12 @@ class TestMigrateLegacy:
 
         assert count == 1
         installed = registry.list_installed()
-        assert len(installed) == 1
-        assert installed[0].task == "embedding"
-        assert installed[0].source_repo == "nomic-ai/nomic-embed-text-v1.5-GGUF"
+        # 2 manifests: v1.5 + latest alias (recommended model)
+        assert len(installed) == 2
+        tags = {m.tag for m in installed}
+        assert tags == {"v1.5", "latest"}
+        assert all(m.task == "embedding" for m in installed)
+        assert all(m.source_repo == "nomic-ai/nomic-embed-text-v1.5-GGUF" for m in installed)
 
     def test_no_gguf_files(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -530,20 +533,34 @@ class TestMigrateLegacy:
 
 class TestMatchCatalogEntry:
     def test_matches_featured_embedding(self) -> None:
-        _name, task, repo = _match_catalog_entry("nomic-embed-text-v1.5-GGUF-Q4_K_M.gguf")
+        name, tag, task, repo = _match_catalog_entry("nomic-embed-text-v1.5-GGUF-Q4_K_M.gguf")
+        assert name == "nomic-embed-text"
+        assert tag == "v1.5"
         assert task == "embedding"
         assert "nomic" in repo.lower()
 
     def test_matches_featured_chat(self) -> None:
-        _name, task, repo = _match_catalog_entry("Qwen3-8B-GGUF-Q4_K_M.gguf")
+        name, tag, task, repo = _match_catalog_entry("Qwen3-8B-GGUF-Q4_K_M.gguf")
+        assert name == "qwen3"
+        assert tag == "8b"
         assert task == "chat"
         assert "Qwen" in repo
 
     def test_fallback_unknown_model(self) -> None:
-        name, task, repo = _match_catalog_entry("totally-custom-model.gguf")
+        name, tag, task, repo = _match_catalog_entry("totally-custom-model.gguf")
         assert name == "totally-custom-model"
+        assert tag == "latest"
         assert task == "chat"
         assert repo == ""
+
+
+class TestWriteLatestAlias:
+    def test_noop_for_missing_manifest(self, tmp_path: Path) -> None:
+        """write_latest_alias does nothing when the ref has no manifest."""
+        registry = ModelRegistry(tmp_path / "models")
+        ref = ModelRef(name="nonexistent", tag="v1")
+        registry.write_latest_alias(ref)
+        assert not (tmp_path / "models" / "manifests").exists()
 
 
 class TestWriteManifestErrorPath:

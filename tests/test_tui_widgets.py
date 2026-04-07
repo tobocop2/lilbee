@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from lilbee.catalog import CatalogModel
+from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
 
@@ -16,6 +17,7 @@ from lilbee.config import cfg
 def _isolated_cfg(tmp_path):
 
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.chat_model = "test-model"
@@ -31,9 +33,13 @@ def _make_model(
     task: str = "chat",
     featured: bool = False,
     size_gb: float = 2.0,
+    tag: str = "latest",
+    display_name: str = "",
 ) -> CatalogModel:
     return CatalogModel(
-        name=name,
+        name=name.lower().replace(" ", "-"),
+        tag=tag,
+        display_name=display_name or name,
         hf_repo=f"test/{name.lower().replace(' ', '-')}",
         gguf_filename="*.gguf",
         size_gb=size_gb,
@@ -382,15 +388,19 @@ class TestModelBar:
         app = _ModelBarApp()
         with patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=(["qwen3:8b"], ["nomic"], ["llava"]),
+            return_value=(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [ModelOption("nomic", "nomic")],
+                [ModelOption("llava", "llava")],
+            ),
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
                 vision_sel = app.query_one("#vision-model-select", Select)
                 assert vision_sel.value == "llava"
 
-    async def test_vision_invalid_model_ignored(self) -> None:
-        """Invalid vision model in config should not appear as selected."""
+    async def test_vision_model_not_in_scan_still_selectable(self) -> None:
+        """Configured vision model is prepended even if not in scanned list."""
         from textual.widgets import Select
 
         cfg.vision_model = "nonexistent-model:latest"
@@ -398,7 +408,7 @@ class TestModelBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             vision_sel = app.query_one("#vision-model-select", Select)
-            assert vision_sel.value == Select.NULL
+            assert vision_sel.value == "nonexistent-model:latest"
 
     async def test_labels_rendered(self) -> None:
         from textual.widgets import Label
@@ -481,9 +491,12 @@ class TestClassifyInstalledModels:
             ]
             chat, embed, vision = _classify_installed_models()
 
-        assert "qwen3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
-        assert "llava:latest" in vision
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        vision_refs = [ref for _, ref in vision]
+        assert "qwen3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
+        assert "llava:latest" in vision_refs
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -520,8 +533,8 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
             chat, embed, vision = _classify_installed_models()
 
-        all_names = chat + embed + vision
-        assert not any("mmproj" in n.lower() for n in all_names)
+        all_refs = [ref for _, ref in chat + embed + vision]
+        assert not any("mmproj" in r.lower() for r in all_refs)
 
     def test_remote_models_classified(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -552,8 +565,10 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = []
             chat, embed, _vision = _classify_installed_models()
 
-        assert "llama3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        assert "llama3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
 
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -796,7 +811,15 @@ class TestVisionOptions:
         from lilbee.cli.tui.widgets.autocomplete import _vision_options
         from lilbee.models import ModelInfo
 
-        fake_catalog = (ModelInfo("llava", 5.5, 8, "test"),)
+        fake_catalog = (
+            ModelInfo(
+                ref="llava:latest",
+                display_name="LLaVA",
+                size_gb=5.5,
+                min_ram_gb=8,
+                description="test",
+            ),
+        )
         with mock.patch("lilbee.models.VISION_CATALOG", fake_catalog):
             r = _vision_options()
             assert r[0] == "off"
@@ -1994,7 +2017,7 @@ class TestSetupModal:
 
         app = _SetupModalApp()
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(ollama_embeddings=["nomic-embed-text"]))
+            app.push_screen(SetupModal(remote_embeddings=["nomic-embed-text"]))
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
@@ -2005,7 +2028,7 @@ class TestSetupModal:
         results: list[object] = []
         async with app.run_test() as pilot:
             app.push_screen(
-                SetupModal(ollama_embeddings=["nomic-embed-text"]),
+                SetupModal(remote_embeddings=["nomic-embed-text"]),
                 callback=lambda r: results.append(r),
             )
             await pilot.pause()
@@ -2183,7 +2206,11 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["qwen3:8b", "llama:7b"], ["test-embed"], [])
+            bar._populate(
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2200,16 +2227,16 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            # Populate with empty lists — triggers (none) fallback
+            # Populate with empty lists — falls back to configured default
             bar._populate([], [], [])
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value in ("", Select.BLANK)
+            assert chat_sel.value == "test-model"
 
     async def test_populate_vision_model_fallback(self) -> None:
-        """Vision model in config but not in scan results → disabled, not injected."""
+        """Vision model in config but not in scan results → prepended and selected."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2219,13 +2246,17 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], ["llava:7b"])
+            # vision model configured but not in scanned list
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
             vision_sel = app.query_one("#vision-model-select", Select)
-            # llava:custom is not installed → should not be selected
-            assert vision_sel.value == Select.NULL
+            assert vision_sel.value == "llava:custom"
 
     async def test_populate_vision_model_not_in_list_or_config(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
@@ -2237,7 +2268,11 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], [])
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2258,7 +2293,7 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
-            embed_sel.set_options([("new-embed", "new-embed")])
+            embed_sel.set_options([ModelOption("new-embed", "new-embed")])
             with (
                 mock.patch("lilbee.settings.set_value"),
                 mock.patch("lilbee.services.reset_services"),
@@ -2277,12 +2312,70 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["nomic:latest"], [])
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
             embed_sel = app.query_one("#embed-model-select", Select)
             assert embed_sel.value == "nomic:latest"
+
+
+class TestSyncSelectPrepend:
+    """Cover _sync_select branch: current value not in scanned options."""
+
+    def test_current_value_prepended_when_not_in_options(self) -> None:
+        """When Select holds a value absent from the new options, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        # Mock a Select widget that retains its value after set_options
+        sel = mock.MagicMock()
+        sel.value = "custom:latest"
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts)
+        # Prepended the missing value and called set_options twice
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("custom:latest", "custom:latest")
+        assert sel.value == "custom:latest"
+
+    def test_default_used_when_no_current_value(self) -> None:
+        """When Select has no value, fall back to the configured default."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="qwen3:8b")
+        assert sel.value == "qwen3:8b"
+
+    def test_default_prepended_when_not_in_opts(self) -> None:
+        """When the configured default isn't in opts, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="llama3:8b")
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("llama3:8b", "llama3:8b")
+        assert sel.value == "llama3:8b"
+
+    def test_no_default_no_current_leaves_unset(self) -> None:
+        """When no current value and no default, don't set a value."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts)
+        assert sel.set_options.call_count == 1
+        # value should not have been reassigned beyond the mock default
+        assert sel.value == _DISABLED
 
 
 class TestCollectNativeModelsError:
@@ -2291,7 +2384,11 @@ class TestCollectNativeModelsError:
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        buckets: dict[str, list[str]] = {"chat": [], "embedding": [], "vision": []}
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
         seen: set[str] = set()
         with mock.patch(
             "lilbee.registry.ModelRegistry",
@@ -2303,7 +2400,11 @@ class TestCollectNativeModelsError:
     def test_collect_remote_models_exception_suppressed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
 
-        buckets: dict[str, list[str]] = {"chat": [], "embedding": [], "vision": []}
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
         seen: set[str] = set()
         with mock.patch(
             "lilbee.model_manager.classify_remote_models",
@@ -2545,7 +2646,11 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model", "other"], ["test-embed", "nomic"], ["llava:7b"])
+            bar._populate(
+                [ModelOption("test-model", "test-model"), ModelOption("other", "other")],
+                [ModelOption("test-embed", "test-embed"), ModelOption("nomic", "nomic")],
+                [ModelOption("Llava 7B", "llava:7b")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2554,8 +2659,8 @@ class TestModelBarPopulateBranches:
             assert chat_sel.value == "test-model"
             assert embed_sel.value == "test-embed"
 
-    async def test_populate_empty_lists_uses_none_option(self) -> None:
-        """When no models found, (none) fallback is used."""
+    async def test_populate_empty_lists_uses_config_default(self) -> None:
+        """When no models found, configured default from cfg is used."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2570,10 +2675,10 @@ class TestModelBarPopulateBranches:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value in ("", Select.BLANK)
+            assert chat_sel.value == "test-model"
 
     async def test_populate_vision_from_cfg_fallback(self) -> None:
-        """Cover lines 202-206: vision from cfg when not in scan and select is empty."""
+        """Vision from cfg when not in scan → prepended and selected."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2583,13 +2688,16 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], [])
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
             vision_sel = app.query_one("#vision-model-select", Select)
-            # Not installed → disabled, not blindly injected
-            assert vision_sel.value == Select.NULL
+            assert vision_sel.value == "llava:custom"
 
     async def test_populate_vision_in_scanned_list(self) -> None:
         """Vision model in scanned list gets selected."""
@@ -2602,25 +2710,24 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            cfg.vision_model = "llava:7b"  # re-set after on_mount may have cleared it
-            bar._populate(["test-model"], ["test-embed"], ["llava:7b", "moondream:latest"])
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b"), ModelOption("Moondream", "moondream:latest")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
             vision_sel = app.query_one("#vision-model-select", Select)
             assert vision_sel.value == "llava:7b"
 
-    async def test_populate_value_not_in_new_options(self) -> None:
-        """Cover lines 179, 183, 189, 193, 198-201: value retained but not in scanned list.
-
-        After set_options, Textual may auto-select the first option, but we can
-        intercept to simulate a retained value that isn't in the new options.
-        """
+    async def test_populate_retains_matching_value(self) -> None:
+        """When current value matches a scanned model, it's preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
-        cfg.vision_model = "llava:custom"
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = "llava:7b"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2631,56 +2738,21 @@ class TestModelBarPopulateBranches:
             embed_sel = app.query_one("#embed-model-select", Select)
             vision_sel = app.query_one("#vision-model-select", Select)
 
-            # Monkey-patch set_options to also force a custom value afterward,
-            # simulating the case where the widget retains a value not in the
-            # new option list (e.g. from a previous configure step).
-            patched_vals = [
-                (chat_sel, "custom-chat:latest"),
-                (embed_sel, "custom-embed:latest"),
-                (vision_sel, "custom-vision:latest"),
-            ]
-            call_counts: dict[int, int] = {}
-
-            for sel, cfg_val in patched_vals:
-                sel_id = id(sel)
-                call_counts[sel_id] = 0
-                orig_fn = sel.set_options
-
-                def make_patched(s, orig, val, sid):
-                    def patched(opts):
-                        orig(opts)
-                        call_counts[sid] += 1
-                        # Only on the FIRST set_options call, force the custom value.
-                        # The second call (line 180/190/200) has the value in opts.
-                        if call_counts[sid] == 1:
-                            # Add the value to the option list and set it
-                            opts_with_val = [(val, val), *list(opts)]
-                            orig(opts_with_val)
-                            s.value = val
-
-                    return patched
-
-                sel.set_options = make_patched(sel, orig_fn, cfg_val, sel_id)  # type: ignore[assignment]
-
             bar._populate(
-                ["qwen3:8b", "llama:7b"],
-                ["nomic:latest"],
-                ["llava:7b"],
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Llava 7B", "llava:7b")],
             )
             await pilot.pause()
-            # Each select should now have the custom value prepended and selected
-            assert chat_sel.value == "custom-chat:latest"
-            assert embed_sel.value == "custom-embed:latest"
-            # Vision: monkey-patch injected custom-vision:latest into options
-            # but _populate checks against vision_models list, not Select state
-            assert vision_sel.value in ("custom-vision:latest", Select.NULL)
+            assert chat_sel.value == "qwen3:8b"
+            assert embed_sel.value == "nomic:latest"
+            assert vision_sel.value == "llava:7b"
 
-    async def test_populate_blank_value_with_models_available(self) -> None:
-        """Cover lines 183, 193: value is empty but models list is non-empty.
+    async def test_populate_blank_value_uses_config_default(self) -> None:
+        """When Select has no value, falls back to configured default from cfg.
 
-        This is a defensive branch — after set_options with allow_blank=False,
-        Textual normally auto-selects the first value. We force the Select to
-        return empty by intercepting set_options.
+        We force the Select to return empty by intercepting set_options to
+        simulate a widget that lost its value during refresh.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -2697,8 +2769,8 @@ class TestModelBarPopulateBranches:
             embed_sel = app.query_one("#embed-model-select", Select)
 
             # Patch the first set_options to force _reactive_value = Select.NULL
-            # (bypassing validation), so has_chat_model = False while
-            # chat_models is non-empty. This covers lines 183, 193.
+            # (bypassing validation), so the current-value branch is skipped
+            # and _sync_select falls back to the configured default.
             for sel in (chat_sel, embed_sel):
                 orig_fn = sel.set_options
                 call_count = [0]
@@ -2715,10 +2787,15 @@ class TestModelBarPopulateBranches:
 
                 sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
 
-            bar._populate(["qwen3:8b"], ["nomic:latest"], [])
+            bar._populate(
+                [ModelOption("Qwen3 8B", "qwen3:8b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
             await pilot.pause()
-            assert chat_sel.value == "qwen3:8b"
-            assert embed_sel.value == "nomic:latest"
+            # Falls back to cfg.chat_model / cfg.embedding_model, not models[0]
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
 
     async def test_refresh_models(self) -> None:
         """Cover line 267: refresh_models calls _scan_models."""

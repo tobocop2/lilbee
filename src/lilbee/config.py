@@ -87,7 +87,7 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3:8b", min_length=1)
+    chat_model: str = Field(default="qwen3", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)

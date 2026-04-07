@@ -133,21 +133,27 @@ class TestModelClassification:
         mock_manifests[1].name = "Nomic Embed"
         mock_manifests[2].name = "LightOnOCR"
 
+        from lilbee.cli.tui.widgets.model_bar import ModelOption
+
         with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models") as mock_native:
 
             def fill_buckets(buckets, seen):
                 for m in mock_manifests:
-                    name = f"{m.name}:{m.tag}"
-                    buckets.get(m.task, buckets["chat"]).append(name)
-                    seen.add(name)
+                    ref = f"{m.name}:{m.tag}"
+                    label = m.display_name or ref
+                    buckets.get(m.task, buckets["chat"]).append(ModelOption(label, ref))
+                    seen.add(ref)
 
             mock_native.side_effect = fill_buckets
             with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
                 chat, embed, vision = _classify_installed_models()
 
-        assert "Qwen3:latest" in chat
-        assert "Nomic Embed:latest" in embed
-        assert "LightOnOCR:latest" in vision
+        chat_refs = [o.ref for o in chat]
+        embed_refs = [o.ref for o in embed]
+        vision_refs = [o.ref for o in vision]
+        assert "Qwen3:latest" in chat_refs
+        assert "Nomic Embed:latest" in embed_refs
+        assert "LightOnOCR:latest" in vision_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -357,7 +363,9 @@ class TestDownloadProgressSlow:
             reset_model_manager()
 
             entry = CatalogModel(
-                name="Mistral 7B",
+                name="mistral",
+                tag="7b",
+                display_name="Mistral 7B",
                 hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=4.2,
@@ -413,6 +421,7 @@ def _mock_catalog_deps():
 
     families = [
         ModelFamily(
+            slug="testchat",
             name="TestChat",
             task="chat",
             description="A test chat model",
@@ -421,6 +430,7 @@ def _mock_catalog_deps():
                     hf_repo="test/chat-repo",
                     filename="chat-Q4.gguf",
                     param_count="7B",
+                    tag="7b",
                     quant="Q4_K_M",
                     size_mb=4000,
                     recommended=True,
@@ -428,6 +438,7 @@ def _mock_catalog_deps():
             ),
         ),
         ModelFamily(
+            slug="testembed",
             name="TestEmbed",
             task="embedding",
             description="A test embedding model",
@@ -436,6 +447,7 @@ def _mock_catalog_deps():
                     hf_repo="test/embed-repo",
                     filename="embed-Q8.gguf",
                     param_count="0.5B",
+                    tag="0.5b",
                     quant="Q8_0",
                     size_mb=500,
                     recommended=True,

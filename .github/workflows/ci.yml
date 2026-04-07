@@ -7,6 +7,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
 
@@ -36,6 +37,7 @@ jobs:
         run: make imports-check
 
   test:
+    timeout-minutes: 10
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -69,6 +71,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -92,7 +95,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/lilbee/models
-          key: gguf-models-v2
+          key: gguf-models-v3
           restore-keys: gguf-models-
 
       - name: Run integration tests
