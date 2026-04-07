@@ -358,9 +358,7 @@ class TestLlamaCppProvider:
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_direct_not_exists(
-        self, models_dir: Path, tmp_path: Path
-    ) -> None:
+    def test_resolve_model_path_direct_not_exists(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
