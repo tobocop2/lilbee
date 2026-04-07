@@ -82,7 +82,7 @@ class StatusScreen(Screen[None]):
     """Knowledge base status view with collapsible sections."""
 
     CSS_PATH = "status.tcss"
-    AUTO_FOCUS = "#status-scroll"
+    AUTO_FOCUS = "CollapsibleTitle"
     HELP = "Knowledge base status.\n\nView configuration, documents, model architecture, and storage info."
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -165,14 +165,13 @@ class StatusScreen(Screen[None]):
             self.app.pop_screen()
 
     def action_cursor_down(self) -> None:
-        self.query_one("#docs-table", DataTable).action_cursor_down()
+        self.query_one("#status-scroll", VerticalScroll).scroll_down()
 
     def action_cursor_up(self) -> None:
-        self.query_one("#docs-table", DataTable).action_cursor_up()
+        self.query_one("#status-scroll", VerticalScroll).scroll_up()
 
     def action_jump_top(self) -> None:
-        self.query_one("#docs-table", DataTable).move_cursor(row=0)
+        self.query_one("#status-scroll", VerticalScroll).scroll_home()
 
     def action_jump_bottom(self) -> None:
-        table = self.query_one("#docs-table", DataTable)
-        table.move_cursor(row=table.row_count - 1)
+        self.query_one("#status-scroll", VerticalScroll).scroll_end()

@@ -2790,22 +2790,20 @@ async def test_settings_key_g_G():
 
 
 async def test_status_key_g_G(mock_svc):
-    """g/G jump to first/last row in status table."""
+    """g/G scroll the status page to top/bottom."""
     mock_svc.store.get_sources.return_value = [
         {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
         {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
         {"source": "c.md", "chunk_count": 3, "content_type": "text/markdown"},
     ]
     app = StatusTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import DataTable
-
-        table = app.screen.query_one("#docs-table", DataTable)
-        table.focus()
+    async with app.run_test(size=(120, 40)) as pilot:
+        scroll = app.screen.query_one("#status-scroll")
         app.screen.action_jump_bottom()
-        assert table.cursor_row == table.row_count - 1
+        await pilot.pause()
         app.screen.action_jump_top()
-        assert table.cursor_row == 0
+        await pilot.pause()
+        assert scroll.scroll_offset.y == 0
 
 
 async def test_catalog_key_g_G():
