@@ -5779,9 +5779,6 @@ async def test_command_provider_action_setup():
 
 def test_run_tui_keyboard_interrupt_during_shutdown():
     """run_tui handles KeyboardInterrupt during shutdown cleanup."""
-    import os
-    import signal
-
     from lilbee.cli.tui import run_tui
 
     mock_app = MagicMock()
@@ -5789,17 +5786,14 @@ def test_run_tui_keyboard_interrupt_during_shutdown():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.tui.shutdown_executor", side_effect=KeyboardInterrupt),
-        patch("os.kill") as mock_kill,
+        patch("os._exit") as mock_exit,
     ):
         run_tui()
-        mock_kill.assert_called_once_with(os.getpid(), signal.SIGKILL)
+        mock_exit.assert_called_once_with(1)
 
 
 def test_run_tui_exception_during_shutdown():
     """run_tui handles generic Exception during shutdown cleanup."""
-    import os
-    import signal
-
     from lilbee.cli.tui import run_tui
 
     mock_app = MagicMock()
@@ -5807,10 +5801,10 @@ def test_run_tui_exception_during_shutdown():
     with (
         patch("lilbee.cli.tui.app.LilbeeApp", return_value=mock_app),
         patch("lilbee.cli.tui.shutdown_executor", side_effect=RuntimeError("fail")),
-        patch("os.kill") as mock_kill,
+        patch("os._exit") as mock_exit,
     ):
         run_tui()
-        mock_kill.assert_called_once_with(os.getpid(), signal.SIGKILL)
+        mock_exit.assert_called_once_with(1)
 
 
 async def test_chat_on_show_writes_splash_ready():

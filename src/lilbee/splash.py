@@ -167,7 +167,7 @@ def _animation_loop(
         nonlocal got_signal
         got_signal = True
 
-    signal.signal(signal.SIGUSR1, _handle_stop)  # pragma: no cover
+    signal.signal(signal.SIGTERM, _handle_stop)  # pragma: no cover
 
     # Delay before showing anything — fast warm starts skip the splash entirely
     for _ in range(int(_STARTUP_DELAY / 0.01)):  # pragma: no cover
@@ -217,16 +217,20 @@ def start(ready_file: str | None = None) -> int:
 
     frame0, frame1, frame2, frame3 = _pick_frames()
 
-    if not hasattr(os, "fork"):  # pragma: no cover
+    if not hasattr(os, "kill"):  # pragma: no cover
         # Windows: fall back to threading
         return _start_threaded(frame0, frame1, frame2, frame3, ready_file)
 
-    pid = os.fork()
-    if pid == 0:  # pragma: no cover
-        # Child — run animation and never return
-        _animation_loop(frame0, frame1, frame2, frame3, ready_file)  # pragma: no cover
-        os._exit(0)  # safety net  # pragma: no cover
-    return pid
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(
+        target=_animation_loop,
+        args=(frame0, frame1, frame2, frame3, ready_file),
+        daemon=True,
+    )
+    proc.start()
+    return proc.pid or 0
 
 
 def stop(pid: int) -> None:
@@ -238,15 +242,15 @@ def stop(pid: int) -> None:
         _stop_threaded(pid)
         return
 
-    if not hasattr(os, "fork"):  # pragma: no cover
+    if not hasattr(os, "kill"):  # pragma: no cover
         _stop_threaded(pid)
         return
 
     try:
-        os.kill(pid, signal.SIGUSR1)
+        os.kill(pid, signal.SIGTERM)
     except OSError:  # pragma: no cover
         return
-    # Wait for child to finish clearing the terminal
+    # Wait for child to finish
     import contextlib
 
     with contextlib.suppress(ChildProcessError):

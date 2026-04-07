@@ -33,7 +33,6 @@ class _CallbackProgressBar(_base_tqdm):
     _callback: Any = None
 
     def __init__(self, *args: Any, **kwargs: Any):
-        kwargs.pop("name", None)
         kwargs["disable"] = True
         super().__init__(*args, **kwargs)
         self._cumulative = 0
@@ -535,9 +534,8 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
 
         if on_progress:
-            on_progress(
-                int(entry.size_gb * 1024 * 1024 * 1024), int(entry.size_gb * 1024 * 1024 * 1024)
-            )
+            actual_size = cached.stat().st_size
+            on_progress(actual_size, actual_size)
         dest = cached
 
     # Register in manifest so the model is visible to the registry

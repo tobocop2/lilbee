@@ -1008,11 +1008,6 @@ class TestRealDownloadProgress:
         def download_in_thread():
             """Run download in a thread like Textual's @work(thread=True)."""
             try:
-                # This is what setup.py does - disable progress bars before download
-                from huggingface_hub.utils import disable_progress_bars
-
-                disable_progress_bars()
-
                 from lilbee.catalog import download_model
 
                 download_model(entry, on_progress=lambda d, t: None)

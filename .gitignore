@@ -33,3 +33,4 @@ node_modules/
 *.mov
 *.mp4
 PLAN.md
+.DS_Store
