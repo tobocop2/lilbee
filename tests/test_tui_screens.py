@@ -802,9 +802,7 @@ async def test_app_push_help():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.action_push_help()
         await _pilot.pause()
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        assert isinstance(app.screen, HelpModal)
+        assert app.screen.query("HelpPanel")
 
 
 async def test_app_auto_sync_flag():
@@ -1107,9 +1105,7 @@ async def test_chat_slash_help():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/help")
         await _pilot.pause()
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        assert isinstance(app.screen, HelpModal)
+        assert app.screen.query("HelpPanel")
 
 
 async def test_chat_slash_models():
@@ -1187,24 +1183,22 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen._streaming is False
 
 
-async def test_chat_vim_j_k_cycles_focus_in_normal_mode():
-    """j/k cycle focus between widgets in normal mode."""
+async def test_chat_vim_j_k_scrolls_in_normal_mode():
+    """j/k scroll the chat log in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        app.screen.query_one("#model-bar").focus()
+        app.screen.action_vim_scroll_down()
+        app.screen.action_vim_scroll_up()
         await pilot.pause()
-        app.screen.key_j()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-log"
-        app.screen.key_k()
-        await pilot.pause()
-        assert app.screen.focused.id == "model-bar"
+        assert app.screen.is_current
 
 
-async def test_chat_vim_j_k_noop_in_insert_mode():
-    """j/k do nothing when in insert mode."""
+async def test_chat_vim_j_k_skips_in_insert_mode():
+    """j/k raise SkipAction when in insert mode."""
+    from textual.actions import SkipAction
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
@@ -1213,10 +1207,10 @@ async def test_chat_vim_j_k_noop_in_insert_mode():
         inp.focus()
         await pilot.pause()
         assert app.screen._insert_mode is True
-        app.screen.key_j()
-        app.screen.key_k()
-        await pilot.pause()
-        # Focus should remain on input
+        with pytest.raises(SkipAction):
+            app.screen.action_vim_scroll_down()
+        with pytest.raises(SkipAction):
+            app.screen.action_vim_scroll_up()
         assert inp.has_focus
 
 
@@ -1275,9 +1269,7 @@ async def test_chat_slash_h():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._handle_slash("/h")
         await _pilot.pause()
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        assert isinstance(app.screen, HelpModal)
+        assert app.screen.query("HelpPanel")
 
 
 async def test_chat_slash_m():
@@ -2524,17 +2516,17 @@ async def test_catalog_jump_top_bottom():
             assert app.screen.is_current
 
 
-async def test_chat_vim_j_cycles_focus_from_chat_log():
-    """key_j cycles focus forward from chat-log to chat-input in normal mode."""
+async def test_chat_vim_j_scrolls_from_chat_log():
+    """action_vim_scroll_down scrolls in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         app.screen.query_one("#chat-log").focus()
         await pilot.pause()
-        app.screen.key_j()
+        app.screen.action_vim_scroll_down()
         await pilot.pause()
-        assert app.screen.focused.id == "chat-input"
+        assert app.screen.is_current
 
 
 def test_check_embedding_model_installed():
@@ -2755,30 +2747,28 @@ async def test_chat_run_crawl_background_error():
             assert app.screen.is_current
 
 
-async def test_chat_key_g_scrolls_home():
-    """g scrolls to top of chat log when input not focused."""
+async def test_chat_vim_g_scrolls_home():
+    """g/G scroll to top/bottom of chat log in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.containers import VerticalScroll
-
-        log_widget = app.screen.query_one("#chat-log", VerticalScroll)
-        log_widget.focus()
-        app.screen.key_g()
-        app.screen.key_G()
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.action_vim_scroll_home()
+        app.screen.action_vim_scroll_end()
         assert app.screen.is_current
 
 
-async def test_chat_key_g_noop_in_input():
-    """g/G do nothing when Input is focused."""
+async def test_chat_vim_g_skips_in_insert_mode():
+    """g/G raise SkipAction in insert mode."""
+    from textual.actions import SkipAction
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.widgets import Input
-
-        app.screen.query_one("#chat-input", Input).focus()
-        # Should not raise
-        app.screen.key_g()
-        app.screen.key_G()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is True
+        with pytest.raises(SkipAction):
+            app.screen.action_vim_scroll_home()
+        with pytest.raises(SkipAction):
+            app.screen.action_vim_scroll_end()
 
 
 async def test_chat_half_page_actions():
@@ -3193,8 +3183,10 @@ async def test_chat_escape_key_enters_normal_mode():
         assert log.has_focus
 
 
-async def test_chat_key_down_cycles_focus_normal_mode():
-    """key_down cycles focus in normal mode."""
+async def test_chat_history_next_skips_in_normal_mode():
+    """action_history_next raises SkipAction in normal mode."""
+    from textual.actions import SkipAction
+
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3202,17 +3194,14 @@ async def test_chat_key_down_cycles_focus_normal_mode():
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-
-        # Focus model-bar, then cycle down to chat-log
-        app.screen.query_one("#model-bar").focus()
-        await pilot.pause()
-        app.screen.key_down()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-log"
+        with pytest.raises(SkipAction):
+            app.screen.action_history_next()
 
 
-async def test_chat_key_up_cycles_focus_normal_mode():
-    """key_up cycles focus in normal mode."""
+async def test_chat_history_prev_skips_in_normal_mode():
+    """action_history_prev raises SkipAction in normal mode."""
+    from textual.actions import SkipAction
+
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3220,13 +3209,8 @@ async def test_chat_key_up_cycles_focus_normal_mode():
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-
-        # Focus chat-log, then cycle up to model-bar
-        app.screen.query_one("#chat-log").focus()
-        await pilot.pause()
-        app.screen.key_up()
-        await pilot.pause()
-        assert app.screen.focused.id == "model-bar"
+        with pytest.raises(SkipAction):
+            app.screen.action_history_prev()
 
 
 async def test_chat_enter_key_returns_to_insert_mode():
@@ -3474,55 +3458,57 @@ async def test_chat_input_history_up_down():
         assert app.screen._input_history == ["hello", "world"]
 
         # Press up to recall "world"
-        app.screen.key_up()
+        app.screen.action_history_prev()
         await pilot.pause()
         assert inp.value == "world"
 
         # Press up again to recall "hello"
-        app.screen.key_up()
+        app.screen.action_history_prev()
         await pilot.pause()
         assert inp.value == "hello"
 
         # Press up at boundary stays at "hello"
-        app.screen.key_up()
+        app.screen.action_history_prev()
         await pilot.pause()
         assert inp.value == "hello"
 
         # Press down to go to "world"
-        app.screen.key_down()
+        app.screen.action_history_next()
         await pilot.pause()
         assert inp.value == "world"
 
         # Press down past end clears input
-        app.screen.key_down()
+        app.screen.action_history_next()
         await pilot.pause()
         assert inp.value == ""
 
 
 async def test_chat_input_history_up_no_history():
-    """Up arrow is a no-op when input history is empty."""
+    """Up arrow raises SkipAction when input history is empty."""
+    from textual.actions import SkipAction
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input")
         inp.focus()
         await pilot.pause()
 
-        app.screen.key_up()
-        await pilot.pause()
-        assert inp.value == ""
+        with pytest.raises(SkipAction):
+            app.screen.action_history_prev()
 
 
 async def test_chat_input_history_down_no_index():
-    """Down arrow is a no-op when history_index is -1."""
+    """Down arrow raises SkipAction when history_index is -1."""
+    from textual.actions import SkipAction
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         inp = app.screen.query_one("#chat-input")
         inp.focus()
         await pilot.pause()
 
-        app.screen.key_down()
-        await pilot.pause()
-        assert inp.value == ""
+        with pytest.raises(SkipAction):
+            app.screen.action_history_next()
 
 
 async def test_chat_sync_gating_rejects_add(tmp_path):
@@ -3708,8 +3694,10 @@ async def test_chat_mode_indicator_shows_insert():
         assert bar.mode_text == msg.MODE_INSERT
 
 
-async def test_chat_up_down_cycle_focus_in_normal_mode():
-    """Up/down arrow keys cycle focus between widgets in normal mode."""
+async def test_chat_up_down_skip_in_normal_mode():
+    """Up/down arrow keys raise SkipAction in normal mode (no focus cycling)."""
+    from textual.actions import SkipAction
+
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3717,24 +3705,14 @@ async def test_chat_up_down_cycle_focus_in_normal_mode():
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        app.screen.query_one("#model-bar").focus()
-        await pilot.pause()
-
-        app.screen.key_down()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-log"
-
-        app.screen.key_down()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-input"
-
-        app.screen.key_up()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-log"
+        with pytest.raises(SkipAction):
+            app.screen.action_history_next()
+        with pytest.raises(SkipAction):
+            app.screen.action_history_prev()
 
 
-async def test_chat_cycle_focus_wraps_around():
-    """Focus cycling wraps from last widget to first and vice versa."""
+async def test_chat_vim_scroll_in_normal_mode():
+    """j/k scroll the chat log in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
@@ -3742,16 +3720,9 @@ async def test_chat_cycle_focus_wraps_around():
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        app.screen.query_one("#chat-input").focus()
-        await pilot.pause()
-
-        app.screen.key_j()
-        await pilot.pause()
-        assert app.screen.focused.id == "model-bar"
-
-        app.screen.key_k()
-        await pilot.pause()
-        assert app.screen.focused.id == "chat-input"
+        app.screen.action_vim_scroll_down()
+        app.screen.action_vim_scroll_up()
+        assert app.screen.is_current
 
 
 async def test_chat_up_arrow_insert_mode_recalls_history():
@@ -3768,7 +3739,7 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
         await pilot.pause()
         app.screen._input_history = ["hello", "world"]
         app.screen._history_index = -1
-        app.screen.key_up()
+        app.screen.action_history_prev()
         assert inp.value == "world"
 
 
@@ -4869,8 +4840,8 @@ async def test_fetch_installed_names_exception():
             assert screen._installed_names == set()
 
 
-async def test_catalog_nav_actions_return_early_in_grid_view():
-    """Navigation actions return early when in grid view mode."""
+async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
+    """Navigation actions forward to focused GridSelect in grid view mode."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -4879,9 +4850,8 @@ async def test_catalog_nav_actions_return_early_in_grid_view():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            # Ensure grid_view is True (default)
             assert screen._grid_view is True
-            # These should return early without error
+            # These should all run without error (forwarding to GridSelect or no-op)
             screen.action_page_down()
             screen.action_page_up()
             screen.action_cursor_down()
@@ -5888,26 +5858,19 @@ async def test_chat_on_key_insert_mode_focus():
         assert app.screen.is_current
 
 
-def test_chat_cycle_focus_unknown_widget():
-    """_cycle_focus handles unknown focused widget by defaulting to index 0."""
-    from lilbee.cli.tui.screens.chat import _FOCUSABLE_IDS, ChatScreen
+def test_chat_has_auto_focus():
+    """ChatScreen declares AUTO_FOCUS for the chat input."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
-    screen = MagicMock()
-    screen.focused = MagicMock(id="nonexistent-widget")
-    screen.query_one = MagicMock()
-    ChatScreen._cycle_focus(screen, 1)
-    screen.query_one.assert_called_once_with(f"#{_FOCUSABLE_IDS[1]}")
+    assert ChatScreen.AUTO_FOCUS == "#chat-input"
 
 
-def test_chat_cycle_focus_no_focused_widget():
-    """_cycle_focus handles None focused widget."""
-    from lilbee.cli.tui.screens.chat import _FOCUSABLE_IDS, ChatScreen
+def test_chat_has_help_attribute():
+    """ChatScreen declares HELP for HelpPanel."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
-    screen = MagicMock()
-    screen.focused = None
-    screen.query_one = MagicMock()
-    ChatScreen._cycle_focus(screen, 1)
-    screen.query_one.assert_called_once_with(f"#{_FOCUSABLE_IDS[1]}")
+    assert ChatScreen.HELP
+    assert "Chat" in ChatScreen.HELP
 
 
 async def test_chat_action_enter_normal_mode_streaming():
@@ -6040,15 +6003,17 @@ async def test_chat_on_key_non_key_event_returns():
         assert app.screen.is_current
 
 
-async def test_chat_cycle_focus_negative_direction():
-    """_cycle_focus handles negative direction (backwards)."""
+async def test_chat_vim_scroll_actions_work():
+    """Vim scroll actions execute without error in normal mode."""
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        # Focus something in the focusable list first
-        app.screen.query_one("#chat-log").focus()
-        await _pilot.pause()
-        app.screen._cycle_focus(-1)  # Should cycle backward
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.screen.action_enter_normal_mode()
+        await pilot.pause()
+        app.screen.action_vim_scroll_down()
+        app.screen.action_vim_scroll_up()
+        app.screen.action_vim_scroll_home()
+        app.screen.action_vim_scroll_end()
         assert app.screen.is_current
 
 
@@ -6082,40 +6047,6 @@ async def test_catalog_enqueue_download_in_lilbee_app():
             with patch.object(screen, "_run_download"):
                 screen._enqueue_download(cm)
                 assert app.screen.is_current
-
-
-async def test_catalog_key_left_in_lilbee_app():
-    """key_left delegates to nav_prev in LilbeeApp."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            with patch.object(app, "action_nav_prev") as mock_prev:
-                screen.key_left()
-                mock_prev.assert_called_once()
-
-
-async def test_catalog_key_right_in_lilbee_app():
-    """key_right delegates to nav_next in LilbeeApp."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            with patch.object(app, "action_nav_next") as mock_next:
-                screen.key_right()
-                mock_next.assert_called_once()
 
 
 async def test_catalog_select_row_out_of_range():

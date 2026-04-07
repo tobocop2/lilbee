@@ -186,15 +186,13 @@ class TestChatScreenIntegration:
 class TestSlashCommandIntegration:
     """Slash commands dispatched through the registry end-to-end."""
 
-    async def test_slash_help_shows_modal(self) -> None:
+    async def test_slash_help_shows_panel(self) -> None:
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._handle_slash("/help")
             await pilot.pause()
-            from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-            assert isinstance(app.screen, HelpModal)
+            assert app.screen.query("HelpPanel")
 
     async def test_slash_h_alias(self) -> None:
         app = _ChatApp()
@@ -202,9 +200,7 @@ class TestSlashCommandIntegration:
             await pilot.pause()
             app.screen._handle_slash("/h")
             await pilot.pause()
-            from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-            assert isinstance(app.screen, HelpModal)
+            assert app.screen.query("HelpPanel")
 
     async def test_slash_quit_exits(self) -> None:
         app = _ChatApp()
@@ -432,9 +428,7 @@ class TestGlobalKeybindings:
             await pilot.pause()
             app.action_push_help()
             await pilot.pause()
-            from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-            assert isinstance(app.screen, HelpModal)
+            assert app.screen.query("HelpPanel")
 
     async def test_f2_opens_catalog(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
@@ -530,7 +524,8 @@ class TestChatKeybindings:
 
             log = app.screen.query_one("#chat-log", VerticalScroll)
             log.focus()
-            app.screen.key_j()
+            app.screen.action_enter_normal_mode()
+            app.screen.action_vim_scroll_down()
 
     async def test_k_scrolls_up_vim(self) -> None:
         app = _ChatApp()
@@ -540,7 +535,8 @@ class TestChatKeybindings:
 
             log = app.screen.query_one("#chat-log", VerticalScroll)
             log.focus()
-            app.screen.key_k()
+            app.screen.action_enter_normal_mode()
+            app.screen.action_vim_scroll_up()
 
 
 class TestCatalogKeybindings:
@@ -656,24 +652,16 @@ class TestSettingsKeybindings:
             screen.action_scroll_up()
 
 
-class TestHelpModal:
-    async def test_help_escape_closes(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+class TestHelpPanel:
+    async def test_help_toggle_closes(self) -> None:
         app = _FullApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            app.screen.action_close()
+            assert app.screen.query("HelpPanel")
+            app.action_hide_help_panel()
             await pilot.pause()
-            assert not isinstance(app.screen, HelpModal)
-
-    async def test_help_lists_all_commands(self) -> None:
-        from lilbee.cli.tui.command_registry import COMMANDS
-        from lilbee.cli.tui.widgets.help_modal import _HELP_TEXT
-
-        for cmd in COMMANDS:
-            assert cmd.name in _HELP_TEXT
+            assert not app.screen.query("HelpPanel")
 
 
 class TestSetupWizardIntegration:
