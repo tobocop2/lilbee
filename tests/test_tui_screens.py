@@ -6478,7 +6478,6 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             assert result is None
 
 
-
 async def test_catalog_browse_more_clicked():
     """Browse more button triggers HF model fetch."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen

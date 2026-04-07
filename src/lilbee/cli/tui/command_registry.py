@@ -111,5 +111,3 @@ def build_dispatch_dict() -> dict[str, str]:
 def command_names() -> tuple[str, ...]:
     """All primary command names (excludes aliases), for tab completion."""
     return tuple(cmd.name for cmd in COMMANDS)
-
-

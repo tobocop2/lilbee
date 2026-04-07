@@ -46,6 +46,7 @@ _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
+
 class ChatStatusLine(Label):
     """One-line status bar showing the current model as a pill badge."""
 
@@ -786,7 +787,6 @@ class ChatScreen(Screen[None]):
 
         with contextlib.suppress(Exception):
             self.query_one("#chat-model-select", Select).focus()
-
 
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""

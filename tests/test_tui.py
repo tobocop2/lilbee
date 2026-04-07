@@ -111,7 +111,6 @@ class TestTaskBarUnit:
         assert len(task_id) == 8
 
 
-
 class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
