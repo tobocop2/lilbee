@@ -237,6 +237,19 @@ _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
+def _get_distance(chunk: SearchChunk) -> float:
+    """Extract distance as a sortable float (inf for None)."""
+    return chunk.distance if chunk.distance is not None else float("inf")
+
+
+def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float) -> int:
+    """Count results whose distance is within the given threshold."""
+    for i, r in enumerate(sorted_results):
+        if _get_distance(r) > threshold:
+            return i
+    return len(sorted_results)
+
+
 class Store:
     """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
@@ -416,35 +429,23 @@ class Store:
         cap = max(initial_threshold, _MAX_THRESHOLD)
         step = self._config.adaptive_threshold_step
 
-        sorted_results = sorted(
-            results, key=lambda r: r.distance if r.distance is not None else float("inf")
-        )
+        sorted_results = sorted(results, key=_get_distance)
 
         threshold = initial_threshold
         for _ in range(_MAX_FILTER_ITERATIONS):
             if threshold > cap:
                 break
-            cutoff = 0
-            for i, r in enumerate(sorted_results):
-                dist = r.distance if r.distance is not None else float("inf")
-                if dist > threshold:
-                    break
-                cutoff = i + 1
+            cutoff = _count_within_threshold(sorted_results, threshold)
             if cutoff >= top_k:
                 return sorted_results[:cutoff]
             threshold += step
         # Final pass at cap
-        cutoff = 0
-        for i, r in enumerate(sorted_results):
-            dist = r.distance if r.distance is not None else float("inf")
-            if dist > cap:
-                break
-            cutoff = i + 1
+        cutoff = _count_within_threshold(sorted_results, cap)
         return sorted_results[:cutoff]
 
     def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
         """Simple fixed threshold filter - keep only results within distance threshold."""
-        return [r for r in results if r.distance is not None and r.distance <= threshold]
+        return [r for r in results if _get_distance(r) <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return all chunks for a given source file."""
