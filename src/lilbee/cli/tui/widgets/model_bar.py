@@ -175,7 +175,6 @@ class ModelBar(Widget, can_focus=False):
 
         has_chat_model = bool(current_chat)
         has_embed_model = bool(current_embed)
-        has_vision_model = bool(current_vision)
 
         if has_chat_model:
             if not any(v == current_chat for _, v in chat_opts):
@@ -198,12 +197,9 @@ class ModelBar(Widget, can_focus=False):
             embed_sel.value = embed_opts[0][1]
 
         vision_names = set(vision_models)
-        if has_vision_model and current_vision in vision_names:
-            vision_sel.value = current_vision
-        elif cfg.vision_model in vision_names:
-            vision_sel.value = cfg.vision_model
-        elif vision_models:
-            vision_sel.value = _DISABLED
+        target_vision = current_vision or cfg.vision_model
+        if target_vision and target_vision in vision_names:
+            vision_sel.value = target_vision
         else:
             vision_sel.value = _DISABLED
 

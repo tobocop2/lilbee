@@ -118,7 +118,10 @@ class SettingsScreen(Screen[None]):
 
     CSS_PATH = "settings.tcss"
     AUTO_FOCUS = "#settings-scroll"
-    HELP = "Browse and edit configuration.\n\nUse / to search, Enter to confirm, Escape to return to the list."
+    HELP = (
+        "Browse and edit configuration.\n\n"
+        "Use / to search, Enter to confirm, Escape to return to the list."
+    )
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),

@@ -782,10 +782,10 @@ class ChatScreen(Screen[None]):
         """Focus the first Select in the model bar (normal mode only)."""
         if self._insert_mode:
             raise SkipAction()
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             self.query_one("#chat-model-select", Select).focus()
-        except Exception:
-            pass
 
 
     def action_complete(self) -> None:

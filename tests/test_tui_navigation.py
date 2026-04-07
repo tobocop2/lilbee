@@ -238,7 +238,8 @@ async def test_catalog_nav_noop_when_search_focused():
         await pilot.pause()
         assert isinstance(screen.focused, Input)
 
-        for action in ("cursor_down", "cursor_up", "page_down", "page_up", "jump_top", "jump_bottom"):
+        actions = ("cursor_down", "cursor_up", "page_down", "page_up", "jump_top", "jump_bottom")
+        for action in actions:
             getattr(screen, f"action_{action}")()
         await pilot.pause()
         assert isinstance(screen.focused, Input)
