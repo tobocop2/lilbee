@@ -358,15 +358,19 @@ class TestLlamaCppProvider:
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_direct_not_exists(self, models_dir: Path) -> None:
+    def test_resolve_model_path_direct_not_exists(
+        self, models_dir: Path, tmp_path: Path
+    ) -> None:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
             from lilbee.providers.llama_cpp_provider import _resolve_model_path
 
             cfg.models_dir = models_dir
+            # Use a real absolute path that doesn't exist (works on all platforms)
+            fake_path = str(tmp_path / "nonexistent" / "model.gguf")
             with pytest.raises(ProviderError, match="Model file not found"):
-                _resolve_model_path("/nonexistent/model.gguf")
+                _resolve_model_path(fake_path)
         finally:
             self._resolve_patcher.start()
 
@@ -1716,16 +1720,19 @@ class TestLlamaCppProviderMethods:
         assert result == mock_vis
         assert provider._vision_llm == mock_vis
 
-    def test_get_vision_llm_reuses_cache(self, mock_llama_cpp: mock.MagicMock) -> None:
+    def test_get_vision_llm_reuses_cache(
+        self, mock_llama_cpp: mock.MagicMock, tmp_path: Path
+    ) -> None:
         """_get_vision_llm reuses cached model for same path."""
         provider = _make_provider_no_thread()
+        vis_path = tmp_path / "models" / "vis.gguf"
         existing_vis = mock.MagicMock()
-        existing_vis._model_path = "/models/vis.gguf"
+        existing_vis._model_path = str(vis_path)
         provider._vision_llm = existing_vis
 
         with mock.patch(
             "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/models/vis.gguf"),
+            return_value=vis_path,
         ):
             result = provider._get_vision_llm("vis-model")
 
