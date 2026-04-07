@@ -113,14 +113,3 @@ def command_names() -> tuple[str, ...]:
     return tuple(cmd.name for cmd in COMMANDS)
 
 
-def help_text() -> str:
-    """Generate help text from the registry for the help modal."""
-    lines: list[str] = []
-    for cmd in COMMANDS:
-        label = cmd.name
-        if cmd.args_hint:
-            label += f" {cmd.args_hint}"
-        if cmd.aliases:
-            label += f"  ({', '.join(cmd.aliases)})"
-        lines.append(f"  {label:<25s} {cmd.help_text}")
-    return "\n".join(lines)

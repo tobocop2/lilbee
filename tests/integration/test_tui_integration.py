@@ -91,13 +91,6 @@ class TestCommandRegistry:
             for alias in cmd.aliases:
                 assert alias in dispatch
 
-    def test_help_text_includes_all_commands(self) -> None:
-        from lilbee.cli.tui.command_registry import COMMANDS, help_text
-
-        text = help_text()
-        for cmd in COMMANDS:
-            assert cmd.name in text
-
     def test_command_names_are_primary_only(self) -> None:
         from lilbee.cli.tui.command_registry import COMMANDS, command_names
 
