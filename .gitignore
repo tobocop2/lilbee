@@ -34,3 +34,5 @@ node_modules/
 *.mp4
 PLAN.md
 .DS_Store
+scripts/
+.DS_Store

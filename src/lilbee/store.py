@@ -1,15 +1,20 @@
 """LanceDB vector store operations."""
 
+from __future__ import annotations
+
 import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-import lancedb
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+if TYPE_CHECKING:
+    import lancedb
+    import lancedb.table
 
 from lilbee.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
@@ -258,8 +263,10 @@ class Store:
 
     def get_db(self) -> lancedb.DBConnection:
         if self._db is None:
+            import lancedb as _lancedb
+
             self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-            self._db = lancedb.connect(
+            self._db = _lancedb.connect(
                 str(self._config.lancedb_dir),
                 read_consistency_interval=READ_CONSISTENCY_INTERVAL,
             )

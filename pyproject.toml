@@ -71,7 +71,6 @@ packages = ["src/lilbee"]
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
-    "pexpect>=4.9.0",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

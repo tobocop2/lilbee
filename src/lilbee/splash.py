@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 import time
 
 _HIDE_CURSOR = "\033[?25l"
@@ -217,8 +218,8 @@ def start(ready_file: str | None = None) -> int:
 
     frame0, frame1, frame2, frame3 = _pick_frames()
 
-    if not hasattr(os, "kill"):  # pragma: no cover
-        # Windows: fall back to threading
+    if sys.platform == "win32":  # pragma: no cover
+        # Windows: fall back to threading (signal handlers don't work in subprocesses)
         return _start_threaded(frame0, frame1, frame2, frame3, ready_file)
 
     import multiprocessing
@@ -242,7 +243,7 @@ def stop(pid: int) -> None:
         _stop_threaded(pid)
         return
 
-    if not hasattr(os, "kill"):  # pragma: no cover
+    if sys.platform == "win32":  # pragma: no cover
         _stop_threaded(pid)
         return
 
