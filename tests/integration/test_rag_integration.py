@@ -270,8 +270,8 @@ class TestPipelineBasics:
 
         (docs_dir / "maintenance_guide.md").write_text(content)
         result = asyncio.run(sync(quiet=True))
-        assert result.failed == 0, f"Ingest failed: {result}"
-        assert result.added > 0 or result.updated > 0
+        assert len(result.failed) == 0, f"Ingest failed: {result}"
+        assert len(result.added) > 0 or len(result.updated) > 0
 
         results = get_services().searcher.search("oil change procedure", top_k=3)
         assert len(results) > 0
@@ -717,7 +717,9 @@ class TestDownloadProgressCallbacks:
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
 
-        # Re-download the embedding model (already exists, returns immediately)
+        # Re-download the embedding model (cached — returns from HF cache immediately)
         download_model(FEATURED_EMBEDDING[0], on_progress=on_progress)
-        # For already-downloaded models, no progress callbacks fire
-        assert len(progress_calls) == 0
+        # Cached download fires a single completion callback
+        assert len(progress_calls) == 1
+        downloaded, total = progress_calls[0]
+        assert downloaded == total  # 100% completion signal
