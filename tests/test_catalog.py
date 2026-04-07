@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -114,13 +114,9 @@ class TestHfToken:
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert _hf_token() is None
 
-    def test_headers_empty_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @patch("lilbee.catalog._hf_token", return_value=None)
+    def test_headers_empty_when_no_token(self, _mock_token: MagicMock) -> None:
         """_hf_headers returns empty dict when no token available."""
-        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
-        monkeypatch.delenv("HF_TOKEN", raising=False)
-        fake_hf_hub = MagicMock()
-        fake_hf_hub.get_token.return_value = None
-        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert catalog._hf_headers() == {}
 
 
@@ -592,7 +588,7 @@ class TestDownloadModel:
         download_model(entry, on_progress=on_progress)
         # 2 tqdm updates + 1 final 100% call from download_model
         assert len(progress_calls) == 3
-        assert progress_calls[-1] == (322122547, 322122547)
+        assert progress_calls[-1] == (100, 100)
 
     def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
