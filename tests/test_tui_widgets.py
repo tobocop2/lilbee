@@ -2624,6 +2624,7 @@ class TestModelBarPopulateBranches:
                             opts_with_val = [(val, val), *list(opts)]
                             orig(opts_with_val)
                             s.value = val
+
                     return patched
 
                 sel.set_options = make_patched(sel, orig_fn, cfg_val, sel_id)  # type: ignore[assignment]
@@ -2674,6 +2675,7 @@ class TestModelBarPopulateBranches:
                         if cc[0] == 1:
                             # Bypass validation to force NULL value
                             s._reactive_value = Select.NULL  # type: ignore[attr-defined]
+
                     return patched
 
                 sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]

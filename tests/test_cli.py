@@ -2256,9 +2256,7 @@ class TestCrawlProgressCallback:
 
         mock_crawl.side_effect = _fake_crawl
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
-            _crawl_urls_blocking(
-                ["https://example.com"], crawl=False, depth=None, max_pages=None
-            )
+            _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
 
 
 class TestLoginCommand:

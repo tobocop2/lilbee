@@ -1248,9 +1248,11 @@ class TestLockedStreamIterator:
 
         lock = threading.Lock()
         lock.acquire()
-        chunks = iter([
-            {"choices": [{"delta": {"content": "hi"}}]},
-        ])
+        chunks = iter(
+            [
+                {"choices": [{"delta": {"content": "hi"}}]},
+            ]
+        )
         it = _LockedStreamIterator(chunks, lock)
         assert next(it) == "hi"
         it.close()
@@ -1482,11 +1484,14 @@ class TestWorkerProcessNoneResponses:
 
         req = EmbedRequest(texts=["hello"], model="test", request_id=1)
         # First call returns None (worker died), retry returns valid response
-        with mock.patch.object(
-            wp,
-            "_get_response",
-            side_effect=[None, EmbedResponse(vectors=[[0.1]], request_id=1)],
-        ), mock.patch.object(wp, "restart"):
+        with (
+            mock.patch.object(
+                wp,
+                "_get_response",
+                side_effect=[None, EmbedResponse(vectors=[[0.1]], request_id=1)],
+            ),
+            mock.patch.object(wp, "restart"),
+        ):
             result = wp._send_and_receive_embed(req)
         assert result == [[0.1]]
 
@@ -1500,9 +1505,11 @@ class TestWorkerProcessNoneResponses:
         wp._started = True
 
         req = EmbedRequest(texts=["hello"], model="test", request_id=1)
-        with mock.patch.object(wp, "_get_response", return_value=None), mock.patch.object(
-            wp, "restart"
-        ), pytest.raises(RuntimeError, match="crashed again"):
+        with (
+            mock.patch.object(wp, "_get_response", return_value=None),
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="crashed again"),
+        ):
             wp._retry_embed(req)
 
     def test_send_and_receive_vision_none_retries(self) -> None:
@@ -1516,11 +1523,14 @@ class TestWorkerProcessNoneResponses:
         wp._next_id = 0
 
         req = VisionRequest(png_bytes=b"\x89PNG", model="vis", prompt="", request_id=1)
-        with mock.patch.object(
-            wp,
-            "_get_response",
-            side_effect=[None, VisionResponse(text="ocr result", request_id=1)],
-        ), mock.patch.object(wp, "restart"):
+        with (
+            mock.patch.object(
+                wp,
+                "_get_response",
+                side_effect=[None, VisionResponse(text="ocr result", request_id=1)],
+            ),
+            mock.patch.object(wp, "restart"),
+        ):
             result = wp._send_and_receive_vision(req)
         assert result == "ocr result"
 
@@ -1534,9 +1544,11 @@ class TestWorkerProcessNoneResponses:
         wp._started = True
 
         req = VisionRequest(png_bytes=b"\x89PNG", model="vis", prompt="", request_id=1)
-        with mock.patch.object(wp, "_get_response", return_value=None), mock.patch.object(
-            wp, "restart"
-        ), pytest.raises(RuntimeError, match="crashed again"):
+        with (
+            mock.patch.object(wp, "_get_response", return_value=None),
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="crashed again"),
+        ):
             wp._retry_vision(req)
 
     def test_get_response_dead_worker_returns_none(self) -> None:
@@ -1636,12 +1648,15 @@ class TestLlamaCppProviderMethods:
         mock_cache_model = mock.MagicMock()
         provider._cache.load_model.return_value = mock_cache_model
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/models/test.gguf"),
-        ), mock.patch(
-            "lilbee.providers.llama_cpp_provider._is_vision_model",
-            return_value=False,
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                return_value=Path("/models/test.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._is_vision_model",
+                return_value=False,
+            ),
         ):
             result = provider._get_chat_llm()
 
@@ -1655,12 +1670,15 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
         cfg.chat_model = "vision-model"
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._is_vision_model",
-            return_value=True,
-        ), mock.patch.object(
-            provider, "_get_vision_llm", return_value=mock.MagicMock()
-        ) as mock_vis:
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._is_vision_model",
+                return_value=True,
+            ),
+            mock.patch.object(
+                provider, "_get_vision_llm", return_value=mock.MagicMock()
+            ) as mock_vis,
+        ):
             result = provider._get_chat_llm()
 
         mock_vis.assert_called_once_with("vision-model")
@@ -1671,12 +1689,15 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
         cfg.chat_model = "default-model"
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/models/override.gguf"),
-        ), mock.patch(
-            "lilbee.providers.llama_cpp_provider._is_vision_model",
-            return_value=False,
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                return_value=Path("/models/override.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._is_vision_model",
+                return_value=False,
+            ),
         ):
             provider._get_chat_llm(model="override-model")
 
@@ -1689,12 +1710,15 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
 
         mock_vis = mock.MagicMock()
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/models/vis.gguf"),
-        ), mock.patch(
-            "lilbee.providers.llama_cpp_provider._load_vision_llama",
-            return_value=mock_vis,
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                return_value=Path("/models/vis.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._load_vision_llama",
+                return_value=mock_vis,
+            ),
         ):
             result = provider._get_vision_llm("vis-model")
 
@@ -1735,9 +1759,7 @@ class TestLlamaCppProviderMethods:
         """_get_subprocess_worker lazy-creates a WorkerProcess."""
         provider = _make_provider_no_thread()
 
-        with mock.patch(
-            "lilbee.providers.worker_process.WorkerProcess"
-        ) as mock_wp_cls:
+        with mock.patch("lilbee.providers.worker_process.WorkerProcess") as mock_wp_cls:
             result = provider._get_subprocess_worker()
 
         assert result == mock_wp_cls.return_value
@@ -1770,9 +1792,7 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
 
         mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
+        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
 
         with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
             result = provider.chat(
@@ -1812,12 +1832,15 @@ class TestLlamaCppProviderMethods:
         """show_model returns metadata from _read_gguf_metadata."""
         provider = _make_provider_no_thread()
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/models/test.gguf"),
-        ), mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
-            return_value={"architecture": "llama"},
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                return_value=Path("/models/test.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+                return_value={"architecture": "llama"},
+            ),
         ):
             result = provider.show_model("test-model")
 
@@ -2010,12 +2033,15 @@ class TestEmbedWorker:
         mock_llm = mock.MagicMock()
         provider._cache.load_model.return_value = mock_llm
 
-        with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
-            return_value=Path("/test.gguf"),
-        ), mock.patch(
-            "lilbee.providers.llama_cpp_provider._embed_one",
-            side_effect=RuntimeError("embed broken"),
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                return_value=Path("/test.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider._embed_one",
+                side_effect=RuntimeError("embed broken"),
+            ),
         ):
             cfg.embedding_model = "test"
             fut: Future[list[list[float]]] = Future()
@@ -2264,10 +2290,13 @@ class TestFindMmprojForModel:
         model_path = tmp_path / "model.gguf"
         model_path.touch()
 
-        with mock.patch(
-            "lilbee.catalog.find_mmproj_file",
-            return_value=None,
-        ), pytest.raises(ProviderError, match="No mmproj"):
+        with (
+            mock.patch(
+                "lilbee.catalog.find_mmproj_file",
+                return_value=None,
+            ),
+            pytest.raises(ProviderError, match="No mmproj"),
+        ):
             _find_mmproj_for_model(model_path)
 
 

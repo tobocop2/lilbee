@@ -5791,6 +5791,7 @@ def test_chat_cycle_focus_unknown_widget():
     ChatScreen._cycle_focus(screen, 1)
     screen.query_one.assert_called_once_with(f"#{_FOCUSABLE_IDS[1]}")
 
+
 def test_chat_cycle_focus_no_focused_widget():
     """_cycle_focus handles None focused widget."""
     from lilbee.cli.tui.screens.chat import _FOCUSABLE_IDS, ChatScreen
@@ -6455,5 +6456,3 @@ async def test_catalog_grid_selected_with_model_card():
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
                 mock_sel.assert_called_once_with(row)
-
-
