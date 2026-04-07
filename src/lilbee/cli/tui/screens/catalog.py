@@ -188,21 +188,31 @@ class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
     CSS_PATH = "catalog.tcss"
+    AUTO_FOCUS = "GridSelect"
+
+    HELP = (
+        "# Catalog\n"
+        "Browse and install models.\n\n"
+        "Use arrows to navigate the grid, Enter to install."
+    )
+
+    _ACTION_GROUP = Binding.Group("Actions", compact=True)
+    _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
+        Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
         Binding("escape", "go_back", "Back", show=False),
-        Binding("v", "toggle_view", "View", show=True),
-        Binding("slash", "focus_search", "Search", show=True),
-        Binding("d", "delete_model", "Delete", show=True),
+        Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
+        Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
+        Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
-        Binding("space", "page_down", "PgDn", show=False),
-        Binding("ctrl+d", "page_down", "PgDn", show=False),
-        Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -274,6 +284,8 @@ class CatalogScreen(Screen[None]):
             self.remove_class("-list-view")
             self.add_class("-grid-view")
             self._refresh_grid()
+            with contextlib.suppress(Exception):
+                self.query_one(GridSelect).focus()
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -709,38 +721,64 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
         self._fetch_remote_models()
 
+    def _focused_grid(self) -> GridSelect | None:
+        """Return the focused GridSelect if in grid mode, else None."""
+        if self._grid_view and isinstance(self.focused, GridSelect):
+            return self.focused
+        return None
+
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(3):
+                grid.action_cursor_down()
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(3):
+                grid.action_cursor_up()
             return
         table = self.query_one("#catalog-table", DataTable)
         for _ in range(10):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_down()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_up()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_up()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_first()
             return
         table = self.query_one("#catalog-table", DataTable)
         table.move_cursor(row=0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_last()
             return
         table = self.query_one("#catalog-table", DataTable)
         if self._rows:
