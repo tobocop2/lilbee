@@ -442,14 +442,14 @@ class TestIgnoreDirs:
 
 
 class TestEmptyStringValidation:
-    def test_empty_chat_model_rejected(self):
+    def test_empty_chat_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
                 chat_model="",
                 embedding_model="nomic-embed-text",
                 embedding_dim=768,
@@ -462,14 +462,14 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_embedding_model_rejected(self):
+    def test_empty_embedding_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
                 chat_model="qwen3:8b",
                 embedding_model="",
                 embedding_dim=768,
@@ -482,14 +482,14 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_system_prompt_rejected(self):
+    def test_empty_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
                 chat_model="qwen3:8b",
                 embedding_model="nomic-embed-text",
                 embedding_dim=768,
@@ -502,14 +502,14 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_vision_model_allowed(self):
+    def test_empty_vision_model_allowed(self, tmp_path):
         """vision_model is nullable — empty string is valid."""
         c = Config(
-            data_root=Path("/tmp"),
-            documents_dir=Path("/tmp/docs"),
-            data_dir=Path("/tmp/data"),
-            lancedb_dir=Path("/tmp/data/lancedb"),
-            models_dir=Path("/tmp/models"),
+            data_root=tmp_path,
+            documents_dir=tmp_path / "docs",
+            data_dir=tmp_path / "data",
+            lancedb_dir=tmp_path / "data" / "lancedb",
+            models_dir=tmp_path / "models",
             chat_model="qwen3:8b",
             embedding_model="nomic-embed-text",
             embedding_dim=768,

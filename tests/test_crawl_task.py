@@ -108,7 +108,7 @@ class TestRunCrawl:
     async def test_success(self, mock_crawl):
         from pathlib import Path
 
-        mock_crawl.return_value = [Path("/tmp/a.md"), Path("/tmp/b.md")]
+        mock_crawl.return_value = [Path("a.md"), Path("b.md")]
         task = CrawlTask(task_id="t1", url="https://example.com", depth=1, max_pages=10)
 
         await run_crawl(task)

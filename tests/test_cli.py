@@ -199,9 +199,9 @@ class TestAdd:
         assert result.exit_code == 0
         assert "Copied 2" in result.output
 
-    def test_add_nonexistent_fails(self):
+    def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
-        result = runner.invoke(app, ["add", "/tmp/nonexistent_file_xyz.txt"])
+        result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
 
     def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
@@ -416,12 +416,12 @@ class TestApplyOverrides:
         apply_overrides(data_dir=explicit_dir)
         assert cfg.data_root == explicit_dir
 
-    def test_lilbee_data_env_ignored_when_global(self, monkeypatch):
+    def test_lilbee_data_env_ignored_when_global(self, monkeypatch, tmp_path):
         """--global takes precedence over LILBEE_DATA."""
         from lilbee.cli import apply_overrides
         from lilbee.platform import default_data_dir
 
-        monkeypatch.setenv("LILBEE_DATA", "/tmp/should-be-ignored")
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "should-be-ignored"))
         apply_overrides(use_global=True)
         assert cfg.data_root == default_data_dir()
 
@@ -1733,7 +1733,7 @@ class TestAddWithUrls:
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
 
-        mock_crawl.return_value = [Path("/tmp/a.md")]
+        mock_crawl.return_value = [Path("a.md")]
         result = runner.invoke(app, ["--json", "add", "https://example.com"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1760,14 +1760,16 @@ class TestAddWithUrls:
             assert result.exit_code == 1
             assert "pip install" in result.output.lower()
 
-    def test_add_nonexistent_path_fails(self):
+    def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
-        result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")])
         assert result.exit_code != 0
 
-    def test_add_nonexistent_path_json_fails(self):
+    def test_add_nonexistent_path_json_fails(self, tmp_path):
         """Adding a nonexistent file path in JSON mode returns error."""
-        result = runner.invoke(app, ["--json", "add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        result = runner.invoke(
+            app, ["--json", "add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")]
+        )
         assert result.exit_code != 0
 
 
@@ -1785,7 +1787,7 @@ class TestIsUrl:
     def test_not_url(self):
         from lilbee.crawler import is_url
 
-        assert not is_url("/tmp/file.txt")
+        assert not is_url("/some/file.txt")
 
     def test_ftp_not_url(self):
         from lilbee.crawler import is_url
@@ -1797,7 +1799,7 @@ class TestPartitionInputs:
     def test_separates_urls_and_paths(self):
         from lilbee.cli.commands import _partition_inputs
 
-        paths, urls = _partition_inputs(["/tmp/a.txt", "https://example.com", "/tmp/b.txt"])
+        paths, urls = _partition_inputs(["/some/a.txt", "https://example.com", "/some/b.txt"])
         assert len(paths) == 2
         assert urls == ["https://example.com"]
 
@@ -1830,7 +1832,7 @@ class TestCrawlUrlsBlocking:
             cb = kwargs.get("on_progress")
             if cb:
                 cb(EventType.CRAWL_PAGE, CrawlPageEvent(current=1, total=1, url=url))
-            return [Path("/tmp/page.md")]
+            return [Path("page.md")]
 
         mock_crawl.side_effect = _fake_crawl
         result = _crawl_urls_blocking(

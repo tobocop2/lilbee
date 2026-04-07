@@ -91,8 +91,8 @@ class TestStatus:
 
         mock_status = StatusResult(
             config=StatusConfig(
-                documents_dir="/tmp/docs",
-                data_dir="/tmp/data",
+                documents_dir="docs",
+                data_dir="data",
                 chat_model="test:latest",
                 embedding_model="embed:latest",
             ),
@@ -952,7 +952,7 @@ class TestCrawlStream:
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
             on_progress("crawl_done", CrawlDoneEvent(pages_crawled=1, files_written=1))
-            return [Path("/tmp/test.md")]
+            return [Path("test.md")]
 
         mock_crawl.side_effect = fake_crawl
         events = []

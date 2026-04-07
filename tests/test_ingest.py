@@ -1,5 +1,6 @@
 """Tests for the document sync engine (mocked — no live server needed)."""
 
+import sys
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -674,6 +675,7 @@ class TestClassifyNewFormats:
 
 
 class TestDiscoverSymlinkEscape:
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
     def test_symlink_escaping_docs_dir_skipped(self, isolated_env):
         """Symlinks that resolve outside the documents directory are skipped."""
         import os

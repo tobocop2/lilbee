@@ -2730,7 +2730,7 @@ async def test_chat_run_crawl_background_success():
         cb = kwargs.get("on_progress")
         if cb:
             cb("crawl_page", {"current": 1, "total": 2, "url": url})
-        return [Path("/tmp/a.md")]
+        return [Path("a.md")]
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -6195,7 +6195,7 @@ async def test_chat_add_skipped_file():
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
-            app.screen._run_add_background(_Path("/tmp/test.txt"), "task-1")
+            app.screen._run_add_background(_Path("test.txt"), "task-1")
             while app.screen.workers:
                 await _pilot.pause()
                 assert app.screen.is_current
@@ -6211,7 +6211,7 @@ async def test_chat_add_sync_progress_wrong_type():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        mock_result = CopyResult(copied=[_Path("/tmp/ok.txt")], skipped=[])
+        mock_result = CopyResult(copied=[_Path("ok.txt")], skipped=[])
 
         async def fake_sync(*, quiet=True, on_progress=None):
             if on_progress:
@@ -6225,7 +6225,7 @@ async def test_chat_add_sync_progress_wrong_type():
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
             patch("lilbee.ingest.sync", side_effect=fake_sync),
         ):
-            app.screen._run_add_background(_Path("/tmp/test.txt"), "task-wrong")
+            app.screen._run_add_background(_Path("test.txt"), "task-wrong")
             while app.screen.workers:
                 await _pilot.pause()
                 assert app.screen.is_current
@@ -6247,7 +6247,7 @@ async def test_chat_crawl_background_success():
                     EventType.CRAWL_PAGE,
                     CrawlPageEvent(current=1, total=2, url="https://example.com/page1"),
                 )
-            return [_Path("/tmp/p.md")]
+            return [_Path("p.md")]
 
         with (
             patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),

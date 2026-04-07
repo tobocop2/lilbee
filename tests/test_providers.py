@@ -910,13 +910,13 @@ class TestConfigProvider:
             assert c.litellm_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
-    def test_models_dir_is_canonical(self) -> None:
+    def test_models_dir_is_canonical(self, tmp_path: Path) -> None:
         """models_dir uses canonical system path, not per-project data_root."""
         import os
 
         from lilbee.platform import canonical_models_dir
 
-        with mock.patch.dict(os.environ, {"LILBEE_DATA": "/tmp/test-lilbee"}):
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(tmp_path / "test-lilbee")}):
             from lilbee.config import Config
 
             c = Config()
@@ -1318,7 +1318,7 @@ class TestSkipGgufValue:
 
 
 class TestReadMmprojProjectorType:
-    def test_reads_projector_type(self) -> None:
+    def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
         from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
@@ -1337,12 +1337,9 @@ class TestReadMmprojProjectorType:
         buf += struct.pack("<Q", len(value))
         buf += value
 
-        tmp = Path("/tmp/test_mmproj.gguf")
-        tmp.write_bytes(bytes(buf))
-        try:
-            assert _read_mmproj_projector_type(tmp) == "ldp"
-        finally:
-            tmp.unlink(missing_ok=True)
+        gguf_file = tmp_path / "test_mmproj.gguf"
+        gguf_file.write_bytes(bytes(buf))
+        assert _read_mmproj_projector_type(gguf_file) == "ldp"
 
     def test_exception_returns_none(self) -> None:
         from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
