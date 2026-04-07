@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
@@ -228,12 +228,12 @@ def _check_faithfulness(
         config = cfg
     template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
     try:
         response = provider.chat(messages, stream=False)
         return _parse_faithfulness_score(cast(str, response))
-    except Exception:
-        log.warning("Faithfulness check failed for %s, using 0.0", label, exc_info=True)
+    except (ConnectionError, OSError, RuntimeError) as exc:
+        log.warning("Faithfulness check failed for %s: %s", label, exc)
         return 0.0
 
 
@@ -336,12 +336,12 @@ def _generate_page(
     config: Config,
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
     try:
         response = provider.chat(messages, stream=False)
         wiki_text = cast(str, response).strip()
-    except Exception:
-        log.warning("LLM failed to generate wiki page for %s", label, exc_info=True)
+    except (ConnectionError, OSError, RuntimeError) as exc:
+        log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
         return None
 
     if not wiki_text:

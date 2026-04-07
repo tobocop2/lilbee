@@ -78,7 +78,7 @@ def _archive_page(
     archive_path = archive_dir / source_path.name
 
     if source_path.exists():
-        shutil.move(str(source_path), str(archive_path))
+        shutil.move(source_path, archive_path)
         log.info("Archived wiki page %s -> %s", source_path, archive_path)
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
@@ -199,7 +199,7 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
         subdir_path = wiki_root / subdir
         if not subdir_path.exists():
             continue
-        for md_path in sorted(subdir_path.rglob("*.md")):
+        for md_path in sorted(subdir_path.glob("*.md")):
             relative = md_path.relative_to(wiki_root)
             wiki_source = f"{config.wiki_dir}/{relative.as_posix()}"
             record = _evaluate_page(wiki_source, wiki_root, store, config)
