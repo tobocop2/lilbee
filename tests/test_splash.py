@@ -190,3 +190,63 @@ class TestBeeLines:
 
     def test_logo_lines_count(self) -> None:
         assert len(BEE_LINES) == 12
+
+
+class TestStopTimeout:
+    def test_stop_kills_on_timeout(self) -> None:
+        """stop() kills the process when it doesn't exit within timeout."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from lilbee.splash import SplashHandle, stop
+
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
+        handle = SplashHandle(process=mock_proc, write_fd=-1)
+
+        with patch("lilbee.splash._close_write_fd"):
+            stop(handle)
+
+        mock_proc.kill.assert_called_once()
+        assert mock_proc.wait.call_count == 2
+
+
+class TestRestoreCursor:
+    def test_restore_cursor_oserror(self) -> None:
+        """_restore_cursor handles OSError from stderr."""
+        from lilbee.splash import _restore_cursor
+
+        with patch("sys.stderr") as mock_stderr:
+            mock_stderr.write.side_effect = OSError("broken pipe")
+            _restore_cursor()  # should not raise
+
+
+class TestAtexitCleanup:
+    def test_atexit_calls_stop(self) -> None:
+        """_atexit_cleanup calls stop when handle is active."""
+        import lilbee.splash as splash_mod
+        from lilbee.splash import _atexit_cleanup
+
+        mock_handle = object()
+        original = splash_mod._active_handle
+        splash_mod._active_handle = mock_handle
+        try:
+            with patch("lilbee.splash.stop") as mock_stop:
+                _atexit_cleanup()
+                mock_stop.assert_called_once_with(mock_handle)
+        finally:
+            splash_mod._active_handle = original
+
+    def test_atexit_noop_when_none(self) -> None:
+        """_atexit_cleanup is a no-op when no active handle."""
+        import lilbee.splash as splash_mod
+        from lilbee.splash import _atexit_cleanup
+
+        original = splash_mod._active_handle
+        splash_mod._active_handle = None
+        try:
+            with patch("lilbee.splash.stop") as mock_stop:
+                _atexit_cleanup()
+                mock_stop.assert_not_called()
+        finally:
+            splash_mod._active_handle = original

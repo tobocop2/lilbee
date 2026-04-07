@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -169,7 +169,7 @@ class WikiScreen(Screen[None]):
 
         source_count = page.frontmatter.get("source_count", 0)
         created_at = page.frontmatter.get("generated_at", "")
-        if isinstance(created_at, datetime):
+        if isinstance(created_at, (datetime, date)):
             created_at = created_at.isoformat()
 
         header_text = _format_page_header(
