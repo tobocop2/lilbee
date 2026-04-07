@@ -1490,23 +1490,29 @@ class TestPickVisionInteractive:
             _pick_vision_interactive(set())
             mock_save.assert_called_once()
 
-    def test_eof_cancels(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_eof_cancels(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", side_effect=EOFError):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
-    def test_invalid_input(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_invalid_input(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", return_value="abc"):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
-    def test_out_of_range(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_out_of_range(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", return_value="999"):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
     def test_valid_numeric_choice(self) -> None:
         from lilbee.cli.commands import _pick_vision_interactive

@@ -669,6 +669,7 @@ class TestLiteLLMProvider:
         with mock.patch("httpx.Client", return_value=mock_client):
             provider = LiteLLMProvider()
             provider.pull_model("llama3")
+        mock_client.stream.assert_called_once()
 
     def test_show_model(self) -> None:
 
@@ -1998,8 +1999,9 @@ class TestEmbedWorker:
         # After first item, put shutdown while batching
         provider._embed_queue.put(None)
 
-        with mock.patch.object(provider, "_dispatch_batch"):
+        with mock.patch.object(provider, "_dispatch_batch") as mock_dispatch:
             provider._embed_worker()
+        mock_dispatch.assert_called_once()
 
     def test_dispatch_batch_success(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_dispatch_batch resolves futures with embedding vectors."""
