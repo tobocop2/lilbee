@@ -82,7 +82,9 @@ def _patch_chat_setup():
 
 
 def _make_catalog_model(
-    name: str = "test-7B",
+    name: str = "test",
+    tag: str = "7b",
+    display_name: str = "Test 7B",
     hf_repo: str = "org/test-7B-GGUF",
     task: str = "chat",
     featured: bool = False,
@@ -92,6 +94,8 @@ def _make_catalog_model(
 ) -> CatalogModel:
     return CatalogModel(
         name=name,
+        tag=tag,
+        display_name=display_name,
         hf_repo=hf_repo,
         gguf_filename="test.gguf",
         size_gb=size_gb,
@@ -181,7 +185,7 @@ class TestFormatSizeGb:
 
 class TestCatalogToRow:
     def test_contains_display_name(self):
-        m = _make_catalog_model(name="my-model-8B", hf_repo="my-org/my-model-8B-GGUF")
+        m = _make_catalog_model(display_name="My Model 8B", hf_repo="my-org/my-model-8B-GGUF")
         row = _catalog_to_row(m, installed=False)
         assert "my model 8b" in row.name.lower()
 
@@ -203,7 +207,8 @@ class TestMatchesSearch:
 
     def test_search_by_name(self):
         row = _catalog_to_row(
-            _make_catalog_model(name="qwen-8B", hf_repo="org/qwen-8B-GGUF"), installed=False
+            _make_catalog_model(display_name="Qwen 8B", hf_repo="org/qwen-8B-GGUF"),
+            installed=False,
         )
         assert _matches_search(row, "qwen") is True
 
@@ -212,7 +217,7 @@ class TestMatchesSearch:
         assert _matches_search(row, "embedding") is True
 
     def test_search_no_match(self):
-        row = _catalog_to_row(_make_catalog_model(name="llama-7B"), installed=False)
+        row = _catalog_to_row(_make_catalog_model(display_name="Llama 7B"), installed=False)
         assert _matches_search(row, "qwen") is False
 
     def test_search_by_quant(self):
@@ -935,6 +940,8 @@ async def test_chat_slash_delete_with_match(mock_svc):
     ]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
         app.screen._cmd_delete("notes.md")
         mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
         mock_svc.store.delete_source.assert_called_once_with("notes.md")
@@ -1504,20 +1511,19 @@ async def test_command_provider_set_model_vision():
             assert cfg.vision_model == ""
 
 
-async def test_command_provider_delete_doc():
+async def test_command_provider_delete_doc(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         provider._delete_doc("notes.md")
-        from lilbee.services import get_services
-
-        store = get_services().store
-        store.delete_by_source.assert_called_once_with("notes.md")
-        store.delete_source.assert_called_once_with("notes.md")
+        mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
+        mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
 
 async def test_command_provider_action_sync():
@@ -1608,46 +1614,49 @@ async def test_command_provider_model_commands_vision_error():
             assert isinstance(cmds, list)
 
 
-async def test_command_provider_document_commands():
+async def test_command_provider_document_commands(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
-
-        get_services().store.get_sources.return_value = [
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.return_value = [
             {"filename": "notes.md", "source": "notes.md"},
         ]
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert len(cmds) == 1
         assert "notes.md" in cmds[0][0]
 
 
-async def test_command_provider_document_commands_error():
+async def test_command_provider_document_commands_error(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.side_effect = Exception("no store")
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
 
-        get_services().store.get_sources.side_effect = Exception("no store")
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
 
 
-async def test_command_provider_document_commands_empty_name():
+async def test_command_provider_document_commands_empty_name(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.return_value = [{"source": ""}]
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
 
-        get_services().store.get_sources.return_value = [{"source": ""}]
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
@@ -4639,6 +4648,7 @@ async def test_setup_wizard_grid_selected_installed():
                 installed=True,
                 sort_downloads=0,
                 sort_size=0.0,
+                ref="installed-model:latest",
             )
             from lilbee.cli.tui.widgets.grid_select import GridSelect
             from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -4905,11 +4915,13 @@ async def test_catalog_select_variant_row():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
@@ -4936,11 +4948,13 @@ async def test_catalog_install_variant_creates_catalog_model():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
@@ -5038,11 +5052,13 @@ async def test_catalog_get_highlighted_variant_name():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
             )
             family = ModelFamily(
+                slug="testmodel",
                 name="TestModel",
                 task="chat",
                 description="Test",
@@ -5057,7 +5073,7 @@ async def test_catalog_get_highlighted_variant_name():
             table.add_row("name", "chat", "8B", "4.0 GB", "Q4_K_M", "--")
             table.move_cursor(row=0)
             name = screen._get_highlighted_model_name()
-            assert name == "TestModel 8B:latest"
+            assert name == "testmodel:8b"
 
 
 async def test_catalog_get_highlighted_remote_name():
@@ -5099,7 +5115,7 @@ async def test_catalog_get_highlighted_catalog_name():
             table.add_row("name", "chat", "7B", "4.0 GB", "--", "1K")
             table.move_cursor(row=0)
             name = screen._get_highlighted_model_name()
-            assert name == "hf-model:latest"
+            assert name == "hf-model:7b"
 
 
 async def test_catalog_run_delete_success():
@@ -6495,7 +6511,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             app.push_screen(screen)
             await _pilot.pause()
 
-            cm = _make_catalog_model(name="Qwen3 8B")
+            cm = _make_catalog_model(name="qwen3", tag="8b", display_name="Qwen3 8B")
             row = TableRow(
                 name="Qwen3 8B",
                 task="chat",
@@ -6507,6 +6523,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
                 featured=False,
                 sort_downloads=1000,
                 sort_size=5.0,
+                ref=cm.ref,
                 catalog_model=cm,
             )
             screen._rows = [row]
@@ -6515,7 +6532,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
             table.add_row("Qwen3 8B", "chat", "8B", "5.0 GB", "Q4_K_M", "1K")
             table.move_cursor(row=0)
             result = screen._get_highlighted_model_name()
-            assert result == "Qwen3 8B:latest"
+            assert result == "qwen3:8b"
 
 
 async def test_catalog_get_highlighted_model_name_fallback_none():

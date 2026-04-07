@@ -61,8 +61,6 @@ def pdf_pipeline(tmp_path_factory):
     cfg.data_dir = data_dir
     cfg.data_root = tmp
     cfg.lancedb_dir = lancedb_dir
-    cfg.models_dir = tmp / "models"
-    cfg.models_dir.mkdir(parents=True)
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
@@ -73,8 +71,8 @@ def pdf_pipeline(tmp_path_factory):
 
     # Download embedding model
     embed_entry = FEATURED_EMBEDDING[0]
-    embed_path = download_model(embed_entry)
-    cfg.embedding_model = embed_path.name
+    download_model(embed_entry)
+    cfg.embedding_model = embed_entry.ref
 
     # Run sync (will use Tesseract OCR if available, otherwise skip PDF)
     asyncio.run(sync(quiet=True))

@@ -32,7 +32,7 @@ class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
             assert c.embedding_model == "nomic-embed-text"
             assert c.embedding_dim == 768
             assert c.chunk_size == 512
@@ -132,7 +132,7 @@ class TestTomlConfigFile:
     def test_no_toml_uses_defaults(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -141,7 +141,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
 
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -470,7 +470,7 @@ class TestEmptyStringValidation:
                 data_dir=tmp_path / "data",
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
-                chat_model="qwen3:8b",
+                chat_model="qwen3",
                 embedding_model="",
                 embedding_dim=768,
                 chunk_size=512,
@@ -490,7 +490,7 @@ class TestEmptyStringValidation:
                 data_dir=tmp_path / "data",
                 lancedb_dir=tmp_path / "data" / "lancedb",
                 models_dir=tmp_path / "models",
-                chat_model="qwen3:8b",
+                chat_model="qwen3",
                 embedding_model="nomic-embed-text",
                 embedding_dim=768,
                 chunk_size=512,
@@ -510,7 +510,7 @@ class TestEmptyStringValidation:
             data_dir=tmp_path / "data",
             lancedb_dir=tmp_path / "data" / "lancedb",
             models_dir=tmp_path / "models",
-            chat_model="qwen3:8b",
+            chat_model="qwen3",
             embedding_model="nomic-embed-text",
             embedding_dim=768,
             chunk_size=512,
@@ -564,4 +564,4 @@ class TestPlainEnvSourceSkipsEmpty:
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.chat_model == "qwen3:8b"  # default, not empty
+        assert c.chat_model == "qwen3"  # default, not empty

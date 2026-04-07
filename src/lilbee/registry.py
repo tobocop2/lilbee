@@ -39,6 +39,8 @@ _HASH_ALGORITHM = "sha256"
 _HASH_CHUNK_SIZE = 8192  # bytes read per iteration when hashing
 _REF_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9 ._/-]+$")
 
+DEFAULT_TAG = "latest"
+
 
 def _validate_ref_segment(segment: str, label: str) -> str:
     """Validate that a model ref segment contains only safe characters.
@@ -58,7 +60,7 @@ class ModelRef:
     """Parsed model reference like 'qwen3:8b' or 'nomic-embed-text:latest'."""
 
     name: str
-    tag: str = "latest"
+    tag: str = DEFAULT_TAG
 
     @classmethod
     def parse(cls, s: str) -> ModelRef:
@@ -79,14 +81,15 @@ class ModelRef:
 class ModelManifest:
     """Manifest for an installed model version."""
 
-    name: str
-    tag: str
+    name: str  # family slug: "qwen3", "nomic-embed-text"
+    tag: str  # variant: "0.6b", "v1.5", "latest"
     size_bytes: int
     task: str  # "chat", "embedding", or "vision" — use TaskType constants
     source_repo: str  # HuggingFace repo
     source_filename: str  # original .gguf filename
     downloaded_at: str  # ISO 8601 timestamp
     blob: str = ""  # SHA-256 hash (filename in blobs/), set by install()
+    display_name: str = ""  # human-readable label: "Qwen3 0.6B"
 
 
 def _coerce_ref(ref: str | ModelRef) -> ModelRef:
@@ -182,9 +185,31 @@ class ModelRegistry:
             source_filename=manifest.source_filename,
             downloaded_at=manifest.downloaded_at,
             blob=digest,
+            display_name=manifest.display_name,
         )
         self._write_manifest(ref, updated)
         return blob_path
+
+    def write_latest_alias(self, ref: ModelRef) -> None:
+        """Write a :latest manifest that mirrors the given ref.
+
+        Call after install() so the blob hash is already recorded.
+        """
+        manifest = self._read_manifest(ref)
+        if manifest is None:
+            return
+        latest = ModelManifest(
+            name=manifest.name,
+            tag=DEFAULT_TAG,
+            size_bytes=manifest.size_bytes,
+            task=manifest.task,
+            source_repo=manifest.source_repo,
+            source_filename=manifest.source_filename,
+            downloaded_at=manifest.downloaded_at,
+            blob=manifest.blob,
+            display_name=manifest.display_name,
+        )
+        self._write_manifest(ModelRef(name=ref.name, tag=DEFAULT_TAG), latest)
 
     def remove(self, ref: str | ModelRef) -> bool:
         """Remove a model manifest. Does NOT delete cache files (managed by HF)."""
@@ -231,8 +256,8 @@ class ModelRegistry:
             return 0
         count = 0
         for path in gguf_files:
-            name, task, repo = _match_catalog_entry(path.name)
-            ref = ModelRef.parse(name)
+            name, tag, task, repo = _match_catalog_entry(path.name)
+            ref = ModelRef(name=name, tag=tag)
             digest = _sha256_file(path)
 
             if repo:
@@ -247,7 +272,7 @@ class ModelRegistry:
 
             manifest = ModelManifest(
                 name=name,
-                tag="latest",
+                tag=tag,
                 size_bytes=blob_path.stat().st_size,
                 task=task,
                 source_repo=repo,
@@ -256,6 +281,9 @@ class ModelRegistry:
                 blob=digest,
             )
             self._write_manifest(ref, manifest)
+            # Also write :latest alias for legacy models
+            if tag != DEFAULT_TAG:
+                self.write_latest_alias(ref)
             log.info("Migrated legacy model %s -> %s", path.name, ref)
             count += 1
         return count
@@ -303,7 +331,8 @@ class ModelRegistry:
 class CatalogMatch(NamedTuple):
     """Result of matching a .gguf filename to a catalog entry."""
 
-    name: str
+    name: str  # family slug
+    tag: str  # variant tag
     task: str
     repo: str
 
@@ -320,7 +349,7 @@ def _match_catalog_entry(filename: str) -> CatalogMatch:
         # Match on repo name fragment or exact filename
         repo_stem = entry.hf_repo.split("/")[-1].lower()
         if filename_lower.startswith(repo_stem) or entry.gguf_filename == filename:
-            return CatalogMatch(entry.name, entry.task, entry.hf_repo)
+            return CatalogMatch(entry.name, entry.tag, entry.task, entry.hf_repo)
     # Fallback: strip extension and quant suffix for a reasonable name
     stem = filename.rsplit(".", 1)[0]
-    return CatalogMatch(stem, ModelTask.CHAT, "")
+    return CatalogMatch(stem, DEFAULT_TAG, ModelTask.CHAT, "")

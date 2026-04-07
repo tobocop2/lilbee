@@ -17,6 +17,7 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.chat_model = "test-model"
@@ -44,9 +45,13 @@ def _make_model(
     featured: bool = False,
     size_gb: float = 2.0,
     description: str = "A test model",
+    tag: str = "latest",
+    display_name: str = "",
 ) -> CatalogModel:
     return CatalogModel(
-        name=name,
+        name=name.lower().replace(" ", "-"),
+        tag=tag,
+        display_name=display_name or name,
         hf_repo=f"test/{name.lower().replace(' ', '-')}",
         gguf_filename="*.gguf",
         size_gb=size_gb,

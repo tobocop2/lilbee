@@ -27,7 +27,7 @@ class _EmbeddingRow(ListItem):
 
     def compose(self) -> ComposeResult:
         suffix = "  (Recommended)" if self._recommended else ""
-        yield Static(f"  {self.model.name}  {self.model.size_gb:.1f} GB{suffix}")
+        yield Static(f"  {self.model.display_name}  {self.model.size_gb:.1f} GB{suffix}")
 
 
 class _RemoteRow(ListItem):
@@ -48,9 +48,9 @@ class SetupModal(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, ollama_embeddings: list[str] | None = None) -> None:
+    def __init__(self, remote_embeddings: list[str] | None = None) -> None:
         super().__init__()
-        self._remote_embeddings = ollama_embeddings or []
+        self._remote_embeddings = remote_embeddings or []
         self._downloaded_name: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -82,14 +82,14 @@ class SetupModal(ModalScreen[str | None]):
     @work(thread=True)
     def _download_model(self, model: CatalogModel) -> None:
         """Download the selected embedding model."""
-        self.app.call_from_thread(self._set_status, f"Downloading {model.name}...")
+        self.app.call_from_thread(self._set_status, f"Downloading {model.display_name}...")
         try:
             from lilbee.models import pull_with_progress
 
-            pull_with_progress(model.name)
-            self.app.call_from_thread(self._on_downloaded, model.name)
+            pull_with_progress(model.ref)
+            self.app.call_from_thread(self._on_downloaded, model.ref)
         except Exception as exc:
-            log.warning("Embedding download failed for %s", model.name, exc_info=True)
+            log.warning("Embedding download failed for %s", model.ref, exc_info=True)
             self.app.call_from_thread(self._set_status, f"Error: {exc}")
 
     def _set_status(self, text: str) -> None:

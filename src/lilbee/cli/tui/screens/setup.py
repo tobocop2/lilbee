@@ -17,6 +17,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
+from lilbee.models import ModelTask
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
@@ -37,9 +38,9 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
         embed: list[str] = []
         for m in registry.list_installed():
             name = f"{m.name}:{m.tag}"
-            if m.task == "embedding":
+            if m.task == ModelTask.EMBEDDING:
                 embed.append(name)
-            elif m.task == "chat":
+            elif m.task == ModelTask.CHAT:
                 chat.append(name)
         return sorted(chat), sorted(embed)
     except Exception:
@@ -47,7 +48,12 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 
 def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model."""
+    """Create a minimal TableRow for an already-installed model.
+
+    ``name`` is a ref string like ``qwen3:0.6b``.  We store it in ``ref``
+    (for config persistence) and also in ``name`` (for display) since we
+    don't have a richer display label for already-installed models.
+    """
     from lilbee.cli.tui.screens.catalog import TableRow, _parse_param_label
 
     return TableRow(
@@ -61,6 +67,7 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
         installed=True,
         sort_downloads=0,
         sort_size=0.0,
+        ref=name,
     )
 
 
@@ -103,12 +110,12 @@ class SetupWizard(Screen[str | None]):
             label.update(msg.SETUP_STEP_CHAT)
             installed_names = self._chat_installed
             featured_models = FEATURED_CHAT
-            task = "chat"
+            task = ModelTask.CHAT
         else:
             label.update(msg.SETUP_STEP_EMBED)
             installed_names = self._embed_installed
             featured_models = FEATURED_EMBEDDING
-            task = "embedding"
+            task = ModelTask.EMBEDDING
 
         from lilbee.cli.tui.screens.catalog import _catalog_to_row
 
@@ -154,7 +161,7 @@ class SetupWizard(Screen[str | None]):
         if isinstance(event.widget, ModelCard):
             row = event.widget.row
             if row.installed:
-                self._on_model_chosen(row.name)
+                self._on_model_chosen(row.ref or row.name)
             elif row.catalog_model:
                 self._download_model(row.catalog_model)
 
@@ -217,17 +224,17 @@ class SetupWizard(Screen[str | None]):
                         exc_info=True,
                     )
 
-            dest = download_model(model, on_progress=_on_progress)
-            self.app.call_from_thread(self._on_download_complete, dest.stem)
+            download_model(model, on_progress=_on_progress)
+            self.app.call_from_thread(self._on_download_complete, model.ref, model.display_name)
         except Exception as exc:
             log.warning(
                 "Download failed for %s",
-                model.name,
+                model.ref,
                 exc_info=True,
             )
             error_msg = str(exc)
             if "401" in error_msg or "PermissionError" in error_msg:
-                error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.name)
+                error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
             self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
 
     def _set_status(self, text: str) -> None:
@@ -236,10 +243,10 @@ class SetupWizard(Screen[str | None]):
     def _update_progress(self, percent: int) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
 
-    def _on_download_complete(self, name: str) -> None:
+    def _on_download_complete(self, ref: str, display_name: str = "") -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=100)
-        self._set_status(msg.SETUP_INSTALLED_STATUS.format(name=name))
-        self._on_model_chosen(name)
+        self._set_status(msg.SETUP_INSTALLED_STATUS.format(name=display_name or ref))
+        self._on_model_chosen(ref)
 
     def _finish(self) -> None:
         from lilbee import settings
