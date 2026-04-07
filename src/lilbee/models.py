@@ -1,5 +1,6 @@
 """RAM detection, model selection, interactive picker, and auto-install for chat models."""
 
+import functools
 import logging
 import os
 import shutil
@@ -58,26 +59,20 @@ def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
 
 # Lazy singletons — resolved on first access to break the circular import
 # between models.py (imports ModelTask) and catalog.py (imports from models).
-_model_catalog: tuple[ModelInfo, ...] | None = None
-_vision_catalog: tuple[ModelInfo, ...] | None = None
 
 
+@functools.cache
 def _get_model_catalog() -> tuple[ModelInfo, ...]:
-    global _model_catalog
-    if _model_catalog is None:
-        from lilbee.catalog import FEATURED_CHAT
+    from lilbee.catalog import FEATURED_CHAT
 
-        _model_catalog = _catalog_from_featured(FEATURED_CHAT)
-    return _model_catalog
+    return _catalog_from_featured(FEATURED_CHAT)
 
 
+@functools.cache
 def _get_vision_catalog() -> tuple[ModelInfo, ...]:
-    global _vision_catalog
-    if _vision_catalog is None:
-        from lilbee.catalog import FEATURED_VISION
+    from lilbee.catalog import FEATURED_VISION
 
-        _vision_catalog = _catalog_from_featured(FEATURED_VISION)
-    return _vision_catalog
+    return _catalog_from_featured(FEATURED_VISION)
 
 
 def __getattr__(name: str) -> tuple[ModelInfo, ...]:
