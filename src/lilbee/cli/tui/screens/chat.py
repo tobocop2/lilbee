@@ -97,6 +97,7 @@ class ChatScreen(Screen[None]):
         Binding("down", "history_next", "Down", show=False),
         Binding("escape", "enter_normal_mode", "Normal", show=False, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
+        Binding("f5", "open_setup", "Setup", show=False),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -195,7 +196,7 @@ class ChatScreen(Screen[None]):
         """Hide the chat-only banner."""
         self.query_one("#chat-only-banner", Static).display = False
 
-    def key_f5(self) -> None:
+    def action_open_setup(self) -> None:
         """Open the setup wizard."""
         self._cmd_setup("")
 

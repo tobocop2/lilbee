@@ -789,7 +789,6 @@ class CatalogScreen(Screen[None]):
             table.move_cursor(row=len(self._rows) - 1)
 
 
-
 @dataclass
 class GridSection:
     """A named group of rows for the grid view."""

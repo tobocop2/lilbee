@@ -5829,13 +5829,13 @@ async def test_chat_hide_banner():
         assert app.screen.query_one("#chat-only-banner").display is False
 
 
-async def test_chat_key_f5_opens_setup():
-    """key_f5 opens the setup wizard."""
+async def test_chat_f5_opens_setup():
+    """F5 binding opens the setup wizard."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with patch.object(app.screen, "_cmd_setup") as mock_setup:
-            app.screen.key_f5()
+            app.screen.action_open_setup()
             mock_setup.assert_called_once_with("")
 
 

@@ -18,7 +18,6 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
-from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.config import cfg
 
 
@@ -62,9 +61,6 @@ def _patch_chat_setup():
         return_value=True,
     ):
         yield
-
-
-SCREEN_TYPES = [ChatScreen, CatalogScreen, StatusScreen, SettingsScreen, TaskCenter]
 
 
 async def test_bracket_keys_cycle_all_screens():
