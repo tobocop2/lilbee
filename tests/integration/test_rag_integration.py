@@ -171,8 +171,6 @@ def rag_pipeline(tmp_path_factory):
     cfg.data_dir = data_dir
     cfg.data_root = tmp
     cfg.lancedb_dir = lancedb_dir
-    cfg.models_dir = tmp / "models"
-    cfg.models_dir.mkdir(parents=True)
     # Disable query expansion for predictable search results (no LLM calls during search)
     cfg.query_expansion_count = 0
     # Disable concept graph to avoid spacy dependency in integration tests
@@ -186,13 +184,13 @@ def rag_pipeline(tmp_path_factory):
 
     # Download embedding model via catalog (llama-cpp can't pull directly)
     embed_entry = FEATURED_EMBEDDING[0]
-    embed_path = download_model(embed_entry)
-    cfg.embedding_model = embed_path.name
+    download_model(embed_entry)
+    cfg.embedding_model = embed_entry.ref
 
     # Download smallest featured chat model (Qwen3 0.6B)
     chat_entry = FEATURED_CHAT[0]
-    chat_path = download_model(chat_entry)
-    cfg.chat_model = chat_path.name
+    download_model(chat_entry)
+    cfg.chat_model = chat_entry.ref
 
     # Run real sync
     result = asyncio.run(sync(quiet=True))

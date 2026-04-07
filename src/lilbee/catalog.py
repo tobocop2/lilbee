@@ -61,7 +61,7 @@ class DownloadConfig(BaseModel):
     repo_id: str
     filename: str
     token: str | None
-    force_download: bool = True
+    force_download: bool = False
     cache_dir: str | None = None
     tqdm_class: Any = None
 
