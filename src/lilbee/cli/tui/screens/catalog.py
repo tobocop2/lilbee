@@ -193,25 +193,39 @@ def _param_sort_value(params: str) -> float:
     return float(match.group(1)) if match else 0.0
 
 
+_GRID_PAGE_ROWS = 3
+_TABLE_PAGE_ROWS = 10
+
+
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
     CSS_PATH = "catalog.tcss"
+    AUTO_FOCUS = ""  # GridSelect is mounted dynamically; focused in on_mount
+
+    HELP = (
+        "# Catalog\n"
+        "Browse and install models.\n\n"
+        "Use arrows to navigate the grid, Enter to install."
+    )
+
+    _ACTION_GROUP = Binding.Group("Actions", compact=True)
+    _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
-        Binding("v", "toggle_view", "View", show=True),
-        Binding("slash", "focus_search", "Search", show=True),
-        Binding("d", "delete_model", "Delete", show=True),
+        Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
+        Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
+        Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
-        Binding("space", "page_down", "PgDn", show=False),
-        Binding("ctrl+d", "page_down", "PgDn", show=False),
-        Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -231,14 +245,17 @@ class CatalogScreen(Screen[None]):
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -248,7 +265,15 @@ class CatalogScreen(Screen[None]):
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
+        self._focus_first_grid()
         self._fetch_remote_models()
+
+    def _focus_first_grid(self) -> None:
+        """Focus the first GridSelect widget if available."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self.query_one(GridSelect).focus()
 
     def _fetch_installed_names(self) -> None:
         """Populate installed source repos/filenames from registry manifests."""
@@ -280,6 +305,8 @@ class CatalogScreen(Screen[None]):
             self.remove_class("-list-view")
             self.add_class("-grid-view")
             self._refresh_grid()
+            with contextlib.suppress(Exception):
+                self.query_one(GridSelect).focus()
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -707,56 +734,68 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
         self._fetch_remote_models()
 
+    def _focused_grid(self) -> GridSelect | None:
+        """Return the focused GridSelect if in grid mode, else None."""
+        if self._grid_view and isinstance(self.focused, GridSelect):
+            return self.focused
+        return None
+
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(_GRID_PAGE_ROWS):
+                grid.action_cursor_down()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(_GRID_PAGE_ROWS):
+                grid.action_cursor_up()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_down()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_up()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_up()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_first()
             return
         table = self.query_one("#catalog-table", DataTable)
         table.move_cursor(row=0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_last()
             return
         table = self.query_one("#catalog-table", DataTable)
         if self._rows:
             table.move_cursor(row=len(self._rows) - 1)
-
-    def key_left(self) -> None:
-        """Navigate to previous view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_prev()
-
-    def key_right(self) -> None:
-        """Navigate to next view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_next()
 
 
 @dataclass

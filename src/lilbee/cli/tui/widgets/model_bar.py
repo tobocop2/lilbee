@@ -111,7 +111,10 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
         sel.value = target
 
 
-class ModelBar(Widget, can_focus=True):
+_SELECT_IDS = ("#chat-model-select", "#embed-model-select", "#vision-model-select")
+
+
+class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
     DEFAULT_CSS = """

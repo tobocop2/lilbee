@@ -82,10 +82,17 @@ class StatusScreen(Screen[None]):
     """Knowledge base status view with collapsible sections."""
 
     CSS_PATH = "status.tcss"
+    AUTO_FOCUS = "CollapsibleTitle"
+    HELP = (
+        "Knowledge base status.\n\n"
+        "View configuration, documents, model architecture, and storage info."
+    )
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
+        Binding("tab", "focus_next", "Next section", show=True),
+        Binding("shift+tab", "focus_previous", "Prev section", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),
@@ -93,7 +100,9 @@ class StatusScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
@@ -102,7 +111,8 @@ class StatusScreen(Screen[None]):
             Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             id="status-scroll",
         )
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self._load_config()
@@ -158,14 +168,13 @@ class StatusScreen(Screen[None]):
             self.app.pop_screen()
 
     def action_cursor_down(self) -> None:
-        self.query_one("#docs-table", DataTable).action_cursor_down()
+        self.query_one("#status-scroll", VerticalScroll).scroll_down()
 
     def action_cursor_up(self) -> None:
-        self.query_one("#docs-table", DataTable).action_cursor_up()
+        self.query_one("#status-scroll", VerticalScroll).scroll_up()
 
     def action_jump_top(self) -> None:
-        self.query_one("#docs-table", DataTable).move_cursor(row=0)
+        self.query_one("#status-scroll", VerticalScroll).scroll_home()
 
     def action_jump_bottom(self) -> None:
-        table = self.query_one("#docs-table", DataTable)
-        table.move_cursor(row=table.row_count - 1)
+        self.query_one("#status-scroll", VerticalScroll).scroll_end()

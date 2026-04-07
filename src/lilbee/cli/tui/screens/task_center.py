@@ -44,6 +44,8 @@ class TaskCenter(Screen[None]):
     """View for monitoring active, queued, and recent background tasks."""
 
     CSS_PATH = "task_center.tcss"
+    AUTO_FOCUS = "#task-table"
+    HELP = "Background task monitor.\n\nUse r to refresh, c to cancel the selected task."
 
     app: LilbeeApp
 
@@ -57,12 +59,15 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Static("Background Tasks", id="task-center-title")
         yield DataTable(id="task-table", cursor_type="row")
         yield Static("", id="task-detail")
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def action_go_back(self) -> None:
         """Go back to the Chat screen."""

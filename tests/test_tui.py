@@ -9,7 +9,6 @@ from textual.binding import Binding
 
 from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.cli.tui.screens.catalog import _catalog_to_row, _remote_to_row
-from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
 
@@ -117,12 +116,6 @@ class TestTaskBarUnit:
         assert len(task_id) == 8
 
 
-class TestHelpModal:
-    def test_creates(self) -> None:
-        modal = HelpModal()
-        assert modal is not None
-
-
 class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
@@ -202,7 +195,7 @@ class TestChatScreenAsync:
             await pilot.press("ctrl+q")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_help_modal(self, mock_catalog: mock.MagicMock) -> None:
+    async def test_help_panel(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -211,7 +204,7 @@ class TestChatScreenAsync:
             await pilot.pause()
             app.action_push_help()
             await pilot.pause()
-            assert len(app.screen_stack) > 1
+            assert app.screen.query("HelpPanel")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_push(self, mock_catalog: mock.MagicMock) -> None:
@@ -662,20 +655,19 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert len(visible) <= 3
+        assert any("Search" in d for d in visible)
+        assert len(visible) <= 4
 
 
 class TestNavBindings:
-    """Verify h/l nav bindings exist in app BINDINGS (number keys removed)."""
+    """Verify [/] nav bindings exist in app BINDINGS (number keys removed)."""
 
     def test_nav_bindings_exist(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
         keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        assert "h" in keys
-        assert "l" in keys
-        assert "left" in keys
-        assert "right" in keys
+        assert "left_square_bracket" in keys
+        assert "right_square_bracket" in keys
 
     def test_number_keys_removed(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp

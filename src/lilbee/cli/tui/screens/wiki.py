@@ -53,6 +53,8 @@ class WikiScreen(Screen[None]):
     """Wiki page browser with sidebar and markdown content viewer."""
 
     CSS_PATH = "wiki.tcss"
+    AUTO_FOCUS = "#wiki-page-list"
+    HELP = "Browse wiki pages.\n\nUse / to search, Enter to select a page, Escape to clear search."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
@@ -69,7 +71,9 @@ class WikiScreen(Screen[None]):
         self._page_slugs: list[str] = []
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Horizontal(
             Vertical(
@@ -90,7 +94,8 @@ class WikiScreen(Screen[None]):
             ),
             id="wiki-layout",
         )
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self._load_pages()

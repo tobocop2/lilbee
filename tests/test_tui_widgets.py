@@ -182,32 +182,26 @@ class _HelpApp(App):
         yield Static("bg")
 
     def key_f1(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        self.push_screen(HelpModal())
+        self.action_show_help_panel()
 
 
-class TestHelpModal:
-    async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+class TestHelpPanel:
+    async def test_show_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            # The modal should be visible
-            assert len(app.screen_stack) == 2
+            assert app.screen.query("HelpPanel")
 
-    async def test_action_close_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+    async def test_hide_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            app.screen.action_close()
+            assert app.screen.query("HelpPanel")
+            app.action_hide_help_panel()
             await pilot.pause()
-            assert len(app.screen_stack) == 1
+            assert not app.screen.query("HelpPanel")
 
 
 class _TaskBarApp(App):
@@ -386,14 +380,35 @@ class TestModelBar:
             assert vision_sel is not None
 
     async def test_vision_set_when_configured(self) -> None:
+        from unittest.mock import patch
+
         from textual.widgets import Select
 
         cfg.vision_model = "llava"
         app = _ModelBarApp()
+        with patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [ModelOption("nomic", "nomic")],
+                [ModelOption("llava", "llava")],
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                vision_sel = app.query_one("#vision-model-select", Select)
+                assert vision_sel.value == "llava"
+
+    async def test_vision_model_not_in_scan_still_selectable(self) -> None:
+        """Configured vision model is prepended even if not in scanned list."""
+        from textual.widgets import Select
+
+        cfg.vision_model = "nonexistent-model:latest"
+        app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             vision_sel = app.query_one("#vision-model-select", Select)
-            assert vision_sel.value == "llava"
+            assert vision_sel.value == "nonexistent-model:latest"
 
     async def test_labels_rendered(self) -> None:
         from textual.widgets import Label
@@ -1459,70 +1474,70 @@ class TestRunTuiKeyboardInterrupt:
                 mock_reset.assert_called_once()
 
 
-class _StatusBarApp(App):
+class _ViewTabsApp(App):
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        yield StatusBar()
+        yield ViewTabs()
 
 
-class TestStatusBar:
+class TestViewTabs:
     async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             assert bar is not None
 
     async def test_default_active_view_is_chat(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
     async def test_watch_active_view_updates_display(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.active_view = "Catalog"
             await pilot.pause()
             assert bar.active_view == "Catalog"
 
     async def test_set_active_view_to_status(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.active_view = "Status"
             await pilot.pause()
             assert bar.active_view == "Status"
 
     async def test_mode_text_updates(self) -> None:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.mode_text = msg.MODE_NORMAL
             await pilot.pause()
             assert bar.mode_text == msg.MODE_NORMAL
 
     async def test_dock_bottom_in_css(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        assert "dock: bottom" in StatusBar.DEFAULT_CSS
+        assert "dock: bottom" in ViewTabs.DEFAULT_CSS
 
     async def test_nav_views_contains_all_screens(self) -> None:
         from lilbee.cli.tui.messages import get_nav_views
@@ -1537,14 +1552,14 @@ class TestStatusBar:
         assert msg.get_nav_views()[0] == msg.DEFAULT_VIEW
 
 
-class TestLilbeeAppStatusBar:
+class TestLilbeeAppViewTabs:
     async def test_screen_composes_status_bar(self) -> None:
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -1552,7 +1567,7 @@ class TestLilbeeAppStatusBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar is not None
 
     async def test_status_bar_default_is_chat(self) -> None:
@@ -1561,7 +1576,7 @@ class TestLilbeeAppStatusBar:
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -1569,7 +1584,7 @@ class TestLilbeeAppStatusBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
 
@@ -2221,6 +2236,7 @@ class TestModelBarAdditional:
             assert chat_sel.value == "test-model"
 
     async def test_populate_vision_model_fallback(self) -> None:
+        """Vision model in config but not in scan results → prepended and selected."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2662,7 +2678,7 @@ class TestModelBarPopulateBranches:
             assert chat_sel.value == "test-model"
 
     async def test_populate_vision_from_cfg_fallback(self) -> None:
-        """Cover lines 202-206: vision from cfg when not in scan and select is empty."""
+        """Vision from cfg when not in scan → prepended and selected."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2684,7 +2700,7 @@ class TestModelBarPopulateBranches:
             assert vision_sel.value == "llava:custom"
 
     async def test_populate_vision_in_scanned_list(self) -> None:
-        """Cover lines 197-201: vision model in scanned list, has_vision_model True."""
+        """Vision model in scanned list gets selected."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"

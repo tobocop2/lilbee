@@ -203,49 +203,49 @@ class TestModelSwitchSafety:
             screen.action_cancel_stream.assert_called_once()
 
 
-class TestStatusBarPresence:
+class TestViewTabsPresence:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
     async def test_status_bar_on_all_screens(self, _fam, _cat, _mock_resolve):
-        """StatusBar must exist on every screen."""
+        """ViewTabs must exist on every screen."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
 
             # Chat screen
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar is not None
 
             # Cycle through all views
             for view in ["Catalog", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
-                bar = app.screen.query_one(StatusBar)
-                assert bar is not None, f"StatusBar missing on {view} screen"
+                bar = app.screen.query_one(ViewTabs)
+                assert bar is not None, f"ViewTabs missing on {view} screen"
 
 
 class TestModeIndicator:
     async def test_insert_mode_on_startup(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "INSERT" in bar.mode_text
 
     async def test_normal_mode_on_escape(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "NORMAL" in bar.mode_text
 
 
@@ -602,7 +602,6 @@ class TestScreenTransitions:
     async def test_help_from_each_view_and_dismiss(self, _mock_resolve):
         """Open help from each view, dismiss, verify back at same view."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -615,11 +614,11 @@ class TestScreenTransitions:
 
                     app.action_push_help()
                     await pilot.pause()
-                    assert isinstance(app.screen, HelpModal)
+                    assert app.screen.query("HelpPanel")
 
-                    await pilot.press("escape")
+                    app.action_push_help()
                     await pilot.pause()
-                    assert not isinstance(app.screen, HelpModal)
+                    assert not app.screen.query("HelpPanel")
 
     async def test_q_from_models_returns_to_chat(self, _mock_resolve):
         """From Models, pressing q returns to Chat."""
@@ -758,7 +757,7 @@ class TestChatInteractions:
             app.screen.action_enter_normal_mode()
             await pilot.pause()
 
-            app.screen.key_j()
+            app.screen.action_vim_scroll_down()
             await pilot.pause()
             new_focus = app.screen.focused.id if app.screen.focused else None
             assert new_focus is not None
@@ -772,7 +771,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            app.screen.key_g()
+            app.screen.action_vim_scroll_home()
             await pilot.pause()
             assert app.screen._insert_mode is False
 
@@ -783,7 +782,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            app.screen.key_G()
+            app.screen.action_vim_scroll_end()
             await pilot.pause()
             assert app.screen._insert_mode is False
 
@@ -822,16 +821,14 @@ class TestChatInteractions:
             assert inp.has_focus
             assert inp.value.startswith("/")
 
-    async def test_slash_command_help_opens_modal(self, _mock_resolve):
+    async def test_slash_command_help_opens_panel(self, _mock_resolve):
         """Typing /help dispatches to the help handler."""
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._handle_slash("/help")
             await pilot.pause()
-            assert isinstance(app.screen, HelpModal)
+            assert app.screen.query("HelpPanel")
 
     async def test_slash_command_unknown_notifies(self, _mock_resolve):
         """Unknown slash command shows a warning notification."""
@@ -927,21 +924,21 @@ class TestChatInteractions:
             await pilot.pause()
 
             # Navigate up through history
-            app.screen.key_up()
+            app.screen.action_history_prev()
             await pilot.pause()
             assert inp.value == "second message"
 
-            app.screen.key_up()
+            app.screen.action_history_prev()
             await pilot.pause()
             assert inp.value == "first message"
 
             # Navigate down
-            app.screen.key_down()
+            app.screen.action_history_next()
             await pilot.pause()
             assert inp.value == "second message"
 
             # Past end clears
-            app.screen.key_down()
+            app.screen.action_history_next()
             await pilot.pause()
             assert inp.value == ""
 
@@ -975,17 +972,19 @@ class TestChatInteractions:
             await pilot.pause()
             assert app.screen._insert_mode is True
 
-    async def test_focus_cycle_in_normal_mode_with_up_down(self, _mock_resolve):
-        """In normal mode, up/down cycle focus between focusable widgets."""
+    async def test_history_actions_skip_in_normal_mode(self, _mock_resolve):
+        """In normal mode, up/down raise SkipAction (no focus cycling)."""
+        from textual.actions import SkipAction
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            app.screen.key_up()
-            await pilot.pause()
-            app.screen.key_down()
-            await pilot.pause()
+            with pytest.raises(SkipAction):
+                app.screen.action_history_prev()
+            with pytest.raises(SkipAction):
+                app.screen.action_history_next()
             assert app.screen._insert_mode is False
 
 
@@ -1785,27 +1784,30 @@ class TestTaskCenterInteractions:
 class TestChatPromptBorder:
     """Test that the chat prompt area has a single border, not stacked."""
 
-    async def test_prompt_area_insert_mode_border(self, _mock_resolve):
-        """PromptArea should have insert-mode class, input should have no border."""
+    async def test_prompt_area_border_uses_focus_within(self, _mock_resolve):
+        """PromptArea uses :focus-within for border, not mode classes."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             area = app.screen.query_one("#chat-prompt-area")
             inp = app.screen.query_one("#chat-input")
-            assert area.has_class("insert-mode")
+            # No mode classes on the prompt area — border driven by :focus-within CSS
+            assert not area.has_class("insert-mode")
+            assert not area.has_class("normal-mode")
             # Input should not have its own border
-            assert inp.styles.border is not None  # exists but set to none in CSS
+            assert inp.styles.border is not None
 
-    async def test_prompt_area_normal_mode_border(self, _mock_resolve):
-        """PromptArea should switch to normal-mode class on escape."""
+    async def test_normal_mode_dims_input_not_area(self, _mock_resolve):
+        """Normal mode adds class to input (opacity), not to prompt area."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
+            inp = app.screen.query_one("#chat-input")
             area = app.screen.query_one("#chat-prompt-area")
-            assert area.has_class("normal-mode")
-            assert not area.has_class("insert-mode")
+            assert inp.has_class("normal-mode")
+            assert not area.has_class("normal-mode")
 
 
 class TestAppQuit:

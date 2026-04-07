@@ -1,4 +1,4 @@
-"""StatusBar — unified bottom bar with mode indicator, view tabs, and hints."""
+"""ViewTabs — view tab strip with mode indicator."""
 
 from __future__ import annotations
 
@@ -17,17 +17,17 @@ _MODE_STYLES: dict[str, str] = {
 _DEFAULT_MODE_STYLE = "bold white on dark_red"
 
 
-class StatusBar(Widget):
-    """Persistent bottom bar: mode indicator + view tabs + binding hints."""
+class ViewTabs(Widget):
+    """View tab strip with mode indicator."""
 
     DEFAULT_CSS = """
-    StatusBar {
+    ViewTabs {
         dock: bottom;
         height: 1;
         width: 100%;
         background: $surface;
     }
-    StatusBar > Static {
+    ViewTabs > Static {
         width: auto;
     }
     """
@@ -36,7 +36,7 @@ class StatusBar(Widget):
     mode_text: reactive[str] = reactive("")
 
     def compose(self) -> ComposeResult:
-        yield Static(id="status-bar-content")
+        yield Static(id="view-tabs-content")
 
     def on_mount(self) -> None:
         self.active_view = getattr(self.app, "active_view", msg.DEFAULT_VIEW)
@@ -58,5 +58,4 @@ class StatusBar(Widget):
                 parts.append(f"[bold reverse] {name} [/]")
             else:
                 parts.append(f" [dim]{name}[/] ")
-        parts.append(msg.STATUS_BAR_HINTS)
-        self.query_one("#status-bar-content", Static).update("".join(parts))
+        self.query_one("#view-tabs-content", Static).update("".join(parts))
