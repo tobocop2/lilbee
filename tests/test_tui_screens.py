@@ -5804,11 +5804,20 @@ def test_chat_cycle_focus_no_focused_widget():
 
 
 async def test_chat_action_enter_normal_mode_streaming():
-    """action_enter_normal_mode stops streaming and enters normal mode."""
+    """action_enter_normal_mode cancels workers and stops streaming."""
+    import asyncio
+
+    async def _slow_worker() -> None:
+        await asyncio.sleep(999)
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         app.screen._streaming = True
+        # Start a real Textual worker so self.workers is non-empty
+        app.screen.run_worker(_slow_worker(), exclusive=False)
+        await _pilot.pause()
+        assert len(list(app.screen.workers)) > 0
         app.screen.action_enter_normal_mode()
         assert app.screen._streaming is False
 
