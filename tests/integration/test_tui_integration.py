@@ -42,9 +42,13 @@ def _make_model(
     task: str = "chat",
     featured: bool = False,
     size_gb: float = 4.0,
+    tag: str = "latest",
+    display_name: str = "",
 ) -> CatalogModel:
     return CatalogModel(
-        name=name,
+        name=name.lower().replace(" ", "-"),
+        tag=tag,
+        display_name=display_name or name,
         hf_repo=f"org/{name}-GGUF",
         gguf_filename="test.gguf",
         size_gb=size_gb,
@@ -935,6 +939,8 @@ class TestRealDownloadProgress:
         # Use small test file from xet-enabled repo
         entry = CatalogModel(
             name="dummy-xet-test",
+            tag="latest",
+            display_name="Dummy XET Test",
             hf_repo="celinah/dummy-xet-testing",
             gguf_filename="dummy.safetensors",
             size_gb=0.001,  # ~1MB
@@ -992,6 +998,8 @@ class TestRealDownloadProgress:
         # Use small test file (~1MB)
         entry = CatalogModel(
             name="dummy-xet-test",
+            tag="latest",
+            display_name="Dummy XET Test",
             hf_repo="celinah/dummy-xet-testing",
             gguf_filename="dummy.safetensors",
             size_gb=0.001,
@@ -1048,6 +1056,8 @@ class TestRealDownloadProgress:
         # Use small test file (~1MB)
         entry = CatalogModel(
             name="dummy-xet-test",
+            tag="latest",
+            display_name="Dummy XET Test",
             hf_repo="celinah/dummy-xet-testing",
             gguf_filename="dummy.safetensors",
             size_gb=0.001,

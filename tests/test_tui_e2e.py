@@ -357,7 +357,9 @@ class TestDownloadProgressSlow:
             reset_model_manager()
 
             entry = CatalogModel(
-                name="Mistral 7B",
+                name="mistral",
+                tag="7b",
+                display_name="Mistral 7B",
                 hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=4.2,

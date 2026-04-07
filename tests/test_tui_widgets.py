@@ -16,6 +16,7 @@ from lilbee.config import cfg
 def _isolated_cfg(tmp_path):
 
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.chat_model = "test-model"
@@ -31,9 +32,13 @@ def _make_model(
     task: str = "chat",
     featured: bool = False,
     size_gb: float = 2.0,
+    tag: str = "latest",
+    display_name: str = "",
 ) -> CatalogModel:
     return CatalogModel(
-        name=name,
+        name=name.lower().replace(" ", "-"),
+        tag=tag,
+        display_name=display_name or name,
         hf_repo=f"test/{name.lower().replace(' ', '-')}",
         gguf_filename="*.gguf",
         size_gb=size_gb,
@@ -470,9 +475,12 @@ class TestClassifyInstalledModels:
             ]
             chat, embed, vision = _classify_installed_models()
 
-        assert "qwen3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
-        assert "llava:latest" in vision
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        vision_refs = [ref for _, ref in vision]
+        assert "qwen3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
+        assert "llava:latest" in vision_refs
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -509,8 +517,8 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
             chat, embed, vision = _classify_installed_models()
 
-        all_names = chat + embed + vision
-        assert not any("mmproj" in n.lower() for n in all_names)
+        all_refs = [ref for _, ref in chat + embed + vision]
+        assert not any("mmproj" in r.lower() for r in all_refs)
 
     def test_remote_models_classified(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -541,8 +549,10 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = []
             chat, embed, _vision = _classify_installed_models()
 
-        assert "llama3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        assert "llama3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
 
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -785,7 +795,15 @@ class TestVisionOptions:
         from lilbee.cli.tui.widgets.autocomplete import _vision_options
         from lilbee.models import ModelInfo
 
-        fake_catalog = (ModelInfo("llava", 5.5, 8, "test"),)
+        fake_catalog = (
+            ModelInfo(
+                ref="llava:latest",
+                display_name="LLaVA",
+                size_gb=5.5,
+                min_ram_gb=8,
+                description="test",
+            ),
+        )
         with mock.patch("lilbee.models.VISION_CATALOG", fake_catalog):
             r = _vision_options()
             assert r[0] == "off"
@@ -2172,7 +2190,11 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["qwen3:8b", "llama:7b"], ["test-embed"], [])
+            bar._populate(
+                [("Qwen3 8B", "qwen3:8b"), ("Llama 7B", "llama:7b")],
+                [("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2208,7 +2230,11 @@ class TestModelBarAdditional:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             # vision model configured but not in scanned list
-            bar._populate(["test-model"], ["test-embed"], ["llava:7b"])
+            bar._populate(
+                [("test-model", "test-model")],
+                [("test-embed", "test-embed")],
+                [("Llava 7B", "llava:7b")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2225,7 +2251,11 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], [])
+            bar._populate(
+                [("test-model", "test-model")],
+                [("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2265,7 +2295,11 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["nomic:latest"], [])
+            bar._populate(
+                [("test-model", "test-model")],
+                [("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2279,7 +2313,11 @@ class TestCollectNativeModelsError:
 
         cfg.models_dir = tmp_path / "models"
         cfg.models_dir.mkdir()
-        buckets: dict[str, list[str]] = {"chat": [], "embedding": [], "vision": []}
+        buckets: dict[str, list[tuple[str, str]]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
         seen: set[str] = set()
         with mock.patch(
             "lilbee.registry.ModelRegistry",
@@ -2291,7 +2329,11 @@ class TestCollectNativeModelsError:
     def test_collect_remote_models_exception_suppressed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
 
-        buckets: dict[str, list[str]] = {"chat": [], "embedding": [], "vision": []}
+        buckets: dict[str, list[tuple[str, str]]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
         seen: set[str] = set()
         with mock.patch(
             "lilbee.model_manager.classify_remote_models",
@@ -2533,7 +2575,11 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model", "other"], ["test-embed", "nomic"], ["llava:7b"])
+            bar._populate(
+                [("test-model", "test-model"), ("other", "other")],
+                [("test-embed", "test-embed"), ("nomic", "nomic")],
+                [("Llava 7B", "llava:7b")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2571,7 +2617,11 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], [])
+            bar._populate(
+                [("test-model", "test-model")],
+                [("test-embed", "test-embed")],
+                [],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2589,7 +2639,11 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            bar._populate(["test-model"], ["test-embed"], ["llava:7b", "moondream:latest"])
+            bar._populate(
+                [("test-model", "test-model")],
+                [("test-embed", "test-embed")],
+                [("Llava 7B", "llava:7b"), ("Moondream", "moondream:latest")],
+            )
             await pilot.pause()
             from textual.widgets import Select
 
@@ -2649,9 +2703,9 @@ class TestModelBarPopulateBranches:
                 sel.set_options = make_patched(sel, orig_fn, cfg_val, sel_id)  # type: ignore[assignment]
 
             bar._populate(
-                ["qwen3:8b", "llama:7b"],
-                ["nomic:latest"],
-                ["llava:7b"],
+                [("Qwen3 8B", "qwen3:8b"), ("Llama 7B", "llama:7b")],
+                [("Nomic Embed Text", "nomic:latest")],
+                [("Llava 7B", "llava:7b")],
             )
             await pilot.pause()
             # Each select should now have the custom value prepended and selected
@@ -2699,7 +2753,11 @@ class TestModelBarPopulateBranches:
 
                 sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
 
-            bar._populate(["qwen3:8b"], ["nomic:latest"], [])
+            bar._populate(
+                [("Qwen3 8B", "qwen3:8b")],
+                [("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
             await pilot.pause()
             assert chat_sel.value == "qwen3:8b"
             assert embed_sel.value == "nomic:latest"

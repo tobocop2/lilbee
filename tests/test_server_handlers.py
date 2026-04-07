@@ -495,14 +495,14 @@ class TestListModels:
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
-        mock_list.return_value = ["Qwen3 8B"]
+        mock_list.return_value = ["qwen3"]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
-        qwen_entry = next(m for m in catalog if m.name == "Qwen3 8B")
+        qwen_entry = next(m for m in catalog if m.name == "qwen3")
         assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if m.name == "Mistral 7B Instruct")
+        mistral_entry = next(m for m in catalog if m.name == "mistral")
         assert mistral_entry.installed is False
 
 
@@ -542,7 +542,9 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="Qwen3 8B",
+                    name="qwen3",
+                    tag="8b",
+                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -560,9 +562,9 @@ class TestModelsCatalog:
         assert result.total == 1
         assert len(result.models) == 1
         m = result.models[0]
-        assert m.name == "Qwen3 8B"
-        assert m.installed is False
-        assert m.source == "native"
+        assert m.name == "qwen3"
+        assert m.installed is True
+        assert m.source == "litellm"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
@@ -601,7 +603,9 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="qwen3:8b",
+                    name="qwen3",
+                    tag="8b",
+                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
