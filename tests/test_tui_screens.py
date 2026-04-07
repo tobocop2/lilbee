@@ -6201,6 +6201,36 @@ async def test_chat_add_skipped_file():
                 assert app.screen.is_current
 
 
+async def test_chat_add_sync_progress_with_total_files():
+    """_run_add_background computes percentage when total_files > 0."""
+    from pathlib import Path as _Path
+
+    from lilbee.cli.helpers import CopyResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        mock_result = CopyResult(copied=[_Path("new.txt")], skipped=[])
+
+        from lilbee.progress import EventType, FileStartEvent
+
+        async def fake_sync(*, quiet=True, on_progress=None):
+            if on_progress:
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(file="doc.md", total_files=4, current_file=2),
+                )
+
+        with (
+            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
+            patch("lilbee.ingest.sync", side_effect=fake_sync),
+        ):
+            app.screen._run_add_background(_Path("doc.md"), "task-pct")
+            while app.screen.workers:
+                await _pilot.pause()
+                assert app.screen.is_current
+
+
 async def test_chat_add_sync_progress_wrong_type():
     """_run_add_background sync progress raises TypeError for non-FileStartEvent."""
     from pathlib import Path as _Path

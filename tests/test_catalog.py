@@ -119,6 +119,11 @@ class TestHfToken:
         """_hf_headers returns empty dict when no token available."""
         assert catalog._hf_headers() == {}
 
+    @patch("lilbee.catalog._hf_token", return_value="test-token-123")
+    def test_headers_include_bearer_when_token_set(self, _mock_token: MagicMock) -> None:
+        """_hf_headers returns Authorization header when token is available."""
+        assert catalog._hf_headers() == {"Authorization": "Bearer test-token-123"}
+
 
 class TestFeaturedModels:
     def test_chat_not_empty(self) -> None:
