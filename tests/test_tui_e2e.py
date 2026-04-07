@@ -760,9 +760,9 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            # Should not crash
             app.screen.key_g()
             await pilot.pause()
+            assert app.screen._insert_mode is False
 
     async def test_normal_mode_G_scrolls_bottom(self, _mock_resolve):
         """In normal mode, G scrolls the chat log to bottom."""
@@ -773,6 +773,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.key_G()
             await pilot.pause()
+            assert app.screen._insert_mode is False
 
     async def test_page_up_page_down(self, _mock_resolve):
         """PageUp and PageDown scroll the chat log."""
@@ -783,6 +784,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_scroll_down()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_half_page_scroll(self, _mock_resolve):
         """Ctrl-D and Ctrl-U half-page scroll."""
@@ -793,6 +795,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_half_page_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_focuses_input_with_prefix(self, _mock_resolve):
         """/ key focuses input and prefills with /."""
@@ -825,6 +828,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/nonexistent_command_xyz")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_command_version(self, _mock_resolve):
         """Typing /version shows version notification."""
@@ -833,6 +837,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/version")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_command_set_valid(self, _mock_resolve):
         """/set chat_model <value> updates cfg."""
@@ -850,6 +855,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/set nonexistent_key_xyz value")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_escape_cancels_stream_when_streaming(self, _mock_resolve):
         """Escape cancels streaming if active."""
@@ -872,6 +878,7 @@ class TestChatInteractions:
             inp.value = ""
             event = Input.Submitted(inp, "")
             app.screen._on_chat_submitted(event)
+            assert app.screen._streaming is False
             await pilot.pause()
 
     async def test_submit_message_mocked_llm(self, _mock_resolve, _mock_services):
@@ -967,6 +974,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.key_down()
             await pilot.pause()
+            assert app.screen._insert_mode is False
 
 
 class TestCatalogInteractions:
@@ -1145,6 +1153,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.screen.action_page_up()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_column_header_click_sorts_list(self, _mock_resolve):
         """Clicking a column header sorts the table by that column."""
@@ -1229,6 +1238,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.screen.action_delete_model()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_q_from_catalog_returns_to_chat(self, _mock_resolve):
         """Pressing q on catalog returns to chat."""
@@ -1262,6 +1272,7 @@ class TestCatalogInteractions:
                 app.screen.action_jump_bottom()
                 app.screen.action_page_down()
                 app.screen.action_page_up()
+                assert app.screen.is_current
                 await pilot.pause()
 
 
@@ -1408,6 +1419,7 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.screen.action_scroll_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_g_G_scroll_home_end(self, _mock_resolve):
         """g and G scroll to top and bottom."""
@@ -1422,6 +1434,7 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.screen.action_scroll_home()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_pop_screen_returns_to_chat(self, _mock_resolve):
         """action_go_back returns to chat."""
@@ -1522,6 +1535,7 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.screen.action_cursor_up()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_g_G_jump_in_docs_table(self, _mock_resolve):
         """g/G jump to top/bottom in the documents table."""
@@ -1537,6 +1551,7 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.screen.action_jump_top()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_q_returns_to_chat(self, _mock_resolve):
         """Pressing q from status returns to chat."""
@@ -1663,6 +1678,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cursor_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cursor_movement_updates_detail_panel(self, _mock_resolve):
         """Moving cursor updates the detail panel."""
@@ -1724,6 +1740,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cancel_task()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_q_returns_to_chat(self, _mock_resolve):
         """Pressing q returns to chat."""
@@ -1750,6 +1767,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cancel_task()
             await pilot.pause()
+            assert app.screen.is_current
 
 
 class TestChatPromptBorder:
@@ -1907,6 +1925,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/vision")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_reset_without_confirm(self, _mock_resolve):
         """/reset without confirm shows warning."""
@@ -1915,15 +1934,17 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/reset")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_reset_with_confirm(self, _mock_resolve):
         """/reset confirm performs reset."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._cmd_reset"):
+            with mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._cmd_reset") as mock_reset:
                 app.screen._cmd_reset("confirm")
                 await pilot.pause()
+            mock_reset.assert_called_once_with("confirm")
 
     async def test_cmd_cancel(self, _mock_resolve):
         """/cancel cancels workers."""
@@ -1932,6 +1953,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/cancel")
             await pilot.pause()
+            assert app.screen._streaming is False
 
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
@@ -1961,6 +1983,7 @@ class TestChatSlashCommands:
             assert isinstance(screen, ChatScreen)
             screen._handle_slash("/theme")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_delete_no_docs(self, _mock_resolve):
         """/delete with no docs shows warning."""
@@ -1971,6 +1994,7 @@ class TestChatSlashCommands:
                 mock_svc.return_value.store.get_sources.return_value = []
                 app.screen._handle_slash("/delete")
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_cmd_add_nonexistent_path(self, _mock_resolve):
         """/add with nonexistent path shows error."""
@@ -1979,6 +2003,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/add /nonexistent/path/xyz")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_add_no_args(self, _mock_resolve):
         """/add with no args is a no-op."""
@@ -1987,6 +2012,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/add")
             await pilot.pause()
+            assert app.screen.is_current
 
 
 class TestChatCompletions:
@@ -2003,6 +2029,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_ctrl_n_cycles_forward(self, _mock_resolve):
         """Ctrl+N cycles forward through completions."""
@@ -2015,6 +2042,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete_next()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_ctrl_p_cycles_backward(self, _mock_resolve):
         """Ctrl+P cycles backward through completions."""
@@ -2027,6 +2055,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete_prev()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_input_change_hides_overlay(self, _mock_resolve):
         """Changing input manually hides the completion overlay."""
@@ -2042,10 +2071,11 @@ class TestChatCompletions:
             app.screen.action_complete()
             await pilot.pause()
 
-            app.screen.query_one("#completion-overlay", CompletionOverlay)
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
             # Changing input should dismiss overlay
             inp.value = "/h"
             await pilot.pause()
+            assert overlay.display is False
 
 
 class TestGridSelectWidget:
