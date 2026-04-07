@@ -15,14 +15,12 @@ from unittest.mock import patch
 
 import pytest
 
-llama_cpp = pytest.importorskip("llama_cpp")
-
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
-from lilbee.config import cfg  # noqa: E402
-from lilbee.ingest import sync  # noqa: E402
-from lilbee.model_manager import reset_model_manager  # noqa: E402
-from lilbee.services import get_services  # noqa: E402
-from lilbee.services import reset_services as reset_provider  # noqa: E402
+from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+from lilbee.config import cfg
+from lilbee.ingest import sync
+from lilbee.model_manager import reset_model_manager
+from lilbee.services import get_services
+from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
 
@@ -723,3 +721,51 @@ class TestDownloadProgressCallbacks:
         assert len(progress_calls) == 1
         downloaded, total = progress_calls[0]
         assert downloaded == total  # 100% completion signal
+
+
+# ---------------------------------------------------------------------------
+# Wiki Generation (real LLM + search pipeline)
+# ---------------------------------------------------------------------------
+
+
+class TestWikiGeneration:
+    """Wiki page generation with real search results and mocked LLM chat."""
+
+    def test_generate_summary_page(self, rag_pipeline):
+        """generate_summary_page produces a markdown page with citations."""
+        from lilbee.wiki.gen import generate_summary_page
+
+        svc = get_services()
+        chunks = svc.store.search("engine specifications", top_k=5)
+        assert len(chunks) > 0, "Need search results for wiki generation"
+
+        fake_wiki = (
+            "# Thunderbolt X500\n\n"
+            "The Thunderbolt X500 has a 3.5L V6 engine [^src1].\n\n"
+            "## References\n"
+            "[^src1]: specs.md"
+        )
+
+        with patch.object(svc.provider, "chat", return_value=fake_wiki):
+            path = generate_summary_page("specs.md", chunks, svc.provider, svc.store)
+
+        assert path is not None
+        content = path.read_text()
+        assert "Thunderbolt" in content
+
+    def test_wiki_lint_checks_generated_page(self, rag_pipeline):
+        """Wiki lint can check a generated page for issues."""
+        from lilbee.wiki.lint import lint_wiki_page
+
+        # Create a simple wiki page to lint
+        wiki_dir = cfg.data_dir / "wiki" / "summaries"
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+        page = wiki_dir / "test-page.md"
+        page.write_text(
+            "---\nsource: specs.md\nhash: abc123\n---\n# Test Page\n\nSome content about specs.\n"
+        )
+
+        svc = get_services()
+        issues = lint_wiki_page(page, svc.store)
+        # Lint should return a list (possibly empty if page is clean)
+        assert isinstance(issues, list)
