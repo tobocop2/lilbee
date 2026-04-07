@@ -1,7 +1,7 @@
 """Model registry -- manifest-based resolution over HuggingFace cache.
 
-Model names (e.g., "nomic-embed-text") resolve through manifests to files
-in the HF cache.
+Inspired by Ollama's model management. Model names (e.g., "nomic-embed-text")
+resolve through manifests to files in the HF cache.
 
 Storage layout::
 
