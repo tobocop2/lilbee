@@ -179,7 +179,7 @@ VISION_MMPROJ_FILES: dict[str, str] = {
 FEATURED_ALL: tuple[CatalogModel, ...] = FEATURED_CHAT + FEATURED_EMBEDDING + FEATURED_VISION
 
 _FAMILY_NAME_RE = re.compile(r"^(.+?)\s+\d")
-_PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
+PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
 
 def _extract_family_name(model_name: str) -> str:
@@ -206,7 +206,7 @@ def _extract_quant(filename: str) -> str:
 
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
     """Convert a CatalogModel to a ModelVariant."""
-    m = _PARAM_COUNT_RE.search(model.display_name)
+    m = PARAM_COUNT_RE.search(model.display_name)
     param_count = m.group(1) if m else model.tag
     return ModelVariant(
         hf_repo=model.hf_repo,
@@ -510,14 +510,16 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
 def _build_catalog_index() -> tuple[
     dict[str, CatalogModel], dict[str, CatalogModel], dict[str, CatalogModel]
 ]:
-    """Build lookup indexes for find_catalog_entry (cached after first call)."""
+    """Build case-insensitive lookup indexes for find_catalog_entry."""
     by_ref: dict[str, CatalogModel] = {}
     by_name: dict[str, CatalogModel] = {}
     by_display: dict[str, CatalogModel] = {}
     for m in FEATURED_ALL:
-        by_ref[m.ref] = m
-        if m.name not in by_name or m.recommended:
-            by_name[m.name] = m
+        ref_key = m.ref.lower()
+        name_key = m.name.lower()
+        by_ref[ref_key] = m
+        if name_key not in by_name or m.recommended:
+            by_name[name_key] = m
         by_display.setdefault(m.display_name.lower(), m)
     return by_ref, by_name, by_display
 

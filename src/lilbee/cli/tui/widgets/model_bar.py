@@ -98,6 +98,8 @@ def _sync_select(sel: Select, opts: list[ModelOption], models: list[ModelOption]
     Preserves the current value if it's in the options. Otherwise picks the
     first available model. If the current value isn't in the options, prepends
     it so it remains selectable.
+
+    Note: may mutate *opts* by inserting the current value at index 0.
     """
     sel.set_options(opts)
     current = str(sel.value) if sel.value != _DISABLED else ""

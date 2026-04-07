@@ -46,9 +46,9 @@ COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
 def _parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
-    from lilbee.catalog import _PARAM_COUNT_RE
+    from lilbee.catalog import PARAM_COUNT_RE
 
-    match = _PARAM_COUNT_RE.search(name)
+    match = PARAM_COUNT_RE.search(name)
     return match.group(1).upper() if match else "--"
 
 
