@@ -2668,20 +2668,31 @@ async def test_command_provider_vision_catalog_error():
             models_mod.VISION_CATALOG = original_vision  # type: ignore[assignment]
 
 
+async def test_chat_slash_crawl_unavailable():
+    """_cmd_crawl notifies when crawler is not installed."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False):
+            app.screen._cmd_crawl("https://example.com")
+            assert app.screen.is_current
+
+
 async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("")
-        assert app.screen.is_current
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True):
+            app.screen._cmd_crawl("")
+            assert app.screen.is_current
 
 
 async def test_chat_slash_crawl_invalid_url():
     """Cover /crawl with non-URL argument."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("not-a-url")
-        assert app.screen.is_current
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True):
+            app.screen._cmd_crawl("not-a-url")
+            assert app.screen.is_current
 
 
 async def test_chat_slash_crawl_valid_url():
