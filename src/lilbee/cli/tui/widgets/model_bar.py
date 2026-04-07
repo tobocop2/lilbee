@@ -70,6 +70,9 @@ def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
         log.debug("Could not classify remote models", exc_info=True)
 
 
+_SELECT_IDS = ("#chat-model-select", "#embed-model-select", "#vision-model-select")
+
+
 class ModelBar(Widget, can_focus=False):
     """Compact bar with Select dropdowns for active model assignments."""
 
@@ -194,16 +197,13 @@ class ModelBar(Widget, can_focus=False):
         elif embed_opts:
             embed_sel.value = embed_opts[0][1]
 
-        if has_vision_model:
-            if not any(v == current_vision for _, v in vision_opts):
-                vision_opts.insert(0, (current_vision, current_vision))
-            vision_sel.set_options(vision_opts)
+        vision_names = set(vision_models)
+        if has_vision_model and current_vision in vision_names:
             vision_sel.value = current_vision
-        elif cfg.vision_model:
-            if not any(v == cfg.vision_model for _, v in vision_opts):
-                vision_opts.insert(0, (cfg.vision_model, cfg.vision_model))
-            vision_sel.set_options(vision_opts)
+        elif cfg.vision_model in vision_names:
             vision_sel.value = cfg.vision_model
+        elif vision_models:
+            vision_sel.value = _DISABLED
         else:
             vision_sel.value = _DISABLED
 

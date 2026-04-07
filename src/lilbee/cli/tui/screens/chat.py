@@ -680,11 +680,14 @@ class ChatScreen(Screen[None]):
         self.query_one("#chat-log", VerticalScroll).scroll_page_down()
 
     def action_enter_normal_mode(self) -> None:
-        """Escape: cancel stream if active, otherwise enter normal mode."""
+        """Escape: cancel stream, return from model bar, or enter normal mode."""
         if self._streaming:
             for worker in self.workers:
                 worker.cancel()
             self._streaming = False
+            return
+        if isinstance(self.focused, Select):
+            self.query_one("#chat-input", Input).focus()
             return
         self._insert_mode = False
         self.query_one("#chat-log", VerticalScroll).focus()
@@ -784,10 +787,13 @@ class ChatScreen(Screen[None]):
         except Exception:
             pass
 
+
     def action_complete(self) -> None:
         """Tab completion: show or cycle autocomplete options."""
-        overlay = self.query_one("#completion-overlay", CompletionOverlay)
         inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus:
+            raise SkipAction()
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
 
         if overlay.is_visible:
             selection = overlay.cycle_next()

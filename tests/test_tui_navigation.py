@@ -223,3 +223,84 @@ async def test_help_panel_toggle():
         await pilot.pause()
         has_panel = bool(app.screen.query("HelpPanel") or app.query("HelpPanel"))
         assert not has_panel, "HelpPanel should be hidden"
+
+
+async def test_catalog_nav_noop_when_search_focused():
+    """Navigation actions are no-ops when catalog search input is focused."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.switch_view("Catalog")
+        await pilot.pause()
+
+        screen = app.screen
+        screen.action_focus_search()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input)
+
+        for action in ("cursor_down", "cursor_up", "page_down", "page_up", "jump_top", "jump_bottom"):
+            getattr(screen, f"action_{action}")()
+        await pilot.pause()
+        assert isinstance(screen.focused, Input)
+
+
+async def test_chat_tab_skips_when_input_not_focused():
+    """Tab triggers SkipAction when chat input doesn't have focus."""
+    from textual.actions import SkipAction
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Escape to normal mode — input loses focus
+        await pilot.press("escape")
+        await pilot.pause()
+
+        screen = app.screen
+        try:
+            screen.action_complete()
+            raised = False
+        except SkipAction:
+            raised = True
+        assert raised, "action_complete should raise SkipAction when input not focused"
+
+
+async def test_chat_escape_from_model_select():
+    """Escape from a model Select returns to chat input."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+
+        # Focus model bar
+        await pilot.press("escape")
+        await pilot.pause()
+        screen.action_focus_model_bar()
+        await pilot.pause()
+
+        from textual.widgets import Select
+
+        assert isinstance(screen.focused, Select)
+
+        # Escape should return to chat input
+        await pilot.press("escape")
+        await pilot.pause()
+        assert screen.focused is not None
+        assert screen.focused.id == "chat-input"
+
+
+async def test_chat_m_key_skips_in_insert_mode():
+    """m key raises SkipAction in insert mode."""
+    from textual.actions import SkipAction
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen._insert_mode is True
+
+        try:
+            screen.action_focus_model_bar()
+            raised = False
+        except SkipAction:
+            raised = True
+        assert raised
