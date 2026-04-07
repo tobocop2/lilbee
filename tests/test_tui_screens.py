@@ -127,7 +127,7 @@ class TestParseParamLabel:
         assert _parse_param_label("nomic-embed-text") == "--"
 
     def test_case_insensitive(self):
-        assert _parse_param_label("model-3b-chat") == "3b"
+        assert _parse_param_label("model-3b-chat") == "3B"
 
 
 class TestFormatDownloads:
@@ -4911,6 +4911,7 @@ async def test_catalog_select_variant_row():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
@@ -4943,6 +4944,7 @@ async def test_catalog_install_variant_creates_catalog_model():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,
@@ -5046,6 +5048,7 @@ async def test_catalog_get_highlighted_variant_name():
                 hf_repo="org/model-GGUF",
                 filename="model-Q4.gguf",
                 param_count="8B",
+                tag="8b",
                 quant="Q4_K_M",
                 size_mb=4096,
                 recommended=True,

@@ -49,7 +49,7 @@ def _parse_param_label(name: str) -> str:
     from lilbee.catalog import _PARAM_COUNT_RE
 
     match = _PARAM_COUNT_RE.search(name)
-    return match.group(1) if match else "--"
+    return match.group(1).upper() if match else "--"
 
 
 def _format_downloads(n: int) -> str:
@@ -116,7 +116,7 @@ def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRo
         installed=installed,
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
-        ref=f"{f.slug}:{v.param_count.lower()}",
+        ref=f"{f.slug}:{v.tag}",
         variant=v,
         family=f,
     )
@@ -371,7 +371,7 @@ class CatalogScreen(Screen[None]):
         for fam in self._families:
             for v in fam.variants:
                 installed = self._is_installed(
-                    f"{fam.slug}:{v.param_count.lower()}", repo=v.hf_repo, filename=v.filename
+                    f"{fam.slug}:{v.tag}", repo=v.hf_repo, filename=v.filename
                 )
                 row = _variant_to_row(v, fam, installed)
                 if _matches_search(row, search):
@@ -549,10 +549,9 @@ class CatalogScreen(Screen[None]):
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
-        tag = variant.param_count.lower()
         entry = CatalogModel(
             name=family.slug,
-            tag=tag,
+            tag=variant.tag,
             display_name=f"{family.name} {variant.param_count}",
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,

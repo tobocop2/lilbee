@@ -114,6 +114,7 @@ class ModelVariant:
     hf_repo: str
     filename: str
     param_count: str
+    tag: str  # original CatalogModel tag for ref construction
     quant: str
     size_mb: int
     recommended: bool
@@ -211,6 +212,7 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
         param_count=param_count,
+        tag=model.tag,
         quant=_extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
         recommended=model.recommended,
@@ -491,7 +493,7 @@ def _get_installed_models(model_manager: Any) -> set[str]:
 
 _SORT_KEYS: dict[str, tuple] = {
     "downloads": (lambda m: m.downloads, True),
-    "name": (lambda m: m.name.lower(), False),
+    "name": (lambda m: m.display_name.lower(), False),
     "size_asc": (lambda m: m.size_gb, False),
     "size_desc": (lambda m: m.size_gb, True),
     "featured": (lambda m: (not m.featured, -m.downloads), False),

@@ -544,9 +544,12 @@ class TestFindCatalogEntry:
             for m in FEATURED_ALL
         )
         with patch.object(catalog, "FEATURED_ALL", patched):
+            catalog._build_catalog_index.cache_clear()
             result = find_catalog_entry("qwen3")
             assert result is not None
             assert result.name == "qwen3"
+            assert result.recommended is False
+        catalog._build_catalog_index.cache_clear()  # restore for other tests
 
     def test_not_found(self) -> None:
         result = find_catalog_entry("Nonexistent Model")
@@ -905,12 +908,12 @@ class TestHfCacheEviction:
 
 class TestModelVariantDataclass:
     def test_frozen(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
         with pytest.raises(AttributeError):
             v.hf_repo = "nope"  # type: ignore[misc]
 
     def test_default_mmproj(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, False)
         assert v.mmproj_filename == ""
 
 
@@ -921,7 +924,7 @@ class TestModelFamilyDataclass:
             f.name = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
         f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="Fast", variants=(v,))
         assert f.name == "Qwen3"
         assert f.slug == "qwen3"
