@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -29,7 +30,7 @@ def _run_lilbee(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="PTY tests require Unix")
 class TestSplashE2EWithPTY:
-    """Tests using subprocess with a PTY to verify splash behavior."""
+    """Tests using subprocess to verify splash behavior."""
 
     def test_animation_runs_cleanly(self) -> None:
         """The splash process should not crash when running with a PTY."""
@@ -74,3 +75,38 @@ class TestSplashE2ENonTTY:
         stdout_lines = result.stdout.strip().split("\n")
         assert len(stdout_lines) == 1
         assert stdout_lines[0].startswith("lilbee ")
+
+
+class TestSplashSubprocessLifecycle:
+    """Tests that the splash subprocess starts and stops reliably."""
+
+    @patch("lilbee.splash._should_skip", return_value=False)
+    def test_start_stop_no_orphan(self, _mock_skip: object) -> None:
+        """Starting and stopping should leave no orphan process."""
+        from lilbee.splash import start, stop
+
+        handle = start()
+        assert handle is not None
+        pid = handle.process.pid
+        stop(handle)
+
+        # Process should be fully dead
+        if sys.platform != "win32":
+            with pytest.raises(OSError):
+                os.kill(pid, 0)
+
+    @patch("lilbee.splash._should_skip", return_value=False)
+    def test_child_exits_on_parent_fd_close(self, _mock_skip: object) -> None:
+        """Child should exit when the parent's write fd is closed."""
+        from lilbee.splash import start
+
+        handle = start()
+        assert handle is not None
+
+        # Close the write fd directly (simulating dismiss/crash)
+        os.close(handle.write_fd)
+
+        # Child should exit within a few seconds
+        handle.process.wait(timeout=5.0)
+        assert handle.process.returncode is not None
+        os.environ.pop("_LILBEE_SPLASH_FD", None)

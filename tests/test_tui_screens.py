@@ -5247,17 +5247,14 @@ async def test_chat_task_bar_property_raises_when_missing():
             _ = app.screen._task_bar
 
 
-async def test_chat_on_show_writes_ready_file():
-    """on_show creates a ready file in temp dir."""
-    import os
-    import tempfile
-
+async def test_chat_on_show_calls_dismiss():
+    """on_show calls splash.dismiss() to signal splash stop."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        ready_file = os.path.join(tempfile.gettempdir(), "lilbee-splash-ready")
-        # on_show is called during mounting
-        assert os.path.exists(ready_file)
+        with patch("lilbee.splash.dismiss") as mock_dismiss:
+            app.screen.on_show()
+            mock_dismiss.assert_called_once()
 
 
 async def test_chat_on_setup_complete_completed_with_auto_sync():
@@ -5807,29 +5804,32 @@ def test_run_tui_exception_during_shutdown():
         mock_exit.assert_called_once_with(1)
 
 
-async def test_chat_on_show_writes_splash_ready():
-    """on_show writes a splash-ready file to tempdir."""
+async def test_chat_on_show_dismiss_with_fd():
+    """on_show calls dismiss which closes the splash pipe fd."""
     import os
-    import tempfile
+
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    os.environ["_LILBEE_SPLASH_FD"] = str(write_fd)
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        # Manually call on_show
         app.screen.on_show()
-        ready_file = os.path.join(tempfile.gettempdir(), "lilbee-splash-ready")
-        assert os.path.exists(ready_file)
-        os.unlink(ready_file)
+        assert "_LILBEE_SPLASH_FD" not in os.environ
 
 
-async def test_chat_on_show_handles_oserror():
-    """on_show suppresses OSError when writing splash file."""
+async def test_chat_on_show_dismiss_no_fd():
+    """on_show dismiss is a no-op when no splash fd is set."""
+    import os
+
+    os.environ.pop("_LILBEE_SPLASH_FD", None)
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        with patch("builtins.open", side_effect=OSError("permission denied")):
-            app.screen.on_show()  # Should not raise
-            assert app.screen.is_current
+        app.screen.on_show()  # Should not raise
+        assert app.screen.is_current
 
 
 async def test_chat_embedding_ready_false_on_exception():

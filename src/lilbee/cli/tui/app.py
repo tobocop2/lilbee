@@ -20,8 +20,6 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
-_READY_FILE = "lilbee-splash-ready"
-
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
 DARK_THEMES = (
     "monokai",
