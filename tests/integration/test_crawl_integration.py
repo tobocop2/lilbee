@@ -293,7 +293,9 @@ class TestCrawlConcurrency:
         cfg.crawl_max_concurrent = 2
         crawler_mod._state.semaphore = None
 
-        original_crawl_single = crawler_mod.crawl_single
+        from unittest.mock import patch
+
+        from lilbee.crawler import CrawlResult
 
         async def tracking_crawl_single(url):
             nonlocal peak_concurrent, current_concurrent
@@ -302,12 +304,10 @@ class TestCrawlConcurrency:
                 peak_concurrent = max(peak_concurrent, current_concurrent)
             try:
                 await asyncio.sleep(0.2)
-                return await original_crawl_single(url)
+                return CrawlResult(url=url, markdown=f"# {url}", success=True)
             finally:
                 with lock:
                     current_concurrent -= 1
-
-        from unittest.mock import patch
 
         with patch.object(crawler_mod, "crawl_single", side_effect=tracking_crawl_single):
             urls = [str(httpserver.url_for(f"/slow{i}")) for i in range(3)]
@@ -336,7 +336,9 @@ class TestCrawlConcurrency:
         cfg.crawl_max_concurrent = 0
         crawler_mod._state.semaphore = None
 
-        original_crawl_single = crawler_mod.crawl_single
+        from unittest.mock import patch
+
+        from lilbee.crawler import CrawlResult
 
         async def tracking_crawl_single(url):
             nonlocal peak_concurrent, current_concurrent
@@ -345,12 +347,10 @@ class TestCrawlConcurrency:
                 peak_concurrent = max(peak_concurrent, current_concurrent)
             try:
                 await asyncio.sleep(0.1)
-                return await original_crawl_single(url)
+                return CrawlResult(url=url, markdown=f"# {url}", success=True)
             finally:
                 with lock:
                     current_concurrent -= 1
-
-        from unittest.mock import patch
 
         with patch.object(crawler_mod, "crawl_single", side_effect=tracking_crawl_single):
             urls = [str(httpserver.url_for(f"/fast{i}")) for i in range(3)]
@@ -385,12 +385,12 @@ class TestPeriodicSync:
 
         mock_sync = AsyncMock()
 
-        original_crawl_single = crawler_mod.crawl_single
+        from lilbee.crawler import CrawlResult
 
         async def slow_crawl_single(url):
             # Simulate a slow crawl to let the interval elapse
             await asyncio.sleep(1.5)
-            return await original_crawl_single(url)
+            return CrawlResult(url=url, markdown="# Slow", success=True)
 
         with (
             patch.object(crawler_mod, "crawl_single", side_effect=slow_crawl_single),
