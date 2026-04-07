@@ -44,6 +44,8 @@ class TaskCenter(Screen[None]):
     """View for monitoring active, queued, and recent background tasks."""
 
     CSS_PATH = "task_center.tcss"
+    AUTO_FOCUS = "#task-table"
+    HELP = "Background task monitor.\n\nUse r to refresh, c to cancel the selected task."
 
     app: LilbeeApp
 

@@ -82,6 +82,8 @@ class StatusScreen(Screen[None]):
     """Knowledge base status view with collapsible sections."""
 
     CSS_PATH = "status.tcss"
+    AUTO_FOCUS = "#status-scroll"
+    HELP = "Knowledge base status.\n\nView configuration, documents, model architecture, and storage info."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),

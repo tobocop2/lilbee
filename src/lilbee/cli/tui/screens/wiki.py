@@ -53,6 +53,8 @@ class WikiScreen(Screen[None]):
     """Wiki page browser with sidebar and markdown content viewer."""
 
     CSS_PATH = "wiki.tcss"
+    AUTO_FOCUS = "#wiki-page-list"
+    HELP = "Browse wiki pages.\n\nUse / to search, Enter to select a page, Escape to clear search."
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
