@@ -30,7 +30,7 @@ HF_API_URL = "https://huggingface.co/api/models"
 class _CallbackProgressBar(_base_tqdm):
     """tqdm subclass that forwards progress to a plain callback."""
 
-    _callback = None
+    _callback: Any = None
 
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs.pop("name", None)
@@ -39,7 +39,7 @@ class _CallbackProgressBar(_base_tqdm):
         self._cumulative = 0
 
     def update(self, n: float = 1) -> bool | None:
-        self._cumulative += n
+        self._cumulative += int(n)
         if self._callback is not None:
             self._callback(int(self._cumulative), self.total)
         return None
