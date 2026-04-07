@@ -54,9 +54,7 @@ def start() -> SplashHandle | None:
         return None
 
     read_fd, write_fd = os.pipe()
-
-    if sys.platform == "win32":
-        os.set_inheritable(read_fd, True)
+    os.set_inheritable(read_fd, True)
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "lilbee._splash_runner", str(read_fd)],
