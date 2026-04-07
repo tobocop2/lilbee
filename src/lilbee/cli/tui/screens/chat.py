@@ -81,7 +81,7 @@ class ChatScreen(Screen[None]):
     _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("slash", "focus_commands", "/ commands", show=True),
+        Binding("slash", "focus_commands", "Commands", show=True),
         Binding("tab", "complete", "Tab", show=False, priority=True),
         Binding("ctrl+n", "complete_next", "^n next", show=False),
         Binding("ctrl+p", "complete_prev", "^p prev", show=False),

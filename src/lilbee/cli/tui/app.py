@@ -93,13 +93,13 @@ class LilbeeApp(App[None]):
     _NAV_GROUP = Binding.Group("Navigate", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "? Help", show=True),
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("left_square_bracket", "nav_prev", "[", show=True, group=_NAV_GROUP),
-        Binding("right_square_bracket", "nav_next", "]", show=True, group=_NAV_GROUP),
-        Binding("ctrl+c", "quit", "^c Quit", show=True, priority=True),
+        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:

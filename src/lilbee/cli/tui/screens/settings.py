@@ -123,7 +123,7 @@ class SettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
-        Binding("slash", "focus_search", "/ Search", show=True),
+        Binding("slash", "focus_search", "Search", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
