@@ -22,7 +22,6 @@ from lilbee.catalog import (
     CatalogModel,
     ModelFamily,
     ModelVariant,
-    clean_display_name,
     get_catalog,
     get_families,
 )
@@ -77,7 +76,12 @@ def _format_size_gb(size_gb: float) -> str:
 
 @dataclass
 class TableRow:
-    """A row in the catalog DataTable with source metadata."""
+    """A row in the catalog DataTable with source metadata.
+
+    ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
+    ``ref`` is the canonical name:tag identifier used for config persistence
+    (e.g. "qwen3:0.6b").  When ``ref`` is empty, fall back to ``name``.
+    """
 
     name: str
     task: str
@@ -89,6 +93,7 @@ class TableRow:
     installed: bool
     sort_downloads: int
     sort_size: float
+    ref: str = ""
     variant: ModelVariant | None = None
     family: ModelFamily | None = None
     catalog_model: CatalogModel | None = None
@@ -109,6 +114,7 @@ def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRo
         installed=installed,
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
+        ref=f"{f.name.lower()}:{v.param_count.lower()}",
         variant=v,
         family=f,
     )
@@ -116,12 +122,11 @@ def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRo
 
 def _catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     """Convert a CatalogModel to a TableRow."""
-    display = clean_display_name(m.hf_repo)
     quant = _extract_quant_from_filename(m.gguf_filename)
     return TableRow(
-        name=display,
+        name=m.display_name,
         task=m.task,
-        params=_parse_param_label(m.name),
+        params=_parse_param_label(m.tag),
         size=_format_size_gb(m.size_gb),
         quant=quant or "--",
         downloads=_format_downloads(m.downloads) if m.downloads > 0 else "--",
@@ -129,6 +134,7 @@ def _catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
         installed=installed,
         sort_downloads=m.downloads,
         sort_size=m.size_gb,
+        ref=m.ref,
         catalog_model=m,
     )
 
@@ -146,6 +152,7 @@ def _remote_to_row(rm: RemoteModel) -> TableRow:
         installed=True,
         sort_downloads=0,
         sort_size=0.0,
+        ref=rm.name,
         remote_model=rm,
     )
 
@@ -373,7 +380,7 @@ class CatalogScreen(Screen[None]):
         """Build rows from HuggingFace models."""
         rows: list[TableRow] = []
         for m in self._hf_models:
-            installed = self._is_installed(m.name, repo=m.hf_repo, filename=m.gguf_filename)
+            installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
             row = _catalog_to_row(m, installed)
             if _matches_search(row, search):
                 rows.append(row)
@@ -540,8 +547,11 @@ class CatalogScreen(Screen[None]):
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
+        tag = variant.param_count.lower()
         entry = CatalogModel(
-            name=f"{family.name} {variant.param_count}",
+            name=family.name.lower(),
+            tag=tag,
+            display_name=f"{family.name} {variant.param_count}",
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,
             size_gb=variant.size_mb / 1024,
@@ -550,6 +560,7 @@ class CatalogScreen(Screen[None]):
             featured=True,
             downloads=0,
             task=family.task,
+            recommended=variant.recommended,
         )
         self._install_model(entry)
 
@@ -560,7 +571,7 @@ class CatalogScreen(Screen[None]):
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
-                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.name))
+                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                 return
         except Exception:
             log.debug("Could not resolve filename", exc_info=True)
@@ -575,9 +586,9 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
         task_bar = self.app.task_bar
-        task_id = task_bar.add_task(f"Downloading {model.name}", "download")
+        task_id = task_bar.add_task(f"Downloading {model.display_name}", "download")
         task_bar.queue.advance("download")
-        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
+        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
         self._run_download(model, task_id, task_bar)
 
     def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
@@ -608,15 +619,15 @@ class CatalogScreen(Screen[None]):
         try:
             download_model(model, on_progress=self._make_progress_callback(task_id, bar))
             self._safe_call(bar.complete_task, task_id)
-            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
+            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
         except PermissionError:
-            detail = msg.CATALOG_GATED_REPO.format(name=model.name)
+            detail = msg.CATALOG_GATED_REPO.format(name=model.display_name)
             log.warning("Gated repo: %s", model.hf_repo)
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="warning")
         except Exception:
-            log.warning("Download failed for %s", model.name, exc_info=True)
-            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.name)
+            log.warning("Download failed for %s", model.ref, exc_info=True)
+            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.display_name)
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="error")
 
@@ -661,24 +672,13 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _get_highlighted_model_name(self) -> str | None:
-        """Return the registry-compatible model name for the highlighted row.
-
-        For registry models, returns 'Name:latest' to match manifest format.
-        For remote models, returns the remote model name.
-        """
+        """Return the registry-compatible model ref for the highlighted row."""
         table = self.query_one("#catalog-table", DataTable)
         row_idx = table.cursor_row
         if row_idx < 0 or row_idx >= len(self._rows):
             return None
         row = self._rows[row_idx]
-        if row.variant and row.family:
-            # Registry name matches the catalog entry name used in _register_model
-            return f"{row.family.name} {row.variant.param_count}:latest"
-        if row.remote_model:
-            return row.remote_model.name
-        if row.catalog_model:
-            return f"{row.catalog_model.name}:latest"
-        return None
+        return row.ref or None
 
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:

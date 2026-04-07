@@ -25,39 +25,50 @@ def _is_mmproj(name: str) -> bool:
     return _MMPROJ_MARKER in name.lower()
 
 
-def _classify_installed_models() -> tuple[list[str], list[str], list[str]]:
+def _classify_installed_models() -> tuple[
+    list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]
+]:
     """Classify installed models into (chat, embedding, vision) lists.
+
+    Each entry is ``(display_label, ref)`` where *ref* is the ``name:tag``
+    identity used for config and *display_label* is the human label shown
+    in Select dropdowns.
 
     Uses registry manifests for native models and the litellm backend's
     /api/tags metadata for remote models. Filters out mmproj files.
     """
-    buckets: dict[str, list[str]] = {"chat": [], "embedding": [], "vision": []}
+    buckets: dict[str, list[tuple[str, str]]] = {"chat": [], "embedding": [], "vision": []}
     seen: set[str] = set()
 
     _collect_native_models(buckets, seen)
     _collect_remote_models(buckets, seen)
 
-    return sorted(buckets["chat"]), sorted(buckets["embedding"]), sorted(buckets["vision"])
+    return (
+        sorted(buckets["chat"], key=lambda t: t[1]),
+        sorted(buckets["embedding"], key=lambda t: t[1]),
+        sorted(buckets["vision"], key=lambda t: t[1]),
+    )
 
 
-def _collect_native_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add native registry models to buckets."""
+def _collect_native_models(buckets: dict[str, list[tuple[str, str]]], seen: set[str]) -> None:
+    """Add native registry models to buckets as (display_label, ref) tuples."""
     try:
         from lilbee.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         for manifest in registry.list_installed():
-            name = f"{manifest.name}:{manifest.tag}"
-            if _is_mmproj(name) or name in seen:
+            ref = f"{manifest.name}:{manifest.tag}"
+            if _is_mmproj(ref) or ref in seen:
                 continue
-            seen.add(name)
-            buckets.get(manifest.task, buckets["chat"]).append(name)
+            seen.add(ref)
+            label = manifest.display_name or ref
+            buckets.get(manifest.task, buckets["chat"]).append((label, ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
 
 
-def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> None:
-    """Add remote (litellm) models to buckets."""
+def _collect_remote_models(buckets: dict[str, list[tuple[str, str]]], seen: set[str]) -> None:
+    """Add remote (litellm) models to buckets as (display_label, ref) tuples."""
     try:
         from lilbee.model_manager import classify_remote_models
 
@@ -65,7 +76,7 @@ def _collect_remote_models(buckets: dict[str, list[str]], seen: set[str]) -> Non
             if model.name in seen or _is_mmproj(model.name):
                 continue
             seen.add(model.name)
-            buckets.get(model.task, buckets["chat"]).append(model.name)
+            buckets.get(model.task, buckets["chat"]).append((model.name, model.name))
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
 
@@ -147,20 +158,24 @@ class ModelBar(Widget, can_focus=True):
 
     def _populate(
         self,
-        chat_models: list[str],
-        embed_models: list[str],
-        vision_models: list[str],
+        chat_models: list[tuple[str, str]],
+        embed_models: list[tuple[str, str]],
+        vision_models: list[tuple[str, str]],
     ) -> None:
-        """Populate Select widgets from scanned models (main thread)."""
+        """Populate Select widgets from scanned models (main thread).
+
+        Each model entry is ``(display_label, ref)`` where *ref* is the
+        ``name:tag`` value persisted to config.
+        """
         self._populating = True
 
         chat_sel = self.query_one("#chat-model-select", Select)
         embed_sel = self.query_one("#embed-model-select", Select)
         vision_sel = self.query_one("#vision-model-select", Select)
 
-        chat_opts = [(m, m) for m in chat_models] if chat_models else [("(none)", "")]
-        embed_opts = [(m, m) for m in embed_models] if embed_models else [("(none)", "")]
-        vision_opts = [(m, m) for m in vision_models]
+        chat_opts = list(chat_models) if chat_models else [("(none)", "")]
+        embed_opts = list(embed_models) if embed_models else [("(none)", "")]
+        vision_opts = list(vision_models)
 
         chat_sel.set_options(chat_opts)
         embed_sel.set_options(embed_opts)
@@ -180,7 +195,7 @@ class ModelBar(Widget, can_focus=True):
             chat_sel.set_options(chat_opts)
             chat_sel.value = current_chat
         elif chat_models:
-            chat_sel.value = chat_models[0]
+            chat_sel.value = chat_models[0][1]
         elif chat_opts:
             chat_sel.value = chat_opts[0][1]
 
@@ -190,7 +205,7 @@ class ModelBar(Widget, can_focus=True):
             embed_sel.set_options(embed_opts)
             embed_sel.value = current_embed
         elif embed_models:
-            embed_sel.value = embed_models[0]
+            embed_sel.value = embed_models[0][1]
         elif embed_opts:
             embed_sel.value = embed_opts[0][1]
 
