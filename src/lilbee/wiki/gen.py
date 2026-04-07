@@ -26,75 +26,6 @@ log = logging.getLogger(__name__)
 
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
-_SUMMARY_PROMPT = """\
-You are a knowledge compiler. Given the source chunks below from a single document, \
-write a concise wiki summary page in markdown.
-
-Rules:
-1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.
-2. Cite the EXACT text from the source that supports each claim by quoting it.
-3. For interpretations or connections not directly stated in the source, mark with [*inference*].
-4. Use blockquotes (>) for directly cited facts.
-5. End with a citation block in this format:
-
----
-<!-- citations (auto-generated from _citations table -- do not edit) -->
-[^src1]: {source_name}, excerpt: "exact quoted text"
-[^src2]: {source_name}, excerpt: "exact quoted text"
-
-Source document: {source_name}
-
-Chunks:
-{chunks_text}
-
-Write the wiki summary page now. Start with a heading."""
-
-_FAITHFULNESS_PROMPT = """\
-You are a fact-checker. Given source chunks and a wiki summary page generated from them, \
-score the summary's faithfulness to the sources on a scale of 0.0 to 1.0.
-
-Criteria:
-- 1.0 = every claim is directly supported by the source chunks
-- 0.5 = some claims are supported, some are unsupported extrapolations
-- 0.0 = the summary contains fabricated information
-
-Source chunks:
-{chunks_text}
-
-Wiki summary:
-{wiki_text}
-
-Respond with ONLY a number between 0.0 and 1.0. Nothing else."""
-
-_SYNTHESIS_PROMPT = """\
-You are a knowledge compiler. Given source chunks from MULTIPLE documents about \
-related concepts, write a synthesis wiki page in markdown that connects ideas \
-across sources.
-
-Rules:
-1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.
-2. Cite the EXACT text from the source that supports each claim by quoting it.
-3. For connections, interpretations, or patterns you identify across sources, \
-mark with [*inference*].
-4. Use blockquotes (>) for directly cited facts.
-5. Reference each source by its filename when drawing connections.
-6. End with a citation block in this format:
-
----
-<!-- citations (auto-generated from _citations table -- do not edit) -->
-[^src1]: {{source_name}}, excerpt: "exact quoted text"
-[^src2]: {{source_name}}, excerpt: "exact quoted text"
-
-Topic: {topic}
-
-Sources:
-{source_list}
-
-Chunks:
-{chunks_text}
-
-Write the synthesis page now. Start with a heading."""
-
 
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
     """Format chunks as numbered text blocks for the LLM prompt."""
@@ -293,7 +224,9 @@ def _check_faithfulness(
     config: Config | None = None,
 ) -> float:
     """Run the faithfulness check and return the score (0.0 on failure)."""
-    template = (config.wiki_faithfulness_prompt if config else "") or _FAITHFULNESS_PROMPT
+    if config is None:
+        config = cfg
+    template = config.wiki_faithfulness_prompt
     prompt = template.format(chunks_text=chunks_text, wiki_text=wiki_text)
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     try:
@@ -471,7 +404,7 @@ def generate_summary_page(
         return None
 
     chunks_text = _chunks_to_text(chunks)
-    template = config.wiki_summary_prompt or _SUMMARY_PROMPT
+    template = config.wiki_summary_prompt
     prompt = template.format(source_name=source_name, chunks_text=chunks_text)
     slug = source_name.replace("/", "--").rsplit(".", 1)[0]
 
@@ -577,7 +510,7 @@ def _generate_synthesis_page(
 
     chunks_text = _chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
-    template = config.wiki_synthesis_prompt or _SYNTHESIS_PROMPT
+    template = config.wiki_synthesis_prompt
     prompt = template.format(topic=topic, source_list=source_list, chunks_text=chunks_text)
     slug = make_slug(topic)
 
