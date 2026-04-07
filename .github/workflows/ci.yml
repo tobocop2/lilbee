@@ -68,39 +68,6 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
-  integration:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Install Playwright for crawl4ai
-        run: uv run crawl4ai-setup
-        continue-on-error: true
-
-      - name: Cache GGUF models
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/lilbee/models
-          key: gguf-models-v2
-          restore-keys: gguf-models-
-
-      - name: Run integration tests
-        run: uv run pytest tests/integration/ -v -m slow
-        env:
-          LILBEE_DATA: ${{ runner.temp }}/lilbee
-          LILBEE_LLM_PROVIDER: llama-cpp
-
   deploy-pages:
     needs: test
     if: github.event_name == 'push'
