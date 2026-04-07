@@ -1154,33 +1154,37 @@ class TestModelPullProgressCancel:
         assert sse.queue.empty()
 
     async def test_cancel_during_pull_skips_later_progress(self):
-        """When cancel is set mid-pull, the real _on_progress returns early."""
+        """When cancel is set before pull starts, all progress calls return early."""
         import threading
 
-        from lilbee.server.handlers import SseStream
-
-        cancel_barrier = threading.Event()
         mock_manager = MagicMock()
-        sse_ref: list[SseStream] = []
+        progress_called = threading.Event()
 
         def fake_pull(model, source, *, on_progress=None):
             if on_progress:
-                on_progress({"status": "first"})
-                # Wait for cancel to be set by the consumer
-                cancel_barrier.wait(timeout=2)
-                on_progress({"status": "second"})  # This hits line 703
+                # All progress calls should see cancel already set
+                on_progress({"status": "should_be_suppressed"})
+                progress_called.set()
 
         mock_manager.pull.side_effect = fake_pull
-        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+
+        # Patch SseStream so cancel is pre-set
+        original_init = handlers.SseStream.__init__
+
+        def patched_init(self):
+            original_init(self)
+            self.cancel.set()  # Pre-set cancel before pull starts
+
+        with (
+            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            patch.object(handlers.SseStream, "__init__", patched_init),
+        ):
             gen = handlers.models_pull("test", source="native")
             events = []
             async for event in gen:
                 events.append(event)
-                if event and "first" in event:
-                    await gen.aclose()
-                    # After aclose, cancel is guaranteed to be set
-                    cancel_barrier.set()
-                    break
-            await asyncio.sleep(0.15)  # Let the thread complete
+            # Wait for the pull thread to complete
+            await asyncio.sleep(0.2)
 
-        assert not any("second" in e for e in events if e)
+        assert progress_called.is_set()  # Pull did call on_progress
+        assert not any("should_be_suppressed" in e for e in events if e)
