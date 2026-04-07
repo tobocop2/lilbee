@@ -95,7 +95,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/lilbee/models
-          key: gguf-models-v2
+          key: gguf-models-v3
           restore-keys: gguf-models-
 
       - name: Run integration tests
