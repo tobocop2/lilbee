@@ -1424,6 +1424,7 @@ class TestRunTuiKeyboardInterrupt:
                 from lilbee.cli.tui import run_tui
 
                 run_tui()
+            MockApp.return_value.run.assert_called_once()
 
     def test_cleanup_called_on_interrupt(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
@@ -1678,6 +1679,7 @@ class TestGridSelect:
             # Force highlighted to an out-of-bounds index without validation
             grid._reactive_highlighted = 999
             grid.reveal_highlight()  # should not raise
+            assert grid._reactive_highlighted == 999
 
     async def test_watch_highlighted_index_error(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -1688,6 +1690,7 @@ class TestGridSelect:
             grid = app.query_one(GridSelect)
             # Manually call watch with an out-of-bounds index
             grid.watch_highlighted(None, 999)  # should not raise
+            assert len(grid.children) > 0
 
     async def test_validate_highlighted_none(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -1928,7 +1931,9 @@ class TestGridSelect:
                 screen_x=0,
                 screen_y=0,
             )
+            old_highlighted = grid.highlighted
             grid.on_click(click_event)  # should not raise
+            assert grid.highlighted == old_highlighted
 
     async def test_action_select_when_highlighted_none(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -1939,6 +1944,7 @@ class TestGridSelect:
             grid = app.query_one(GridSelect)
             grid.highlighted = None
             grid.action_select()  # should not raise
+            assert grid.highlighted is None
 
     async def test_action_select_index_error(self) -> None:
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -1949,6 +1955,7 @@ class TestGridSelect:
             grid = app.query_one(GridSelect)
             grid._reactive_highlighted = 999
             grid.action_select()  # should not raise
+            assert grid._reactive_highlighted == 999
 
 
 # ---------------------------------------------------------------------------
@@ -2185,7 +2192,10 @@ class TestModelBarAdditional:
             # Populate with empty lists — triggers (none) fallback
             bar._populate([], [], [])
             await pilot.pause()
-            # Should not crash
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            assert chat_sel.value in ("", Select.BLANK)
 
     async def test_populate_vision_model_fallback(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -2362,6 +2372,7 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             # call_from_thread might raise if not on worker thread, but suppress
             bar._on_queue_change()  # should not raise
+            assert bar.display is False
 
     async def test_render_active_task_non_active_status(self) -> None:
         """Cover line 166: _render_active_task when status != ACTIVE (e.g. DONE)."""
@@ -2470,7 +2481,7 @@ class TestGridSelectExtra:
             grid.highlighted = 0
             grid.action_select()
             await pilot.pause()
-            # The message is posted to the message queue — verifying no crash
+            assert grid.highlighted == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2544,6 +2555,10 @@ class TestModelBarPopulateBranches:
             bar = app.query_one(ModelBar)
             bar._populate([], [], [])
             await pilot.pause()
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            assert chat_sel.value in ("", Select.BLANK)
 
     async def test_populate_vision_from_cfg_fallback(self) -> None:
         """Cover lines 202-206: vision from cfg when not in scan and select is empty."""
@@ -2576,6 +2591,10 @@ class TestModelBarPopulateBranches:
             bar = app.query_one(ModelBar)
             bar._populate(["test-model"], ["test-embed"], ["llava:7b", "moondream:latest"])
             await pilot.pause()
+            from textual.widgets import Select
+
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava:7b"
 
     async def test_populate_value_not_in_new_options(self) -> None:
         """Cover lines 179, 183, 189, 193, 198-201: value retained but not in scanned list.
@@ -2698,6 +2717,7 @@ class TestModelBarPopulateBranches:
             bar = app.query_one(ModelBar)
             bar.refresh_models()
             await pilot.pause()
+            assert bar.display is True
 
     async def test_after_model_change_with_streaming_chat(self) -> None:
         """Cover line 259: cancel stream when chat screen is streaming."""
