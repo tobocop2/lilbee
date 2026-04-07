@@ -90,7 +90,7 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Install spacy model
-        run: uv run python -m spacy download en_core_web_sm
+        run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
       - name: Install Playwright for crawl4ai
         run: uv run crawl4ai-setup
@@ -109,7 +109,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v -m slow
+        run: uv run pytest tests/integration/ -v
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
