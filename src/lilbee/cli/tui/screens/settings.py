@@ -124,6 +124,7 @@ class SettingsScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
+        Binding("tab", "focus_next", "Next field", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),

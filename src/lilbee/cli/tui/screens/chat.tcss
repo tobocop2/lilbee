@@ -59,10 +59,6 @@ Markdown {
     border: tall transparent;
 }
 
-#chat-prompt-area.insert-mode {
-    border: tall $accent;
-}
-
-#chat-prompt-area.normal-mode {
-    border: tall $surface-lighten-1;
+#chat-prompt-area:focus-within {
+    border: tall $secondary;
 }

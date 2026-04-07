@@ -651,11 +651,12 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert len(visible) <= 3
+        assert any("Search" in d for d in visible)
+        assert len(visible) <= 4
 
 
 class TestNavBindings:
-    """Verify h/l nav bindings exist in app BINDINGS (number keys removed)."""
+    """Verify [/] nav bindings exist in app BINDINGS (number keys removed)."""
 
     def test_nav_bindings_exist(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp

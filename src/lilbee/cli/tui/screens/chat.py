@@ -95,7 +95,7 @@ class ChatScreen(Screen[None]):
         Binding("G", "vim_scroll_end", "G bottom", show=False, group=_SCROLL_GROUP),
         Binding("up", "history_prev", "Up", show=False),
         Binding("down", "history_next", "Down", show=False),
-        Binding("escape", "enter_normal_mode", "Normal", show=False, priority=True),
+        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
         Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
         Binding("f5", "open_setup", "Setup", show=False),
     ]
@@ -212,19 +212,12 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def _update_input_style(self) -> None:
-        """Toggle input border and mode indicator based on current mode."""
+        """Toggle input opacity and mode indicator based on current mode."""
         inp = self.query_one("#chat-input", Input)
-        area = self.query_one("#chat-prompt-area", PromptArea)
         if self._insert_mode:
             inp.remove_class("normal-mode")
-            inp.add_class("insert-mode")
-            area.remove_class("normal-mode")
-            area.add_class("insert-mode")
         else:
-            inp.remove_class("insert-mode")
             inp.add_class("normal-mode")
-            area.remove_class("insert-mode")
-            area.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:

@@ -192,7 +192,7 @@ class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
     CSS_PATH = "catalog.tcss"
-    AUTO_FOCUS = "GridSelect"
+    AUTO_FOCUS = ""  # GridSelect is mounted dynamically; focused in on_mount
 
     HELP = (
         "# Catalog\n"
@@ -205,7 +205,7 @@ class CatalogScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
-        Binding("escape", "go_back", "Back", show=False),
+        Binding("escape", "go_back", "Back", show=True),
         Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
         Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
         Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
@@ -256,7 +256,15 @@ class CatalogScreen(Screen[None]):
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
+        self._focus_first_grid()
         self._fetch_remote_models()
+
+    def _focus_first_grid(self) -> None:
+        """Focus the first GridSelect widget if available."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self.query_one(GridSelect).focus()
 
     def _fetch_installed_names(self) -> None:
         """Populate installed source repos/filenames from registry manifests."""

@@ -3149,17 +3149,16 @@ async def test_chat_enter_returns_to_insert_mode():
 
 
 async def test_chat_normal_mode_dims_input():
-    """F3: Input widget gets normal-mode class when in normal mode."""
+    """Input widget gets normal-mode class when in normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
         inp = app.screen.query_one("#chat-input", Input)
-        assert "insert-mode" in inp.classes
+        assert "normal-mode" not in inp.classes
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         assert "normal-mode" in inp.classes
-        assert "insert-mode" not in inp.classes
 
 
 async def test_chat_escape_key_enters_normal_mode():

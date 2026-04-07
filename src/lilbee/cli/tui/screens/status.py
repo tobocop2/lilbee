@@ -88,6 +88,7 @@ class StatusScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
+        Binding("tab", "focus_next", "Next section", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),

@@ -1772,27 +1772,30 @@ class TestTaskCenterInteractions:
 class TestChatPromptBorder:
     """Test that the chat prompt area has a single border, not stacked."""
 
-    async def test_prompt_area_insert_mode_border(self, _mock_resolve):
-        """PromptArea should have insert-mode class, input should have no border."""
+    async def test_prompt_area_border_uses_focus_within(self, _mock_resolve):
+        """PromptArea uses :focus-within for border, not mode classes."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             area = app.screen.query_one("#chat-prompt-area")
             inp = app.screen.query_one("#chat-input")
-            assert area.has_class("insert-mode")
+            # No mode classes on the prompt area — border driven by :focus-within CSS
+            assert not area.has_class("insert-mode")
+            assert not area.has_class("normal-mode")
             # Input should not have its own border
-            assert inp.styles.border is not None  # exists but set to none in CSS
+            assert inp.styles.border is not None
 
-    async def test_prompt_area_normal_mode_border(self, _mock_resolve):
-        """PromptArea should switch to normal-mode class on escape."""
+    async def test_normal_mode_dims_input_not_area(self, _mock_resolve):
+        """Normal mode adds class to input (opacity), not to prompt area."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
+            inp = app.screen.query_one("#chat-input")
             area = app.screen.query_one("#chat-prompt-area")
-            assert area.has_class("normal-mode")
-            assert not area.has_class("insert-mode")
+            assert inp.has_class("normal-mode")
+            assert not area.has_class("normal-mode")
 
 
 class TestAppQuit:
