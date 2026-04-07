@@ -940,6 +940,8 @@ async def test_chat_slash_delete_with_match(mock_svc):
     ]
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
         app.screen._cmd_delete("notes.md")
         mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
         mock_svc.store.delete_source.assert_called_once_with("notes.md")
@@ -1509,20 +1511,19 @@ async def test_command_provider_set_model_vision():
             assert cfg.vision_model == ""
 
 
-async def test_command_provider_delete_doc():
+async def test_command_provider_delete_doc(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         provider._delete_doc("notes.md")
-        from lilbee.services import get_services
-
-        store = get_services().store
-        store.delete_by_source.assert_called_once_with("notes.md")
-        store.delete_source.assert_called_once_with("notes.md")
+        mock_svc.store.delete_by_source.assert_called_once_with("notes.md")
+        mock_svc.store.delete_source.assert_called_once_with("notes.md")
 
 
 async def test_command_provider_action_sync():
@@ -1613,46 +1614,49 @@ async def test_command_provider_model_commands_vision_error():
             assert isinstance(cmds, list)
 
 
-async def test_command_provider_document_commands():
+async def test_command_provider_document_commands(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
-
-        get_services().store.get_sources.return_value = [
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.return_value = [
             {"filename": "notes.md", "source": "notes.md"},
         ]
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert len(cmds) == 1
         assert "notes.md" in cmds[0][0]
 
 
-async def test_command_provider_document_commands_error():
+async def test_command_provider_document_commands_error(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.side_effect = Exception("no store")
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
 
-        get_services().store.get_sources.side_effect = Exception("no store")
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
 
 
-async def test_command_provider_document_commands_empty_name():
+async def test_command_provider_document_commands_empty_name(mock_svc):
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        # Re-inject mock after mount (model bar events may call reset_services)
+        set_services(mock_svc)
+        mock_svc.store.get_sources.return_value = [{"source": ""}]
         from lilbee.cli.tui.commands import LilbeeCommandProvider
-        from lilbee.services import get_services
 
-        get_services().store.get_sources.return_value = [{"source": ""}]
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._document_commands()
         assert cmds == []
