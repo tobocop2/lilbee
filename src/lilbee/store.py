@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,20 @@ from lilbee.lock import write_lock
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
+
+# Suppress lancedb's LanceDBBackgroundEventLoop thread exception on shutdown.
+# lancedb has no close() API and its internal event loop thread crashes during
+# Python interpreter teardown. This is harmless — the process is exiting anyway.
+_original_excepthook = threading.excepthook
+
+
+def _suppress_lancedb_thread_error(args: threading.ExceptHookArgs) -> None:
+    if args.thread and "LanceDB" in args.thread.name:
+        return
+    _original_excepthook(args)
+
+
+threading.excepthook = _suppress_lancedb_thread_error
 
 # How often readers re-check the manifest for new versions from other processes.
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
