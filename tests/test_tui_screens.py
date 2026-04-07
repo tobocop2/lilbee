@@ -2203,7 +2203,7 @@ async def test_chat_run_sync_worker():
                 )
             return {"added": 3}
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -2232,7 +2232,7 @@ async def test_chat_sync_progress_percentage():
             return {"added": 1}
 
         with (
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
             patch.object(task_bar, "update_task", tracking_update),
         ):
             app.screen._run_sync()
@@ -2253,7 +2253,7 @@ async def test_chat_run_sync_error_worker():
         async def failing_sync(quiet=False, on_progress=None):
             raise Exception("sync failed")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.ingest.sync", new=failing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3110,7 +3110,7 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
                 "lilbee.cli.helpers.copy_files",
                 return_value=MagicMock(copied=["doc.txt"], skipped=[]),
             ) as mock_copy,
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             task_bar = app.task_bar
             add_task_spy = MagicMock(wraps=task_bar.add_task)
@@ -3154,7 +3154,7 @@ async def test_sync_called_with_quiet_true():
             sync_kwargs.append(kwargs)
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", side_effect=capturing_sync):
+        with patch("lilbee.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3487,11 +3487,13 @@ async def test_chat_input_history_up_down():
         inp.focus()
         await pilot.pause()
 
-        # Submit two messages
-        inp.value = "hello"
-        await pilot.press("enter")
-        inp.value = "world"
-        await pilot.press("enter")
+        # Patch _stream_response to prevent background worker threads
+        with patch.object(app.screen, "_stream_response"):
+            # Submit two messages
+            inp.value = "hello"
+            await pilot.press("enter")
+            inp.value = "world"
+            await pilot.press("enter")
         await pilot.pause()
 
         assert app.screen._input_history == ["hello", "world"]
@@ -6160,7 +6162,7 @@ async def test_chat_add_skipped_file():
 
         from lilbee.progress import EventType, FileStartEvent
 
-        async def fake_sync(*, quiet=True, on_progress=None):
+        async def fake_sync(*, quiet: bool = True, on_progress: object = None) -> None:
             if on_progress:
                 # Trigger with total_files=0 to cover pct=75 path
                 on_progress(
@@ -6170,7 +6172,7 @@ async def test_chat_add_skipped_file():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("test.txt"), "task-1")
             while app.screen.workers:
@@ -6200,7 +6202,7 @@ async def test_chat_add_sync_progress_with_total_files():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("doc.md"), "task-pct")
             while app.screen.workers:
@@ -6230,7 +6232,7 @@ async def test_chat_add_sync_progress_wrong_type():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("test.txt"), "task-wrong")
             while app.screen.workers:

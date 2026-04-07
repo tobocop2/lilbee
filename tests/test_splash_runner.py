@@ -246,7 +246,14 @@ def test_main_guard():
         patch("lilbee._splash_runner.main"),
         pytest.raises(SystemExit),
     ):
-        runpy.run_module("lilbee._splash_runner", run_name="__main__")
+        # Remove from sys.modules after patch setup (which imports it)
+        # so runpy doesn't warn about pre-existing module
+        saved = sys.modules.pop("lilbee._splash_runner", None)
+        try:
+            runpy.run_module("lilbee._splash_runner", run_name="__main__")
+        finally:
+            if saved is not None:
+                sys.modules["lilbee._splash_runner"] = saved
 
 
 def test_main_missing_args():
