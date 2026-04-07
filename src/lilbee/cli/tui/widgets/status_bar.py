@@ -1,8 +1,4 @@
-"""ViewTabs — view tab strip with mode indicator.
-
-Replaces the old StatusBar. Keybinding hints are now handled by
-Textual's built-in Footer widget (yielded separately by each screen).
-"""
+"""ViewTabs — view tab strip with mode indicator."""
 
 from __future__ import annotations
 
@@ -22,7 +18,7 @@ _DEFAULT_MODE_STYLE = "bold white on dark_red"
 
 
 class ViewTabs(Widget):
-    """View tab strip with mode indicator. No keybinding hints — use Footer."""
+    """View tab strip with mode indicator."""
 
     DEFAULT_CSS = """
     ViewTabs {
@@ -63,7 +59,3 @@ class ViewTabs(Widget):
             else:
                 parts.append(f" [dim]{name}[/] ")
         self.query_one("#view-tabs-content", Static).update("".join(parts))
-
-
-# Backward-compatible alias for imports that haven't been updated yet.
-StatusBar = ViewTabs

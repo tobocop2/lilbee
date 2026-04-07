@@ -197,49 +197,49 @@ class TestModelSwitchSafety:
             screen.action_cancel_stream.assert_called_once()
 
 
-class TestStatusBarPresence:
+class TestViewTabsPresence:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
     async def test_status_bar_on_all_screens(self, _fam, _cat, _mock_resolve):
-        """StatusBar must exist on every screen."""
+        """ViewTabs must exist on every screen."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
 
             # Chat screen
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar is not None
 
             # Cycle through all views
             for view in ["Catalog", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
-                bar = app.screen.query_one(StatusBar)
-                assert bar is not None, f"StatusBar missing on {view} screen"
+                bar = app.screen.query_one(ViewTabs)
+                assert bar is not None, f"ViewTabs missing on {view} screen"
 
 
 class TestModeIndicator:
     async def test_insert_mode_on_startup(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "INSERT" in bar.mode_text
 
     async def test_normal_mode_on_escape(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "NORMAL" in bar.mode_text
 
 

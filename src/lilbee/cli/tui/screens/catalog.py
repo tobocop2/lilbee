@@ -184,6 +184,10 @@ def _param_sort_value(params: str) -> float:
     return float(match.group(1)) if match else 0.0
 
 
+_GRID_PAGE_ROWS = 3
+_TABLE_PAGE_ROWS = 10
+
+
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
@@ -731,22 +735,22 @@ class CatalogScreen(Screen[None]):
         if isinstance(self.focused, Input):
             return
         if (grid := self._focused_grid()) is not None:
-            for _ in range(3):
+            for _ in range(_GRID_PAGE_ROWS):
                 grid.action_cursor_down()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
         if isinstance(self.focused, Input):
             return
         if (grid := self._focused_grid()) is not None:
-            for _ in range(3):
+            for _ in range(_GRID_PAGE_ROWS):
                 grid.action_cursor_up()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:

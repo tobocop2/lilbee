@@ -3661,36 +3661,36 @@ async def test_app_switch_to_tasks():
 
 
 async def test_chat_mode_indicator_shows_normal():
-    """StatusBar shows NORMAL when entering normal mode."""
+    """ViewTabs shows NORMAL when entering normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        bar = app.screen.query_one(StatusBar)
+        bar = app.screen.query_one(ViewTabs)
         assert bar.mode_text == msg.MODE_NORMAL
 
 
 async def test_chat_mode_indicator_shows_insert():
-    """StatusBar shows INSERT when returning to insert mode."""
+    """ViewTabs shows INSERT when returning to insert mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
     cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app.screen.action_enter_normal_mode()
         await pilot.pause()
         app.screen._enter_insert_mode()
         await pilot.pause()
-        bar = app.screen.query_one(StatusBar)
+        bar = app.screen.query_one(ViewTabs)
         assert bar.mode_text == msg.MODE_INSERT
 
 
@@ -3744,12 +3744,12 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
 
 
 def test_statusbar_mode_text_reactive_declared():
-    """StatusBar declares a mode_text reactive."""
+    """ViewTabs declares a mode_text reactive."""
     from textual.reactive import Reactive
 
-    from lilbee.cli.tui.widgets.status_bar import StatusBar
+    from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-    reactives = {name for name, val in vars(StatusBar).items() if isinstance(val, Reactive)}
+    reactives = {name for name, val in vars(ViewTabs).items() if isinstance(val, Reactive)}
     assert "mode_text" in reactives
 
 
@@ -3949,12 +3949,12 @@ def _create_wiki_page(wiki_root, subdir, slug, title, content_body="Some content
 
 class TestWikiScreenCompose:
     async def test_composes_with_status_bar(self):
-        """WikiScreen includes a StatusBar widget."""
+        """WikiScreen includes a ViewTabs widget."""
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
-            from lilbee.cli.tui.widgets.status_bar import StatusBar
+            from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-            bars = app.screen.query(StatusBar)
+            bars = app.screen.query(ViewTabs)
             assert len(bars) == 1
 
     async def test_has_sidebar_and_content(self):

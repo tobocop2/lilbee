@@ -115,7 +115,7 @@ class LilbeeApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
-        yield from ()  # screens compose their own StatusBar
+        yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
