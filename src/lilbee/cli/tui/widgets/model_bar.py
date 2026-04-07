@@ -38,7 +38,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption], 
     """Classify installed models into (chat, embedding, vision) lists.
 
     Uses registry manifests for native models and the litellm backend's
-    /api/tags metadata for remote models. Filters out mmproj files.
+    backend metadata for remote models. Filters out mmproj files.
     """
     buckets: dict[str, list[ModelOption]] = {
         ModelTask.CHAT: [],
@@ -92,26 +92,23 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
         log.debug("Could not classify remote models", exc_info=True)
 
 
-def _sync_select(sel: Select, opts: list[ModelOption], models: list[ModelOption]) -> None:
+def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Set options and value for a model Select widget.
 
-    Preserves the current value if it's in the options. Otherwise picks the
-    first available model. If the current value isn't in the options, prepends
-    it so it remains selectable.
+    Preserves the current value if it's in the options. Falls back to
+    *default* (typically the configured model from ``cfg``). If the
+    resolved value isn't in *opts*, prepends it so it remains selectable.
 
-    Note: may mutate *opts* by inserting the current value at index 0.
+    Note: may mutate *opts* by inserting the resolved value at index 0.
     """
     sel.set_options(opts)
     current = str(sel.value) if sel.value != _DISABLED else ""
-    if current:
-        if not any(o.ref == current for o in opts):
-            opts.insert(0, ModelOption(current, current))
+    target = current or default
+    if target:
+        if not any(o.ref == target for o in opts):
+            opts.insert(0, ModelOption(target, target))
             sel.set_options(opts)
-        sel.value = current
-    elif models:
-        sel.value = models[0].ref
-    elif opts:
-        sel.value = opts[0].ref
+        sel.value = target
 
 
 class ModelBar(Widget, can_focus=True):
@@ -205,8 +202,8 @@ class ModelBar(Widget, can_focus=True):
         chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
         embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
 
-        _sync_select(chat_sel, chat_opts, chat_models)
-        _sync_select(embed_sel, embed_opts, embed_models)
+        _sync_select(chat_sel, chat_opts, cfg.chat_model)
+        _sync_select(embed_sel, embed_opts, cfg.embedding_model)
         self._sync_vision_select(vision_sel, vision_models)
 
         self._populating = False

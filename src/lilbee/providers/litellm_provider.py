@@ -196,9 +196,9 @@ def _format_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
 
 def _cache_ollama_defaults(model: str, params_text: str) -> None:
     """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.model_defaults import parse_ollama_parameters, set_defaults
+    from lilbee.model_defaults import parse_kv_parameters, set_defaults
 
-    defaults = parse_ollama_parameters(params_text)
+    defaults = parse_kv_parameters(params_text)
     set_defaults(model, defaults)
 
 

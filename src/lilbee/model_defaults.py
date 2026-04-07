@@ -1,6 +1,6 @@
 """Per-model default generation settings.
 
-Parses and caches generation parameters from Ollama's /api/show response
+Parses and caches generation parameters from key-value parameter text
 or GGUF file metadata so that model-specific defaults (temperature, num_ctx,
 etc.) are applied automatically when switching models.
 """
@@ -14,8 +14,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Ollama parameter keys we recognise and their target types
-_OLLAMA_PARAM_TYPES: dict[str, type] = {
+# Parameter keys we recognise and their target types
+_KNOWN_PARAM_TYPES: dict[str, type] = {
     "temperature": float,
     "top_p": float,
     "top_k": int,
@@ -63,8 +63,8 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-def parse_ollama_parameters(text: str) -> ModelDefaults:
-    """Parse Ollama's multiline ``key value`` parameter format.
+def parse_kv_parameters(text: str) -> ModelDefaults:
+    """Parse multiline ``key value`` parameter format.
 
     Example input::
 
@@ -84,12 +84,12 @@ def parse_ollama_parameters(text: str) -> ModelDefaults:
         if len(parts) != 2:
             continue
         key, raw_value = parts
-        if key not in _OLLAMA_PARAM_TYPES:
+        if key not in _KNOWN_PARAM_TYPES:
             continue
         try:
-            values[key] = _OLLAMA_PARAM_TYPES[key](raw_value)
+            values[key] = _KNOWN_PARAM_TYPES[key](raw_value)
         except (ValueError, TypeError):
-            log.debug("Skipping unparseable Ollama param %s=%r", key, raw_value)
+            log.debug("Skipping unparseable param %s=%r", key, raw_value)
     return ModelDefaults(**values)
 
 

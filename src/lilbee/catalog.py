@@ -12,7 +12,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from tqdm.auto import tqdm as _base_tqdm
 
 from lilbee.config import cfg
 from lilbee.models import ModelTask
-from lilbee.registry import DEFAULT_TAG
+from lilbee.registry import DEFAULT_TAG, ModelManifest, ModelRef, ModelRegistry
 
 log = logging.getLogger(__name__)
 
@@ -593,10 +593,6 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
 
 def _register_model(entry: CatalogModel, file_path: Path) -> None:
     """Create a registry manifest for a downloaded model."""
-    from datetime import datetime
-
-    from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
-
     registry = ModelRegistry(cfg.models_dir)
     ref = ModelRef(name=entry.name, tag=entry.tag)
     manifest = ModelManifest(

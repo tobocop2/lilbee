@@ -48,9 +48,9 @@ class SetupModal(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, ollama_embeddings: list[str] | None = None) -> None:
+    def __init__(self, remote_embeddings: list[str] | None = None) -> None:
         super().__init__()
-        self._remote_embeddings = ollama_embeddings or []
+        self._remote_embeddings = remote_embeddings or []
         self._downloaded_name: str | None = None
 
     def compose(self) -> ComposeResult:

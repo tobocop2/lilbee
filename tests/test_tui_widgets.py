@@ -2002,7 +2002,7 @@ class TestSetupModal:
 
         app = _SetupModalApp()
         async with app.run_test() as pilot:
-            app.push_screen(SetupModal(ollama_embeddings=["nomic-embed-text"]))
+            app.push_screen(SetupModal(remote_embeddings=["nomic-embed-text"]))
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
@@ -2013,7 +2013,7 @@ class TestSetupModal:
         results: list[object] = []
         async with app.run_test() as pilot:
             app.push_screen(
-                SetupModal(ollama_embeddings=["nomic-embed-text"]),
+                SetupModal(remote_embeddings=["nomic-embed-text"]),
                 callback=lambda r: results.append(r),
             )
             await pilot.pause()
@@ -2212,13 +2212,13 @@ class TestModelBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            # Populate with empty lists — triggers (none) fallback
+            # Populate with empty lists — falls back to configured default
             bar._populate([], [], [])
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value in ("", Select.BLANK)
+            assert chat_sel.value == "test-model"
 
     async def test_populate_vision_model_fallback(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -2319,12 +2319,47 @@ class TestSyncSelectPrepend:
         sel = mock.MagicMock()
         sel.value = "custom:latest"
         opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
-        _sync_select(sel, opts, opts)
+        _sync_select(sel, opts)
         # Prepended the missing value and called set_options twice
         assert sel.set_options.call_count == 2
         prepended = sel.set_options.call_args_list[1][0][0]
         assert prepended[0] == ModelOption("custom:latest", "custom:latest")
         assert sel.value == "custom:latest"
+
+    def test_default_used_when_no_current_value(self) -> None:
+        """When Select has no value, fall back to the configured default."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="qwen3:8b")
+        assert sel.value == "qwen3:8b"
+
+    def test_default_prepended_when_not_in_opts(self) -> None:
+        """When the configured default isn't in opts, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="llama3:8b")
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("llama3:8b", "llama3:8b")
+        assert sel.value == "llama3:8b"
+
+    def test_no_default_no_current_leaves_unset(self) -> None:
+        """When no current value and no default, don't set a value."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts)
+        assert sel.set_options.call_count == 1
+        # value should not have been reassigned beyond the mock default
+        assert sel.value == _DISABLED
 
 
 class TestCollectNativeModelsError:
@@ -2608,8 +2643,8 @@ class TestModelBarPopulateBranches:
             assert chat_sel.value == "test-model"
             assert embed_sel.value == "test-embed"
 
-    async def test_populate_empty_lists_uses_none_option(self) -> None:
-        """When no models found, (none) fallback is used."""
+    async def test_populate_empty_lists_uses_config_default(self) -> None:
+        """When no models found, configured default from cfg is used."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2624,7 +2659,7 @@ class TestModelBarPopulateBranches:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value in ("", Select.BLANK)
+            assert chat_sel.value == "test-model"
 
     async def test_populate_vision_from_cfg_fallback(self) -> None:
         """Cover lines 202-206: vision from cfg when not in scan and select is empty."""
@@ -2697,12 +2732,11 @@ class TestModelBarPopulateBranches:
             assert embed_sel.value == "nomic:latest"
             assert vision_sel.value == "llava:7b"
 
-    async def test_populate_blank_value_with_models_available(self) -> None:
-        """Cover lines 183, 193: value is empty but models list is non-empty.
+    async def test_populate_blank_value_uses_config_default(self) -> None:
+        """When Select has no value, falls back to configured default from cfg.
 
-        This is a defensive branch — after set_options with allow_blank=False,
-        Textual normally auto-selects the first value. We force the Select to
-        return empty by intercepting set_options.
+        We force the Select to return empty by intercepting set_options to
+        simulate a widget that lost its value during refresh.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -2719,8 +2753,8 @@ class TestModelBarPopulateBranches:
             embed_sel = app.query_one("#embed-model-select", Select)
 
             # Patch the first set_options to force _reactive_value = Select.NULL
-            # (bypassing validation), so has_chat_model = False while
-            # chat_models is non-empty. This covers lines 183, 193.
+            # (bypassing validation), so the current-value branch is skipped
+            # and _sync_select falls back to the configured default.
             for sel in (chat_sel, embed_sel):
                 orig_fn = sel.set_options
                 call_count = [0]
@@ -2743,8 +2777,9 @@ class TestModelBarPopulateBranches:
                 [],
             )
             await pilot.pause()
-            assert chat_sel.value == "qwen3:8b"
-            assert embed_sel.value == "nomic:latest"
+            # Falls back to cfg.chat_model / cfg.embedding_model, not models[0]
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
 
     async def test_refresh_models(self) -> None:
         """Cover line 267: refresh_models calls _scan_models."""

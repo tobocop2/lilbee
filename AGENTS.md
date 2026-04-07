@@ -95,7 +95,7 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`
 - No hardcoded values — all configurable through `config.py` with env var overrides
 - Imports: stdlib first, then third-party, then local — no star imports
-- Lazy imports in CLI callbacks (avoid loading heavy deps at import time)
+- Lazy imports in CLI callbacks only for heavy third-party deps or circular imports
 - Linting: `ruff check` + `ruff format` (line length 100)
 - Type checking: `mypy` with strict settings
 
