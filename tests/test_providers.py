@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -115,7 +116,7 @@ class TestLlamaCppProvider:
             p.shutdown()
         self._resolve_patcher.stop()
 
-    def _make_provider(self) -> Any:
+    def _make_provider(self) -> object:
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider
 
         p = LlamaCppProvider()
@@ -1161,7 +1162,6 @@ class TestDispatchBatch:
 class TestEmbedSubprocessFallback:
     def test_oserror_disables_subprocess(self, mock_llama_cpp: mock.MagicMock) -> None:
         """OSError from subprocess worker falls back to in-process embedding."""
-        from concurrent.futures import Future
 
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
 
@@ -1502,9 +1502,8 @@ class TestWorkerProcessNoneResponses:
         req = EmbedRequest(texts=["hello"], model="test", request_id=1)
         with mock.patch.object(wp, "_get_response", return_value=None), mock.patch.object(
             wp, "restart"
-        ):
-            with pytest.raises(RuntimeError, match="crashed again"):
-                wp._retry_embed(req)
+        ), pytest.raises(RuntimeError, match="crashed again"):
+            wp._retry_embed(req)
 
     def test_send_and_receive_vision_none_retries(self) -> None:
         from lilbee.providers.worker_process import VisionRequest, VisionResponse, WorkerProcess
@@ -1537,9 +1536,8 @@ class TestWorkerProcessNoneResponses:
         req = VisionRequest(png_bytes=b"\x89PNG", model="vis", prompt="", request_id=1)
         with mock.patch.object(wp, "_get_response", return_value=None), mock.patch.object(
             wp, "restart"
-        ):
-            with pytest.raises(RuntimeError, match="crashed again"):
-                wp._retry_vision(req)
+        ), pytest.raises(RuntimeError, match="crashed again"):
+            wp._retry_vision(req)
 
     def test_get_response_dead_worker_returns_none(self) -> None:
         from lilbee.providers.worker_process import WorkerProcess
@@ -1611,7 +1609,7 @@ class TestFilterOptions:
 # ---------------------------------------------------------------------------
 
 
-def _make_provider_no_thread() -> Any:
+def _make_provider_no_thread() -> object:
     """Create a LlamaCppProvider without starting the embed thread."""
     import queue as q
     import threading
@@ -1902,9 +1900,8 @@ class TestLlamaCppProviderMethods:
         with mock.patch.object(provider, "_get_subprocess_worker", return_value=mock_worker):
             # The embed will try subprocess, fail, then queue in-process
             # We need to handle the queue - put a pre-resolved future
-            original_put = provider._embed_queue.put
 
-            def intercept_put(req: Any) -> None:
+            def intercept_put(req: object) -> None:
                 req.future.set_result([[0.3, 0.4]])
 
             provider._embed_queue.put = intercept_put
@@ -1985,7 +1982,7 @@ class TestEmbedWorker:
         """_dispatch_batch resolves futures with embedding vectors."""
         from concurrent.futures import Future
 
-        from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
+        from lilbee.providers.llama_cpp_provider import _EmbedRequest
 
         provider = _make_provider_no_thread()
         mock_llm = mock.MagicMock()
@@ -2067,11 +2064,14 @@ class TestLockedStreamIteratorException:
         lock = threading.Lock()
         lock.acquire()
 
-        def bad_stream() -> Iterator:
+        def bad_stream() -> Iterator[str]:
+            """Generator that raises immediately."""
+            yield ""  # make it a generator
             raise RuntimeError("stream error")
-            yield  # noqa: unreachable
 
-        it = _LockedStreamIterator(bad_stream(), lock)
+        gen = bad_stream()
+        next(gen)  # advance past the yield to prime the generator
+        it = _LockedStreamIterator(gen, lock)
         with pytest.raises(RuntimeError, match="stream error"):
             next(it)
 

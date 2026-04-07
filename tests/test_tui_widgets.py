@@ -1849,6 +1849,7 @@ class TestGridSelect:
 
     async def test_on_click_highlights_child(self) -> None:
         from textual import events
+
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         app = _GridApp()
@@ -1876,6 +1877,7 @@ class TestGridSelect:
 
     async def test_on_click_double_click_selects(self) -> None:
         from textual import events
+
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         app = _GridApp()
@@ -1900,13 +1902,13 @@ class TestGridSelect:
                 screen_x=0,
                 screen_y=0,
             )
-            original_action_select = grid.action_select
             grid.action_select = lambda: selected.append(True)  # type: ignore[assignment]
             grid.on_click(click_event)
             assert len(selected) == 1
 
     async def test_on_click_no_widget(self) -> None:
         from textual import events
+
         from lilbee.cli.tui.widgets.grid_select import GridSelect
 
         app = _GridApp()
@@ -2204,7 +2206,7 @@ class TestModelBarAdditional:
             assert vision_sel.value == "llava:custom"
 
     async def test_populate_vision_model_not_in_list_or_config(self) -> None:
-        from lilbee.cli.tui.widgets.model_bar import ModelBar, _DISABLED
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
 
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
@@ -2436,7 +2438,7 @@ class TestGridSelectExtra:
             gs = grid.grid_size
             assert gs is not None
             width = gs[0]
-            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)} items, width={width}"
+            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)}"
             grid.highlighted = width  # first cell of second row
             grid.action_cursor_up()
             assert grid.highlighted == 0
@@ -2452,7 +2454,7 @@ class TestGridSelectExtra:
             gs = grid.grid_size
             assert gs is not None
             width = gs[0]
-            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)} items, width={width}"
+            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)}"
             grid.highlighted = 0
             grid.action_cursor_down()
             assert grid.highlighted == width
@@ -2599,7 +2601,6 @@ class TestModelBarPopulateBranches:
             # Monkey-patch set_options to also force a custom value afterward,
             # simulating the case where the widget retains a value not in the
             # new option list (e.g. from a previous configure step).
-            originals: dict[str, object] = {}
             patched_vals = [
                 (chat_sel, "custom-chat:latest"),
                 (embed_sel, "custom-embed:latest"),
@@ -2620,7 +2621,7 @@ class TestModelBarPopulateBranches:
                         # The second call (line 180/190/200) has the value in opts.
                         if call_counts[sid] == 1:
                             # Add the value to the option list and set it
-                            opts_with_val = [(val, val)] + list(opts)
+                            opts_with_val = [(val, val), *list(opts)]
                             orig(opts_with_val)
                             s.value = val
                     return patched

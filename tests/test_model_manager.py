@@ -64,7 +64,6 @@ def _install_registry_model(
 
 class TestModelManagerListInstalled:
     def test_native_lists_registered_models(self, tmp_path: Path) -> None:
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -125,7 +124,6 @@ class TestModelManagerListInstalled:
         assert result == []
 
     def test_none_source_lists_both(self, tmp_path: Path) -> None:
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -143,7 +141,6 @@ class TestModelManagerListInstalled:
 
     def test_none_source_deduplicates(self, tmp_path: Path) -> None:
         """If same model appears in both sources, it should appear once."""
-        from lilbee.registry import ModelManifest, ModelRef, ModelRegistry
 
         models_dir = tmp_path / "models"
         models_dir.mkdir()

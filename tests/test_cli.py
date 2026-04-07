@@ -2215,7 +2215,7 @@ class TestWikiPrune:
 class TestCrawlProgressCallback:
     def test_crawl_page_event(self):
         """Crawl progress callback handles CrawlPageEvent."""
-        from lilbee.progress import CrawlPageEvent, EventType
+        from lilbee.progress import CrawlPageEvent
 
         event = CrawlPageEvent(url="https://example.com", current=3, total=10)
         # The callback in commands.py checks isinstance(data, CrawlPageEvent)
@@ -2224,22 +2224,22 @@ class TestCrawlProgressCallback:
 
     def test_crawl_callback_wrong_type_raises(self):
         """Crawl progress callback raises TypeError for non-CrawlPageEvent."""
-        from lilbee.progress import EventType, FileStartEvent
-
         # Simulate what _make_callback does
         from unittest.mock import MagicMock
 
-        progress = MagicMock()
+        from lilbee.progress import EventType, FileStartEvent
+
+        MagicMock()
 
         def on_progress(event_type, data):
-            if event_type == EventType.CRAWL_PAGE:
-                if not isinstance(data, CrawlPageEvent):
-                    raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+            if event_type == EventType.CRAWL_PAGE and not isinstance(data, CrawlPageEvent):
+                raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
 
         from lilbee.progress import CrawlPageEvent
 
+        bad_event = FileStartEvent(file="x", total_files=1, current_file=1)
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
-            on_progress(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
+            on_progress(EventType.CRAWL_PAGE, bad_event)
 
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
     def test_crawl_callback_wrong_type_real_code(self, mock_crawl, isolated_env):
@@ -2329,8 +2329,9 @@ class TestSyncProgressPrinter:
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
+        bad = SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0)
         with pytest.raises(TypeError, match="Expected FileStartEvent"):
-            cb(EventType.FILE_START, SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0))
+            cb(EventType.FILE_START, bad)
 
     def test_done_wrong_type_raises(self):
         """_sync_progress_printer raises TypeError for wrong data type on DONE."""
@@ -2383,8 +2384,9 @@ class TestChatSyncCallback:
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
+        bad = SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0)
         with pytest.raises(TypeError, match="Expected FileStartEvent"):
-            cb(EventType.FILE_START, SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0))
+            cb(EventType.FILE_START, bad)
 
     def test_extract_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback

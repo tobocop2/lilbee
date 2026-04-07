@@ -808,9 +808,10 @@ class TestWorkerNotStartedGuards:
         wp._started = True
         wp._request_queue = None
         req = EmbedRequest(texts=["hello"], model="m", request_id=1)
-        with mock.patch.object(wp, "restart"):
-            with pytest.raises(RuntimeError, match="Worker not started"):
-                wp._retry_embed(req)
+        with mock.patch.object(wp, "restart"), pytest.raises(
+            RuntimeError, match="Worker not started"
+        ):
+            wp._retry_embed(req)
 
     def test_send_and_receive_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
         wp = WorkerProcess(config_snap)
@@ -825,9 +826,10 @@ class TestWorkerNotStartedGuards:
         wp._started = True
         wp._request_queue = None
         req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
-        with mock.patch.object(wp, "restart"):
-            with pytest.raises(RuntimeError, match="Worker not started"):
-                wp._retry_vision(req)
+        with mock.patch.object(wp, "restart"), pytest.raises(
+            RuntimeError, match="Worker not started"
+        ):
+            wp._retry_vision(req)
 
     def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
         wp = WorkerProcess(config_snap)
@@ -839,9 +841,10 @@ class TestWorkerNotStartedGuards:
         wp = WorkerProcess(config_snap)
         wp._started = True
         wp._request_queue = None
-        with mock.patch.object(wp, "_ensure_started"):
-            with pytest.raises(RuntimeError, match="Worker not started"):
-                wp.load_model("test-model")
+        with mock.patch.object(wp, "_ensure_started"), pytest.raises(
+            RuntimeError, match="Worker not started"
+        ):
+            wp.load_model("test-model")
 
 
 class TestLoadVisionModel:

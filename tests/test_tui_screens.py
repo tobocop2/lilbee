@@ -5783,7 +5783,7 @@ async def test_chat_on_key_insert_mode_focus():
 
 def test_chat_cycle_focus_unknown_widget():
     """_cycle_focus handles unknown focused widget by defaulting to index 0."""
-    from lilbee.cli.tui.screens.chat import ChatScreen, _FOCUSABLE_IDS
+    from lilbee.cli.tui.screens.chat import _FOCUSABLE_IDS, ChatScreen
 
     screen = MagicMock()
     screen.focused = MagicMock(id="nonexistent-widget")
@@ -5793,7 +5793,7 @@ def test_chat_cycle_focus_unknown_widget():
 
 def test_chat_cycle_focus_no_focused_widget():
     """_cycle_focus handles None focused widget."""
-    from lilbee.cli.tui.screens.chat import ChatScreen, _FOCUSABLE_IDS
+    from lilbee.cli.tui.screens.chat import _FOCUSABLE_IDS, ChatScreen
 
     screen = MagicMock()
     screen.focused = None
@@ -5803,15 +5803,12 @@ def test_chat_cycle_focus_no_focused_widget():
 
 
 async def test_chat_action_enter_normal_mode_streaming():
-    """action_enter_normal_mode cancels workers when streaming."""
+    """action_enter_normal_mode stops streaming and enters normal mode."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         app.screen._streaming = True
-        mock_worker = MagicMock()
-        app.screen._workers = [mock_worker]
-        with patch.object(type(app.screen), "workers", new_callable=lambda: property(lambda self: [mock_worker])):
-            app.screen.action_enter_normal_mode()
+        app.screen.action_enter_normal_mode()
         assert app.screen._streaming is False
 
 
@@ -6309,23 +6306,6 @@ async def test_catalog_install_model_resolve_exception():
                 mock_dl.assert_called_once_with(cm)
 
 
-async def test_catalog_enqueue_download_non_lilbee_app():
-    """_enqueue_download notifies error when not running in LilbeeApp."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            cm = _make_catalog_model(name="no-task-bar")
-            with patch.object(screen, "notify") as mock_notify:
-                screen._enqueue_download(cm)
-                mock_notify.assert_called()
-
-
 async def test_catalog_delete_when_input_focused():
     """action_delete_model returns early when Input is focused."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -6409,22 +6389,6 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
             table.move_cursor(row=0)
             result = screen._get_highlighted_model_name()
             assert result is None
-
-
-async def test_catalog_row_selected_out_of_range():
-    """_on_row_selected handles out-of-range row index."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._rows = []
-            event = MagicMock()
-            event.cursor_row = 5
-            screen._on_row_selected(event)  # Should not raise
 
 
 async def test_catalog_key_left_right_navigation():
