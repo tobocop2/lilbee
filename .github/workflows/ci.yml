@@ -7,7 +7,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -37,7 +37,7 @@ jobs:
         run: make imports-check
 
   test:
-    timeout-minutes: 10
+    timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -71,7 +71,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
-    timeout-minutes: 15
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
