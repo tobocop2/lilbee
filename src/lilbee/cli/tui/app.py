@@ -90,7 +90,7 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
-    _NAV_GROUP = Binding.Group("Navigate", compact=True)
+    _NAV_GROUP = Binding.Group("Navigate")
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("question_mark", "push_help", "Help", show=True),
