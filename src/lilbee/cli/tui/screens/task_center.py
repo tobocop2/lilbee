@@ -57,12 +57,15 @@ class TaskCenter(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Static("Background Tasks", id="task-center-title")
         yield DataTable(id="task-table", cursor_type="row")
         yield Static("", id="task-detail")
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def action_go_back(self) -> None:
         """Go back to the Chat screen."""

@@ -222,14 +222,17 @@ class CatalogScreen(Screen[None]):
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -743,19 +746,6 @@ class CatalogScreen(Screen[None]):
         if self._rows:
             table.move_cursor(row=len(self._rows) - 1)
 
-    def key_left(self) -> None:
-        """Navigate to previous view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_prev()
-
-    def key_right(self) -> None:
-        """Navigate to next view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_next()
 
 
 @dataclass

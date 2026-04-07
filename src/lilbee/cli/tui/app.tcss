@@ -15,6 +15,21 @@ TabbedContent > ContentSwitcher {
     height: 1fr;
 }
 
+Footer {
+    background: transparent;
+}
+
+Footer > .footer-key--key {
+    color: $text;
+    background: transparent;
+    padding: 0 1;
+}
+
+Footer > .footer-key--description {
+    color: $text-muted;
+    padding: 0 1 0 0;
+}
+
 HelpModal > Vertical {
     width: 70;
     height: auto;

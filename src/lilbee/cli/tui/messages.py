@@ -141,7 +141,6 @@ def get_nav_views() -> list[str]:
     return views
 
 
-STATUS_BAR_HINTS = "  [dim]h/l[/] nav  [dim]?[/] help  [dim]^c[/] quit"
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
 
@@ -150,8 +149,7 @@ MODE_INSERT = "INSERT"
 HELP_TEXT_TEMPLATE = """\
 [bold]Navigation[/bold]
 
-  h / Left       Previous view
-  l / Right      Next view
+  [ / ]          Navigate views
   ? / F1 / ^h    Help (this screen)
   ^t             Cycle theme
   ^c             Quit

@@ -69,7 +69,9 @@ class WikiScreen(Screen[None]):
         self._page_slugs: list[str] = []
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Horizontal(
             Vertical(
@@ -90,7 +92,8 @@ class WikiScreen(Screen[None]):
             ),
             id="wiki-layout",
         )
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self._load_pages()

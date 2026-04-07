@@ -16,7 +16,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Input, Label, Static
+from textual.widgets import Footer, Input, Label, Static
 
 from lilbee import settings
 from lilbee.cli.helpers import get_version
@@ -31,7 +31,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.help_modal import HelpModal
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.status_bar import StatusBar
+from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -123,7 +123,8 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()

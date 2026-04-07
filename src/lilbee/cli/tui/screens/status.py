@@ -93,7 +93,9 @@ class StatusScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield VerticalScroll(
             Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
@@ -102,7 +104,8 @@ class StatusScreen(Screen[None]):
             Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
             id="status-scroll",
         )
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self._load_config()

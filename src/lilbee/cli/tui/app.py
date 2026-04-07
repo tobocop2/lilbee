@@ -90,16 +90,16 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
+    _NAV_GROUP = Binding.Group("Navigate", compact=True)
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "? help", show=True),
+        Binding("question_mark", "push_help", "? Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("h", "nav_prev", "Prev", show=False),
-        Binding("left", "nav_prev", "Prev", show=False),
-        Binding("l", "nav_next", "Next", show=False),
-        Binding("right", "nav_next", "Next", show=False),
-        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
+        Binding("left_square_bracket", "nav_prev", "[", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "]", show=True, group=_NAV_GROUP),
+        Binding("ctrl+c", "quit", "^c Quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -196,13 +196,13 @@ class LilbeeApp(App[None]):
         self.push_screen(HelpModal())
 
     def action_nav_prev(self) -> None:
-        """Navigate to previous view (h or left arrow)."""
+        """Navigate to previous view ([ key)."""
         view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx - 1) % len(view_names)])
 
     def action_nav_next(self) -> None:
-        """Navigate to next view (l or right arrow)."""
+        """Navigate to next view (] key)."""
         view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx + 1) % len(view_names)])
