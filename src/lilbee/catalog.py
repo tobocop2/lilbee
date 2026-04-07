@@ -17,11 +17,10 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel
+from tqdm.auto import tqdm as _base_tqdm
 
 from lilbee.config import cfg
 from lilbee.models import ModelTask
-
-from tqdm.auto import tqdm as _base_tqdm
 
 log = logging.getLogger(__name__)
 
