@@ -7,7 +7,6 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import threading
@@ -778,41 +777,25 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
 
     def _on_progress(stage: str, data: dict[str, object]) -> None:
         payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is sse._loop:
-            sse.queue.put_nowait(payload)
-        else:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+        sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
-    def _run_generate() -> str | None:
+    def _run_blocking() -> None:
         try:
             result = generate_summary_page(
                 source, chunks, svc.provider, svc.store, on_progress=_on_progress
             )
-            return str(result) if result is not None else None
+            path = str(result) if result is not None else None
+            status = "generated" if path else "failed"
+            done = {"status": status, "source": source, "path": path or ""}
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
         except Exception as exc:
             sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
-            return None
         finally:
             sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
-    task = asyncio.ensure_future(asyncio.to_thread(_run_generate))
+    task = asyncio.ensure_future(asyncio.to_thread(_run_blocking))
     async for event in sse.drain(task, "Wiki generate stream"):
         yield event
-
-    # Ensure the thread has fully resolved before reading the result
-    with contextlib.suppress(Exception):
-        await task
-
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        result_path = task.result()
-        if result_path is not None:
-            yield sse_done({"status": "generated", "source": source, "path": result_path})
-        else:
-            yield sse_done({"status": "failed", "source": source})
 
 
 _EXTERNAL_MODELS_TTL = 60

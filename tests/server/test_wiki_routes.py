@@ -556,22 +556,16 @@ class TestWikiGenerateStream:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """Progress callback fires and emits SSE progress events."""
-        import asyncio
-
         from conftest import make_mock_services
         from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
-        loop = asyncio.get_running_loop()
-
         def _fake_generate(*args, **kwargs):
             cb = kwargs.get("on_progress")
             if cb:
-                # Call from worker thread (exercises the threadsafe path)
                 cb("preparing", {"chunks": 5, "source": "test.txt"})
-                # Also call from the event loop thread (exercises the put_nowait path)
-                loop.call_soon_threadsafe(cb, "generating", {"source": "test.txt"})
+                cb("generating", {"source": "test.txt"})
             return Path(isolated_env / "wiki" / "summaries" / "test.md")
 
         monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
