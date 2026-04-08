@@ -473,6 +473,7 @@ class Store:
         except Exception:
             # Fallback: on tables with FTS indexes, search() may return an
             # incompatible query builder.  Scan the Arrow table directly.
+            log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
             all_rows = table.to_arrow().to_pylist()
             rows = [r for r in all_rows if r.get("source") == source]
         return [SearchChunk(**r) for r in rows]

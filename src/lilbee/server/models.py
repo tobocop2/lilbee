@@ -295,14 +295,6 @@ class WikiLintStatusResult(BaseModel):
     issues: list[dict[str, str]] = []
 
 
-class WikiGenerateResult(BaseModel):
-    """Result of wiki page generation."""
-
-    status: str
-    source: str
-    path: str = ""
-
-
 class WikiPruneRecordResponse(BaseModel):
     """A single pruning action."""
 

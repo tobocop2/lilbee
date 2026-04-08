@@ -7,6 +7,7 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -803,8 +804,6 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         yield event
 
     # Ensure the thread has fully resolved before reading the result
-    import contextlib
-
     with contextlib.suppress(Exception):
         await task
 
