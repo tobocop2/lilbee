@@ -101,9 +101,10 @@ def clear_screen() -> bytes:
     return b"\033[2J\033[H\033[?25h"
 
 
-def pipe_closed(pipe_fd: int) -> bool:
-    """Check if the pipe has been closed (EOF) without blocking."""
-    if sys.platform == "win32":
+if sys.platform == "win32":
+
+    def pipe_closed(pipe_fd: int) -> bool:
+        """Check if the pipe has been closed (EOF) without blocking."""
         try:
             os.set_blocking(pipe_fd, False)
             data = os.read(pipe_fd, 1)
@@ -116,7 +117,10 @@ def pipe_closed(pipe_fd: int) -> bool:
             with contextlib.suppress(OSError):
                 os.set_blocking(pipe_fd, True)
 
-    if sys.platform != "win32":
+if sys.platform != "win32":
+
+    def pipe_closed(pipe_fd: int) -> bool:
+        """Check if the pipe has been closed (EOF) without blocking."""
         try:
             readable, _, _ = select.select([pipe_fd], [], [], 0)
         except (ValueError, OSError):
@@ -128,8 +132,6 @@ def pipe_closed(pipe_fd: int) -> bool:
             return len(data) == 0
         except OSError:
             return True
-
-    return True
 
 
 def animation_loop(pipe_fd: int) -> None:

@@ -1132,17 +1132,22 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
+                await pilot.pause()
 
                 app.screen.action_toggle_view()
                 await pilot.pause()
+                await pilot.pause()
 
                 table = app.screen.query_one("#catalog-table", DataTable)
+                table.focus()
+                await pilot.pause()
+
                 if table.row_count > 0:
-                    app.screen.action_jump_bottom()
+                    await pilot.press("G")
                     await pilot.pause()
                     assert table.cursor_row == table.row_count - 1
 
-                    app.screen.action_jump_top()
+                    await pilot.press("g")
                     await pilot.pause()
                     assert table.cursor_row == 0
 
