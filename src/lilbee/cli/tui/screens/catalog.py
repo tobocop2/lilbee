@@ -20,10 +20,12 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
     CatalogModel,
+    DownloadProgress,
     ModelFamily,
     ModelVariant,
     get_catalog,
     get_families,
+    make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -625,16 +627,10 @@ class CatalogScreen(Screen[None]):
 
         tb: TaskBar = bar  # type: ignore[assignment]
 
-        def on_progress(downloaded: int, total: int) -> None:
-            mb_done = downloaded / (1024 * 1024)
-            if total > 0:
-                pct = min(int(downloaded * 100 / total), 100)
-                mb_total = total / (1024 * 1024)
-                self._safe_call(tb.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB")
-            else:
-                self._safe_call(tb.update_task, task_id, 0, f"{mb_done:.0f} MB")
+        def _on_update(p: DownloadProgress) -> None:
+            self._safe_call(tb.update_task, task_id, p.percent, p.detail)
 
-        return on_progress
+        return make_download_callback(_on_update)
 
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
@@ -653,9 +649,10 @@ class CatalogScreen(Screen[None]):
             log.warning("Gated repo: %s", model.hf_repo)
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="warning")
-        except Exception:
+        except Exception as exc:
             log.warning("Download failed for %s", model.ref, exc_info=True)
-            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.display_name)
+            error_detail = str(exc) if str(exc) else type(exc).__name__
+            detail = f"{model.display_name}: {error_detail}"
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="error")
 

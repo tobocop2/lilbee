@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -9,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from lilbee.catalog import CatalogModel
+from lilbee.cli.tui.screens.catalog import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
@@ -1992,192 +1994,57 @@ class TestGridSelect:
             assert grid._reactive_highlighted == 999
 
 
-# ---------------------------------------------------------------------------
-# SetupModal widget tests
-# ---------------------------------------------------------------------------
+class TestModelCardSelected:
+    def test_model_card_selected_reactive(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
 
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = _catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.selected is False
+        card.selected = True
+        assert card.selected is True
 
-class _SetupModalApp(App):
-    def compose(self) -> ComposeResult:
-        yield Static("base")
+    def _make_row(self, **overrides: Any) -> TableRow:
+        defaults: dict[str, Any] = {
+            "name": "test",
+            "task": "chat",
+            "params": "8B",
+            "size": "4 GB",
+            "quant": "Q4_K_M",
+            "downloads": "--",
+            "featured": False,
+            "installed": False,
+            "sort_downloads": 0,
+            "sort_size": 4.0,
+        }
+        defaults.update(overrides)
+        return TableRow(**defaults)
 
+    def test_build_status_with_downloads(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-class TestSetupModal:
-    async def test_compose_without_remote_embeddings(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+        row = self._make_row(downloads="1K", sort_downloads=1000)
+        assert _build_status(row) is not None
 
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
+    def test_build_status_installed(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-    async def test_compose_with_remote_embeddings(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+        result = _build_status(self._make_row(installed=True))
+        assert result is not None
+        assert "installed" in str(result).lower()
 
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal(remote_embeddings=["nomic-embed-text"]))
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
+    def test_build_status_downloads_positive(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-    async def test_select_remote_row_dismisses_with_name(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+        row = self._make_row(downloads="5K", sort_downloads=5000)
+        assert _build_status(row) is not None
 
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(remote_embeddings=["nomic-embed-text"]),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            # Find the _RemoteRow and select it via the ListView
-            from textual.widgets import ListView
+    def test_build_status_none(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            # The _RemoteRow should be the second item (first is header label)
-            from lilbee.cli.tui.widgets.setup_modal import _RemoteRow
-
-            for idx, item in enumerate(lv.children):
-                if isinstance(item, _RemoteRow):
-                    lv.post_message(ListView.Selected(lv, item, idx))
-                    break
-            await pilot.pause()
-        assert "nomic-embed-text" in results
-
-    async def test_select_embedding_row_triggers_download(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
-
-            from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
-
-            lv = app.screen.query_one("#embed-picker", ListView)
-            with mock.patch(
-                "lilbee.cli.tui.widgets.setup_modal.SetupModal._download_model"
-            ) as mock_dl:
-                for idx, item in enumerate(lv.children):
-                    if isinstance(item, _EmbeddingRow):
-                        lv.post_message(ListView.Selected(lv, item, idx))
-                        break
-                await pilot.pause()
-                mock_dl.assert_called_once()
-
-    async def test_download_success_path(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            # Simulate successful download callback
-            modal._on_downloaded("test-embed-model")
-            await pilot.pause()
-            await pilot.pause()
-        assert "test-embed-model" in results
-
-    async def test_download_error_path(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            # Simulate the error path by calling _set_status directly
-            modal._set_status("Error: connection failed")
-            await pilot.pause()
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            assert "Error" in str(status.render())
-
-    async def test_cancel_action_dismisses_none(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            modal.action_cancel()
-            await pilot.pause()
-        assert None in results
-
-    async def test_set_status_updates_label(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            modal._set_status("Downloading...")
-            await pilot.pause()
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            assert "Downloading" in str(status.render())
-
-    async def test_download_model_worker_success(self) -> None:
-        from lilbee.catalog import FEATURED_EMBEDDING
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            with mock.patch("lilbee.models.pull_with_progress"):
-                modal._download_model(FEATURED_EMBEDDING[0])
-                await pilot.pause(delay=0.5)
-        assert len(results) >= 1
-
-    async def test_download_model_worker_error(self) -> None:
-        from lilbee.catalog import FEATURED_EMBEDDING
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            with mock.patch(
-                "lilbee.models.pull_with_progress",
-                side_effect=RuntimeError("download failed"),
-            ):
-                modal._download_model(FEATURED_EMBEDDING[0])
-                await pilot.pause(delay=0.5)
-            # Modal should still be showing (not dismissed)
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            rendered = str(status.render())
-            assert "Error" in rendered or "download failed" in rendered
+        assert _build_status(self._make_row()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2465,10 +2332,8 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
-            from textual.widgets import Label
-
-            active_label = bar.query_one("#task-active-label", Label)
-            assert active_label.display is False
+            # No panels created since no task is active
+            assert len(bar._panels) == 0
 
     async def test_status_icon_unknown_status(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2487,10 +2352,8 @@ class TestTaskBarAdditional:
             bar._on_queue_change()  # should not raise
             assert bar.display is False
 
-    async def test_render_active_task_non_active_status(self) -> None:
-        """Cover line 166: _render_active_task when status != ACTIVE (e.g. DONE)."""
-        from textual.widgets import Label, ProgressBar
-
+    async def test_render_task_panel_done_status(self) -> None:
+        """Cover _render_task_panel when status is DONE (shows checkmark icon)."""
         from lilbee.cli.tui.task_queue import Task, TaskStatus
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -2498,11 +2361,13 @@ class TestTaskBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            label = bar.query_one("#task-active-label", Label)
-            progress_bar = bar.query_one("#task-progress", ProgressBar)
-            # Create a task with DONE status and call _render_active_task directly
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Manually set the task to DONE and re-render its panel
             done_task = Task(
-                task_id="t1",
+                task_id=task_id,
                 fn=lambda: None,
                 name="Sync",
                 task_type="sync",
@@ -2510,7 +2375,129 @@ class TestTaskBarAdditional:
                 progress=100,
                 detail="",
             )
-            bar._render_active_task(done_task, label, progress_bar)
+            bar._render_task_panel(task_id, done_task)
+            await pilot.pause()
+
+    async def test_multiple_panels_for_concurrent_downloads(self) -> None:
+        """Each active task gets its own panel with progress bar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            t1 = bar.add_task("Download A", "download")
+            t2 = bar.add_task("Sync B", "sync")
+            bar.queue.advance("download")
+            bar.queue.advance("sync")
+            bar._refresh_display()
+            await pilot.pause()
+            assert len(bar._panels) == 2
+            assert t1 in bar._panels
+            assert t2 in bar._panels
+
+    async def test_panel_removed_on_dismiss(self) -> None:
+        """Panel is removed from DOM after dismiss."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            assert task_id in bar._panels
+            bar._dismiss_panel(task_id, "download")
+            await pilot.pause()
+            assert task_id not in bar._panels
+
+    async def test_fail_task_adds_failed_class_to_panel(self) -> None:
+        """fail_task marks the panel with task-failed CSS class."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            bar.fail_task(task_id, "Network error")
+            await pilot.pause()
+            panel = bar._panels.get(task_id)
+            assert panel is not None
+            assert panel.has_class("task-failed")
+
+    async def test_render_task_panel_with_failed_status(self) -> None:
+        """_render_task_panel renders FAILED status icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            failed_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.FAILED,
+                progress=0,
+                detail="timeout",
+            )
+            bar._render_task_panel(task_id, failed_task)
+            await pilot.pause()
+
+    async def test_render_task_panel_no_panel_is_noop(self) -> None:
+        """_render_task_panel with unknown task_id does nothing."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task = Task(
+                task_id="nonexistent",
+                fn=lambda: None,
+                name="X",
+                task_type="x",
+                status=TaskStatus.ACTIVE,
+                progress=0,
+            )
+            bar._render_task_panel("nonexistent", task)  # should not raise
+            bar._render_task_panel("nonexistent", None)  # should not raise
+
+    async def test_render_task_panel_queued_status(self) -> None:
+        """_render_task_panel with QUEUED status uses fallback icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            queued_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.QUEUED,
+                progress=0,
+            )
+            bar._render_task_panel(task_id, queued_task)
             await pilot.pause()
 
 

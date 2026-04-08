@@ -1,31 +1,38 @@
-"""First-run setup wizard."""
+"""First-run setup — single-screen model picker with RAM-based recommendations."""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Label, ProgressBar, Static
 
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
+from lilbee.catalog import (
+    FEATURED_CHAT,
+    FEATURED_EMBEDDING,
+    CatalogModel,
+    DownloadProgress,
+    download_model,
+    make_download_callback,
+)
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens.catalog import (
+    TableRow,
+    _catalog_to_row,
+    _format_size_gb,
+    _parse_param_label,
+)
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
-from lilbee.models import ModelTask
-
-if TYPE_CHECKING:
-    from lilbee.cli.tui.screens.catalog import TableRow
+from lilbee.models import ModelTask, get_system_ram_gb
 
 log = logging.getLogger(__name__)
-
-_STEP_CHAT = 1
-_STEP_EMBED = 2
 
 
 def _scan_installed_models() -> tuple[list[str], list[str]]:
@@ -54,8 +61,6 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
     (for config persistence) and also in ``name`` (for display) since we
     don't have a richer display label for already-installed models.
     """
-    from lilbee.cli.tui.screens.catalog import TableRow, _parse_param_label
-
     return TableRow(
         name=name,
         task=task,
@@ -71,8 +76,39 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
     )
 
 
+def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
+    """Pick chat + embedding models appropriate for system RAM.
+
+    Selects the largest featured chat model whose min_ram_gb fits,
+    and always picks the first embedding model (Nomic).
+    """
+    chat = FEATURED_CHAT[0]
+    for m in reversed(FEATURED_CHAT):
+        if m.min_ram_gb <= ram_gb:
+            chat = m
+            break
+    embed = FEATURED_EMBEDDING[0]
+    return chat, embed
+
+
+def _card_download_size(card: ModelCard | None) -> float:
+    """Return download size in GB for a non-installed card, or 0."""
+    if card and not card.row.installed:
+        cm = card.row.catalog_model
+        if cm:
+            return cm.size_gb
+    return 0.0
+
+
+def _pending_download(card: ModelCard | None) -> CatalogModel | None:
+    """Return the CatalogModel to download for a non-installed card, or None."""
+    if card and not card.row.installed:
+        return card.row.catalog_model
+    return None
+
+
 class SetupWizard(Screen[str | None]):
-    """First-run setup -- helps user configure chat and embedding models."""
+    """First-run setup — browsable single-screen model picker."""
 
     CSS_PATH = "setup.tcss"
 
@@ -82,88 +118,153 @@ class SetupWizard(Screen[str | None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self._step = _STEP_CHAT
-        self._selected_chat: str | None = None
-        self._selected_embed: str | None = None
+        self._selections: dict[str, tuple[str | None, ModelCard | None]] = {
+            ModelTask.CHAT: (None, None),
+            ModelTask.EMBEDDING: (None, None),
+        }
         self._chat_installed, self._embed_installed = _scan_installed_models()
+        self._recommended_chat: CatalogModel | None = None
+        self._recommended_embed: CatalogModel | None = None
+        self._download_models: list[CatalogModel] = []
+
+    @property
+    def _selected_chat(self) -> str | None:
+        return self._selections[ModelTask.CHAT][0]
+
+    @property
+    def _selected_embed(self) -> str | None:
+        return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
-        yield Static(msg.SETUP_TITLE, id="setup-title")
-        yield Label("", id="setup-step-label")
+        yield Static(msg.SETUP_WELCOME, id="setup-title")
+        yield Static(msg.SETUP_SUBTITLE, id="setup-subtitle")
         yield VerticalScroll(id="setup-grid-container")
+        with Horizontal(id="setup-footer"):
+            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-chat-slot")
+            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-embed-slot")
+            yield Label("", id="setup-download-size")
+        yield Button(msg.SETUP_INSTALL_BUTTON, id="setup-action", disabled=True)
+        yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse", variant="default")
+        yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
         yield Label("", id="setup-status")
         yield ProgressBar(total=100, show_eta=False, id="setup-progress")
-        yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse")
-        yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip")
 
     def on_mount(self) -> None:
-        self._show_step()
+        self._build_grid()
 
-    def _show_step(self) -> None:
+    def _build_section(
+        self,
+        heading: str,
+        models: tuple[CatalogModel, ...],
+        widgets_out: list[Static | GridSelect],
+    ) -> list[ModelCard]:
+        """Build a heading + GridSelect for a list of catalog models."""
+        widgets_out.append(Static(heading, classes="section-heading"))
+        cards = [ModelCard(_catalog_to_row(m, installed=False)) for m in models]
+        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
+        return cards
+
+    def _build_grid(self) -> None:
+        """Build all model sections and pre-select recommended combo."""
+        ram_gb = get_system_ram_gb()
+        rec_chat, rec_embed = _pick_recommended(ram_gb)
+        self._recommended_chat = rec_chat
+        self._recommended_embed = rec_embed
+
         container = self.query_one("#setup-grid-container", VerticalScroll)
-        container.remove_children()
-        label = self.query_one("#setup-step-label", Label)
-        self.query_one("#setup-progress", ProgressBar).update(total=100, progress=0)
-        self.query_one("#setup-status", Label).update("")
-
-        if self._step == _STEP_CHAT:
-            label.update(msg.SETUP_STEP_CHAT)
-            installed_names = self._chat_installed
-            featured_models = FEATURED_CHAT
-            task = ModelTask.CHAT
-        else:
-            label.update(msg.SETUP_STEP_EMBED)
-            installed_names = self._embed_installed
-            featured_models = FEATURED_EMBEDDING
-            task = ModelTask.EMBEDDING
-
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
-
         widgets_to_mount: list[Static | GridSelect] = []
 
-        if installed_names:
-            installed_rows = [_installed_name_to_row(n, task) for n in installed_names]
+        if self._chat_installed or self._embed_installed:
+            widgets_to_mount.append(Static(msg.HEADING_INSTALLED, classes="section-heading"))
+            installed_cards = [
+                ModelCard(_installed_name_to_row(n, ModelTask.CHAT)) for n in self._chat_installed
+            ] + [
+                ModelCard(_installed_name_to_row(n, ModelTask.EMBEDDING))
+                for n in self._embed_installed
+            ]
             widgets_to_mount.append(
-                Static(
-                    msg.HEADING_INSTALLED,
-                    classes="section-heading",
-                )
-            )
-            cards = [ModelCard(row) for row in installed_rows]
-            widgets_to_mount.append(
-                GridSelect(
-                    *cards,
-                    min_column_width=30,
-                    max_column_width=50,
-                )
+                GridSelect(*installed_cards, min_column_width=30, max_column_width=50)
             )
 
-        featured_rows = [_catalog_to_row(m, installed=False) for m in featured_models]
-        widgets_to_mount.append(
-            Static(
-                msg.HEADING_OUR_PICKS,
-                classes="section-heading",
-            )
-        )
-        cards = [ModelCard(row) for row in featured_rows]
-        widgets_to_mount.append(
-            GridSelect(
-                *cards,
-                min_column_width=30,
-                max_column_width=50,
-            )
+        chat_cards = self._build_section(msg.SETUP_HEADING_CHAT, FEATURED_CHAT, widgets_to_mount)
+        embed_cards = self._build_section(
+            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, widgets_to_mount
         )
 
         container.mount_all(widgets_to_mount)
+        self._preselect_recommended(chat_cards, embed_cards)
+
+    def _preselect_recommended(
+        self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
+    ) -> None:
+        """Pre-select the RAM-appropriate recommended models."""
+        for cards, recommended in [
+            (chat_cards, self._recommended_chat),
+            (embed_cards, self._recommended_embed),
+        ]:
+            if not recommended:
+                continue
+            for card in cards:
+                cm = card.row.catalog_model
+                if cm and cm.ref == recommended.ref:
+                    self._select_card(card, card.row.task)
+                    break
+
+    def _select_card(self, card: ModelCard, task: str) -> None:
+        """Select a card, deselecting the previous selection for that task."""
+        _ref, prev_card = self._selections[task]
+        if prev_card is not None:
+            prev_card.selected = False
+        ref = card.row.ref or card.row.name
+        card.selected = True
+        self._selections[task] = (ref, card)
+        self._update_footer()
+
+    def _update_footer(self) -> None:
+        """Update footer slots, download size, and button states."""
+        chat_slot = self.query_one("#setup-chat-slot", Label)
+        embed_slot = self.query_one("#setup-embed-slot", Label)
+        size_label = self.query_one("#setup-download-size", Label)
+        action_btn = self.query_one("#setup-action", Button)
+        skip_btn = self.query_one("#setup-skip", Button)
+
+        chat_ref, chat_card = self._selections[ModelTask.CHAT]
+        embed_ref, embed_card = self._selections[ModelTask.EMBEDDING]
+
+        chat_slot.update(
+            msg.SETUP_CHAT_SLOT.format(name=chat_ref) if chat_ref else msg.SETUP_SLOT_EMPTY
+        )
+        embed_slot.update(
+            msg.SETUP_EMBED_SLOT.format(name=embed_ref) if embed_ref else msg.SETUP_SLOT_EMPTY
+        )
+
+        total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
+        if total_gb > 0:
+            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=_format_size_gb(total_gb)))
+        else:
+            size_label.update("")
+
+        both_selected = chat_ref is not None and embed_ref is not None
+        action_btn.disabled = not both_selected
+
+        if both_selected:
+            action_btn.label = msg.SETUP_INSTALL_BUTTON
+            skip_btn.display = False
+        elif chat_ref:
+            skip_btn.label = msg.SETUP_CONTINUE_NO_SEARCH
+            skip_btn.display = True
+        else:
+            skip_btn.label = msg.SETUP_SKIP_BUTTON
+            skip_btn.display = True
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
-        if isinstance(event.widget, ModelCard):
-            row = event.widget.row
-            if row.installed:
-                self._on_model_chosen(row.ref or row.name)
-            elif row.catalog_model:
-                self._download_model(row.catalog_model)
+        if not isinstance(event.widget, ModelCard):
+            return
+        card = event.widget
+        task = card.row.task
+        if task in self._selections:
+            self._select_card(card, task)
 
     @on(Button.Pressed, "#setup-browse")
     def _on_browse_catalog(self) -> None:
@@ -173,69 +274,70 @@ class SetupWizard(Screen[str | None]):
             self.dismiss("skipped")
             self.app.call_later(lambda: self.app.switch_view("Catalog"))
 
-    def _on_model_chosen(self, name: str) -> None:
-        if self._step == _STEP_CHAT:
-            self._selected_chat = name
-            self._step = _STEP_EMBED
-            self._show_step()
-        else:
-            self._selected_embed = name
-            self._finish()
+    @on(Button.Pressed, "#setup-action")
+    def _on_install(self) -> None:
+        """Start downloading selected models."""
+        self._download_models = [
+            cm
+            for task in (ModelTask.CHAT, ModelTask.EMBEDDING)
+            if (cm := _pending_download(self._selections[task][1]))
+        ]
+
+        if not self._download_models:
+            self._save_and_dismiss("completed")
+            return
+
+        self.add_class("-downloading")
+        self.query_one("#setup-action", Button).disabled = True
+        self._run_downloads()
 
     @work(thread=True)
-    def _download_model(self, model: CatalogModel) -> None:
-        """Download via catalog API with TUI-native progress (no Rich)."""
-        self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
-        try:
-            from lilbee.catalog import download_model
-
-            last_update_time = 0.0
-            last_pct = -1
-
-            def _on_progress(downloaded: int, total: int) -> None:
-                nonlocal last_update_time, last_pct
-                import time
-
-                current_time = time.time()
-                if current_time - last_update_time < 0.1:
-                    return
-                try:
-                    mb_done = downloaded / (1024 * 1024)
-                    if total > 0:
-                        pct = min(int(downloaded * 100 / total), 100)
-                        mb_total = total / (1024 * 1024)
-                        last_update_time = current_time
-                        if pct == last_pct and pct > 0:
-                            return
-                        last_pct = pct
-                        self.app.call_from_thread(self._update_progress, pct)
-                        self.app.call_from_thread(
-                            self._set_status,
-                            f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
-                        )
-                    else:
-                        self.app.call_from_thread(
-                            self._set_status,
-                            f"Downloading... {mb_done:.0f} MB",
-                        )
-                except Exception:
-                    log.debug(
-                        "Progress callback failed",
-                        exc_info=True,
-                    )
-
-            download_model(model, on_progress=_on_progress)
-            self.app.call_from_thread(self._on_download_complete, model.ref, model.display_name)
-        except Exception as exc:
-            log.warning(
-                "Download failed for %s",
-                model.ref,
-                exc_info=True,
+    def _run_downloads(self) -> None:
+        """Download all selected models sequentially."""
+        total = len(self._download_models)
+        for idx, model in enumerate(self._download_models, 1):
+            is_first = idx == 1
+            self.app.call_from_thread(
+                self._set_status,
+                msg.SETUP_DOWNLOADING_N.format(
+                    name=model.display_name, current=idx, total=total
+                ),
             )
-            error_msg = str(exc)
-            if "401" in error_msg or "PermissionError" in error_msg:
-                error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
-            self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
+            self.app.call_from_thread(self._update_progress, 0)
+
+            def _on_update(p: DownloadProgress) -> None:
+                self.app.call_from_thread(self._update_progress, p.percent)
+                self.app.call_from_thread(
+                    self._set_status, f"Downloading... {p.detail} ({p.percent}%)"
+                )
+
+            try:
+                download_model(model, on_progress=make_download_callback(_on_update))
+            except Exception as exc:
+                log.warning("Download failed for %s", model.ref, exc_info=True)
+                error_msg = str(exc)
+                if "401" in error_msg or "PermissionError" in error_msg:
+                    error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
+                self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
+                if is_first and total > 1:
+                    return
+                if not is_first:
+                    # Embedding failed but chat succeeded
+                    self.app.call_from_thread(self._on_partial_success)
+                return
+
+        self.app.call_from_thread(self._on_all_downloads_complete)
+
+    def _on_all_downloads_complete(self) -> None:
+        self._set_status(msg.SETUP_ALL_DONE)
+        self._update_progress(100)
+        self._save_and_dismiss("completed")
+
+    def _on_partial_success(self) -> None:
+        """Chat downloaded but embedding failed."""
+        self._set_status(msg.SETUP_PARTIAL_FAIL)
+        self._selections[ModelTask.EMBEDDING] = (None, None)
+        self._save_and_dismiss("completed")
 
     def _set_status(self, text: str) -> None:
         self.query_one("#setup-status", Label).update(text)
@@ -243,31 +345,26 @@ class SetupWizard(Screen[str | None]):
     def _update_progress(self, percent: int) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
 
-    def _on_download_complete(self, ref: str, display_name: str = "") -> None:
-        self.query_one("#setup-progress", ProgressBar).update(total=100, progress=100)
-        self._set_status(msg.SETUP_INSTALLED_STATUS.format(name=display_name or ref))
-        self._on_model_chosen(ref)
-
-    def _finish(self) -> None:
+    def _save_and_dismiss(self, result: str) -> None:
+        """Persist selected models to config and dismiss."""
         from lilbee import settings
         from lilbee.services import reset_services
 
-        if self._selected_chat:
-            cfg.chat_model = self._selected_chat
-            settings.set_value(cfg.data_root, "chat_model", self._selected_chat)
-        if self._selected_embed:
-            cfg.embedding_model = self._selected_embed
-            settings.set_value(
-                cfg.data_root,
-                "embedding_model",
-                self._selected_embed,
-            )
+        chat_ref = self._selected_chat
+        embed_ref = self._selected_embed
+        if chat_ref:
+            cfg.chat_model = chat_ref
+            settings.set_value(cfg.data_root, "chat_model", chat_ref)
+        if embed_ref:
+            cfg.embedding_model = embed_ref
+            settings.set_value(cfg.data_root, "embedding_model", embed_ref)
         reset_services()
-        self.dismiss("completed")
+        self.dismiss(result)
 
     @on(Button.Pressed, "#setup-skip")
     def _on_skip(self) -> None:
-        self.dismiss("skipped")
+        """Skip setup — save any partial selection."""
+        self._save_and_dismiss("skipped")
 
     def action_cancel(self) -> None:
         self.dismiss("skipped")
