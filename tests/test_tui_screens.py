@@ -18,13 +18,15 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_HF,
     _WORKER_FETCH_MORE_HF,
     _WORKER_FETCH_REMOTE,
+)
+from lilbee.cli.tui.screens.catalog_types import (
     TableRow,
     _format_downloads,
-    _matches_search,
     _remote_to_row,
     _row_display_name,
     catalog_to_row,
     format_size_gb,
+    matches_search,
     parse_param_label,
 )
 from lilbee.config import cfg
@@ -208,22 +210,22 @@ class TestCatalogToRow:
 class TestMatchesSearch:
     def test_no_search(self):
         row = catalog_to_row(_make_catalog_model(task="chat"), installed=False)
-        assert _matches_search(row, "") is True
+        assert matches_search(row, "") is True
 
     def test_search_by_name(self):
         row = catalog_to_row(
             _make_catalog_model(display_name="Qwen 8B", hf_repo="org/qwen-8B-GGUF"),
             installed=False,
         )
-        assert _matches_search(row, "qwen") is True
+        assert matches_search(row, "qwen") is True
 
     def test_search_by_task(self):
         row = catalog_to_row(_make_catalog_model(task="embedding"), installed=False)
-        assert _matches_search(row, "embedding") is True
+        assert matches_search(row, "embedding") is True
 
     def test_search_no_match(self):
         row = catalog_to_row(_make_catalog_model(display_name="Llama 7B"), installed=False)
-        assert _matches_search(row, "qwen") is False
+        assert matches_search(row, "qwen") is False
 
     def test_search_by_quant(self):
         row = TableRow(
@@ -238,7 +240,7 @@ class TestMatchesSearch:
             sort_downloads=5000,
             sort_size=4.0,
         )
-        assert _matches_search(row, "q4_k_m") is True
+        assert matches_search(row, "q4_k_m") is True
 
 
 class TestRemoteToRow:
@@ -871,7 +873,7 @@ async def test_chat_slash_unknown_command():
 async def test_chat_slash_version():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_version", return_value="1.2.3"):
+        with patch("lilbee.cli.helpers.get_version", return_value="1.2.3"):
             with patch.object(app.screen, "notify") as mock_notify:
                 app.screen._handle_slash("/version")
                 mock_notify.assert_called_once()
@@ -881,7 +883,7 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.settings.set_value"):
+        with patch("lilbee.settings.set_value"):
             app.screen._handle_slash("/model new-model:latest")
             assert cfg.chat_model == "new-model:latest"
 
@@ -1950,7 +1952,8 @@ async def test_catalog_install_new_model():
 
 
 async def test_catalog_select_remote_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _remote_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import _remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2100,7 +2103,8 @@ async def test_catalog_worker_non_success_ignored():
 
 
 async def test_catalog_select_catalog_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, catalog_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2805,8 +2809,8 @@ async def test_chat_slash_crawl_valid_url():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url"),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com")
@@ -2818,7 +2822,7 @@ async def test_chat_slash_crawl_with_flags():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
@@ -5102,7 +5106,7 @@ async def test_setup_wizard_grid_selected_non_model():
 
 def test_param_sort_value_with_match():
     """_param_sort_value parses '8B' to 8.0."""
-    from lilbee.cli.tui.screens.catalog import _param_sort_value
+    from lilbee.cli.tui.screens.catalog_types import _param_sort_value
 
     assert _param_sort_value("8B") == 8.0
     assert _param_sort_value("0.6B") == 0.6
@@ -5110,7 +5114,7 @@ def test_param_sort_value_with_match():
 
 def test_param_sort_value_no_match():
     """_param_sort_value returns 0.0 for non-numeric."""
-    from lilbee.cli.tui.screens.catalog import _param_sort_value
+    from lilbee.cli.tui.screens.catalog_types import _param_sort_value
 
     assert _param_sort_value("--") == 0.0
 
@@ -5154,7 +5158,8 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
 async def test_catalog_select_variant_row():
     """_select_row with a variant row triggers _install_variant."""
     from lilbee.catalog import ModelFamily, ModelVariant
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _variant_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import _variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5297,7 +5302,8 @@ async def test_catalog_safe_call_suppresses_exception():
 async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _variant_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import _variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5335,7 +5341,8 @@ async def test_catalog_get_highlighted_variant_name():
 
 async def test_catalog_get_highlighted_remote_name():
     """_get_highlighted_model_name returns name for remote row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _remote_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import _remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5356,7 +5363,8 @@ async def test_catalog_get_highlighted_remote_name():
 
 async def test_catalog_get_highlighted_catalog_name():
     """_get_highlighted_model_name returns name for catalog row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, catalog_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5569,9 +5577,9 @@ async def test_chat_crawl_invalid_url():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
             patch(
-                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
+                "lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url",
                 side_effect=ValueError("bad url"),
             ),
             patch.object(app.screen, "notify") as mock_notify,
@@ -6254,8 +6262,8 @@ async def test_chat_cmd_crawl_with_valid_url():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url"),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com")
@@ -6268,9 +6276,9 @@ async def test_chat_cmd_crawl_invalid_url():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
             patch(
-                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
+                "lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url",
                 side_effect=ValueError("bad url"),
             ),
             patch.object(app.screen, "notify") as mock_notify,
@@ -6386,7 +6394,7 @@ async def test_chat_cmd_crawl_no_args():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._cmd_crawl("")
@@ -6536,7 +6544,8 @@ async def test_chat_crawl_background_success():
 
 def test_on_row_selected_valid_index():
     """_on_row_selected calls _select_row for a valid row index."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import TableRow
 
     screen = MagicMock()
     row = TableRow(
@@ -6733,7 +6742,8 @@ async def test_catalog_delete_when_input_focused():
 
 async def test_catalog_get_highlighted_model_name_catalog():
     """_get_highlighted_model_name returns catalog model name."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import TableRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6768,7 +6778,8 @@ async def test_catalog_get_highlighted_model_name_catalog():
 
 async def test_catalog_get_highlighted_model_name_fallback_none():
     """_get_highlighted_model_name returns None when row has no model ref."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import TableRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6817,7 +6828,8 @@ async def test_catalog_browse_more_clicked():
 
 async def test_catalog_grid_selected_with_model_card():
     """Grid selection with ModelCard delegates to _select_row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, TableRow
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.catalog_types import TableRow
     from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
 

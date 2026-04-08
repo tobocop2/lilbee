@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from conftest import make_test_catalog_model as _make_model
-from lilbee.cli.tui.screens.catalog import TableRow
+from lilbee.cli.tui.screens.catalog_types import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
@@ -1380,7 +1380,7 @@ class TestSetupWizard:
         assert row.featured is False
 
     def test_model_card_from_table_row(self) -> None:
-        from lilbee.cli.tui.screens.catalog import catalog_to_row
+        from lilbee.cli.tui.screens.catalog_types import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
         model = _make_model("Test 8B", task="chat", featured=True)
@@ -1402,18 +1402,18 @@ class TestAllTasksFetched:
 
 class TestMatchesSearchWidget:
     def test_matches_name(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _matches_search, catalog_to_row
+        from lilbee.cli.tui.screens.catalog_types import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
         row = catalog_to_row(m, installed=False)
-        assert _matches_search(row, "qwen") is True
+        assert matches_search(row, "qwen") is True
 
     def test_no_match(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _matches_search, catalog_to_row
+        from lilbee.cli.tui.screens.catalog_types import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
         row = catalog_to_row(m, installed=False)
-        assert _matches_search(row, "llama") is False
+        assert matches_search(row, "llama") is False
 
 
 class TestLoginCommandRegistered:
@@ -1973,7 +1973,7 @@ class TestGridSelect:
 
 class TestModelCardSelected:
     def test_model_card_selected_reactive(self) -> None:
-        from lilbee.cli.tui.screens.catalog import catalog_to_row
+        from lilbee.cli.tui.screens.catalog_types import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
         model = _make_model("Test 8B", task="chat", featured=True)

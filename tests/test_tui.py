@@ -9,7 +9,7 @@ from textual.binding import Binding
 
 from conftest import make_test_catalog_model as _make_model
 from lilbee.catalog import CatalogResult
-from lilbee.cli.tui.screens.catalog import _remote_to_row, catalog_to_row
+from lilbee.cli.tui.screens.catalog_types import _remote_to_row, catalog_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
 
