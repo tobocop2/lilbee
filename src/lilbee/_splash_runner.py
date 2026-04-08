@@ -101,40 +101,37 @@ def clear_screen() -> bytes:
     return b"\033[2J\033[H\033[?25h"
 
 
-def _pipe_closed_win32(pipe_fd: int) -> bool:
-    """Windows: non-blocking read via os.set_blocking."""
-    try:
-        os.set_blocking(pipe_fd, False)
-        data = os.read(pipe_fd, 1)
-        return len(data) == 0
-    except BlockingIOError:
-        return False
-    except OSError:
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            os.set_blocking(pipe_fd, True)
-
-
-def _pipe_closed_unix(pipe_fd: int) -> bool:
-    """Unix: non-blocking check via select."""
-    try:
-        readable, _, _ = select.select([pipe_fd], [], [], 0)
-    except (ValueError, OSError):
-        return True
-    if not readable:
-        return False
-    try:
-        data = os.read(pipe_fd, 1)
-        return len(data) == 0
-    except OSError:
-        return True
-
-
 if sys.platform == "win32":
-    pipe_closed = _pipe_closed_win32
+
+    def pipe_closed(pipe_fd: int) -> bool:
+        """Check if the pipe has been closed (EOF) without blocking."""
+        try:
+            os.set_blocking(pipe_fd, False)
+            data = os.read(pipe_fd, 1)
+            return len(data) == 0
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+        finally:
+            with contextlib.suppress(OSError):
+                os.set_blocking(pipe_fd, True)
+
 else:
-    pipe_closed = _pipe_closed_unix
+
+    def pipe_closed(pipe_fd: int) -> bool:
+        """Check if the pipe has been closed (EOF) without blocking."""
+        try:
+            readable, _, _ = select.select([pipe_fd], [], [], 0)
+        except (ValueError, OSError):
+            return True
+        if not readable:
+            return False
+        try:
+            data = os.read(pipe_fd, 1)
+            return len(data) == 0
+        except OSError:
+            return True
 
 
 def animation_loop(pipe_fd: int) -> None:
