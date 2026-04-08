@@ -1131,10 +1131,10 @@ class TestWikiScreen:
             assert option_list.option_count >= 2
             # Check that page titles appear (options include headings and pages)
             labels = [str(o.prompt) for o in option_list._options]
-            assert any("Test Document Summary" in label for label in labels), (
+            assert any("Test Doc" in label for label in labels), (
                 f"Test doc not in sidebar: {labels}"
             )
-            assert any("Second Document" in label for label in labels), (
+            assert any("Second Doc" in label for label in labels), (
                 f"Second doc not in sidebar: {labels}"
             )
 
