@@ -4877,6 +4877,33 @@ async def test_setup_wizard_single_model_download_error():
                     await pilot.pause()
 
 
+async def test_setup_wizard_download_cache_hit():
+    """Download that returns 100% immediately (cache hit)."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            def fake_download(model, on_progress=None):
+                if on_progress:
+                    on_progress(1000, 1000)
+                return MagicMock(stem="cached-model")
+
+            with (
+                patch("lilbee.catalog.download_model", side_effect=fake_download),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
 async def test_setup_wizard_action_cancel():
     from lilbee.cli.tui.screens.setup import SetupWizard
 

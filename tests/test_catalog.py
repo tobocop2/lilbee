@@ -1500,32 +1500,35 @@ class TestDownloadProgressCallback:
 
     def test_download_config_has_tqdm_class_field(self) -> None:
         """Verify DownloadConfig accepts tqdm_class."""
-        from lilbee.catalog import DownloadConfig, _make_progress_tqdm_class
+        from lilbee.catalog import DownloadConfig, _ProgressTracker
 
+        tracker = _ProgressTracker(lambda x, y: None)
         config = DownloadConfig(
             repo_id="test/test",
             filename="test.gguf",
             token="test",
-            tqdm_class=_make_progress_tqdm_class(lambda x, y: None),
+            tqdm_class=tracker.make_tqdm_class(),
         )
         assert config.tqdm_class is not None
 
     def test_callback_tqdm_class_forwards_updates(self) -> None:
-        """Verify _make_progress_tqdm_class forwards tqdm updates to callback."""
-        from lilbee.catalog import _make_progress_tqdm_class
+        """Verify _ProgressTracker tqdm class forwards updates to callback."""
+        from lilbee.catalog import _ProgressTracker
 
-        calls: list[tuple[int, int | None]] = []
+        calls: list[tuple[int, int]] = []
 
-        def user_callback(downloaded: int, total: int | None) -> None:
+        def user_callback(downloaded: int, total: int) -> None:
             calls.append((downloaded, total))
 
-        cls = _make_progress_tqdm_class(user_callback)
+        tracker = _ProgressTracker(user_callback)
+        cls = tracker.make_tqdm_class()
         bar = cls(total=200)
         bar.update(100)
         bar.update(100)
         bar.close()
 
         assert calls == [(100, 200), (200, 200)]
+        assert tracker.was_used is True
 
 
 class TestRegisterModelFailure:

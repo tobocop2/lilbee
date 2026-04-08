@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from typing import ClassVar
 
 from textual import on, work
@@ -13,7 +12,14 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Label, ProgressBar, Static
 
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
+from lilbee.catalog import (
+    FEATURED_CHAT,
+    FEATURED_EMBEDDING,
+    CatalogModel,
+    DownloadProgress,
+    download_model,
+    make_download_callback,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog import (
     TableRow,
@@ -288,20 +294,25 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _run_downloads(self) -> None:
         """Download all selected models sequentially."""
-        from lilbee.catalog import download_model
-
         total = len(self._download_models)
         for idx, model in enumerate(self._download_models, 1):
             is_first = idx == 1
             self.app.call_from_thread(
                 self._set_status,
-                msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
+                msg.SETUP_DOWNLOADING_N.format(
+                    name=model.display_name, current=idx, total=total
+                ),
             )
             self.app.call_from_thread(self._update_progress, 0)
-            _state, on_progress = self._make_progress_callback()
+
+            def _on_update(p: DownloadProgress) -> None:
+                self.app.call_from_thread(self._update_progress, p.percent)
+                self.app.call_from_thread(
+                    self._set_status, f"Downloading... {p.detail} ({p.percent}%)"
+                )
 
             try:
-                download_model(model, on_progress=on_progress)
+                download_model(model, on_progress=make_download_callback(_on_update))
             except Exception as exc:
                 log.warning("Download failed for %s", model.ref, exc_info=True)
                 error_msg = str(exc)
@@ -333,23 +344,6 @@ class SetupWizard(Screen[str | None]):
 
     def _update_progress(self, percent: int) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
-
-    def _make_progress_callback(self) -> tuple[list[int], Callable[[int, int], None]]:
-        """Build a progress callback for download_model.
-
-        Returns (state, callback) where state[0] tracks last_pct to avoid
-        redundant UI updates.
-        """
-        state = [-1]
-
-        def on_progress(downloaded: int, total_bytes: int) -> None:
-            if total_bytes > 0:
-                pct = min(int(downloaded * 100 / total_bytes), 100)
-                if pct != state[0]:
-                    state[0] = pct
-                    self.app.call_from_thread(self._update_progress, pct)
-
-        return state, on_progress
 
     def _save_and_dismiss(self, result: str) -> None:
         """Persist selected models to config and dismiss."""

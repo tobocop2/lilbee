@@ -2332,10 +2332,8 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
-            from textual.widgets import Label
-
-            active_label = bar.query_one("#task-active-label", Label)
-            assert active_label.display is False
+            # No panels created since no task is active
+            assert len(bar._panels) == 0
 
     async def test_status_icon_unknown_status(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2354,10 +2352,8 @@ class TestTaskBarAdditional:
             bar._on_queue_change()  # should not raise
             assert bar.display is False
 
-    async def test_render_active_task_non_active_status(self) -> None:
-        """Cover line 166: _render_active_task when status != ACTIVE (e.g. DONE)."""
-        from textual.widgets import Label, ProgressBar
-
+    async def test_render_task_panel_done_status(self) -> None:
+        """Cover _render_task_panel when status is DONE (shows checkmark icon)."""
         from lilbee.cli.tui.task_queue import Task, TaskStatus
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -2365,11 +2361,13 @@ class TestTaskBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            label = bar.query_one("#task-active-label", Label)
-            progress_bar = bar.query_one("#task-progress", ProgressBar)
-            # Create a task with DONE status and call _render_active_task directly
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Manually set the task to DONE and re-render its panel
             done_task = Task(
-                task_id="t1",
+                task_id=task_id,
                 fn=lambda: None,
                 name="Sync",
                 task_type="sync",
@@ -2377,7 +2375,129 @@ class TestTaskBarAdditional:
                 progress=100,
                 detail="",
             )
-            bar._render_active_task(done_task, label, progress_bar)
+            bar._render_task_panel(task_id, done_task)
+            await pilot.pause()
+
+    async def test_multiple_panels_for_concurrent_downloads(self) -> None:
+        """Each active task gets its own panel with progress bar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            t1 = bar.add_task("Download A", "download")
+            t2 = bar.add_task("Sync B", "sync")
+            bar.queue.advance("download")
+            bar.queue.advance("sync")
+            bar._refresh_display()
+            await pilot.pause()
+            assert len(bar._panels) == 2
+            assert t1 in bar._panels
+            assert t2 in bar._panels
+
+    async def test_panel_removed_on_dismiss(self) -> None:
+        """Panel is removed from DOM after dismiss."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            assert task_id in bar._panels
+            bar._dismiss_panel(task_id, "download")
+            await pilot.pause()
+            assert task_id not in bar._panels
+
+    async def test_fail_task_adds_failed_class_to_panel(self) -> None:
+        """fail_task marks the panel with task-failed CSS class."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            bar.fail_task(task_id, "Network error")
+            await pilot.pause()
+            panel = bar._panels.get(task_id)
+            assert panel is not None
+            assert panel.has_class("task-failed")
+
+    async def test_render_task_panel_with_failed_status(self) -> None:
+        """_render_task_panel renders FAILED status icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            failed_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.FAILED,
+                progress=0,
+                detail="timeout",
+            )
+            bar._render_task_panel(task_id, failed_task)
+            await pilot.pause()
+
+    async def test_render_task_panel_no_panel_is_noop(self) -> None:
+        """_render_task_panel with unknown task_id does nothing."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task = Task(
+                task_id="nonexistent",
+                fn=lambda: None,
+                name="X",
+                task_type="x",
+                status=TaskStatus.ACTIVE,
+                progress=0,
+            )
+            bar._render_task_panel("nonexistent", task)  # should not raise
+            bar._render_task_panel("nonexistent", None)  # should not raise
+
+    async def test_render_task_panel_queued_status(self) -> None:
+        """_render_task_panel with QUEUED status uses fallback icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            queued_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.QUEUED,
+                progress=0,
+            )
+            bar._render_task_panel(task_id, queued_task)
             await pilot.pause()
 
 
