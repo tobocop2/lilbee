@@ -8,7 +8,12 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 
-from lilbee.catalog import CatalogModel, CatalogResult
+from lilbee.catalog import (
+    FEATURED_CHAT,
+    FEATURED_EMBEDDING,
+    CatalogModel,
+    CatalogResult,
+)
 from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_HF,
     _WORKER_FETCH_MORE_HF,
@@ -2035,9 +2040,7 @@ async def test_catalog_grid_cache_skips_rebuild():
             first_key = screen._grid_cache_key
             assert first_key != ()
 
-            with patch.object(
-                screen.query_one("#catalog-grid"), "remove_children"
-            ) as mock_remove:
+            with patch.object(screen.query_one("#catalog-grid"), "remove_children") as mock_remove:
                 screen._refresh_grid()
                 mock_remove.assert_not_called()
             assert screen._grid_cache_key == first_key
@@ -3875,3 +3878,522 @@ async def test_settings_group_titles_present():
         await pilot.pause()
         titles = app.screen.query(".group-title")
         assert len(titles) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard tests
+# ---------------------------------------------------------------------------
+
+
+class SetupTestApp(App[None]):
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.push_screen(SetupWizard())
+
+
+def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = None):
+    return patch(
+        "lilbee.cli.tui.screens.setup._scan_installed_models",
+        return_value=(chat or [], embed or []),
+    )
+
+
+def _patch_setup_ram(ram_gb: float = 16.0):
+    return patch("lilbee.models.get_system_ram_gb", return_value=ram_gb)
+
+
+def test_pick_recommended_small_ram():
+    """_pick_recommended selects smallest chat model for low RAM."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    chat, embed = _pick_recommended(3.0)
+    assert chat.min_ram_gb <= 3.0
+    assert embed == FEATURED_EMBEDDING[0]
+
+
+def test_pick_recommended_medium_ram():
+    """_pick_recommended selects mid-range for 8 GB."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    chat, _ = _pick_recommended(8.0)
+    assert chat.min_ram_gb <= 8.0
+    # Should pick a model larger than the smallest
+    assert chat.size_gb >= FEATURED_CHAT[0].size_gb
+
+
+def test_pick_recommended_large_ram():
+    """_pick_recommended selects largest fitting model for 32 GB."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    chat, _ = _pick_recommended(32.0)
+    assert chat.min_ram_gb <= 32.0
+
+
+def test_pick_recommended_always_nomic_embed():
+    """_pick_recommended always picks first embedding model."""
+    from lilbee.cli.tui.screens.setup import _pick_recommended
+
+    _, embed = _pick_recommended(4.0)
+    assert embed.name == FEATURED_EMBEDDING[0].name
+
+
+def test_format_download_size_gb():
+    """_format_download_size formats sizes >= 1 GB."""
+    from lilbee.cli.tui.screens.setup import _format_download_size
+
+    assert _format_download_size(2.5) == "2.5 GB"
+
+
+def test_format_download_size_mb():
+    """_format_download_size formats sizes < 1 GB as MB."""
+    from lilbee.cli.tui.screens.setup import _format_download_size
+
+    assert _format_download_size(0.3) == "307 MB"
+
+
+def test_scan_installed_models_empty():
+    """_scan_installed_models returns empty when no registry."""
+    from lilbee.cli.tui.screens.setup import _scan_installed_models
+
+    with patch("lilbee.registry.ModelRegistry", side_effect=Exception("no")):
+        chat, embed = _scan_installed_models()
+        assert chat == []
+        assert embed == []
+
+
+def test_installed_name_to_row():
+    """_installed_name_to_row creates a TableRow with correct fields."""
+    from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+    row = _installed_name_to_row("qwen3:8b", "chat")
+    assert row.name == "qwen3:8b"
+    assert row.task == "chat"
+    assert row.installed is True
+    assert row.size == "--"
+
+
+async def test_setup_wizard_mounts_with_recommendations():
+    """SetupWizard pre-selects recommended models based on RAM."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            assert screen._selected_chat is not None
+            assert screen._selected_embed is not None
+
+
+async def test_setup_wizard_select_chat_updates_slot():
+    """Selecting a chat card updates _selected_chat."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            # Find a chat card different from the recommended one
+            chat_cards = [
+                c
+                for c in screen.query(ModelCard)
+                if c.row.task == "chat" and c.row.name != screen._selected_chat
+            ]
+            if chat_cards:
+                card = chat_cards[0]
+                mock_grid = MagicMock(spec=GridSelect)
+                event = GridSelect.Selected(grid_select=mock_grid, widget=card)
+                screen._on_grid_selected(event)
+                assert screen._selected_chat == card.row.name
+                assert card.selected is True
+
+
+async def test_setup_wizard_select_embed_updates_slot():
+    """Selecting an embedding card updates _selected_embed."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            embed_cards = [c for c in screen.query(ModelCard) if c.row.task == "embedding"]
+            assert len(embed_cards) > 0
+            card = embed_cards[0]
+            mock_grid = MagicMock(spec=GridSelect)
+            event = GridSelect.Selected(grid_select=mock_grid, widget=card)
+            screen._on_grid_selected(event)
+            assert screen._selected_embed == card.row.name
+            assert card.selected is True
+
+
+async def test_setup_wizard_deselects_previous():
+    """Selecting a new chat card deselects the previous one."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            chat_cards = [c for c in screen.query(ModelCard) if c.row.task == "chat"]
+            assert len(chat_cards) >= 2
+            first = chat_cards[0]
+            second = chat_cards[1]
+            mock_grid = MagicMock(spec=GridSelect)
+            # Select first
+            screen._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
+            assert first.selected is True
+            # Select second — first should deselect
+            screen._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=second))
+            assert second.selected is True
+            assert first.selected is False
+
+
+async def test_setup_wizard_skip_dismisses():
+    """Clicking skip dismisses with 'skipped'."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen._on_skip()
+            await pilot.pause()
+
+
+async def test_setup_wizard_skip_saves_chat_if_selected():
+    """Skip with chat selected saves chat config."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen._selected_chat = "my-chat:latest"
+            screen._selected_embed = None
+            with (
+                patch("lilbee.settings.set_value") as mock_set,
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_skip()
+                assert cfg.chat_model == "my-chat:latest"
+                mock_set.assert_called_once()
+
+
+async def test_setup_wizard_finish_saves_config():
+    """_finish persists chat and embed models."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen._selected_chat = "my-chat:latest"
+            screen._selected_embed = "my-embed:latest"
+            with (
+                patch("lilbee.settings.set_value") as mock_set,
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._finish()
+                assert cfg.chat_model == "my-chat:latest"
+                assert cfg.embedding_model == "my-embed:latest"
+                assert mock_set.call_count == 2
+
+
+async def test_setup_wizard_finish_no_embed():
+    """_finish skips embed when not selected."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen._selected_chat = "my-chat:latest"
+            screen._selected_embed = None
+            with (
+                patch("lilbee.settings.set_value") as mock_set,
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._finish()
+                assert mock_set.call_count == 1
+
+
+async def test_setup_wizard_install_both_models():
+    """Install & Go downloads both selected models."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            assert screen._selected_chat is not None
+            assert screen._selected_embed is not None
+
+            with (
+                patch("lilbee.catalog.download_model", return_value=MagicMock(stem="m")),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_install_already_installed():
+    """Install with already-installed models skips download."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(chat=["chat:latest"], embed=["embed:latest"]), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            # Select installed models
+            installed_cards = [c for c in screen.query(ModelCard) if c.row.installed]
+            from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+            mock_grid = MagicMock(spec=GridSelect)
+            for card in installed_cards:
+                screen._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=card))
+
+            with (
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_install()
+                # Should finish immediately without downloading
+
+
+async def test_setup_wizard_download_failure():
+    """Download error shows error status."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            with patch(
+                "lilbee.catalog.download_model",
+                side_effect=Exception("network error"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_download_401_error():
+    """Download 401 error shows login required message."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            with patch(
+                "lilbee.catalog.download_model",
+                side_effect=Exception("401 Unauthorized"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_partial_download():
+    """Chat downloads but embed fails — partial success path."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            call_count = 0
+
+            def _fake_download(model, on_progress=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    raise Exception("embed failed")
+                return MagicMock(stem="chat-model")
+
+            with (
+                patch("lilbee.catalog.download_model", side_effect=_fake_download),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_download_with_progress():
+    """Download progress callback updates progress bar."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            def fake_download(model, on_progress=None):
+                if on_progress:
+                    on_progress(512 * 1024, 1024 * 1024)  # 50%
+                    on_progress(1024 * 1024, 1024 * 1024)  # 100%
+                    on_progress(512 * 1024, 0)  # unknown total
+                return MagicMock(stem="prog-model")
+
+            with (
+                patch("lilbee.catalog.download_model", side_effect=fake_download),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_single_model_download_error():
+    """Download error when only one model to download."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(embed=["embed:latest"]), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            # Select installed embed so only chat needs downloading
+            embed_cards = [
+                c for c in screen.query(ModelCard) if c.row.task == "embedding" and c.row.installed
+            ]
+            if embed_cards:
+                mock_grid = MagicMock(spec=GridSelect)
+                screen._on_grid_selected(
+                    GridSelect.Selected(grid_select=mock_grid, widget=embed_cards[0])
+                )
+
+            with patch(
+                "lilbee.catalog.download_model",
+                side_effect=Exception("connection error"),
+            ):
+                screen._on_install()
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_action_cancel():
+    """Escape key dismisses wizard."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen.action_cancel()
+            await pilot.pause()
+
+
+async def test_setup_wizard_footer_updates():
+    """Footer updates when selections change."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            # Both pre-selected — action button should be enabled
+            action_btn = screen.query_one("#setup-action")
+            assert action_btn.disabled is False
+
+            # Clear selections and verify button disabled
+            screen._selected_chat = None
+            screen._selected_embed = None
+            screen._selected_chat_card = None
+            screen._selected_embed_card = None
+            screen._update_footer()
+            assert action_btn.disabled is True
+
+
+async def test_setup_wizard_with_installed_models():
+    """Wizard shows installed section when models exist."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(chat=["my-chat:1b"], embed=["my-embed:latest"]), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            installed_cards = [c for c in screen.query(ModelCard) if c.row.installed]
+            assert len(installed_cards) >= 2
+
+
+async def test_setup_wizard_grid_selected_non_model():
+    """GridSelect.Selected with non-ModelCard widget is ignored."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            mock_grid = MagicMock(spec=GridSelect)
+            mock_widget = MagicMock()
+            event = GridSelect.Selected(grid_select=mock_grid, widget=mock_widget)
+            # Should not raise
+            screen._on_grid_selected(event)

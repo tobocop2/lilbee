@@ -1377,6 +1377,95 @@ class TestSetupWizard:
         assert card.row.featured is True
         assert card.row.task == "chat"
 
+    def test_model_card_selected_reactive(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = _catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.selected is False
+        card.selected = True
+        assert card.selected is True
+
+    def test_build_status_selected(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="1K",
+            featured=False,
+            installed=False,
+            sort_downloads=1000,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=True)
+        assert result is not None
+        assert "selected" in str(result).lower()
+
+    def test_build_status_not_selected_installed(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="--",
+            featured=False,
+            installed=True,
+            sort_downloads=0,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is not None
+        assert "installed" in str(result).lower()
+
+    def test_build_status_not_selected_downloads(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="5K",
+            featured=False,
+            installed=False,
+            sort_downloads=5000,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is not None
+
+    def test_build_status_none(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is None
+
 
 class TestAllTasksFetched:
     def test_all_tasks_constant(self) -> None:
