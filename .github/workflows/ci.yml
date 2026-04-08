@@ -73,6 +73,11 @@ jobs:
   integration:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
     steps:
       - uses: actions/checkout@v6
 
@@ -124,6 +129,11 @@ jobs:
           key: hf-models-${{ hashFiles('pyproject.toml') }}
           restore-keys: hf-models-
 
+      - name: Pull Ollama models for litellm tests
+        run: |
+          curl -s http://localhost:11434/api/pull -d '{"name":"qwen3:0.6b"}' | tail -1
+          curl -s http://localhost:11434/api/pull -d '{"name":"nomic-embed-text"}' | tail -1
+
       - name: Run all tests with optional deps
         run: uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
         env:
@@ -134,6 +144,7 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
+          OLLAMA_HOST: http://localhost:11434
 
   deploy-pages:
     needs: test

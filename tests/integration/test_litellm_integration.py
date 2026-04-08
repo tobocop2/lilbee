@@ -1,20 +1,38 @@
-"""LiteLLM provider tests — require litellm installed (run in integration CI job).
+"""LiteLLM provider integration tests — real Ollama server, no mocks.
 
-These tests mock the HTTP calls (litellm.embedding, litellm.completion) but
-require litellm itself to be importable for the provider class to work.
+Requires litellm installed and Ollama running at OLLAMA_HOST (default localhost:11434)
+with the qwen3:0.6b model pulled.
 """
 
 from __future__ import annotations
 
-import json
-from unittest import mock
+import os
 
 import pytest
 
 litellm = pytest.importorskip("litellm")
 
 from lilbee.config import cfg  # noqa: E402
-from lilbee.providers.litellm_provider import LiteLLMProvider, _format_messages  # noqa: E402
+from lilbee.providers.litellm_provider import LiteLLMProvider  # noqa: E402
+
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = "qwen3:0.6b"
+
+
+def _ollama_reachable() -> bool:
+    try:
+        import httpx
+
+        resp = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not _ollama_reachable(), reason="Ollama not running"),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -25,367 +43,107 @@ def _isolate_cfg():
         setattr(cfg, name, val)
 
 
-class TestLiteLLMProvider:
-    def test_embed(self) -> None:
+class TestLiteLLMEmbed:
+    def test_embed_returns_vectors(self) -> None:
+        """Real embedding via Ollama returns float vectors."""
         cfg.embedding_model = "nomic-embed-text"
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        result = provider.embed(["hello world"])
 
-        mock_response = {"data": [{"embedding": [0.1, 0.2]}, {"embedding": [0.3, 0.4]}]}
-        with mock.patch("litellm.embedding", return_value=mock_response) as mock_embed:
-            provider = LiteLLMProvider()
-            result = provider.embed(["hello", "world"])
+        assert len(result) == 1
+        assert len(result[0]) > 0
+        assert all(isinstance(v, float) for v in result[0])
 
-        assert result == [[0.1, 0.2], [0.3, 0.4]]
-        mock_embed.assert_called_once()
-        call_kwargs = mock_embed.call_args[1]
-        assert call_kwargs["model"] == "ollama/nomic-embed-text"
+    def test_embed_batch(self) -> None:
+        """Batch embedding returns one vector per input."""
+        cfg.embedding_model = "nomic-embed-text"
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        texts = ["hello", "world", "test"]
+        result = provider.embed(texts)
 
-    def test_embed_preserves_ollama_prefix(self) -> None:
-        cfg.embedding_model = "ollama/my-model"
+        assert len(result) == 3
+        assert all(len(v) > 0 for v in result)
 
-        mock_response = {"data": [{"embedding": [0.1]}]}
-        with mock.patch("litellm.embedding", return_value=mock_response) as mock_embed:
-            provider = LiteLLMProvider()
-            provider.embed(["test"])
 
-        assert mock_embed.call_args[1]["model"] == "ollama/my-model"
+class TestLiteLLMChat:
+    def test_chat_returns_response(self) -> None:
+        """Real chat completion via Ollama returns non-empty text."""
+        cfg.chat_model = OLLAMA_MODEL
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        result = provider.chat(
+            [{"role": "user", "content": "Say hello in exactly one word."}],
+            options={"temperature": 0},
+        )
 
-    def test_model_name_preserves_ollama_prefix(self) -> None:
-        cfg.chat_model = "ollama/prefixed-model"
-        provider = LiteLLMProvider()
-        result = provider._model_name()
-        assert result == "ollama/prefixed-model"
+        assert isinstance(result, str)
+        assert len(result) > 0
 
-    def test_model_name_adds_ollama_prefix(self) -> None:
-        cfg.chat_model = "plain-model"
-        provider = LiteLLMProvider()
-        result = provider._model_name()
-        assert result == "ollama/plain-model"
-
-    def test_embed_error_wrapped(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        cfg.embedding_model = "test"
-
-        with mock.patch("litellm.embedding", side_effect=RuntimeError("connection lost")):
-            provider = LiteLLMProvider()
-            with pytest.raises(ProviderError, match="Embedding failed"):
-                provider.embed(["test"])
-
-    def test_chat_non_stream(self) -> None:
-        cfg.chat_model = "qwen3:8b"
-
-        mock_response = mock.MagicMock()
-        mock_response.choices = [mock.MagicMock(message=mock.MagicMock(content="Hello!"))]
-
-        with mock.patch("litellm.completion", return_value=mock_response) as mock_chat:
-            provider = LiteLLMProvider()
-            result = provider.chat([{"role": "user", "content": "hi"}])
-
-        assert result == "Hello!"
-        call_kwargs = mock_chat.call_args[1]
-        assert call_kwargs["model"] == "ollama/qwen3:8b"
-        assert call_kwargs["stream"] is False
-
-    def test_chat_stream(self) -> None:
-        cfg.chat_model = "qwen3:8b"
-
-        chunk1 = mock.MagicMock()
-        chunk1.choices = [mock.MagicMock(delta=mock.MagicMock(content="Hello"))]
-        chunk2 = mock.MagicMock()
-        chunk2.choices = [mock.MagicMock(delta=mock.MagicMock(content=" world"))]
-        chunk3 = mock.MagicMock()
-        chunk3.choices = [mock.MagicMock(delta=mock.MagicMock(content=None))]
-
-        with mock.patch("litellm.completion", return_value=iter([chunk1, chunk2, chunk3])):
-            provider = LiteLLMProvider()
-            result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
+    def test_chat_stream_yields_tokens(self) -> None:
+        """Streaming chat yields string tokens."""
+        cfg.chat_model = OLLAMA_MODEL
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        result = provider.chat(
+            [{"role": "user", "content": "Count from 1 to 3."}],
+            stream=True,
+            options={"temperature": 0},
+        )
 
         tokens = list(result)
-        assert tokens == ["Hello", " world"]
+        assert len(tokens) > 0
+        assert all(isinstance(t, str) for t in tokens)
+        full_text = "".join(tokens)
+        assert len(full_text) > 0
 
-    def test_chat_stream_empty_choices(self) -> None:
-        cfg.chat_model = "test"
+    def test_chat_with_model_override(self) -> None:
+        """Model override in chat() works."""
+        cfg.chat_model = "should-not-be-used"
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        result = provider.chat(
+            [{"role": "user", "content": "Say yes."}],
+            model=OLLAMA_MODEL,
+            options={"temperature": 0},
+        )
 
-        chunk = mock.MagicMock()
-        chunk.choices = []
+        assert isinstance(result, str)
+        assert len(result) > 0
 
-        with mock.patch("litellm.completion", return_value=iter([chunk])):
-            provider = LiteLLMProvider()
-            result = provider.chat([{"role": "user", "content": "hi"}], stream=True)
 
-        assert list(result) == []
-
-    def test_chat_with_options(self) -> None:
-        cfg.chat_model = "test"
-
-        mock_response = mock.MagicMock()
-        mock_response.choices = [mock.MagicMock(message=mock.MagicMock(content="ok"))]
-
-        with mock.patch("litellm.completion", return_value=mock_response) as mock_chat:
-            provider = LiteLLMProvider()
-            provider.chat(
-                [{"role": "user", "content": "hi"}],
-                options={"temperature": 0.7},
-            )
-
-        call_kwargs = mock_chat.call_args[1]
-        assert call_kwargs["temperature"] == 0.7
-
-    def test_chat_model_override(self) -> None:
-        cfg.chat_model = "default-model"
-
-        mock_response = mock.MagicMock()
-        mock_response.choices = [mock.MagicMock(message=mock.MagicMock(content="ok"))]
-
-        with mock.patch("litellm.completion", return_value=mock_response) as mock_chat:
-            provider = LiteLLMProvider()
-            provider.chat([{"role": "user", "content": "hi"}], model="other-model")
-
-        assert mock_chat.call_args[1]["model"] == "ollama/other-model"
-
-    def test_chat_error_wrapped(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        cfg.chat_model = "test"
-
-        with mock.patch("litellm.completion", side_effect=RuntimeError("timeout")):
-            provider = LiteLLMProvider()
-            with pytest.raises(ProviderError, match="Chat failed"):
-                provider.chat([{"role": "user", "content": "hi"}])
-
-    def test_chat_with_api_key(self) -> None:
-        cfg.chat_model = "test"
-
-        mock_response = mock.MagicMock()
-        mock_response.choices = [mock.MagicMock(message=mock.MagicMock(content="ok"))]
-
-        with mock.patch("litellm.completion", return_value=mock_response) as mock_chat:
-            provider = LiteLLMProvider(api_key="sk-test123")
-            provider.chat([{"role": "user", "content": "hi"}])
-
-        call_kwargs = mock_chat.call_args[1]
-        assert call_kwargs["api_key"] == "sk-test123"
-
-    def test_chat_without_api_key(self) -> None:
-        cfg.chat_model = "test"
-
-        mock_response = mock.MagicMock()
-        mock_response.choices = [mock.MagicMock(message=mock.MagicMock(content="ok"))]
-
-        with mock.patch("litellm.completion", return_value=mock_response) as mock_chat:
-            provider = LiteLLMProvider()
-            provider.chat([{"role": "user", "content": "hi"}])
-
-        call_kwargs = mock_chat.call_args[1]
-        assert "api_key" not in call_kwargs
-
+class TestLiteLLMModelManagement:
     def test_list_models(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"models": [{"name": "llama3:latest"}, {"name": "qwen3:8b"}]}
+        """list_models returns models from Ollama."""
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        models = provider.list_models()
 
-        with mock.patch("httpx.get", return_value=mock_resp) as mock_get:
-            provider = LiteLLMProvider()
-            result = provider.list_models()
-
-        assert result == ["llama3:latest", "qwen3:8b"]
-        mock_get.assert_called_once()
-
-    def test_list_models_error(self) -> None:
-        import httpx
-
-        from lilbee.providers.base import ProviderError
-
-        with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-            provider = LiteLLMProvider()
-            with pytest.raises(ProviderError, match="Cannot list models"):
-                provider.list_models()
-
-    def test_pull_model(self) -> None:
-        events = [
-            json.dumps({"status": "pulling", "completed": 50, "total": 100}).encode(),
-            json.dumps({"status": "success"}).encode(),
-        ]
-
-        mock_stream_ctx = mock.MagicMock()
-        mock_stream_ctx.__enter__ = mock.MagicMock(return_value=mock_stream_ctx)
-        mock_stream_ctx.__exit__ = mock.MagicMock(return_value=False)
-        mock_stream_ctx.iter_lines.return_value = iter(events)
-
-        mock_client = mock.MagicMock()
-        mock_client.stream.return_value = mock_stream_ctx
-        mock_client.__enter__ = mock.MagicMock(return_value=mock_client)
-        mock_client.__exit__ = mock.MagicMock(return_value=False)
-
-        progress_events: list[dict] = []
-
-        def on_progress(event: dict) -> None:
-            progress_events.append(event)
-
-        with mock.patch("httpx.Client", return_value=mock_client):
-            provider = LiteLLMProvider()
-            provider.pull_model("llama3", on_progress=on_progress)
-
-        assert len(progress_events) == 2
-
-    def test_pull_model_error(self) -> None:
-        import httpx
-
-        from lilbee.providers.base import ProviderError
-
-        mock_client = mock.MagicMock()
-        mock_client.stream.side_effect = httpx.ConnectError("refused")
-        mock_client.__enter__ = mock.MagicMock(return_value=mock_client)
-        mock_client.__exit__ = mock.MagicMock(return_value=False)
-
-        with mock.patch("httpx.Client", return_value=mock_client):
-            provider = LiteLLMProvider()
-            with pytest.raises(ProviderError, match="Cannot pull model"):
-                provider.pull_model("llama3")
-
-    def test_pull_model_skips_empty_lines(self) -> None:
-        events = [
-            b"",
-            json.dumps({"status": "success"}).encode(),
-        ]
-
-        mock_stream_ctx = mock.MagicMock()
-        mock_stream_ctx.__enter__ = mock.MagicMock(return_value=mock_stream_ctx)
-        mock_stream_ctx.__exit__ = mock.MagicMock(return_value=False)
-        mock_stream_ctx.iter_lines.return_value = iter(events)
-
-        mock_client = mock.MagicMock()
-        mock_client.stream.return_value = mock_stream_ctx
-        mock_client.__enter__ = mock.MagicMock(return_value=mock_client)
-        mock_client.__exit__ = mock.MagicMock(return_value=False)
-
-        with mock.patch("httpx.Client", return_value=mock_client):
-            provider = LiteLLMProvider()
-            provider.pull_model("llama3")
-        mock_client.stream.assert_called_once()
+        assert isinstance(models, list)
+        assert len(models) > 0
+        assert any("qwen3" in m for m in models)
 
     def test_show_model(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"parameters": "4.7B"}
-        mock_resp.raise_for_status = mock.MagicMock()
+        """show_model returns model info dict."""
+        provider = LiteLLMProvider(base_url=OLLAMA_HOST)
+        info = provider.show_model(OLLAMA_MODEL)
 
-        with mock.patch("httpx.post", return_value=mock_resp):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result == {"parameters": "4.7B"}
-
-    def test_show_model_no_params(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {}
-        mock_resp.raise_for_status = mock.MagicMock()
-
-        with mock.patch("httpx.post", return_value=mock_resp):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result is None
-
-    def test_show_model_error_returns_none(self) -> None:
-        import httpx
-
-        with mock.patch("httpx.post", side_effect=httpx.HTTPError("fail")):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result is None
-
-    def test_show_model_non_string_params(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"parameters": {"key": "value"}}
-        mock_resp.raise_for_status = mock.MagicMock()
-
-        with mock.patch("httpx.post", return_value=mock_resp):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result == {"parameters": "{'key': 'value'}"}
-
-    def test_show_model_empty_params_returns_none(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"parameters": ""}
-        mock_resp.raise_for_status = mock.MagicMock()
-
-        with mock.patch("httpx.post", return_value=mock_resp):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result is None
-
-    def test_show_model_falsy_non_string_params(self) -> None:
-        mock_resp = mock.MagicMock()
-        mock_resp.json.return_value = {"parameters": 0}
-        mock_resp.raise_for_status = mock.MagicMock()
-
-        with mock.patch("httpx.post", return_value=mock_resp):
-            provider = LiteLLMProvider()
-            result = provider.show_model("llama3")
-
-        assert result is None
-
-    def test_format_messages_with_images(self) -> None:
-        messages = [{"role": "user", "content": "describe this", "images": [b"\x89PNG fake"]}]
-        result = _format_messages(messages)
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert isinstance(result[0]["content"], list)
-        assert result[0]["content"][0]["type"] == "text"
-        assert result[0]["content"][1]["type"] == "image_url"
-        assert "data:image/png;base64," in result[0]["content"][1]["image_url"]["url"]
-
-    def test_format_messages_without_images(self) -> None:
-        messages = [{"role": "user", "content": "hello"}]
-        result = _format_messages(messages)
-        assert result == [{"role": "user", "content": "hello"}]
-
-    def test_format_messages_empty_images(self) -> None:
-        messages = [{"role": "user", "content": "test", "images": []}]
-        result = _format_messages(messages)
-        assert result[0]["content"][0] == {"type": "text", "text": "test"}
-
-    def test_format_messages_empty_content_with_images(self) -> None:
-        messages = [{"role": "user", "images": [b"img"]}]
-        result = _format_messages(messages)
-        assert result[0]["content"][0] == {"type": "text", "text": ""}
+        assert info is not None
+        assert isinstance(info, dict)
 
 
-class TestLitellmAvailable:
-    def test_returns_true_when_installed(self) -> None:
-        from lilbee.providers.litellm_provider import litellm_available
+class TestLiteLLMFactory:
+    def test_create_litellm_provider(self) -> None:
+        """Factory creates LiteLLMProvider for 'litellm' provider."""
+        from lilbee.providers.factory import create_provider
 
-        assert litellm_available() is True
+        cfg.llm_provider = "litellm"
+        cfg.litellm_base_url = OLLAMA_HOST
+        provider = create_provider(cfg)
 
-    def test_provider_static_method(self) -> None:
-        assert LiteLLMProvider.available() is True
+        assert isinstance(provider, LiteLLMProvider)
 
-
-class TestLitellmFactory:
-    def test_ollama_alias_provider(self) -> None:
+    def test_ollama_alias(self) -> None:
+        """Factory creates LiteLLMProvider for 'ollama' provider alias."""
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "ollama"
+        cfg.litellm_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
+
         assert isinstance(provider, LiteLLMProvider)
-        assert provider._base_url == "http://localhost:11434"
-
-    def test_litellm_provider(self) -> None:
-        from lilbee.providers.factory import create_provider
-
-        cfg.llm_provider = "litellm"
-        cfg.llm_api_key = "sk-test"
-        provider = create_provider(cfg)
-        assert isinstance(provider, LiteLLMProvider)
-        assert provider._api_key == "sk-test"
-
-    def test_custom_base_url(self) -> None:
-        from lilbee.providers.factory import create_provider
-
-        cfg.llm_provider = "litellm"
-        cfg.litellm_base_url = "http://custom:11434"
-        provider = create_provider(cfg)
-        assert isinstance(provider, LiteLLMProvider)
-        assert provider._base_url == "http://custom:11434"

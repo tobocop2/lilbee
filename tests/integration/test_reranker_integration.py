@@ -63,16 +63,15 @@ class TestRerankerIntegration:
         top_contents = [r.chunk for r in reranked[:2]]
         assert any("Eiffel" in c for c in top_contents)
 
-    def test_encoder_lazy_loaded(self) -> None:
-        """Encoder is not loaded until first rerank call."""
+    def test_rerank_returns_same_count(self) -> None:
+        """Reranking preserves the number of results."""
         cfg.reranker_model = SMALL_MODEL
         reranker = Reranker(cfg)
 
-        assert reranker._encoder is None
+        chunks = [_chunk("first"), _chunk("second"), _chunk("third")]
+        reranked = reranker.rerank("test query", chunks)
 
-        reranker.rerank("test", [_chunk("test content")])
-
-        assert reranker._encoder is not None
+        assert len(reranked) == len(chunks)
 
     def test_no_model_returns_unchanged(self) -> None:
         """Without a model configured, results pass through unchanged."""

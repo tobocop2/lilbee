@@ -43,6 +43,14 @@ class _IntegrationChatApp(App[None]):
         self.push_screen(ChatScreen())
 
 
+async def _submit_slash(pilot, app, command: str) -> None:
+    """Type a slash command into the chat input and press enter."""
+    inp = app.screen.query_one("#chat-input", Input)
+    inp.value = command
+    await pilot.press("enter")
+    await pilot.pause()
+
+
 class TestChatFlow:
     """Real chat with streaming LLM response."""
 
@@ -55,20 +63,16 @@ class TestChatFlow:
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
 
-            # Wait for streaming to complete (timeout after 60s)
             for _ in range(600):
                 await pilot.pause()
                 if not app.screen._streaming:
                     break
 
             assert not app.screen._streaming, "Streaming did not complete in time"
-
-            # History should have user + assistant messages
             assert len(app.screen._history) >= 2
             assistant_reply = app.screen._history[-1]["content"]
             assert len(assistant_reply) > 0, "Assistant reply was empty"
 
-            # The answer should reference facts from specs.md
             reply_lower = assistant_reply.lower()
             has_engine_fact = any(
                 term in reply_lower for term in ("v6", "3.5", "turboforce", "365")
@@ -93,9 +97,8 @@ class TestAddAndSync:
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._handle_slash(f"/add {test_file}")
+            await _submit_slash(pilot, app, f"/add {test_file}")
 
-            # Wait for add + sync workers to finish
             for _ in range(600):
                 await pilot.pause()
                 if not app.screen._sync_active:
@@ -103,7 +106,6 @@ class TestAddAndSync:
 
             assert not app.screen._sync_active, "Sync did not complete in time"
 
-            # Search for the unique content
             results = get_services().searcher.search("quantum entanglement teleportation")
             sources = [r.source for r in results]
             assert "quantum_test.md" in sources, (
@@ -116,7 +118,6 @@ class TestDelete:
 
     async def test_delete_removes_from_search(self, rag_pipeline) -> None:
         """Delete a document via /delete, verify it no longer appears in search."""
-        # First verify specs.md is searchable
         results = get_services().searcher.search("Thunderbolt X500 engine")
         sources_before = [r.source for r in results]
         assert "specs.md" in sources_before, "specs.md should be findable before delete"
@@ -124,15 +125,12 @@ class TestDelete:
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._handle_slash("/delete specs.md")
-            await pilot.pause()
+            await _submit_slash(pilot, app, "/delete specs.md")
 
-        # Verify removed from search
         results_after = get_services().searcher.search("Thunderbolt X500 engine")
         sources_after = [r.source for r in results_after]
         assert "specs.md" not in sources_after, "specs.md should be gone after delete"
 
-        # Re-sync to restore for other tests
         from lilbee.ingest import sync
 
         await sync(quiet=True)
@@ -160,10 +158,8 @@ class TestStatusScreen:
             await pilot.pause()
             table = app.screen.query_one("#docs-table", DataTable)
             row_count = table.row_count
-            # Should have at least the 9 test docs from rag_pipeline
             assert row_count >= 9, f"Expected >= 9 document rows, got {row_count}"
 
-            # Verify a known document appears
             rows = [table.get_row_at(i) for i in range(row_count)]
             doc_names = [str(row[0]) for row in rows]
             assert "specs.md" in doc_names, f"Expected specs.md in {doc_names}"
@@ -179,8 +175,7 @@ class TestSetCommand:
             app = _IntegrationChatApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.screen._handle_slash("/set top_k 10")
-                await pilot.pause()
+                await _submit_slash(pilot, app, "/set top_k 10")
 
             assert cfg.top_k == 10, f"Expected top_k=10, got {cfg.top_k}"
         finally:
@@ -197,8 +192,7 @@ class TestModelSwitch:
             app = _IntegrationChatApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.screen._handle_slash("/model qwen3:0.6b")
-                await pilot.pause()
+                await _submit_slash(pilot, app, "/model qwen3:0.6b")
 
             assert cfg.chat_model == "qwen3:0.6b", (
                 f"Expected chat_model='qwen3:0.6b', got '{cfg.chat_model}'"
@@ -210,7 +204,7 @@ class TestModelSwitch:
 class TestCrawlAndSync:
     """Crawl a URL and verify content becomes searchable."""
 
-    async def test_crawl_becomes_searchable(self, rag_pipeline) -> None:
+    async def test_crawl_becomes_searchable(self, rag_pipeline, monkeypatch) -> None:
         """Crawl a local HTTP page, verify its content is indexed."""
         pytest.importorskip("crawl4ai")
         pytest.importorskip("pytest_httpserver")
@@ -229,12 +223,11 @@ class TestCrawlAndSync:
             "</body></html>"
         )
 
-        # Temporarily allow localhost crawling
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
         loopback_v6 = ipaddress.ip_network("::1/128")
         original_fn = crawler_mod.get_blocked_networks
         filtered = tuple(net for net in original_fn() if net not in (loopback_v4, loopback_v6))
-        crawler_mod.get_blocked_networks = lambda: filtered
+        monkeypatch.setattr(crawler_mod, "get_blocked_networks", lambda: filtered)
 
         server = HTTPServer()
         server.expect_request("/jellyfish").respond_with_data(html, content_type="text/html")
@@ -244,18 +237,15 @@ class TestCrawlAndSync:
             app = _IntegrationChatApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                app.screen._handle_slash(f"/add {url}")
+                await _submit_slash(pilot, app, f"/add {url}")
 
-                # Wait for crawl + sync to finish
                 for _ in range(600):
                     await pilot.pause()
                     if not app.screen._sync_active:
                         break
 
-            # Search for unique crawled content
             results = get_services().searcher.search("bioluminescent jellyfish luciferin")
             assert len(results) > 0, "Expected crawled content to be searchable"
         finally:
             server.clear()
             server.stop()
-            crawler_mod.get_blocked_networks = original_fn
