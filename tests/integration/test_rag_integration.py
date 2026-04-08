@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from unittest.mock import patch
 
 import pytest
 
@@ -40,11 +39,6 @@ def _source_names(results):
 def _unique_sources(results):
     """Extract unique source filenames from search results."""
     return list(dict.fromkeys(r.source for r in results))
-
-
-# ---------------------------------------------------------------------------
-# Pipeline Basics
-# ---------------------------------------------------------------------------
 
 
 class TestPipelineBasics:
@@ -98,11 +92,6 @@ class TestPipelineBasics:
         assert len(results) > 0
         sources = [r.source for r in results]
         assert "maintenance_guide.md" in sources
-
-
-# ---------------------------------------------------------------------------
-# Search Quality
-# ---------------------------------------------------------------------------
 
 
 class TestSearchQuality:
@@ -171,65 +160,30 @@ class TestSearchQuality:
         assert "api-perf.md" in sources, f"api-perf.md not in {sources}"
 
 
-# ---------------------------------------------------------------------------
-# Answer Generation
-# ---------------------------------------------------------------------------
-
-
 class TestAnswerGeneration:
-    """Answer generation tests mock the LLM chat call but use real embeddings + search.
-
-    The 0.6B model's default 512-token context window is too small for RAG prompts.
-    Mocking the chat response lets us verify the full pipeline (search -> context
-    building -> answer formatting) without needing a large context window.
-    """
+    """Answer generation with real LLM (Qwen3 0.6B) and real search."""
 
     def test_ask_returns_answer(self, rag_pipeline):
-        """ask_raw() returns a non-empty answer with real search, mocked chat."""
-        svc = get_services()
-        with patch.object(svc.provider, "chat", return_value="The oil capacity is 6.5 quarts."):
-            result = ask_raw("What is the oil capacity?", top_k=5)
+        """ask_raw() returns a non-empty answer from real search + real LLM."""
+        result = ask_raw("What is the oil capacity?", top_k=5)
         assert result.answer
         assert len(result.answer) > 0
 
     def test_ask_includes_citations(self, rag_pipeline):
         """ask_raw() returns source references from real search."""
-        svc = get_services()
-        with patch.object(svc.provider, "chat", return_value="The Thunderbolt has a 3.5L V6."):
-            result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
+        result = ask_raw("What engine does the Thunderbolt have?", top_k=5)
         assert len(result.sources) > 0
         source_names = [s.source for s in result.sources]
         assert "specs.md" in source_names
 
-    def test_ask_known_fact(self, rag_pipeline):
-        """Real search retrieves the right context for 'oil capacity of the Thunderbolt'.
-
-        Verifies that the context passed to the LLM contains the known fact,
-        even though we mock the LLM response itself.
-        """
-        captured_messages = []
-
-        def capture_chat(messages, **kwargs):
-            captured_messages.extend(messages)
-            return "The oil capacity is 6.5 quarts."
-
-        svc = get_services()
-        with patch.object(svc.provider, "chat", side_effect=capture_chat):
-            ask_raw(
-                "What is the oil capacity of the Thunderbolt X500?",
-                top_k=5,
-            )
-        # The context sent to the LLM should contain the known fact
-        user_msg = next((m for m in captured_messages if m["role"] == "user"), None)
-        assert user_msg is not None
-        assert "6.5 quarts" in user_msg["content"], (
-            f"Expected '6.5 quarts' in context: {user_msg['content'][:200]}"
+    def test_ask_answer_references_facts(self, rag_pipeline):
+        """Real LLM answer references known facts from the indexed documents."""
+        result = ask_raw("What is the oil capacity of the Thunderbolt X500?", top_k=5)
+        assert result.answer
+        answer_lower = result.answer.lower()
+        assert "6.5" in answer_lower or "quart" in answer_lower, (
+            f"Expected oil capacity fact in answer: {result.answer[:300]}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Regression Guards
-# ---------------------------------------------------------------------------
 
 
 class TestRegressionGuards:
@@ -292,11 +246,6 @@ class TestRegressionGuards:
         assert count_after == count_before
 
 
-# ---------------------------------------------------------------------------
-# Query Expansion (LLM-generated variant queries)
-# ---------------------------------------------------------------------------
-
-
 class TestQueryExpansion:
     """Tests with query_expansion_count enabled so the LLM generates variant queries."""
 
@@ -325,11 +274,6 @@ class TestQueryExpansion:
         assert len(results) > 0, "Expected non-empty results with expansion enabled"
 
 
-# ---------------------------------------------------------------------------
-# HyDE Search (Hypothetical Document Embedding)
-# ---------------------------------------------------------------------------
-
-
 class TestHydeSearch:
     """Tests with HyDE enabled — generates a hypothetical answer, embeds it, searches."""
 
@@ -353,11 +297,6 @@ class TestHydeSearch:
         """HyDE search for a general question returns at least one result."""
         results = search_context("tell me about the vehicle", top_k=5)
         assert len(results) > 0
-
-
-# ---------------------------------------------------------------------------
-# Concept Graph (spaCy-based concept extraction + graph boost)
-# ---------------------------------------------------------------------------
 
 
 class TestConceptGraph:
@@ -409,11 +348,6 @@ class TestConceptGraph:
         assert len(concepts) > 0, f"Expected non-empty concepts, got {concepts}"
 
 
-# ---------------------------------------------------------------------------
-# Temporal Filtering (date-based result filtering)
-# ---------------------------------------------------------------------------
-
-
 class TestTemporalFilter:
     """Tests with temporal_filtering enabled — filters by ingestion date."""
 
@@ -441,11 +375,6 @@ class TestTemporalFilter:
         assert detect_temporal("recent changes") is not None
         assert detect_temporal("latest updates") is not None
         assert detect_temporal("engine specifications") is None
-
-
-# ---------------------------------------------------------------------------
-# Structured Queries (prefix syntax: term:, vec:, hyde:)
-# ---------------------------------------------------------------------------
 
 
 class TestStructuredQueries:
@@ -484,25 +413,15 @@ class TestStructuredQueries:
             reset_provider()
 
 
-# ---------------------------------------------------------------------------
-# Ask Stream (streaming answer generation)
-# ---------------------------------------------------------------------------
-
-
 class TestAskStream:
-    """Tests for ask_stream() — real search, mocked LLM chat."""
+    """Tests for ask_stream() with real LLM streaming."""
 
     def test_stream_yields_tokens(self, rag_pipeline):
         """ask_stream() yields StreamToken objects with content."""
         from lilbee.reasoning import StreamToken
 
         svc = get_services()
-        with patch.object(
-            svc.provider,
-            "chat",
-            return_value=iter(["The ", "oil ", "capacity ", "is ", "6.5 quarts."]),
-        ):
-            tokens = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
+        tokens = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
         assert len(tokens) > 0
         assert all(isinstance(t, StreamToken) for t in tokens)
 
@@ -511,8 +430,7 @@ class TestAskStream:
         from lilbee.reasoning import StreamToken
 
         svc = get_services()
-        with patch.object(svc.provider, "chat", return_value=iter(["The engine is a V6."])):
-            tokens = list(svc.searcher.ask_stream("What engine does it have?", top_k=5))
+        tokens = list(svc.searcher.ask_stream("What engine does the Thunderbolt have?", top_k=5))
         assert len(tokens) > 0
         last_token = tokens[-1]
         assert isinstance(last_token, StreamToken)
@@ -523,11 +441,9 @@ class TestAskStream:
         from lilbee.reasoning import StreamToken
 
         svc = get_services()
-        with patch.object(svc.provider, "chat", return_value=iter(["Answer here."])):
-            tokens = list(svc.searcher.ask_stream("Tell me about the car", top_k=5))
+        tokens = list(svc.searcher.ask_stream("Tell me about the Thunderbolt", top_k=5))
         non_empty = [t for t in tokens if t.content.strip()]
         assert len(non_empty) > 0
-        # Normal content tokens (no <think> tags) should all be is_reasoning=False
         for t in non_empty:
             assert isinstance(t, StreamToken)
             assert t.is_reasoning is False
