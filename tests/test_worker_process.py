@@ -893,9 +893,10 @@ class TestRedirectStdio:
 
     @pytest.mark.skipif(
         sys.platform == "win32",
-        reason="fd-level redirect fights with pytest-xdist worker IPC on Windows",
+        reason="fd redirect fights with pytest-xdist worker IPC on Windows",
     )
-    def test_redirects_stdout_stderr_to_devnull(self) -> None:
+    def test_redirects_stdout_stderr_to_devnull_unix(self) -> None:
+        """Direct call — safe on Unix where xdist uses different IPC."""
         import os
         import sys
 
@@ -905,17 +906,38 @@ class TestRedirectStdio:
         orig_fd1, orig_fd2 = os.dup(1), os.dup(2)
         try:
             _redirect_stdio()
-
             assert sys.stdout.name == os.devnull
             assert sys.stderr.name == os.devnull
         finally:
-            # Restore Python-level streams
             sys.stdout.close()
             sys.stderr.close()
             sys.stdout = orig_out
             sys.stderr = orig_err
-            # Restore fd-level redirects
             os.dup2(orig_fd1, 1)
             os.dup2(orig_fd2, 2)
             os.close(orig_fd1)
             os.close(orig_fd2)
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Windows-only: runs in subprocess to avoid xdist hang",
+    )
+    def test_redirects_stdout_stderr_to_devnull_win32(self) -> None:
+        """Subprocess call — avoids xdist IPC interference on Windows."""
+        import subprocess
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys;"
+                "from lilbee.providers.worker_process import _redirect_stdio;"
+                "_redirect_stdio();"
+                "assert sys.stdout.name == os.devnull, sys.stdout.name;"
+                "assert sys.stderr.name == os.devnull, sys.stderr.name",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
