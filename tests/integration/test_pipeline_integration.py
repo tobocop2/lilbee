@@ -15,15 +15,18 @@ from lilbee.store import Store
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path):
-    """Point store at a temp directory, clean up after."""
+    """Point store at a temp directory, force llama-cpp provider."""
     from lilbee.services import reset_services
 
-    original = cfg.lancedb_dir
+    original_dir = cfg.lancedb_dir
+    original_provider = cfg.llm_provider
     cfg.lancedb_dir = tmp_path / "lancedb_test"
+    cfg.llm_provider = "llama-cpp"
     reset_services()
     yield
     reset_services()
-    cfg.lancedb_dir = original
+    cfg.lancedb_dir = original_dir
+    cfg.llm_provider = original_provider
 
 
 @pytest.fixture()
