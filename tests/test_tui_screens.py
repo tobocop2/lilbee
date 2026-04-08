@@ -4741,15 +4741,11 @@ async def test_setup_wizard_install_both_models():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            with (
-                patch("lilbee.catalog.download_model", return_value=MagicMock(stem="m")),
-                patch("lilbee.settings.set_value"),
-                patch("lilbee.services.reset_services"),
-            ):
+            with patch.object(screen, "_run_downloads"):
                 screen._on_install()
                 await pilot.pause()
-                while screen.workers:
-                    await pilot.pause()
+            assert len(screen._download_models) >= 1
+            assert screen.has_class("-downloading")
 
 
 async def test_setup_wizard_install_already_installed():
@@ -4785,7 +4781,7 @@ async def test_setup_wizard_download_failure():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
             with patch("lilbee.catalog.download_model", side_effect=Exception("network error")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4801,7 +4797,7 @@ async def test_setup_wizard_download_401_error():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
             with patch("lilbee.catalog.download_model", side_effect=Exception("401 Unauthorized")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4829,7 +4825,7 @@ async def test_setup_wizard_download_with_progress():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4858,7 +4854,7 @@ async def test_setup_wizard_partial_download():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4884,7 +4880,7 @@ async def test_setup_wizard_single_model_download_error():
                     GridSelect.Selected(grid_select=mock_grid, widget=embed_cards[0])
                 )
             with patch("lilbee.catalog.download_model", side_effect=Exception("connection error")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4911,7 +4907,7 @@ async def test_setup_wizard_download_cache_hit():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -5094,8 +5090,69 @@ async def test_setup_wizard_on_partial_success():
             assert screen._selections[ModelTask.EMBEDDING] == (None, None)
 
 
+async def test_setup_wizard_on_download_progress():
+    """_on_download_progress updates progress bar and status."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            from lilbee.catalog import DownloadProgress
+
+            screen._on_download_progress(
+                lambda fn, *a: fn(*a),
+                DownloadProgress(percent=50, detail="25/50 MB", is_cache_hit=False),
+            )
+
+
+async def test_setup_wizard_handle_download_error_401():
+    """_handle_download_error rewrites 401 errors."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="gated")
+            result = screen._handle_download_error(
+                lambda fn, *a: fn(*a),
+                PermissionError("401 Unauthorized"),
+                cm,
+                is_first=True,
+                total=2,
+            )
+            assert result is True
+
+
+async def test_setup_wizard_handle_download_error_partial():
+    """_handle_download_error calls _on_partial_success for non-first model."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="embed-fail")
+            with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
+                result = screen._handle_download_error(
+                    lambda fn, *a: fn(*a),
+                    Exception("download failed"),
+                    cm,
+                    is_first=False,
+                    total=2,
+                )
+            assert result is True
+
+
 async def test_setup_wizard_download_progress_callback():
-    """Download progress callback updates status."""
+    """Download progress callback updates status via _download_loop."""
     from lilbee.cli.tui.screens.setup import SetupWizard
 
     app = SetupTestApp()
