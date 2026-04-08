@@ -6,8 +6,6 @@ Downloads a small cross-encoder (~80 MB) on first run.
 
 from __future__ import annotations
 
-from dataclasses import fields
-
 import pytest
 
 from lilbee.reranker import reranker_available
@@ -24,7 +22,7 @@ SMALL_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 @pytest.fixture(autouse=True)
 def _isolate_cfg():
-    snapshot = {f.name: getattr(cfg, f.name) for f in fields(cfg)}
+    snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     yield
     for name, val in snapshot.items():
         setattr(cfg, name, val)

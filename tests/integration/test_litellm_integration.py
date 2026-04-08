@@ -7,7 +7,6 @@ require litellm itself to be importable for the provider class to work.
 from __future__ import annotations
 
 import json
-from dataclasses import fields
 from unittest import mock
 
 import pytest
@@ -20,7 +19,7 @@ from lilbee.providers.litellm_provider import LiteLLMProvider, _format_messages 
 
 @pytest.fixture(autouse=True)
 def _isolate_cfg():
-    snapshot = {f.name: getattr(cfg, f.name) for f in fields(cfg)}
+    snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     yield
     for name, val in snapshot.items():
         setattr(cfg, name, val)
