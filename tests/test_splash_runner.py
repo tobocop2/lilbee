@@ -113,7 +113,7 @@ def test_animation_loop_exits_on_closed_pipe():
 
 
 @patch("lilbee._splash_runner.STARTUP_DELAY", 0)
-@patch("lilbee._splash_runner.FRAME_INTERVAL", 0)
+@patch("lilbee._splash_runner.FRAME_INTERVAL", 0.003)
 @patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
 @patch("time.sleep")
 def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
