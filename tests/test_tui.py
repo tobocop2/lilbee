@@ -169,7 +169,10 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
-            await pilot.press("ctrl+q")
+            with mock.patch.object(app, "exit") as mock_exit:
+                await pilot.press("ctrl+q")
+                await pilot.pause()
+                mock_exit.assert_called()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_help_panel(self, mock_catalog: mock.MagicMock) -> None:
@@ -220,8 +223,11 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/badcommand"
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "notify") as mock_notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_notify.assert_called()
+                assert "Unknown command" in mock_notify.call_args[0][0]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_slash_model_changes_model(self, mock_catalog: mock.MagicMock) -> None:
@@ -261,8 +267,11 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/set nonexistent 42"
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "notify") as mock_notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_notify.assert_called()
+                assert "Unknown setting" in mock_notify.call_args[0][0]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_empty_input_ignored(self, mock_catalog: mock.MagicMock) -> None:
@@ -274,8 +283,10 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = ""
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "_send_message") as mock_send:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_send.assert_not_called()
 
 
 class TestCatalogScreenAsync:

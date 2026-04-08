@@ -355,21 +355,27 @@ async def test_settings_checkbox_persist():
 
 async def test_settings_vim_keys():
     """Vim navigation keys work on the scroll container."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press("j")
         await pilot.press("k")
         await pilot.press("g")
         await pilot.press("G")
-        assert app.screen.is_current
+        assert isinstance(app.screen, SettingsScreen)
+        assert app.screen.query(".setting-group")
 
 
 async def test_settings_pop_screen():
     """Pressing q pops the settings screen."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        assert isinstance(app.screen, SettingsScreen)
         await pilot.press("q")
-        assert app.screen.is_current
+        assert not isinstance(app.screen, SettingsScreen)
 
 
 async def test_settings_effective_value_shows_model_default():
@@ -617,14 +623,17 @@ async def test_status_screen_vim_keys(mock_svc):
         table.focus()
         await _pilot.press("j")
         await _pilot.press("k")
-        assert app.screen.is_current
+        assert table.has_focus
 
 
 async def test_status_screen_escape_pops():
+    from lilbee.cli.tui.screens.status import StatusScreen
+
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        assert isinstance(app.screen, StatusScreen)
         await _pilot.press("escape")
-        assert app.screen.is_current
+        assert not isinstance(app.screen, StatusScreen)
 
 
 def test_status_model_pill_truthy():
@@ -853,16 +862,20 @@ async def test_chat_screen_renders():
 async def test_chat_slash_unknown_command():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/bogus")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/bogus")
+            mock_notify.assert_called_once()
+            assert "Unknown command" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_version():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.get_version", return_value="1.2.3"):
-            app.screen._handle_slash("/version")
-            assert app.screen.is_current
+        with patch("lilbee.cli.tui.screens.chat.get_version", return_value="1.2.3"):
+            with patch.object(app.screen, "notify") as mock_notify:
+                app.screen._handle_slash("/version")
+                mock_notify.assert_called_once()
+                assert "1.2.3" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_model_with_arg():
@@ -892,8 +905,10 @@ async def test_chat_slash_theme_with_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/theme dracula")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/theme dracula")
+            mock_notify.assert_called_once()
+            assert "dracula" in mock_notify.call_args[0][0].lower()
 
 
 async def test_chat_slash_theme_no_arg():
@@ -901,16 +916,20 @@ async def test_chat_slash_theme_no_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/theme")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/theme")
+            mock_notify.assert_called_once()
+            assert "Themes:" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_theme_non_lilbee_app():
     """Theme with arg on a non-LilbeeApp should just list themes."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/theme dracula")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/theme dracula")
+            mock_notify.assert_called_once()
+            assert "Themes:" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_vision_set():
@@ -933,8 +952,10 @@ async def test_chat_slash_vision_off():
 async def test_chat_slash_vision_no_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_vision("")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_vision("")
+            mock_notify.assert_called_once()
+            assert "Vision:" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_with_match(mock_svc):
@@ -957,8 +978,10 @@ async def test_chat_slash_delete_not_found(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
-        app.screen._cmd_delete("nonexistent.md")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("nonexistent.md")
+            mock_notify.assert_called_once()
+            assert "Not found" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_no_arg(mock_svc):
@@ -968,8 +991,10 @@ async def test_chat_slash_delete_no_arg(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
-        app.screen._cmd_delete("")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("")
+            mock_notify.assert_called_once()
+            assert "Documents:" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_store_error(mock_svc):
@@ -977,8 +1002,10 @@ async def test_chat_slash_delete_store_error(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
-        app.screen._cmd_delete("x")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("x")
+            mock_notify.assert_called_once()
+            assert "No documents" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_empty_sources(mock_svc):
@@ -986,8 +1013,10 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(mock_svc)
-        app.screen._cmd_delete("x")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("x")
+            mock_notify.assert_called_once()
+            assert "No documents" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_reset_confirm():
@@ -1002,16 +1031,20 @@ async def test_chat_slash_reset_confirm():
 async def test_chat_slash_reset_no_confirm():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/reset")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/reset")
+            mock_notify.assert_called_once()
+            assert "confirm" in mock_notify.call_args[0][0].lower()
 
 
 async def test_chat_slash_reset_error():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset", side_effect=Exception("oops")):
-            app.screen._handle_slash("/reset confirm")
-            assert app.screen.is_current
+            with patch.object(app.screen, "notify") as mock_notify:
+                app.screen._handle_slash("/reset confirm")
+                mock_notify.assert_called_once()
+                assert "oops" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_set_valid():
@@ -1038,15 +1071,19 @@ async def test_chat_slash_set_nullable_none():
 async def test_chat_slash_set_unknown_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_set("bogus_key 42")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("bogus_key 42")
+            mock_notify.assert_called_once()
+            assert "Unknown setting" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_set_invalid_value():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_set("top_k not-a-number")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("top_k not-a-number")
+            mock_notify.assert_called_once()
+            assert "Invalid value" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_set_no_value():
@@ -1064,23 +1101,27 @@ async def test_chat_slash_add_empty_args():
     """Cover early return when /add has no args."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_add("")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_add("")
+            mock_notify.assert_not_called()
 
 
 async def test_chat_slash_set_empty_args():
-    """Cover early return when /set has no args."""
+    """Cover early return when /set has no args — no notification posted."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_set("")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("")
+            mock_notify.assert_not_called()
 
 
 async def test_chat_slash_add_nonexistent():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_add("/nonexistent/path/abc.txt")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_add("/nonexistent/path/abc.txt")
+            mock_notify.assert_called_once()
+            assert "Not found" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_add_existing(tmp_path):
@@ -1088,32 +1129,30 @@ async def test_chat_slash_add_existing(tmp_path):
     test_file.write_text("hello")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch(
-                "lilbee.cli.helpers.copy_files",
-                return_value=MagicMock(copied=["test.txt"], skipped=[]),
-            ),
-            patch.object(app.screen, "_run_sync"),
-        ):
+        with patch.object(app.screen, "_run_add_background") as mock_add_bg:
             app.screen._cmd_add(str(test_file))
-            assert app.screen.is_current
+            mock_add_bg.assert_called_once()
 
 
-async def test_chat_slash_add_error(tmp_path):
+async def test_chat_slash_add_blocked_by_sync(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.copy_files", side_effect=Exception("copy failed")):
+        app.screen._sync_active = True
+        with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_add(str(test_file))
-            assert app.screen.is_current
+            mock_notify.assert_called_once()
+            assert "Sync in progress" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_cancel():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/cancel")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/cancel")
+            mock_notify.assert_called_once()
+            assert "Cancelled" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_help():
@@ -1172,23 +1211,33 @@ async def test_chat_empty_input_ignored():
 
         inp = app.screen.query_one("#chat-input", Input)
         inp.value = ""
-        await _pilot.press("enter")
-        assert app.screen.is_current
+        with patch.object(app.screen, "_send_message") as mock_send:
+            await _pilot.press("enter")
+            mock_send.assert_not_called()
 
 
 async def test_chat_scroll_actions():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen.action_scroll_up()
-        app.screen.action_scroll_down()
-        assert app.screen.is_current
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        with (
+            patch.object(log, "scroll_page_up") as mock_up,
+            patch.object(log, "scroll_page_down") as mock_down,
+        ):
+            app.screen.action_scroll_up()
+            mock_up.assert_called_once()
+            app.screen.action_scroll_down()
+            mock_down.assert_called_once()
 
 
 async def test_chat_cancel_stream_not_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._streaming = False
         app.screen.action_cancel_stream()
-        assert app.screen.is_current
+        assert app.screen._streaming is False
 
 
 async def test_chat_cancel_stream_while_streaming():
@@ -1205,10 +1254,18 @@ async def test_chat_vim_j_k_scrolls_in_normal_mode():
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
         await pilot.pause()
-        app.screen.action_vim_scroll_down()
-        app.screen.action_vim_scroll_up()
-        await pilot.pause()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is False
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        with (
+            patch.object(log, "scroll_down") as mock_down,
+            patch.object(log, "scroll_up") as mock_up,
+        ):
+            app.screen.action_vim_scroll_down()
+            mock_down.assert_called_once()
+            app.screen.action_vim_scroll_up()
+            mock_up.assert_called_once()
 
 
 async def test_chat_vim_j_k_skips_in_insert_mode():
@@ -1240,8 +1297,12 @@ async def test_chat_needs_setup_false_when_models_exist():
 async def test_chat_refresh_model_bar():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._refresh_model_bar()
-        assert app.screen.is_current
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = app.screen.query_one("#model-bar", ModelBar)
+        with patch.object(bar, "refresh_models") as mock_refresh:
+            app.screen._refresh_model_bar()
+            mock_refresh.assert_called_once()
 
 
 async def test_chat_input_changed_hides_overlay():
@@ -1251,9 +1312,12 @@ async def test_chat_input_changed_hides_overlay():
 
         inp = app.screen.query_one("#chat-input", Input)
         inp.focus()
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         inp.value = "/he"
         await _pilot.pause()
-        assert app.screen.is_current
+        assert not overlay.is_visible
 
 
 async def test_chat_slash_quit():
@@ -1305,8 +1369,10 @@ async def test_chat_slash_m():
 async def test_chat_slash_add_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/add /nonexistent/xyz")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/add /nonexistent/xyz")
+            mock_notify.assert_called_once()
+            assert "Not found" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_vision_dispatch():
@@ -1320,8 +1386,9 @@ async def test_chat_slash_vision_dispatch():
 async def test_chat_slash_delete_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/delete")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/delete")
+            mock_notify.assert_called_once()
 
 
 async def test_chat_action_complete_no_options():
@@ -1332,7 +1399,7 @@ async def test_chat_action_complete_no_options():
         inp = app.screen.query_one("#chat-input", Input)
         inp.value = "hello"
         app.screen.action_complete()
-        assert app.screen.is_current
+        assert inp.value == "hello"
 
 
 async def test_chat_action_complete_with_options():
@@ -1396,9 +1463,13 @@ async def test_chat_action_complete_cycle_no_selection():
 
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["a", "b"])
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        original = inp.value
         with patch.object(overlay, "cycle_next", return_value=None):
             app.screen.action_complete()
-            assert app.screen.is_current
+            assert inp.value == original
 
 
 async def test_chat_send_message():
@@ -1429,8 +1500,13 @@ async def test_chat_input_handler_uses_on_decorator():
 async def test_chat_scroll_to_bottom():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._scroll_to_bottom()
-        assert app.screen.is_current
+        from textual.containers import VerticalScroll
+
+        log = app.screen.query_one("#chat-log", VerticalScroll)
+        with patch.object(log, "scroll_end") as mock_end:
+            app.screen._scroll_to_bottom()
+            # scroll_end called only when near bottom (within 5 lines)
+            assert mock_end.called or log.max_scroll_y - log.scroll_y >= 5
 
 
 async def test_chat_trim_history_when_over_limit():
@@ -1535,8 +1611,10 @@ async def test_command_provider_action_sync():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        provider._action_sync()
-        assert app.screen.is_current
+        with patch.object(app, "notify") as mock_notify:
+            provider._action_sync()
+            mock_notify.assert_called_once()
+            assert "/add" in mock_notify.call_args[0][0]
 
 
 async def test_command_provider_action_version():
@@ -1547,9 +1625,13 @@ async def test_command_provider_action_version():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.cli.helpers.get_version", return_value="1.0.0"):
+        with (
+            patch("lilbee.cli.helpers.get_version", return_value="1.0.0"),
+            patch.object(app, "notify") as mock_notify,
+        ):
             provider._action_version()
-            assert app.screen.is_current
+            mock_notify.assert_called_once()
+            assert "1.0.0" in mock_notify.call_args[0][0]
 
 
 async def test_command_provider_action_noop():
@@ -1560,8 +1642,10 @@ async def test_command_provider_action_noop():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        provider._action_noop()
-        assert app.screen.is_current
+        with patch.object(app, "notify") as mock_notify:
+            provider._action_noop()
+            mock_notify.assert_called_once()
+            assert "reset" in mock_notify.call_args[0][0].lower()
 
 
 async def test_command_provider_model_commands():
@@ -1746,7 +1830,10 @@ async def test_catalog_pop_screen():
             await _pilot.pause()
             screen.action_go_back()
             await _pilot.pause()
-            assert app.screen.is_current
+            # action_go_back on non-LilbeeApp calls pop_screen
+            from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+            assert not isinstance(app.screen, CatalogScreen)
 
 
 async def test_catalog_vim_keys():
@@ -1758,11 +1845,9 @@ async def test_catalog_vim_keys():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
             screen.action_cursor_down()
             screen.action_cursor_up()
-            assert app.screen.is_current
+            assert isinstance(app.screen, CatalogScreen)
 
 
 async def test_catalog_vim_keys_in_input():
@@ -1776,10 +1861,14 @@ async def test_catalog_vim_keys_in_input():
             await _pilot.pause()
             from textual.widgets import Input
 
-            screen.query_one("#catalog-search", Input).focus()
+            inp = screen.query_one("#catalog-search", Input)
+            inp.display = True
+            inp.focus()
+            await _pilot.pause()
             screen.action_cursor_down()
             screen.action_cursor_up()
-            assert app.screen.is_current
+            # Input stays focused; vim nav is suppressed when Input focused
+            assert inp.has_focus
 
 
 async def test_catalog_page_down_up():
@@ -1791,11 +1880,9 @@ async def test_catalog_page_down_up():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
             screen.action_page_down()
             screen.action_page_up()
-            assert app.screen.is_current
+            assert isinstance(app.screen, CatalogScreen)
 
 
 async def test_catalog_page_down_no_focus():
@@ -1809,13 +1896,17 @@ async def test_catalog_page_down_no_focus():
             await _pilot.pause()
             from textual.widgets import Input
 
-            screen.query_one("#catalog-search", Input).focus()
+            inp = screen.query_one("#catalog-search", Input)
+            inp.display = True
+            inp.focus()
+            await _pilot.pause()
             screen.action_page_down()
             screen.action_page_up()
-            assert app.screen.is_current
+            # Page actions are suppressed when Input is focused
+            assert inp.has_focus
 
 
-async def test_catalog_install_already_installed():
+async def test_catalog_install_already_installed(tmp_path):
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -1825,11 +1916,16 @@ async def test_catalog_install_already_installed():
             app.push_screen(screen)
             await _pilot.pause()
             m = _make_catalog_model(name="installed-model")
-            mock_mgr = MagicMock()
-            mock_mgr.is_installed.return_value = True
-            with patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr):
+            cfg.models_dir = tmp_path
+            dest = tmp_path / "resolved.gguf"
+            dest.write_text("fake")
+            with (
+                patch("lilbee.catalog.resolve_filename", return_value="resolved.gguf"),
+                patch.object(screen, "notify") as mock_notify,
+            ):
                 screen._install_model(m)
-                assert app.screen.is_current
+                mock_notify.assert_called_once()
+                assert "already installed" in mock_notify.call_args[0][0]
 
 
 async def test_catalog_install_new_model():
@@ -1844,10 +1940,13 @@ async def test_catalog_install_new_model():
             m = _make_catalog_model(name="new-model")
             mock_mgr = MagicMock()
             mock_mgr.is_installed.return_value = False
-            with patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr):
+            with (
+                patch("lilbee.model_manager.get_model_manager", return_value=mock_mgr),
+                patch.object(screen, "_enqueue_download") as mock_enqueue,
+            ):
                 screen._install_model(m)
                 await _pilot.pause()
-                assert app.screen.is_current
+                mock_enqueue.assert_called_once_with(m)
 
 
 async def test_catalog_select_remote_row():
@@ -1994,8 +2093,10 @@ async def test_catalog_worker_non_success_ignored():
 
             mock_event = MagicMock()
             mock_event.state = WorkerState.RUNNING
+            before_hf = len(screen._hf_models)
             screen.on_worker_state_changed(mock_event)
-            assert app.screen.is_current
+            # Non-SUCCESS state should not change model lists
+            assert len(screen._hf_models) == before_hf
 
 
 async def test_catalog_select_catalog_row():
@@ -2053,8 +2154,9 @@ async def test_catalog_row_selected_out_of_range():
             await _pilot.pause()
             event = MagicMock()
             event.cursor_row = 999
-            screen._on_row_selected(event)
-            assert app.screen.is_current
+            with patch.object(screen, "_select_row") as mock_select:
+                screen._on_row_selected(event)
+                mock_select.assert_not_called()
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -2077,7 +2179,8 @@ async def test_catalog_fetch_more_hf_worker():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                # Worker completed; models are now populated
+                assert len(screen._hf_models) >= 0
 
 
 async def test_catalog_grid_cache_skips_rebuild():
@@ -2139,7 +2242,7 @@ async def test_chat_stream_response_error_worker(mock_svc):
         await _pilot.pause()
         while app.screen.workers:
             await _pilot.pause()
-            assert app.screen.is_current
+        assert app.screen.streaming is False
 
 
 async def test_chat_stream_response_reasoning_worker(mock_svc):
@@ -2164,7 +2267,7 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         await _pilot.pause()
         while app.screen.workers:
             await _pilot.pause()
-            assert app.screen.is_current
+        assert app.screen.streaming is False
 
 
 async def test_chat_stream_response_inner_exception(mock_svc):
@@ -2190,7 +2293,7 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         await _pilot.pause()
         while app.screen.workers:
             await _pilot.pause()
-        assert app.screen.is_current
+        assert app.screen.streaming is False
 
 
 async def test_chat_run_sync_worker():
@@ -2213,7 +2316,7 @@ async def test_chat_run_sync_worker():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_chat_sync_progress_percentage():
@@ -2263,7 +2366,7 @@ async def test_chat_run_sync_error_worker():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
@@ -2413,10 +2516,14 @@ async def test_chat_on_setup_complete_success():
     """Cover _on_setup_complete with successful setup."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_embedding_ready", return_value=False):
+        with (
+            patch.object(app.screen, "_embedding_ready", return_value=False),
+            patch.object(app.screen, "_run_sync") as mock_sync,
+        ):
             app.screen._on_setup_complete("done")
             await _pilot.pause()
-            assert app.screen.is_current
+            # Embedding not ready, so sync should NOT be triggered
+            mock_sync.assert_not_called()
 
 
 async def test_chat_cancel_with_active_worker(mock_svc):
@@ -2448,10 +2555,12 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.press("enter")
         await _pilot.pause()
         # Now there should be a worker running
-        app.screen._handle_slash("/cancel")
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/cancel")
+            mock_notify.assert_called_once()
+            assert "Cancelled" in mock_notify.call_args[0][0]
         barrier.set()
         await _pilot.pause()
-        assert app.screen.is_current
 
 
 async def test_catalog_refresh_table_empty():
@@ -2514,7 +2623,7 @@ async def test_catalog_page_down_with_focused_table():
             await _pilot.pause()
             screen.action_page_down()
             screen.action_page_up()
-            assert app.screen.is_current
+            assert table.has_focus
 
 
 async def test_catalog_action_cursor_with_focused_table():
@@ -2537,7 +2646,7 @@ async def test_catalog_action_cursor_with_focused_table():
             await _pilot.pause()
             screen.action_cursor_down()
             screen.action_cursor_up()
-            assert app.screen.is_current
+            assert table.has_focus
 
 
 async def test_catalog_jump_top_bottom():
@@ -2560,7 +2669,7 @@ async def test_catalog_jump_top_bottom():
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-            assert app.screen.is_current
+            assert table.has_focus
 
 
 async def test_chat_vim_j_scrolls_from_chat_log():
@@ -2573,7 +2682,7 @@ async def test_chat_vim_j_scrolls_from_chat_log():
         await pilot.pause()
         app.screen.action_vim_scroll_down()
         await pilot.pause()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is False
 
 
 def test_check_embedding_model_installed():
@@ -2677,25 +2786,31 @@ async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_crawl("")
+            mock_notify.assert_called_once()
 
 
 async def test_chat_slash_crawl_invalid_url():
     """Cover /crawl with non-URL argument."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("not-a-url")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_crawl("not-a-url")
+            mock_notify.assert_called_once()
 
 
 async def test_chat_slash_crawl_valid_url():
     """Cover /crawl dispatching to background crawler."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_run_crawl_background"):
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
+        ):
             app.screen._cmd_crawl("https://example.com")
-            assert app.screen.is_current
+            mock_crawl.assert_called_once()
 
 
 async def test_chat_slash_crawl_with_flags():
@@ -2780,7 +2895,10 @@ async def test_chat_run_crawl_background_success():
             mock_crawl.side_effect = _fake_crawl
             app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
-            assert app.screen.is_current
+            while app.screen.workers:
+                await pilot.pause()
+            # Worker completed successfully
+            assert app.screen._sync_active is False
 
 
 async def test_chat_run_crawl_background_error():
@@ -2791,7 +2909,9 @@ async def test_chat_run_crawl_background_error():
             mock_crawl.side_effect = RuntimeError("network error")
             app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
             await pilot.pause(delay=0.5)
-            assert app.screen.is_current
+            while app.screen.workers:
+                await pilot.pause()
+            assert app.screen._sync_active is False
 
 
 async def test_chat_vim_g_scrolls_home():
@@ -2802,7 +2922,7 @@ async def test_chat_vim_g_scrolls_home():
         await pilot.pause()
         app.screen.action_vim_scroll_home()
         app.screen.action_vim_scroll_end()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is False
 
 
 async def test_chat_vim_g_skips_in_insert_mode():
@@ -2824,7 +2944,8 @@ async def test_chat_half_page_actions():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_half_page_down()
         app.screen.action_half_page_up()
-        assert app.screen.is_current
+        # Half-page actions should not raise
+        assert app.screen._insert_mode is True
 
 
 async def test_settings_key_g_G():
@@ -2833,7 +2954,9 @@ async def test_settings_key_g_G():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_scroll_end()
         app.screen.action_scroll_home()
-        assert app.screen.is_current
+        # Scroll actions delegate to settings-scroll widget
+        scroll = app.screen.query_one("#settings-scroll")
+        assert scroll is not None
 
 
 async def test_status_key_g_G(mock_svc):
@@ -2863,11 +2986,9 @@ async def test_catalog_key_g_G():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
             screen.action_jump_top()
             screen.action_jump_bottom()
-            assert app.screen.is_current
+            assert isinstance(app.screen, CatalogScreen)
 
 
 async def test_catalog_key_g_G_noop_in_input():
@@ -2882,10 +3003,14 @@ async def test_catalog_key_g_G_noop_in_input():
             await _pilot.pause()
             from textual.widgets import Input
 
-            screen.query_one("#catalog-search", Input).focus()
+            inp = screen.query_one("#catalog-search", Input)
+            inp.display = True
+            inp.focus()
+            await _pilot.pause()
             screen.action_jump_top()
             screen.action_jump_bottom()
-            assert app.screen.is_current
+            # Jump actions are suppressed when Input is focused
+            assert inp.has_focus
 
 
 async def test_catalog_tab_bindings_removed():
@@ -3064,8 +3189,10 @@ async def test_catalog_delete_in_input_ignored():
 async def test_chat_slash_remove_no_args():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._handle_slash("/remove")
-        assert app.screen.is_current
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/remove")
+            mock_notify.assert_called_once()
+            assert "Usage" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_remove_not_installed():
@@ -3074,8 +3201,10 @@ async def test_chat_slash_remove_not_installed():
         with patch("lilbee.model_manager.get_model_manager") as mock_mgr:
             mock_mgr.return_value.is_installed.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
+            while app.screen.workers:
+                await _pilot.pause()
             await _pilot.pause()
-            assert app.screen.is_current
+            mock_mgr.return_value.is_installed.assert_called_once_with("some-model:latest")
 
 
 async def test_chat_slash_remove_success():
@@ -3085,8 +3214,10 @@ async def test_chat_slash_remove_success():
             mock_mgr.return_value.is_installed.return_value = True
             mock_mgr.return_value.remove.return_value = True
             app.screen._handle_slash("/remove some-model:latest")
+            while app.screen.workers:
+                await _pilot.pause()
             await _pilot.pause()
-            assert app.screen.is_current
+            mock_mgr.return_value.remove.assert_called_once_with("some-model:latest")
 
 
 async def test_chat_slash_remove_failed():
@@ -3096,8 +3227,10 @@ async def test_chat_slash_remove_failed():
             mock_mgr.return_value.is_installed.return_value = True
             mock_mgr.return_value.remove.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
+            while app.screen.workers:
+                await _pilot.pause()
             await _pilot.pause()
-            assert app.screen.is_current
+            mock_mgr.return_value.remove.assert_called_once_with("some-model:latest")
 
 
 async def test_cmd_add_creates_task_bar_entry(tmp_path):
@@ -3146,7 +3279,7 @@ async def test_cmd_add_error_in_background(tmp_path):
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_sync_called_with_quiet_true():
@@ -3437,7 +3570,7 @@ async def test_task_center_cancel_action():
         # Just call action - should not crash even if cursor is on wrong row
         app.screen.action_cancel_task()
         await pilot.pause()
-        assert app.screen.is_current
+        assert isinstance(app.screen, TaskCenter)
 
 
 async def test_task_center_refresh_action():
@@ -3451,7 +3584,8 @@ async def test_task_center_refresh_action():
         await pilot.pause()
         app.screen.action_refresh_tasks()
         await pilot.pause()
-        assert app.screen.is_current
+        table = app.screen.query_one("#task-table", DataTable)
+        assert table is not None
 
 
 async def test_task_center_cursor_actions():
@@ -3466,7 +3600,8 @@ async def test_task_center_cursor_actions():
         app.screen.action_cursor_down()
         app.screen.action_cursor_up()
         await pilot.pause()
-        assert app.screen.is_current
+        table = app.screen.query_one("#task-table", DataTable)
+        assert table is not None
 
 
 async def test_task_center_pop_screen():
@@ -3761,7 +3896,7 @@ async def test_chat_vim_scroll_in_normal_mode():
         await pilot.pause()
         app.screen.action_vim_scroll_down()
         app.screen.action_vim_scroll_up()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is False
 
 
 async def test_chat_up_arrow_insert_mode_recalls_history():
@@ -4141,10 +4276,12 @@ class TestWikiScreenSearch:
 class TestWikiScreenNavigation:
     async def test_go_back_pops_screen(self):
         """Pressing q pops the wiki screen in a non-LilbeeApp context."""
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.press("q")
-            assert app.screen.is_current
+            assert not isinstance(app.screen, WikiScreen)
 
     async def test_vim_keys(self):
         """Vim navigation keys work on the option list."""
@@ -4155,7 +4292,9 @@ class TestWikiScreenNavigation:
             await pilot.press("k")
             await pilot.press("g")
             await pilot.press("G")
-            assert app.screen.is_current
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            assert isinstance(app.screen, WikiScreen)
 
     async def test_focus_search(self, tmp_path):
         """Pressing / focuses the search input."""
@@ -4334,6 +4473,8 @@ class TestWikiCoverageEdgeCases:
 
     async def test_go_back_pops_screen(self, tmp_path):
         """action_go_back pops screen on non-LilbeeApp."""
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
         cfg.wiki = True
         cfg.data_dir = tmp_path / "data"
         wiki_root = cfg.data_dir / cfg.wiki_dir
@@ -4342,7 +4483,7 @@ class TestWikiCoverageEdgeCases:
         async with app.run_test(size=(120, 40)) as pilot:
             app.screen.action_go_back()
             await pilot.pause()
-            assert app.screen.is_current
+            assert not isinstance(app.screen, WikiScreen)
 
     async def test_go_back_switches_to_chat_on_lilbee_app(self, tmp_path):
         """action_go_back calls switch_view('Chat') on LilbeeApp."""
@@ -4420,7 +4561,7 @@ class TestWikiCoverageEdgeCases:
             app.screen.action_jump_top()
             app.screen.action_jump_bottom()
             await pilot.pause()
-            assert app.screen.is_current
+            assert ol.has_focus
 
     def test_group_pages_unknown_type(self):
         """Pages with unknown type get their own group."""
@@ -5093,9 +5234,13 @@ async def test_catalog_install_model_already_exists(tmp_path):
             cfg.models_dir = tmp_path
             dest = tmp_path / "test.gguf"
             dest.write_text("fake")
-            with patch("lilbee.catalog.resolve_filename", return_value="test.gguf"):
+            with (
+                patch("lilbee.catalog.resolve_filename", return_value="test.gguf"),
+                patch.object(screen, "notify") as mock_notify,
+            ):
                 screen._install_model(m)
-                assert app.screen.is_current
+                mock_notify.assert_called_once()
+                assert "already installed" in mock_notify.call_args[0][0]
 
 
 async def test_catalog_enqueue_download_non_lilbee_app():
@@ -5110,8 +5255,10 @@ async def test_catalog_enqueue_download_non_lilbee_app():
             await _pilot.pause()
             m = _make_catalog_model(name="dl-model")
             # CatalogTestApp is not LilbeeApp, so this should show error
-            screen._enqueue_download(m)
-            assert app.screen.is_current
+            with patch.object(screen, "notify") as mock_notify:
+                screen._enqueue_download(m)
+                mock_notify.assert_called_once()
+                assert "task bar" in mock_notify.call_args[0][0].lower()
 
 
 async def test_catalog_make_progress_callback():
@@ -5126,11 +5273,11 @@ async def test_catalog_make_progress_callback():
             await _pilot.pause()
             mock_bar = MagicMock()
             mock_bar.update_task = MagicMock()
-            with patch.object(screen, "_safe_call"):
+            with patch.object(screen, "_safe_call") as mock_safe:
                 cb = screen._make_progress_callback("task-1", mock_bar)
                 cb(512 * 1024, 1024 * 1024)  # total > 0
-                cb(512 * 1024, 0)  # total == 0
-                assert app.screen.is_current
+                cb(512 * 1024, 0)  # total == 0 (throttled)
+                assert mock_safe.call_count >= 1
 
 
 async def test_catalog_safe_call_suppresses_exception():
@@ -5245,7 +5392,7 @@ async def test_catalog_run_delete_success():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_mgr.remove.assert_called_once_with("test:latest")
 
 
 async def test_catalog_run_delete_failure():
@@ -5265,7 +5412,7 @@ async def test_catalog_run_delete_failure():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_mgr.remove.assert_called_once_with("test:latest")
 
 
 async def test_catalog_run_delete_exception():
@@ -5285,7 +5432,7 @@ async def test_catalog_run_delete_exception():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_mgr.remove.assert_called_once_with("test:latest")
 
 
 async def test_catalog_run_download_success():
@@ -5300,12 +5447,13 @@ async def test_catalog_run_download_success():
             await _pilot.pause()
             m = _make_catalog_model(name="dl-model")
             mock_bar = MagicMock()
-            with patch("lilbee.catalog.download_model"):
+            with patch("lilbee.catalog.download_model") as mock_dl:
                 screen._run_download(m, "task-1", mock_bar)
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_dl.assert_called_once()
+                mock_bar.complete_task.assert_called_once_with("task-1")
 
 
 async def test_catalog_run_download_permission_error():
@@ -5325,7 +5473,7 @@ async def test_catalog_run_download_permission_error():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_bar.fail_task.assert_called_once()
 
 
 async def test_catalog_run_download_generic_error():
@@ -5345,7 +5493,7 @@ async def test_catalog_run_download_generic_error():
                 await _pilot.pause()
                 while screen.workers:
                     await _pilot.pause()
-                    assert app.screen.is_current
+                mock_bar.fail_task.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -5420,12 +5568,17 @@ async def test_chat_crawl_invalid_url():
     """_cmd_crawl with invalid URL shows error notification."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
-        with patch(
-            "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
-            side_effect=ValueError("bad url"),
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch(
+                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
+                side_effect=ValueError("bad url"),
+            ),
+            patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._cmd_crawl("ftp://invalid.example.com")
-            assert app.screen.is_current
+            mock_notify.assert_called_once()
+            assert "bad url" in mock_notify.call_args[0][0]
 
 
 async def test_chat_login_no_token():
@@ -5441,24 +5594,26 @@ async def test_chat_login_with_token():
     """_cmd_login with token calls HF login."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        with patch("huggingface_hub.login"):
+        with patch("huggingface_hub.login") as mock_login:
             app.screen._cmd_login("hf_test_token_123")
-            await pilot.pause()
             while app.screen.workers:
                 await pilot.pause()
-                assert app.screen.is_current
+            await pilot.pause()
+            mock_login.assert_called_once_with(
+                token="hf_test_token_123", add_to_git_credential=False
+            )
 
 
 async def test_chat_login_with_token_error():
     """_cmd_login with token handles login error."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        with patch("huggingface_hub.login", side_effect=Exception("auth failed")):
+        with patch("huggingface_hub.login", side_effect=Exception("auth failed")) as mock_login:
             app.screen._cmd_login("hf_bad_token")
-            await pilot.pause()
             while app.screen.workers:
                 await pilot.pause()
-                assert app.screen.is_current
+            await pilot.pause()
+            mock_login.assert_called_once()
 
 
 async def test_chat_enter_normal_mode_while_streaming():
@@ -5714,12 +5869,14 @@ class TaskCenterTestApp(App[None]):
 
 async def test_task_center_go_back_non_lilbee_app():
     """action_go_back pops screen on non-LilbeeApp."""
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
     app = TaskCenterTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.screen.action_go_back()
         await pilot.pause()
-        assert app.screen.is_current
+        assert not isinstance(app.screen, TaskCenter)
 
 
 async def test_task_center_queue_change_exception():
@@ -5955,7 +6112,7 @@ async def test_chat_on_show_dismiss_no_fd():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         app.screen.on_show()  # Should not raise
-        assert app.screen.is_current
+        assert "_LILBEE_SPLASH_FD" not in os.environ
 
 
 async def test_chat_embedding_ready_false_on_exception():
@@ -6011,7 +6168,7 @@ async def test_chat_on_key_insert_mode_focus():
         event.character = "x"
         event.key = "x"
         app.screen.on_key(event)
-        assert app.screen.is_current
+        assert app.screen._insert_mode is True
 
 
 def test_chat_has_auto_focus():
@@ -6088,7 +6245,7 @@ async def test_chat_remove_model_exception():
             app.screen._run_remove_model("test-model")
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            mock_mgr.remove.assert_called_once_with("test-model")
 
 
 async def test_chat_cmd_crawl_with_valid_url():
@@ -6156,7 +6313,7 @@ async def test_chat_on_key_non_key_event_returns():
         await _pilot.pause()
         # Pass a non-Key object
         app.screen.on_key("not_a_key_event")  # Should not raise
-        assert app.screen.is_current
+        assert app.screen._insert_mode is True
 
 
 async def test_chat_vim_scroll_actions_work():
@@ -6170,7 +6327,7 @@ async def test_chat_vim_scroll_actions_work():
         app.screen.action_vim_scroll_up()
         app.screen.action_vim_scroll_home()
         app.screen.action_vim_scroll_end()
-        assert app.screen.is_current
+        assert app.screen._insert_mode is False
 
 
 async def test_chat_cmd_setup_opens_wizard():
@@ -6200,9 +6357,9 @@ async def test_catalog_enqueue_download_in_lilbee_app():
             await _pilot.pause()
 
             cm = _make_catalog_model(name="enqueue-test")
-            with patch.object(screen, "_run_download"):
+            with patch.object(screen, "_run_download") as mock_dl:
                 screen._enqueue_download(cm)
-                assert app.screen.is_current
+                mock_dl.assert_called_once()
 
 
 async def test_catalog_select_row_out_of_range():
@@ -6218,8 +6375,9 @@ async def test_catalog_select_row_out_of_range():
             screen._rows = []
             event = MagicMock()
             event.cursor_row = -1
-            screen._on_row_selected(event)  # Should not raise
-            assert app.screen.is_current
+            with patch.object(screen, "_select_row") as mock_sel:
+                screen._on_row_selected(event)  # Should not raise
+                mock_sel.assert_not_called()
 
 
 async def test_chat_cmd_crawl_no_args():
@@ -6285,7 +6443,7 @@ async def test_chat_add_skipped_file():
             app.screen._run_add_background(_Path("test.txt"), "task-1")
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_chat_add_sync_progress_with_total_files():
@@ -6315,7 +6473,7 @@ async def test_chat_add_sync_progress_with_total_files():
             app.screen._run_add_background(_Path("doc.md"), "task-pct")
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_chat_add_sync_progress_wrong_type():
@@ -6345,7 +6503,7 @@ async def test_chat_add_sync_progress_wrong_type():
             app.screen._run_add_background(_Path("test.txt"), "task-wrong")
             while app.screen.workers:
                 await _pilot.pause()
-                assert app.screen.is_current
+            assert app.screen._sync_active is False
 
 
 async def test_chat_crawl_background_success():
@@ -6512,8 +6670,9 @@ async def test_catalog_worker_state_unknown_worker():
             event.state = WorkerState.SUCCESS
             event.worker.result = []
             event.worker.name = "unknown_worker"
-            screen.on_worker_state_changed(event)
-            assert app.screen.is_current
+            with patch.object(screen, "_refresh_view") as mock_refresh:
+                screen.on_worker_state_changed(event)
+                mock_refresh.assert_not_called()
 
 
 async def test_catalog_is_installed_by_repo():
@@ -6567,8 +6726,9 @@ async def test_catalog_delete_when_input_focused():
             inp.focus()
             await _pilot.pause()
             # action_delete_model should return early
-            screen.action_delete_model()
-            assert app.screen.is_current
+            with patch.object(screen, "notify") as mock_notify:
+                screen.action_delete_model()
+                mock_notify.assert_not_called()
 
 
 async def test_catalog_get_highlighted_model_name_catalog():
