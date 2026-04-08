@@ -803,11 +803,10 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         yield event
 
     # Ensure the thread has fully resolved before reading the result
-    if not task.done():
-        import contextlib
+    import contextlib
 
-        with contextlib.suppress(Exception):
-            await task
+    with contextlib.suppress(Exception):
+        await task
 
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
         result_path = task.result()
