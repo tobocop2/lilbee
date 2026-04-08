@@ -105,17 +105,24 @@ if sys.platform == "win32":
 
     def pipe_closed(pipe_fd: int) -> bool:
         """Check if the pipe has been closed (EOF) without blocking."""
-        try:
-            os.set_blocking(pipe_fd, False)
-            data = os.read(pipe_fd, 1)
-            return len(data) == 0
-        except BlockingIOError:
-            return False
-        except OSError:
-            return True
-        finally:
-            with contextlib.suppress(OSError):
-                os.set_blocking(pipe_fd, True)
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(pipe_fd)
+        avail = ctypes.c_ulong(0)
+        ok = ctypes.windll.kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(avail), None
+        )
+        if not ok:
+            return True  # pipe broken or closed
+        if avail.value > 0:
+            # Data available — read it to check for EOF
+            try:
+                data = os.read(pipe_fd, 1)
+                return len(data) == 0
+            except OSError:
+                return True
+        return False  # no data, pipe still open
 
 
 if sys.platform != "win32":
