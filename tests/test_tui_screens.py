@@ -5105,15 +5105,13 @@ async def test_setup_wizard_download_progress_callback():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
 
-            from lilbee.catalog import DownloadProgress
-
             cm = _make_catalog_model(name="prog-m")
             screen._download_models = [cm]
 
             def _fake(model, on_progress=None):
                 if on_progress:
-                    on_progress(DownloadProgress(percent=50, detail="25 MB / 50 MB"))
-                    on_progress(DownloadProgress(percent=100, detail="50 MB / 50 MB"))
+                    on_progress(25 * 1024 * 1024, 50 * 1024 * 1024)
+                    on_progress(50 * 1024 * 1024, 50 * 1024 * 1024)
 
             with (
                 patch("lilbee.catalog.download_model", side_effect=_fake),
@@ -5121,9 +5119,6 @@ async def test_setup_wizard_download_progress_callback():
                 patch("lilbee.services.reset_services"),
             ):
                 screen._download_loop(lambda fn, *a: fn(*a))
-                await pilot.pause()
-                while screen.workers:
-                    await pilot.pause()
 
 
 def test_param_sort_value_with_match():
