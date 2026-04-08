@@ -65,8 +65,9 @@ _MIN_MEANINGFUL_CHARS = 50
 
 def _has_meaningful_text(result: Any) -> bool:
     """Check if extraction produced meaningful text."""
-    if hasattr(result, "chunks") and result.chunks:
-        total = sum(len(c.content.strip()) for c in result.chunks)
+    chunks = getattr(result, "chunks", None)
+    if chunks:
+        total = sum(len(c.content.strip()) for c in chunks)
         return total > _MIN_MEANINGFUL_CHARS
     return False
 

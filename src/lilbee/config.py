@@ -55,6 +55,7 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
+CITATIONS_TABLE = "_citations"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
@@ -86,7 +87,7 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3:8b", min_length=1)
+    chat_model: str = Field(default="qwen3", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
@@ -221,6 +222,77 @@ class Config(BaseSettings):
     # Per-model generation defaults (not serialized, not a config field).
     # Set via apply_model_defaults() when switching models.
     _model_defaults: Any = None
+
+    # Wiki layer — LLM-maintained synthesis pages with citation provenance.
+    # Requires optional ``wiki`` extra: ``pip install lilbee[wiki]``.
+    wiki: bool = False
+    wiki_dir: str = "wiki"
+    wiki_prune_raw: bool = False
+    wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+    # Fraction of citations that must be stale before a wiki page is flagged
+    # for regeneration during pruning. 0.5 = flag when >50% are stale.
+    wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # Maximum fraction of content that may change before a regeneration is
+    # flagged for human review instead of overwriting the existing page.
+    # 0.3 = 30% of lines changed triggers the drift guard.
+    wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # LLM prompt templates for wiki page generation. Override via env vars
+    # LILBEE_WIKI_SUMMARY_PROMPT, LILBEE_WIKI_FAITHFULNESS_PROMPT,
+    # LILBEE_WIKI_SYNTHESIS_PROMPT. Must contain the expected {placeholders}.
+    wiki_summary_prompt: str = (
+        "You are a knowledge compiler. Given the source chunks below from a single "
+        "document, write a concise wiki summary page in markdown.\n\n"
+        "Rules:\n"
+        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+        "3. For interpretations or connections not directly stated in the source, "
+        "mark with [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
+        '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
+        "Source document: {source_name}\n\n"
+        "Chunks:\n{chunks_text}\n\n"
+        "Write the wiki summary page now. Start with a heading."
+    )
+    wiki_faithfulness_prompt: str = (
+        "You are a fact-checker. Given source chunks and a wiki summary page generated "
+        "from them, score the summary's faithfulness to the sources on a scale of 0.0 "
+        "to 1.0.\n\n"
+        "Criteria:\n"
+        "- 1.0 = every claim is directly supported by the source chunks\n"
+        "- 0.5 = some claims are supported, some are unsupported extrapolations\n"
+        "- 0.0 = the summary contains fabricated information\n\n"
+        "Source chunks:\n{chunks_text}\n\n"
+        "Wiki summary:\n{wiki_text}\n\n"
+        "Respond with ONLY a number between 0.0 and 1.0. Nothing else."
+    )
+    wiki_synthesis_prompt: str = (
+        "You are a knowledge compiler. Given source chunks from MULTIPLE documents "
+        "about related concepts, write a synthesis wiki page in markdown that connects "
+        "ideas across sources.\n\n"
+        "Rules:\n"
+        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+        "3. For connections, interpretations, or patterns you identify across sources, "
+        "mark with [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. Reference each source by its filename when drawing connections.\n"
+        "6. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+        '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+        "Topic: {topic}\n\n"
+        "Sources:\n{source_list}\n\n"
+        "Chunks:\n{chunks_text}\n\n"
+        "Write the synthesis page now. Start with a heading."
+    )
 
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search

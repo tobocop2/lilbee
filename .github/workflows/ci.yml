@@ -1,15 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [master, main]
   pull_request:
-    branches: [master, main]
   workflow_call:
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -39,6 +37,7 @@ jobs:
         run: make imports-check
 
   test:
+    timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -72,6 +71,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -94,8 +94,8 @@ jobs:
       - name: Cache GGUF models
         uses: actions/cache@v4
         with:
-          path: ~/.lilbee/models
-          key: gguf-models-v1
+          path: ~/.local/share/lilbee/models
+          key: gguf-models-v3
           restore-keys: gguf-models-
 
       - name: Run integration tests

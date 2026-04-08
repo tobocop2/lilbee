@@ -235,3 +235,85 @@ class AddSummary(BaseModel):
     skipped: list[str]
     errors: list[str]
     sync: SyncSummary | None = None
+
+
+class WikiPageSummary(BaseModel):
+    """Summary of a wiki page for list endpoints."""
+
+    slug: str
+    title: str = ""
+    page_type: str = "unknown"
+    source_count: int = 0
+    created_at: str = ""
+
+
+class WikiCitationRecord(BaseModel):
+    """A citation record from the store, used in reverse lookup responses."""
+
+    wiki_source: str = ""
+    wiki_chunk_index: int = 0
+    citation_key: str = ""
+    claim_type: str = "fact"
+    source_filename: str = ""
+    source_hash: str = ""
+    page_start: int = 0
+    page_end: int = 0
+    line_start: int = 0
+    line_end: int = 0
+    excerpt: str = ""
+    created_at: str = ""
+
+
+class WikiPageDetail(BaseModel):
+    """Full content of a single wiki page."""
+
+    slug: str
+    title: str = ""
+    content: str = ""
+
+
+class WikiCitationsResult(BaseModel):
+    """Citations attached to a single wiki page."""
+
+    slug: str
+    citations: list[dict[str, Any]] = []
+
+
+class WikiLintResult(BaseModel):
+    """Result of a full wiki lint run."""
+
+    issues: list[dict[str, str]] = []
+    errors: int = 0
+    warnings: int = 0
+
+
+class WikiLintStatusResult(BaseModel):
+    """Status of a lint task (stub)."""
+
+    task_id: str
+    status: str = "not_implemented"
+    issues: list[dict[str, str]] = []
+
+
+class WikiGenerateResult(BaseModel):
+    """Result of wiki page generation."""
+
+    status: str
+    source: str
+    path: str = ""
+
+
+class WikiPruneRecordResponse(BaseModel):
+    """A single pruning action."""
+
+    wiki_source: str
+    action: str
+    reason: str
+
+
+class WikiPruneResult(BaseModel):
+    """Result of wiki pruning."""
+
+    records: list[WikiPruneRecordResponse] = []
+    archived: int = 0
+    flagged: int = 0

@@ -9,7 +9,7 @@ from lilbee.model_defaults import (
     ModelDefaults,
     clear_cache,
     get_defaults,
-    parse_ollama_parameters,
+    parse_kv_parameters,
     read_gguf_defaults,
     set_defaults,
 )
@@ -17,9 +17,21 @@ from lilbee.model_defaults import (
 
 @pytest.fixture(autouse=True)
 def _isolated_defaults(tmp_path):
-    """Snapshot config and clear model defaults cache for each test."""
+    """Snapshot config and clear model defaults cache for each test.
+
+    Resets all generation-option fields to None so tests aren't affected
+    by the user's local config.toml (e.g. temperature=0.6).
+    """
     snapshot = cfg.model_copy()
     cfg.apply_model_defaults(None)
+    # Reset user-configurable generation fields so toml values don't leak
+    cfg.temperature = None
+    cfg.top_p = None
+    cfg.top_k_sampling = None
+    cfg.repeat_penalty = None
+    cfg.num_ctx = None
+    cfg.seed = None
+    cfg.max_tokens = None
     clear_cache()
     yield
     clear_cache()
@@ -28,14 +40,14 @@ def _isolated_defaults(tmp_path):
     cfg.clear_model_defaults()
 
 
-class TestParseOllamaParameters:
+class TestParseKvParameters:
     def test_empty_string(self):
-        result = parse_ollama_parameters("")
+        result = parse_kv_parameters("")
         assert result == ModelDefaults()
 
     def test_valid_params(self):
         text = "temperature 0.7\ntop_p 0.9\nnum_ctx 4096\nrepeat_penalty 1.1"
-        result = parse_ollama_parameters(text)
+        result = parse_kv_parameters(text)
         assert result.temperature == 0.7
         assert result.top_p == 0.9
         assert result.num_ctx == 4096
@@ -43,36 +55,36 @@ class TestParseOllamaParameters:
 
     def test_unknown_keys_skipped(self):
         text = "temperature 0.7\nstop <|im_end|>\nmirostat 2\ntop_p 0.8"
-        result = parse_ollama_parameters(text)
+        result = parse_kv_parameters(text)
         assert result.temperature == 0.7
         assert result.top_p == 0.8
         assert result.num_ctx is None
 
     def test_invalid_values_skipped(self):
         text = "temperature abc\ntop_p 0.9"
-        result = parse_ollama_parameters(text)
+        result = parse_kv_parameters(text)
         assert result.temperature is None
         assert result.top_p == 0.9
 
     def test_whitespace_handling(self):
         text = "  temperature   0.5  \n\n  num_ctx   2048  \n"
-        result = parse_ollama_parameters(text)
+        result = parse_kv_parameters(text)
         assert result.temperature == 0.5
         assert result.num_ctx == 2048
 
     def test_single_word_lines_skipped(self):
         text = "temperature\ntop_p 0.9"
-        result = parse_ollama_parameters(text)
+        result = parse_kv_parameters(text)
         assert result.temperature is None
         assert result.top_p == 0.9
 
     def test_top_k_parsed_as_int(self):
-        result = parse_ollama_parameters("top_k 40")
+        result = parse_kv_parameters("top_k 40")
         assert result.top_k == 40
         assert isinstance(result.top_k, int)
 
     def test_max_tokens_parsed(self):
-        result = parse_ollama_parameters("max_tokens 2048")
+        result = parse_kv_parameters("max_tokens 2048")
         assert result.max_tokens == 2048
 
 

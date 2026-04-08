@@ -874,6 +874,15 @@ wheels = [
 ]
 
 [[package]]
+name = "execnet"
+version = "2.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708 },
+]
+
+[[package]]
 name = "fake-useragent"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1241,7 +1250,7 @@ wheels = [
 [[package]]
 name = "huggingface-hub"
 version = "1.10.0.dev0"
-source = { editable = "../huggingface_hub" }
+source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Fxet-tqdm-combined#a3f6e18b4c18cdfaa972c8f8a49c072276914a8e" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -1253,120 +1262,6 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "authlib", marker = "extra == 'all'", specifier = ">=1.3.2" },
-    { name = "authlib", marker = "extra == 'dev'", specifier = ">=1.3.2" },
-    { name = "authlib", marker = "extra == 'oauth'", specifier = ">=1.3.2" },
-    { name = "authlib", marker = "extra == 'testing'", specifier = ">=1.3.2" },
-    { name = "duckdb", marker = "extra == 'all'" },
-    { name = "duckdb", marker = "extra == 'dev'" },
-    { name = "duckdb", marker = "extra == 'testing'" },
-    { name = "fastai", marker = "extra == 'fastai'", specifier = ">=2.4" },
-    { name = "fastapi", marker = "extra == 'all'" },
-    { name = "fastapi", marker = "extra == 'dev'" },
-    { name = "fastapi", marker = "extra == 'oauth'" },
-    { name = "fastapi", marker = "extra == 'testing'" },
-    { name = "fastcore", marker = "extra == 'fastai'", specifier = ">=1.3.27" },
-    { name = "filelock", specifier = ">=3.10.0" },
-    { name = "fsspec", specifier = ">=2023.5.0" },
-    { name = "gradio", marker = "extra == 'gradio'", specifier = ">=5.0.0" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'", specifier = ">=1.4.3,<2.0.0" },
-    { name = "hf-xet", marker = "extra == 'hf-xet'", specifier = ">=1.4.3,<2.0.0" },
-    { name = "httpx", specifier = ">=0.23.0,<1" },
-    { name = "httpx", marker = "extra == 'all'" },
-    { name = "httpx", marker = "extra == 'dev'" },
-    { name = "httpx", marker = "extra == 'oauth'" },
-    { name = "httpx", marker = "extra == 'testing'" },
-    { name = "itsdangerous", marker = "extra == 'all'" },
-    { name = "itsdangerous", marker = "extra == 'dev'" },
-    { name = "itsdangerous", marker = "extra == 'oauth'" },
-    { name = "itsdangerous", marker = "extra == 'testing'" },
-    { name = "jedi", marker = "extra == 'all'" },
-    { name = "jedi", marker = "extra == 'dev'" },
-    { name = "jedi", marker = "extra == 'testing'" },
-    { name = "jinja2", marker = "extra == 'all'" },
-    { name = "jinja2", marker = "extra == 'dev'" },
-    { name = "jinja2", marker = "extra == 'testing'" },
-    { name = "libcst", marker = "extra == 'all'", specifier = ">=1.4.0" },
-    { name = "libcst", marker = "extra == 'dev'", specifier = ">=1.4.0" },
-    { name = "libcst", marker = "extra == 'quality'", specifier = ">=1.4.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.8.0" },
-    { name = "mypy", marker = "extra == 'all'", specifier = "==1.15.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = "==1.15.0" },
-    { name = "mypy", marker = "extra == 'quality'", specifier = "==1.15.0" },
-    { name = "numpy", marker = "extra == 'all'" },
-    { name = "numpy", marker = "extra == 'dev'" },
-    { name = "numpy", marker = "extra == 'testing'" },
-    { name = "packaging", specifier = ">=20.9" },
-    { name = "pillow", marker = "extra == 'all'" },
-    { name = "pillow", marker = "extra == 'dev'" },
-    { name = "pillow", marker = "extra == 'testing'" },
-    { name = "pytest", marker = "extra == 'all'", specifier = ">=8.4.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.2" },
-    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.4.2" },
-    { name = "pytest-asyncio", marker = "extra == 'all'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'testing'" },
-    { name = "pytest-cov", marker = "extra == 'all'" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "pytest-cov", marker = "extra == 'testing'" },
-    { name = "pytest-env", marker = "extra == 'all'" },
-    { name = "pytest-env", marker = "extra == 'dev'" },
-    { name = "pytest-env", marker = "extra == 'testing'" },
-    { name = "pytest-mock", marker = "extra == 'all'" },
-    { name = "pytest-mock", marker = "extra == 'dev'" },
-    { name = "pytest-mock", marker = "extra == 'testing'" },
-    { name = "pytest-rerunfailures", marker = "extra == 'all'", specifier = "<16.0" },
-    { name = "pytest-rerunfailures", marker = "extra == 'dev'", specifier = "<16.0" },
-    { name = "pytest-rerunfailures", marker = "extra == 'testing'", specifier = "<16.0" },
-    { name = "pytest-vcr", marker = "extra == 'all'" },
-    { name = "pytest-vcr", marker = "extra == 'dev'" },
-    { name = "pytest-vcr", marker = "extra == 'testing'" },
-    { name = "pytest-xdist", marker = "extra == 'all'" },
-    { name = "pytest-xdist", marker = "extra == 'dev'" },
-    { name = "pytest-xdist", marker = "extra == 'testing'" },
-    { name = "pyyaml", specifier = ">=5.1" },
-    { name = "requests", marker = "extra == 'gradio'" },
-    { name = "ruff", marker = "extra == 'all'", specifier = ">=0.9.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
-    { name = "ruff", marker = "extra == 'quality'", specifier = ">=0.9.0" },
-    { name = "safetensors", extras = ["torch"], marker = "extra == 'torch'" },
-    { name = "soundfile", marker = "extra == 'all'" },
-    { name = "soundfile", marker = "extra == 'dev'" },
-    { name = "soundfile", marker = "extra == 'testing'" },
-    { name = "toml", marker = "extra == 'fastai'" },
-    { name = "torch", marker = "extra == 'torch'" },
-    { name = "tqdm", specifier = ">=4.42.1" },
-    { name = "ty", marker = "extra == 'all'" },
-    { name = "ty", marker = "extra == 'dev'" },
-    { name = "ty", marker = "extra == 'quality'" },
-    { name = "typer" },
-    { name = "types-pyyaml", marker = "extra == 'all'" },
-    { name = "types-pyyaml", marker = "extra == 'dev'" },
-    { name = "types-pyyaml", marker = "extra == 'typing'" },
-    { name = "types-simplejson", marker = "extra == 'all'" },
-    { name = "types-simplejson", marker = "extra == 'dev'" },
-    { name = "types-simplejson", marker = "extra == 'typing'" },
-    { name = "types-toml", marker = "extra == 'all'" },
-    { name = "types-toml", marker = "extra == 'dev'" },
-    { name = "types-toml", marker = "extra == 'typing'" },
-    { name = "types-tqdm", marker = "extra == 'all'" },
-    { name = "types-tqdm", marker = "extra == 'dev'" },
-    { name = "types-tqdm", marker = "extra == 'typing'" },
-    { name = "types-urllib3", marker = "extra == 'all'" },
-    { name = "types-urllib3", marker = "extra == 'dev'" },
-    { name = "types-urllib3", marker = "extra == 'typing'" },
-    { name = "typing-extensions", specifier = ">=4.1.0" },
-    { name = "typing-extensions", marker = "extra == 'all'", specifier = ">=4.8.0" },
-    { name = "typing-extensions", marker = "extra == 'dev'", specifier = ">=4.8.0" },
-    { name = "typing-extensions", marker = "extra == 'typing'", specifier = ">=4.8.0" },
-    { name = "urllib3", marker = "extra == 'all'", specifier = "<2.0" },
-    { name = "urllib3", marker = "extra == 'dev'", specifier = "<2.0" },
-    { name = "urllib3", marker = "extra == 'testing'", specifier = "<2.0" },
-]
-provides-extras = ["oauth", "torch", "fastai", "hf-xet", "mcp", "testing", "gradio", "typing", "quality", "all", "dev"]
 
 [[package]]
 name = "humanize"
@@ -1735,13 +1630,14 @@ reranker = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
-    { name = "pexpect" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-httpserver" },
+    { name = "pytest-xdist" },
     { name = "reportlab" },
     { name = "ruff" },
+    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -1750,7 +1646,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
-    { name = "huggingface-hub", editable = "../huggingface_hub" },
+    { name = "huggingface-hub", git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Fxet-tqdm-combined" },
     { name = "kreuzberg", specifier = ">=4.6.3" },
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'" },
@@ -1774,13 +1670,14 @@ provides-extras = ["litellm", "reranker", "graph", "crawler"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.19.1" },
-    { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-httpserver" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "reportlab" },
     { name = "ruff", specifier = ">=0.15.4" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 
 [[package]]
@@ -2649,18 +2546,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pexpect"
-version = "4.9.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ptyprocess" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772 },
-]
-
-[[package]]
 name = "pillow"
 version = "12.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2989,15 +2874,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ptyprocess"
-version = "0.7.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/20/e5/16ff212c1e452235a90aeb09066144d0c5a6a8c0834397e03f5224495c4e/ptyprocess-0.7.0.tar.gz", hash = "sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220", size = 70762 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/a6/858897256d0deac81a172289110f31629fc4cee19b6f01283303e18c8db3/ptyprocess-0.7.0-py2.py3-none-any.whl", hash = "sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35", size = 13993 },
-]
-
-[[package]]
 name = "pyarrow"
 version = "23.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3283,6 +3159,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/50/17/ad187f46998814014f7cda309de700b87c0eb4b2e111e18bc8c819be7116/pytest_httpserver-1.1.5.tar.gz", hash = "sha256:dc3d82e1fe00e491829d8939c549bf4bd9b39a260f87113c619b9d517c2f8ff1", size = 70974 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/df/0bdf90b84c6a586a9fd2b509523a3ab26b1cc1b1dba2fb62a32e4411ea9e/pytest_httpserver-1.1.5-py3-none-any.whl", hash = "sha256:ee83feb587ab652c0c6729598db2820e9048233bac8df756818b7845a1621d0a", size = 23330 },
+]
+
+[[package]]
+name = "pytest-xdist"
+version = "3.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "execnet" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88", size = 46396 },
 ]
 
 [[package]]
@@ -4578,6 +4467,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085 },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20250915"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338 },
 ]
 
 [[package]]

@@ -133,21 +133,27 @@ class TestModelClassification:
         mock_manifests[1].name = "Nomic Embed"
         mock_manifests[2].name = "LightOnOCR"
 
+        from lilbee.cli.tui.widgets.model_bar import ModelOption
+
         with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models") as mock_native:
 
             def fill_buckets(buckets, seen):
                 for m in mock_manifests:
-                    name = f"{m.name}:{m.tag}"
-                    buckets.get(m.task, buckets["chat"]).append(name)
-                    seen.add(name)
+                    ref = f"{m.name}:{m.tag}"
+                    label = m.display_name or ref
+                    buckets.get(m.task, buckets["chat"]).append(ModelOption(label, ref))
+                    seen.add(ref)
 
             mock_native.side_effect = fill_buckets
             with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
                 chat, embed, vision = _classify_installed_models()
 
-        assert "Qwen3:latest" in chat
-        assert "Nomic Embed:latest" in embed
-        assert "LightOnOCR:latest" in vision
+        chat_refs = [o.ref for o in chat]
+        embed_refs = [o.ref for o in embed]
+        vision_refs = [o.ref for o in vision]
+        assert "Qwen3:latest" in chat_refs
+        assert "Nomic Embed:latest" in embed_refs
+        assert "LightOnOCR:latest" in vision_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -197,49 +203,49 @@ class TestModelSwitchSafety:
             screen.action_cancel_stream.assert_called_once()
 
 
-class TestStatusBarPresence:
+class TestViewTabsPresence:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
     async def test_status_bar_on_all_screens(self, _fam, _cat, _mock_resolve):
-        """StatusBar must exist on every screen."""
+        """ViewTabs must exist on every screen."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
 
             # Chat screen
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar is not None
 
             # Cycle through all views
             for view in ["Catalog", "Status", "Settings", "Tasks"]:
                 app.switch_view(view)
                 await pilot.pause()
-                bar = app.screen.query_one(StatusBar)
-                assert bar is not None, f"StatusBar missing on {view} screen"
+                bar = app.screen.query_one(ViewTabs)
+                assert bar is not None, f"ViewTabs missing on {view} screen"
 
 
 class TestModeIndicator:
     async def test_insert_mode_on_startup(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "INSERT" in bar.mode_text
 
     async def test_normal_mode_on_escape(self, _mock_resolve):
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert "NORMAL" in bar.mode_text
 
 
@@ -357,7 +363,9 @@ class TestDownloadProgressSlow:
             reset_model_manager()
 
             entry = CatalogModel(
-                name="Mistral 7B",
+                name="mistral",
+                tag="7b",
+                display_name="Mistral 7B",
                 hf_repo="MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF",
                 gguf_filename="*Q4_K_M.gguf",
                 size_gb=4.2,
@@ -413,6 +421,7 @@ def _mock_catalog_deps():
 
     families = [
         ModelFamily(
+            slug="testchat",
             name="TestChat",
             task="chat",
             description="A test chat model",
@@ -421,6 +430,7 @@ def _mock_catalog_deps():
                     hf_repo="test/chat-repo",
                     filename="chat-Q4.gguf",
                     param_count="7B",
+                    tag="7b",
                     quant="Q4_K_M",
                     size_mb=4000,
                     recommended=True,
@@ -428,6 +438,7 @@ def _mock_catalog_deps():
             ),
         ),
         ModelFamily(
+            slug="testembed",
             name="TestEmbed",
             task="embedding",
             description="A test embedding model",
@@ -436,6 +447,7 @@ def _mock_catalog_deps():
                     hf_repo="test/embed-repo",
                     filename="embed-Q8.gguf",
                     param_count="0.5B",
+                    tag="0.5b",
                     quant="Q8_0",
                     size_mb=500,
                     recommended=True,
@@ -590,7 +602,6 @@ class TestScreenTransitions:
     async def test_help_from_each_view_and_dismiss(self, _mock_resolve):
         """Open help from each view, dismiss, verify back at same view."""
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -603,11 +614,11 @@ class TestScreenTransitions:
 
                     app.action_push_help()
                     await pilot.pause()
-                    assert isinstance(app.screen, HelpModal)
+                    assert app.screen.query("HelpPanel")
 
-                    await pilot.press("escape")
+                    app.action_push_help()
                     await pilot.pause()
-                    assert not isinstance(app.screen, HelpModal)
+                    assert not app.screen.query("HelpPanel")
 
     async def test_q_from_models_returns_to_chat(self, _mock_resolve):
         """From Models, pressing q returns to Chat."""
@@ -746,7 +757,7 @@ class TestChatInteractions:
             app.screen.action_enter_normal_mode()
             await pilot.pause()
 
-            app.screen.key_j()
+            app.screen.action_vim_scroll_down()
             await pilot.pause()
             new_focus = app.screen.focused.id if app.screen.focused else None
             assert new_focus is not None
@@ -760,9 +771,9 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            # Should not crash
-            app.screen.key_g()
+            app.screen.action_vim_scroll_home()
             await pilot.pause()
+            assert app.screen._insert_mode is False
 
     async def test_normal_mode_G_scrolls_bottom(self, _mock_resolve):
         """In normal mode, G scrolls the chat log to bottom."""
@@ -771,8 +782,9 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            app.screen.key_G()
+            app.screen.action_vim_scroll_end()
             await pilot.pause()
+            assert app.screen._insert_mode is False
 
     async def test_page_up_page_down(self, _mock_resolve):
         """PageUp and PageDown scroll the chat log."""
@@ -783,6 +795,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_scroll_down()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_half_page_scroll(self, _mock_resolve):
         """Ctrl-D and Ctrl-U half-page scroll."""
@@ -793,6 +806,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen.action_half_page_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_focuses_input_with_prefix(self, _mock_resolve):
         """/ key focuses input and prefills with /."""
@@ -807,16 +821,14 @@ class TestChatInteractions:
             assert inp.has_focus
             assert inp.value.startswith("/")
 
-    async def test_slash_command_help_opens_modal(self, _mock_resolve):
+    async def test_slash_command_help_opens_panel(self, _mock_resolve):
         """Typing /help dispatches to the help handler."""
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen._handle_slash("/help")
             await pilot.pause()
-            assert isinstance(app.screen, HelpModal)
+            assert app.screen.query("HelpPanel")
 
     async def test_slash_command_unknown_notifies(self, _mock_resolve):
         """Unknown slash command shows a warning notification."""
@@ -825,6 +837,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/nonexistent_command_xyz")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_command_version(self, _mock_resolve):
         """Typing /version shows version notification."""
@@ -833,6 +846,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/version")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_slash_command_set_valid(self, _mock_resolve):
         """/set chat_model <value> updates cfg."""
@@ -850,6 +864,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/set nonexistent_key_xyz value")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_escape_cancels_stream_when_streaming(self, _mock_resolve):
         """Escape cancels streaming if active."""
@@ -872,6 +887,7 @@ class TestChatInteractions:
             inp.value = ""
             event = Input.Submitted(inp, "")
             app.screen._on_chat_submitted(event)
+            assert app.screen._streaming is False
             await pilot.pause()
 
     async def test_submit_message_mocked_llm(self, _mock_resolve, _mock_services):
@@ -908,21 +924,21 @@ class TestChatInteractions:
             await pilot.pause()
 
             # Navigate up through history
-            app.screen.key_up()
+            app.screen.action_history_prev()
             await pilot.pause()
             assert inp.value == "second message"
 
-            app.screen.key_up()
+            app.screen.action_history_prev()
             await pilot.pause()
             assert inp.value == "first message"
 
             # Navigate down
-            app.screen.key_down()
+            app.screen.action_history_next()
             await pilot.pause()
             assert inp.value == "second message"
 
             # Past end clears
-            app.screen.key_down()
+            app.screen.action_history_next()
             await pilot.pause()
             assert inp.value == ""
 
@@ -956,17 +972,20 @@ class TestChatInteractions:
             await pilot.pause()
             assert app.screen._insert_mode is True
 
-    async def test_focus_cycle_in_normal_mode_with_up_down(self, _mock_resolve):
-        """In normal mode, up/down cycle focus between focusable widgets."""
+    async def test_history_actions_skip_in_normal_mode(self, _mock_resolve):
+        """In normal mode, up/down raise SkipAction (no focus cycling)."""
+        from textual.actions import SkipAction
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            app.screen.key_up()
-            await pilot.pause()
-            app.screen.key_down()
-            await pilot.pause()
+            with pytest.raises(SkipAction):
+                app.screen.action_history_prev()
+            with pytest.raises(SkipAction):
+                app.screen.action_history_next()
+            assert app.screen._insert_mode is False
 
 
 class TestCatalogInteractions:
@@ -1145,6 +1164,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.screen.action_page_up()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_column_header_click_sorts_list(self, _mock_resolve):
         """Clicking a column header sorts the table by that column."""
@@ -1229,6 +1249,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.screen.action_delete_model()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_q_from_catalog_returns_to_chat(self, _mock_resolve):
         """Pressing q on catalog returns to chat."""
@@ -1262,6 +1283,7 @@ class TestCatalogInteractions:
                 app.screen.action_jump_bottom()
                 app.screen.action_page_down()
                 app.screen.action_page_up()
+                assert app.screen.is_current
                 await pilot.pause()
 
 
@@ -1408,6 +1430,7 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.screen.action_scroll_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_g_G_scroll_home_end(self, _mock_resolve):
         """g and G scroll to top and bottom."""
@@ -1422,6 +1445,7 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.screen.action_scroll_home()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_pop_screen_returns_to_chat(self, _mock_resolve):
         """action_go_back returns to chat."""
@@ -1522,6 +1546,7 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.screen.action_cursor_up()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_g_G_jump_in_docs_table(self, _mock_resolve):
         """g/G jump to top/bottom in the documents table."""
@@ -1537,6 +1562,7 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.screen.action_jump_top()
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_q_returns_to_chat(self, _mock_resolve):
         """Pressing q from status returns to chat."""
@@ -1663,6 +1689,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cursor_up()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cursor_movement_updates_detail_panel(self, _mock_resolve):
         """Moving cursor updates the detail panel."""
@@ -1724,6 +1751,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cancel_task()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_q_returns_to_chat(self, _mock_resolve):
         """Pressing q returns to chat."""
@@ -1750,32 +1778,36 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.screen.action_cancel_task()
             await pilot.pause()
+            assert app.screen.is_current
 
 
 class TestChatPromptBorder:
     """Test that the chat prompt area has a single border, not stacked."""
 
-    async def test_prompt_area_insert_mode_border(self, _mock_resolve):
-        """PromptArea should have insert-mode class, input should have no border."""
+    async def test_prompt_area_border_uses_focus_within(self, _mock_resolve):
+        """PromptArea uses :focus-within for border, not mode classes."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             area = app.screen.query_one("#chat-prompt-area")
             inp = app.screen.query_one("#chat-input")
-            assert area.has_class("insert-mode")
+            # No mode classes on the prompt area — border driven by :focus-within CSS
+            assert not area.has_class("insert-mode")
+            assert not area.has_class("normal-mode")
             # Input should not have its own border
-            assert inp.styles.border is not None  # exists but set to none in CSS
+            assert inp.styles.border is not None
 
-    async def test_prompt_area_normal_mode_border(self, _mock_resolve):
-        """PromptArea should switch to normal-mode class on escape."""
+    async def test_normal_mode_dims_input_not_area(self, _mock_resolve):
+        """Normal mode adds class to input (opacity), not to prompt area."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_enter_normal_mode()
             await pilot.pause()
+            inp = app.screen.query_one("#chat-input")
             area = app.screen.query_one("#chat-prompt-area")
-            assert area.has_class("normal-mode")
-            assert not area.has_class("insert-mode")
+            assert inp.has_class("normal-mode")
+            assert not area.has_class("normal-mode")
 
 
 class TestAppQuit:
@@ -1907,6 +1939,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/vision")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_reset_without_confirm(self, _mock_resolve):
         """/reset without confirm shows warning."""
@@ -1915,15 +1948,17 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/reset")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_reset_with_confirm(self, _mock_resolve):
         """/reset confirm performs reset."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._cmd_reset"):
+            with mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._cmd_reset") as mock_reset:
                 app.screen._cmd_reset("confirm")
                 await pilot.pause()
+            mock_reset.assert_called_once_with("confirm")
 
     async def test_cmd_cancel(self, _mock_resolve):
         """/cancel cancels workers."""
@@ -1932,6 +1967,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/cancel")
             await pilot.pause()
+            assert app.screen._streaming is False
 
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
@@ -1961,6 +1997,7 @@ class TestChatSlashCommands:
             assert isinstance(screen, ChatScreen)
             screen._handle_slash("/theme")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_delete_no_docs(self, _mock_resolve):
         """/delete with no docs shows warning."""
@@ -1971,6 +2008,7 @@ class TestChatSlashCommands:
                 mock_svc.return_value.store.get_sources.return_value = []
                 app.screen._handle_slash("/delete")
                 await pilot.pause()
+                assert app.screen.is_current
 
     async def test_cmd_add_nonexistent_path(self, _mock_resolve):
         """/add with nonexistent path shows error."""
@@ -1979,6 +2017,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/add /nonexistent/path/xyz")
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_cmd_add_no_args(self, _mock_resolve):
         """/add with no args is a no-op."""
@@ -1987,6 +2026,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/add")
             await pilot.pause()
+            assert app.screen.is_current
 
 
 class TestChatCompletions:
@@ -2003,6 +2043,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_ctrl_n_cycles_forward(self, _mock_resolve):
         """Ctrl+N cycles forward through completions."""
@@ -2015,6 +2056,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete_next()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_ctrl_p_cycles_backward(self, _mock_resolve):
         """Ctrl+P cycles backward through completions."""
@@ -2027,6 +2069,7 @@ class TestChatCompletions:
             inp.value = "/"
             app.screen.action_complete_prev()
             await pilot.pause()
+            assert app.screen.is_current
 
     async def test_input_change_hides_overlay(self, _mock_resolve):
         """Changing input manually hides the completion overlay."""
@@ -2042,10 +2085,11 @@ class TestChatCompletions:
             app.screen.action_complete()
             await pilot.pause()
 
-            app.screen.query_one("#completion-overlay", CompletionOverlay)
+            overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
             # Changing input should dismiss overlay
             inp.value = "/h"
             await pilot.pause()
+            assert overlay.display is False
 
 
 class TestGridSelectWidget:
@@ -2242,7 +2286,7 @@ class TestSetupWizardGrid:
                 assert len(grids) >= 1
 
     async def test_setup_step1_shows_chat_picks(self, _mock_resolve):
-        """Step 1 shows 'Our picks' heading for chat models."""
+        """Setup shows 'Chat Models' heading."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = ChatTestApp()
@@ -2256,7 +2300,7 @@ class TestSetupWizardGrid:
                 await pilot.pause()
                 headings = app.screen.query(".section-heading")
                 texts = [str(h.render()) for h in headings]
-                assert "Our picks" in texts
+                assert "Chat Models" in texts
 
     async def test_setup_browse_catalog_button(self, _mock_resolve):
         """Browse catalog button exists in setup wizard."""
@@ -2331,3 +2375,22 @@ class TestSetupWizardGrid:
                     await pilot.pause()
                     await pilot.pause()
                     assert not isinstance(app.screen, SetupWizard)
+
+
+class TestChatEmbeddingReadyCoverage:
+    """Cover _embedding_ready exception path (lines 172-173 in chat.py)."""
+
+    async def test_embedding_ready_returns_false_on_resolve_error(self, _mock_resolve):
+        """_embedding_ready returns False when _resolve_model_path raises."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            with mock.patch(
+                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                side_effect=FileNotFoundError("not found"),
+            ):
+                assert screen._embedding_ready() is False

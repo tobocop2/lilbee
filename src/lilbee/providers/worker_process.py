@@ -190,6 +190,8 @@ class WorkerProcess:
 
     def _send_and_receive_embed(self, req: EmbedRequest) -> list[list[float]]:
         """Put request, get response, handle crash with one retry."""
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
         if resp is None:
@@ -204,6 +206,8 @@ class WorkerProcess:
         """Restart worker and retry a failed embed request once."""
         log.warning("Worker crashed during embed, restarting and retrying")
         self.restart()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
         if resp is None:
@@ -226,6 +230,8 @@ class WorkerProcess:
 
     def _send_and_receive_vision(self, req: VisionRequest) -> str:
         """Put request, get response, handle crash with one retry."""
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_VISION_TIMEOUT_S)
         if resp is None:
@@ -240,6 +246,8 @@ class WorkerProcess:
         """Restart worker and retry a failed vision request once."""
         log.warning("Worker crashed during vision OCR, restarting and retrying")
         self.restart()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_VISION_TIMEOUT_S)
         if resp is None:
@@ -252,6 +260,8 @@ class WorkerProcess:
 
     def _get_response(self, timeout: float) -> _WorkerResponse | None:
         """Read from response queue. Return None if worker died."""
+        if self._response_queue is None:
+            raise RuntimeError("Worker not started")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self.is_alive():
@@ -265,6 +275,8 @@ class WorkerProcess:
     def load_model(self, model: str, model_type: str = "embed") -> None:
         """Tell the worker to (re)load a model."""
         self._ensure_started()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(LoadModelRequest(model=model, model_type=model_type))
 
 
@@ -336,7 +348,7 @@ def _worker_main(
 
 def _close_model(model: Any) -> None:
     """Safely close a llama-cpp model instance."""
-    if model is not None and hasattr(model, "close"):
+    if model is not None:
         with contextlib.suppress(Exception):
             model.close()
 

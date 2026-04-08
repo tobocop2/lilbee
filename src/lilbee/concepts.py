@@ -365,6 +365,45 @@ class ConceptGraph:
                 nodes_table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
                 nodes_table.add(node_records)
 
+    def get_cluster_sources(self, min_sources: int = 3) -> dict[int, set[str]]:
+        """Return clusters that span at least *min_sources* distinct sources.
+
+        Joins concept_nodes (concept -> cluster_id) with chunk_concepts
+        (concept -> chunk_source) to find which document sources each
+        cluster touches.
+        """
+        nodes_table = self._store.open_table(CONCEPT_NODES_TABLE)
+        cc_table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
+        if nodes_table is None or cc_table is None:
+            return {}
+
+        node_rows = nodes_table.to_arrow().to_pylist()
+        concept_to_cluster: dict[str, int] = {r["concept"]: r["cluster_id"] for r in node_rows}
+
+        cc_rows = cc_table.to_arrow().to_pylist()
+        cluster_sources: dict[int, set[str]] = {}
+        for row in cc_rows:
+            cid = concept_to_cluster.get(row["concept"])
+            if cid is None:
+                continue
+            cluster_sources.setdefault(cid, set()).add(row["chunk_source"])
+
+        return {
+            cid: sources for cid, sources in cluster_sources.items() if len(sources) >= min_sources
+        }
+
+    def get_cluster_label(self, cluster_id: int) -> str:
+        """Return a human-readable label for a cluster (its highest-degree concept)."""
+        table = self._store.open_table(CONCEPT_NODES_TABLE)
+        if table is None:
+            return f"cluster-{cluster_id}"
+        rows = table.to_arrow().to_pylist()
+        cluster_concepts = [r for r in rows if r["cluster_id"] == cluster_id]
+        if not cluster_concepts:
+            return f"cluster-{cluster_id}"
+        best = max(cluster_concepts, key=lambda r: r["degree"])
+        return str(best["concept"])
+
     def get_graph(self) -> bool:
         """Check whether a concept graph exists in the store."""
         if not self._config.concept_graph:

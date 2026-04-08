@@ -15,16 +15,43 @@ TabbedContent > ContentSwitcher {
     height: 1fr;
 }
 
-HelpModal > Vertical {
-    width: 70;
-    height: auto;
-    max-height: 80%;
-    border: thick $surface-lighten-2;
-    padding: 1 2;
+Footer {
+    background: transparent;
 }
 
-HelpModal {
-    align: center middle;
+Footer > .footer-key--key {
+    color: $text;
+    background: transparent;
+    padding: 0 1;
+}
+
+Footer > .footer-key--description {
+    color: $text-muted;
+    padding: 0 1 0 0;
+}
+
+HelpPanel {
+    border-left: solid $surface-lighten-2;
+    padding-right: 0;
+}
+
+HelpPanel #widget-help {
+    border: round $secondary;
+    background: transparent;
+    margin-top: 0;
+    padding: 0 0;
+}
+
+HelpPanel #widget-help MarkdownBlock {
+    padding: 0 1;
+}
+
+HelpPanel #widget-help MarkdownH2 {
+    margin: 0 0 1 0;
+}
+
+HelpPanel #widget-help MarkdownBlock:last-child {
+    margin: 0 0 0 0;
 }
 
 #edit-bar {

@@ -435,18 +435,18 @@ async def list_models() -> ModelsResponse:
 
     installed = set(list_installed_models())
     chat_installed = set(list_installed_models(exclude_vision=True))
-    vision_names = {v.name for v in VISION_CATALOG}
+    vision_refs = {v.ref for v in VISION_CATALOG}
 
     response = ModelsResponse(
         chat=ModelCatalogSection(
             active=cfg.chat_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.display_name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=m.ref in installed,
                 )
                 for m in MODEL_CATALOG
             ],
@@ -456,15 +456,15 @@ async def list_models() -> ModelsResponse:
             active=cfg.vision_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.display_name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=m.ref in installed,
                 )
                 for m in VISION_CATALOG
             ],
-            installed=sorted(m for m in installed if m in vision_names),
+            installed=sorted(m for m in installed if m in vision_refs),
         ),
     )
     return response

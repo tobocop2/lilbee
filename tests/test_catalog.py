@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -114,14 +114,15 @@ class TestHfToken:
         monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert _hf_token() is None
 
-    def test_headers_empty_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @patch("lilbee.catalog._hf_token", return_value=None)
+    def test_headers_empty_when_no_token(self, _mock_token: MagicMock) -> None:
         """_hf_headers returns empty dict when no token available."""
-        monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
-        monkeypatch.delenv("HF_TOKEN", raising=False)
-        fake_hf_hub = MagicMock()
-        fake_hf_hub.get_token.return_value = None
-        monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_hf_hub)
         assert catalog._hf_headers() == {}
+
+    @patch("lilbee.catalog._hf_token", return_value="test-token-123")
+    def test_headers_include_bearer_when_token_set(self, _mock_token: MagicMock) -> None:
+        """_hf_headers returns Authorization header when token is available."""
+        assert catalog._hf_headers() == {"Authorization": "Bearer test-token-123"}
 
 
 class TestFeaturedModels:
@@ -431,18 +432,18 @@ class TestGetCatalog:
     def test_installed_filter_with_model_manager(self) -> None:
         class FakeManager:
             def list_installed(self) -> list[str]:
-                return ["Qwen3 8B"]
+                return ["qwen3:8b"]
 
         result = get_catalog(installed=True, model_manager=FakeManager())
-        assert all(m.name == "Qwen3 8B" for m in result.models)
+        assert all(m.ref == "qwen3:8b" for m in result.models)
 
     def test_installed_filter_not_installed(self) -> None:
         class FakeManager:
             def list_installed(self) -> list[str]:
-                return ["Qwen3 8B"]
+                return ["qwen3:8b"]
 
         result = get_catalog(installed=False, model_manager=FakeManager())
-        assert all(m.name != "Qwen3 8B" for m in result.models)
+        assert all(m.ref != "qwen3:8b" for m in result.models)
 
     def test_installed_filter_manager_error(self) -> None:
         class BadManager:
@@ -454,26 +455,40 @@ class TestGetCatalog:
 
     def test_combines_featured_and_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
-            CatalogModel("HF Model", "user/hf-model", "*.gguf", 5.0, 8, "desc", False, 100, "chat")
+            CatalogModel(
+                name="hf-model",
+                tag="latest",
+                display_name="HF Model",
+                hf_repo="user/hf-model",
+                gguf_filename="*.gguf",
+                size_gb=5.0,
+                min_ram_gb=8,
+                description="desc",
+                featured=False,
+                downloads=100,
+                task="chat",
+            )
         ]
         monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: hf_models)
         result = get_catalog()
         names = [m.name for m in result.models]
-        assert "HF Model" in names
-        assert "Qwen3 8B" in names
+        assert "hf-model" in names
+        assert "qwen3" in names
 
     def test_deduplicates_hf_against_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
             CatalogModel(
-                "Qwen3 8B",
-                "Qwen/Qwen3-8B-GGUF",
-                "*.gguf",
-                5.0,
-                8,
-                "duplicate",
-                False,
-                100,
-                "chat",
+                name="qwen3",
+                tag="8b",
+                display_name="Qwen3 8B",
+                hf_repo="Qwen/Qwen3-8B-GGUF",
+                gguf_filename="*.gguf",
+                size_gb=5.0,
+                min_ram_gb=8,
+                description="duplicate",
+                featured=False,
+                downloads=100,
+                task="chat",
             )
         ]
         monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: hf_models)
@@ -484,15 +499,57 @@ class TestGetCatalog:
 
 
 class TestFindCatalogEntry:
-    def test_exact_match(self) -> None:
+    def test_exact_match_by_display_name(self) -> None:
         result = find_catalog_entry("Qwen3 8B")
         assert result is not None
-        assert result.name == "Qwen3 8B"
+        assert result.display_name == "Qwen3 8B"
+        assert result.name == "qwen3"
 
     def test_case_insensitive(self) -> None:
         result = find_catalog_entry("qwen3 8b")
         assert result is not None
-        assert result.name == "Qwen3 8B"
+        assert result.display_name == "Qwen3 8B"
+
+    def test_exact_ref_match(self) -> None:
+        result = find_catalog_entry("qwen3:0.6b")
+        assert result is not None
+        assert result.ref == "qwen3:0.6b"
+
+    def test_bare_name_returns_recommended(self) -> None:
+        result = find_catalog_entry("qwen3")
+        assert result is not None
+        assert result.recommended is True
+        assert result.name == "qwen3"
+
+    def test_bare_name_fallback_when_no_recommended(self) -> None:
+        """When no variant is recommended, return the first match."""
+        from unittest.mock import patch
+
+        # Temporarily make all qwen3 entries non-recommended
+        patched = tuple(
+            CatalogModel(
+                name=m.name,
+                tag=m.tag,
+                display_name=m.display_name,
+                hf_repo=m.hf_repo,
+                gguf_filename=m.gguf_filename,
+                size_gb=m.size_gb,
+                min_ram_gb=m.min_ram_gb,
+                description=m.description,
+                featured=m.featured,
+                downloads=m.downloads,
+                task=m.task,
+                recommended=False,
+            )
+            for m in FEATURED_ALL
+        )
+        with patch.object(catalog, "FEATURED_ALL", patched):
+            catalog._build_catalog_index.cache_clear()
+            result = find_catalog_entry("qwen3")
+            assert result is not None
+            assert result.name == "qwen3"
+            assert result.recommended is False
+        catalog._build_catalog_index.cache_clear()  # restore for other tests
 
     def test_not_found(self) -> None:
         result = find_catalog_entry("Nonexistent Model")
@@ -530,27 +587,29 @@ class TestDownloadModel:
         assert len(progress_calls) == 1
         assert progress_calls[0][0] == progress_calls[0][1]
 
-    def test_progress_updater_callback_invoked(
+    def test_tqdm_class_callback_invoked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """progress_updater callback is invoked by hf_hub_download."""
+        """tqdm_class-based callback is invoked during download."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
         def fake_download(**kwargs: Any) -> str:
             result = _fake_download(**kwargs)
-            progress_updater = kwargs.get("progress_updater")
-            if progress_updater:
-                progress_updater(100, 1000)
-                progress_updater(200, 1000)
+            tqdm_class = kwargs.get("tqdm_class")
+            if tqdm_class:
+                bar = tqdm_class(total=1000)
+                bar.update(100)
+                bar.update(100)
+                bar.close()
             return result
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
 
-        progress_calls: list[tuple[int, int]] = []
+        progress_calls: list[tuple[int, int | None]] = []
 
-        def on_progress(downloaded: int, total: int) -> None:
+        def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
         download_model(entry, on_progress=on_progress)
@@ -571,23 +630,26 @@ class TestDownloadModel:
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
 
-        progress_calls: list[tuple[int, int]] = []
+        progress_calls: list[tuple[int, int | None]] = []
 
         def fake_with_progress(**kwargs: Any) -> str:
-            progress_updater = kwargs.get("progress_updater")
-            if progress_updater:
-                progress_updater(500, 1000)
-                progress_updater(1000, 1000)
+            tqdm_class = kwargs.get("tqdm_class")
+            if tqdm_class:
+                bar = tqdm_class(total=1000)
+                bar.update(500)
+                bar.update(500)
+                bar.close()
             return _fake_download(**kwargs)
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_with_progress)
 
-        def on_progress(downloaded: int, total: int) -> None:
+        def on_progress(downloaded: int, total: int | None) -> None:
             progress_calls.append((downloaded, total))
 
         download_model(entry, on_progress=on_progress)
+        # 2 tqdm updates + 1 final 100% call from download_model
         assert len(progress_calls) == 3
-        assert progress_calls[-1] == (322122547, 322122547)
+        assert progress_calls[-1] == (100, 100)
 
     def test_gated_repo_raises_permission_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -724,7 +786,7 @@ class TestPipelineToTask:
 class TestFeaturedVisionModel:
     def test_featured_vision_is_lightonocr(self) -> None:
         assert len(FEATURED_VISION) == 1
-        assert "LightOnOCR" in FEATURED_VISION[0].name
+        assert "LightOnOCR" in FEATURED_VISION[0].display_name
 
     def test_featured_vision_is_small(self) -> None:
         assert FEATURED_VISION[0].size_gb <= 2.0
@@ -846,25 +908,26 @@ class TestHfCacheEviction:
 
 class TestModelVariantDataclass:
     def test_frozen(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
         with pytest.raises(AttributeError):
             v.hf_repo = "nope"  # type: ignore[misc]
 
     def test_default_mmproj(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, False)
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, False)
         assert v.mmproj_filename == ""
 
 
 class TestModelFamilyDataclass:
     def test_frozen(self) -> None:
-        f = ModelFamily("Qwen3", "chat", "desc", ())
+        f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="desc", variants=())
         with pytest.raises(AttributeError):
             f.name = "nope"  # type: ignore[misc]
 
     def test_fields(self) -> None:
-        v = ModelVariant("repo", "file.gguf", "8B", "Q4_K_M", 5000, True)
-        f = ModelFamily("Qwen3", "chat", "Fast", (v,))
+        v = ModelVariant("repo", "file.gguf", "8B", "8b", "Q4_K_M", 5000, True)
+        f = ModelFamily(slug="qwen3", name="Qwen3", task="chat", description="Fast", variants=(v,))
         assert f.name == "Qwen3"
+        assert f.slug == "qwen3"
         assert f.task == "chat"
         assert len(f.variants) == 1
 
@@ -941,22 +1004,23 @@ class TestGetFamilies:
 
     def test_qwen3_grouped(self) -> None:
         families = get_families()
-        qwen3 = [f for f in families if f.name == "Qwen3"]
+        qwen3 = [f for f in families if f.name.startswith("Qwen3") and "Coder" not in f.name]
         assert len(qwen3) == 1
         assert len(qwen3[0].variants) == 3  # 0.6B, 4B, 8B
 
-    def test_qwen3_largest_recommended(self) -> None:
+    def test_qwen3_recommended_from_toml(self) -> None:
         families = get_families()
-        qwen3 = next(f for f in families if f.name == "Qwen3")
-        assert qwen3.variants[-1].recommended is True
-        assert qwen3.variants[0].recommended is False
+        qwen3 = next(f for f in families if f.name.startswith("Qwen3") and "Coder" not in f.name)
+        # TOML marks qwen3:0.6b (first variant) as recommended
+        assert qwen3.variants[0].recommended is True
+        assert qwen3.variants[-1].recommended is False
 
-    def test_single_variant_not_recommended(self) -> None:
-        """A family with only one variant should not mark it as recommended."""
+    def test_single_variant_recommended_from_toml(self) -> None:
+        """Single-variant families use recommended flag from TOML."""
         families = get_families()
         singles = [f for f in families if len(f.variants) == 1]
-        for fam in singles:
-            assert fam.variants[0].recommended is False
+        # At least some single-variant families are explicitly marked recommended
+        assert any(fam.variants[0].recommended for fam in singles)
 
     def test_total_variants_matches_featured(self) -> None:
         families = get_families()
@@ -965,7 +1029,7 @@ class TestGetFamilies:
 
     def test_variant_has_correct_fields(self) -> None:
         families = get_families()
-        qwen3 = next(f for f in families if f.name == "Qwen3")
+        qwen3 = next(f for f in families if f.name.startswith("Qwen3") and "Coder" not in f.name)
         v = qwen3.variants[0]  # 0.6B
         assert v.param_count == "0.6B"
         assert v.quant == "Q4_K_M"
@@ -1095,15 +1159,17 @@ class TestVisionMmprojFallback:
         """A vision model not in VISION_MMPROJ_FILES still gets mmproj via default pattern."""
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         custom_entry = CatalogModel(
-            "CustomVision 1B",
-            "user/CustomVision-1B-GGUF",
-            "*Q4_K_M.gguf",
-            1.0,
-            4,
-            "Custom vision model",
-            True,
-            0,
-            "vision",
+            name="customvision",
+            tag="1b",
+            display_name="CustomVision 1B",
+            hf_repo="user/CustomVision-1B-GGUF",
+            gguf_filename="*Q4_K_M.gguf",
+            size_gb=1.0,
+            min_ram_gb=4,
+            description="Custom vision model",
+            featured=True,
+            downloads=0,
+            task="vision",
         )
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: "custom-Q4_K_M.gguf")
 
@@ -1336,26 +1402,30 @@ class TestEnrichCatalog:
     def _make_result(self) -> CatalogResult:
         models = [
             CatalogModel(
-                "Model-7B-GGUF",
-                "user/Model-7B-Instruct-GGUF",
-                "*Q4_K_M.gguf",
-                4.0,
-                8.0,
-                "A test model",
-                False,
-                1000,
-                "chat",
+                name="model-7b-gguf",
+                tag="latest",
+                display_name="Model-7B-GGUF",
+                hf_repo="user/Model-7B-Instruct-GGUF",
+                gguf_filename="*Q4_K_M.gguf",
+                size_gb=4.0,
+                min_ram_gb=8.0,
+                description="A test model",
+                featured=False,
+                downloads=1000,
+                task="chat",
             ),
             CatalogModel(
-                "Qwen3 8B",
-                "Qwen/Qwen3-8B-GGUF",
-                "*Q4_K_M.gguf",
-                5.0,
-                8.0,
-                "Strong general purpose",
-                True,
-                0,
-                "chat",
+                name="qwen3",
+                tag="8b",
+                display_name="Qwen3 8B",
+                hf_repo="Qwen/Qwen3-8B-GGUF",
+                gguf_filename="*Q4_K_M.gguf",
+                size_gb=5.0,
+                min_ram_gb=8.0,
+                description="Strong general purpose",
+                featured=True,
+                downloads=0,
+                task="chat",
             ),
         ]
         return CatalogResult(total=2, limit=20, offset=0, models=models)
@@ -1369,7 +1439,7 @@ class TestEnrichCatalog:
     def test_display_name_populated(self) -> None:
         result = self._make_result()
         enriched = enrich_catalog(result, set())
-        assert enriched[0].display_name == "Model 7B"
+        assert enriched[0].display_name == "Model-7B-GGUF"
         assert enriched[1].display_name == "Qwen3 8B"
 
     def test_quality_tier_populated(self) -> None:
@@ -1379,7 +1449,7 @@ class TestEnrichCatalog:
 
     def test_installed_status(self) -> None:
         result = self._make_result()
-        enriched = enrich_catalog(result, {"Qwen3 8B"})
+        enriched = enrich_catalog(result, {"qwen3:8b"})
         assert enriched[0].installed is False
         assert enriched[0].source == "native"
         assert enriched[1].installed is True
@@ -1417,45 +1487,82 @@ class TestFormatSizeMb:
 
 
 class TestDownloadProgressCallback:
-    """Tests for download progress callback infrastructure."""
+    """Tests for tqdm_class-based progress callback infrastructure."""
 
-    def test_progress_updater_param_exists_in_hf_hub_download(self) -> None:
-        """Verify huggingface_hub accepts progress_updater parameter."""
+    def test_tqdm_class_param_exists_in_hf_hub_download(self) -> None:
+        """Verify huggingface_hub accepts tqdm_class parameter."""
         import inspect
 
         from huggingface_hub import hf_hub_download
 
         sig = inspect.signature(hf_hub_download)
-        assert "progress_updater" in sig.parameters
+        assert "tqdm_class" in sig.parameters
 
-    def test_download_config_has_progress_updater_field(self) -> None:
-        """Verify DownloadConfig accepts progress_updater."""
-        from lilbee.catalog import DownloadConfig
+    def test_download_config_has_tqdm_class_field(self) -> None:
+        """Verify DownloadConfig accepts tqdm_class."""
+        from lilbee.catalog import DownloadConfig, _ProgressTracker
 
+        tracker = _ProgressTracker(lambda x, y: None)
         config = DownloadConfig(
             repo_id="test/test",
             filename="test.gguf",
             token="test",
-            progress_updater=lambda x, y: None,
+            tqdm_class=tracker.make_tqdm_class(),
         )
-        assert config.progress_updater is not None
+        assert config.tqdm_class is not None
 
-    def test_progress_updater_is_bare_callable(self) -> None:
-        """Verify progress_updater accepts a bare callable, not a list."""
-        from lilbee.catalog import DownloadConfig
+    def test_callback_tqdm_class_forwards_updates(self) -> None:
+        """Verify _ProgressTracker tqdm class forwards updates to callback."""
+        from lilbee.catalog import _ProgressTracker
 
         calls: list[tuple[int, int]] = []
 
         def user_callback(downloaded: int, total: int) -> None:
             calls.append((downloaded, total))
 
-        config = DownloadConfig(
-            repo_id="test/test",
-            filename="test.gguf",
-            token="test",
-            progress_updater=user_callback,
-        )
+        tracker = _ProgressTracker(user_callback)
+        cls = tracker.make_tqdm_class()
+        bar = cls(total=200)
+        bar.update(100)
+        bar.update(100)
+        bar.close()
 
-        assert config.progress_updater is not None
-        config.progress_updater(100, 200)
-        assert calls == [(100, 200)]
+        assert calls == [(100, 200), (200, 200)]
+        assert tracker.was_used is True
+
+
+class TestRegisterModelFailure:
+    def test_manifest_install_exception_is_logged(self, tmp_path: Path) -> None:
+        """When registry.install raises, _register_model logs but doesn't crash."""
+        from unittest.mock import patch
+
+        from lilbee.catalog import CatalogModel, _register_model
+        from lilbee.config import cfg
+
+        entry = CatalogModel(
+            name="test-model",
+            tag="latest",
+            display_name="Test Model",
+            hf_repo="user/test",
+            gguf_filename="test.gguf",
+            size_gb=1.0,
+            min_ram_gb=2,
+            description="test",
+            featured=False,
+            downloads=0,
+            task="chat",
+        )
+        file_path = tmp_path / "test.gguf"
+        file_path.write_bytes(b"fake")
+
+        old_models_dir = cfg.models_dir
+        cfg.models_dir = tmp_path
+        try:
+            with patch(
+                "lilbee.registry.ModelRegistry.install",
+                side_effect=RuntimeError("disk full"),
+            ):
+                # Should not raise
+                _register_model(entry, file_path)
+        finally:
+            cfg.models_dir = old_models_dir

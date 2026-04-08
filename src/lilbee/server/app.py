@@ -50,6 +50,16 @@ from lilbee.server.routes.search import (
     chat_stream_route,
     search_route,
 )
+from lilbee.server.wiki import (
+    wiki_citations_reverse_route,
+    wiki_drafts_route,
+    wiki_generate_route,
+    wiki_lint_route,
+    wiki_lint_status_route,
+    wiki_list_route,
+    wiki_prune_route,
+    wiki_read_route,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +121,14 @@ def create_app() -> Litestar:
             documents_list_route,
             documents_remove_route,
             crawl_route,
+            wiki_list_route,
+            wiki_read_route,
+            wiki_drafts_route,
+            wiki_citations_reverse_route,
+            wiki_lint_route,
+            wiki_lint_status_route,
+            wiki_generate_route,
+            wiki_prune_route,
         ],
         request_max_body_size=10 * 1024 * 1024,
         cors_config=cors,

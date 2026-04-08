@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 from multiprocessing import get_context
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -28,9 +29,9 @@ from lilbee.providers.worker_process import (
 
 
 @pytest.fixture()
-def config_snap() -> ConfigSnapshot:
+def config_snap(tmp_path: Path) -> ConfigSnapshot:
     return ConfigSnapshot(
-        models_dir="/tmp/models",
+        models_dir=str(tmp_path / "models"),
         embedding_model="test-embed",
         embedding_dim=768,
         num_ctx=None,
@@ -72,7 +73,7 @@ class TestDataclasses:
         assert isinstance(req, ShutdownRequest)
 
     def test_config_snapshot_fields(self, config_snap: ConfigSnapshot) -> None:
-        assert config_snap.models_dir == "/tmp/models"
+        assert config_snap.models_dir.endswith("models")
         assert config_snap.embedding_model == "test-embed"
         assert config_snap.embedding_dim == 768
 
@@ -775,12 +776,13 @@ class TestEmbedRetryUnexpectedType:
 
 
 class TestLoadEmbedModel:
-    def test_loads_model(self, config_snap: ConfigSnapshot) -> None:
+    def test_loads_model(self, config_snap: ConfigSnapshot, tmp_path: Path) -> None:
         mock_llm = mock.MagicMock()
+        model_path = str(tmp_path / "model.gguf")
         with (
             mock.patch(
                 "lilbee.providers.llama_cpp_provider._resolve_model_path",
-                return_value="/tmp/model.gguf",
+                return_value=model_path,
             ),
             mock.patch(
                 "lilbee.providers.llama_cpp_provider._load_llama",
@@ -789,16 +791,75 @@ class TestLoadEmbedModel:
         ):
             result = _load_embed_model(config_snap, "test-embed")
         assert result is mock_llm
-        mock_load.assert_called_once_with("/tmp/model.gguf", embedding=True)
+        mock_load.assert_called_once_with(model_path, embedding=True)
+
+
+class TestWorkerNotStartedGuards:
+    """Cover all 'Worker not started' RuntimeError guards when _request_queue is None."""
+
+    def test_send_and_receive_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_embed(req)
+
+    def test_retry_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with (
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp._retry_embed(req)
+
+    def test_send_and_receive_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_vision(req)
+
+    def test_retry_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with (
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp._retry_vision(req)
+
+    def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._response_queue = None
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._get_response(timeout=1.0)
+
+    def test_load_model_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        with (
+            mock.patch.object(wp, "_ensure_started"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp.load_model("test-model")
 
 
 class TestLoadVisionModel:
-    def test_loads_model(self, config_snap: ConfigSnapshot) -> None:
+    def test_loads_model(self, config_snap: ConfigSnapshot, tmp_path: Path) -> None:
         mock_llm = mock.MagicMock()
+        vision_path = str(tmp_path / "vision.gguf")
         with (
             mock.patch(
                 "lilbee.providers.llama_cpp_provider._resolve_model_path",
-                return_value="/tmp/vision.gguf",
+                return_value=vision_path,
             ),
             mock.patch(
                 "lilbee.providers.llama_cpp_provider._load_vision_llama",
@@ -807,4 +868,4 @@ class TestLoadVisionModel:
         ):
             result = _load_vision_model(config_snap, "test-vision")
         assert result is mock_llm
-        mock_load.assert_called_once_with("/tmp/vision.gguf")
+        mock_load.assert_called_once_with(vision_path)

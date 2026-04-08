@@ -21,7 +21,7 @@ class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    LITELLM = "litellm"  # Models managed by an external tool (Ollama, etc.)
+    LITELLM = "litellm"  # Models managed by an external backend
 
 
 class ModelManager:

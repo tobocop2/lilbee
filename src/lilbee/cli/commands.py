@@ -850,3 +850,185 @@ def mcp_cmd() -> None:
     from lilbee.mcp import main
 
     main()
+
+
+wiki_app = typer.Typer(help="Wiki layer commands: lint, citations, status.")
+app.add_typer(wiki_app, name="wiki")
+
+
+@wiki_app.command(name="lint")
+def wiki_lint(
+    wiki_source: str = typer.Argument("", help="Wiki page path (empty = lint all)."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Lint wiki pages for stale citations, missing sources, and unmarked claims."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.services import get_services
+    from lilbee.wiki.lint import lint_all as _lint_all
+    from lilbee.wiki.lint import lint_wiki_page
+
+    store = get_services().store
+    if wiki_source:
+        issues = lint_wiki_page(wiki_source, store)
+    else:
+        report = _lint_all(store)
+        issues = report.issues
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_lint",
+                "issues": [i.to_dict() for i in issues],
+                "total": len(issues),
+            }
+        )
+        return
+
+    if not issues:
+        console.print("No issues found.")
+        return
+
+    table = Table(title="Wiki Lint Issues")
+    table.add_column("Page", style=theme.ACCENT)
+    table.add_column("Severity")
+    table.add_column("Message")
+    for issue in issues:
+        sev_style = theme.ERROR if issue.severity.value == "error" else theme.WARNING
+        sev_text = f"[{sev_style}]{issue.severity.value}[/{sev_style}]"
+        table.add_row(issue.wiki_source, sev_text, issue.message)
+    console.print(table)
+
+
+@wiki_app.command(name="citations")
+def wiki_citations(
+    wiki_source: str = typer.Argument(..., help="Wiki page path, e.g. wiki/summaries/doc.md."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Show citations for a wiki page."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.services import get_services
+
+    records = get_services().store.get_citations_for_wiki(wiki_source)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_citations",
+                "wiki_source": wiki_source,
+                "citations": [dict(r) for r in records],
+                "total": len(records),
+            }
+        )
+        return
+
+    if not records:
+        console.print(f"No citations found for [{theme.ACCENT}]{wiki_source}[/{theme.ACCENT}]")
+        return
+
+    table = Table(title=f"Citations: {wiki_source}")
+    table.add_column("Key", style=theme.ACCENT)
+    table.add_column("Source")
+    table.add_column("Type", style=theme.MUTED)
+    table.add_column("Excerpt", max_width=60)
+    for rec in records:
+        excerpt = rec["excerpt"][:57] + "..." if len(rec["excerpt"]) > 60 else rec["excerpt"]
+        table.add_row(rec["citation_key"], rec["source_filename"], rec["claim_type"], excerpt)
+    console.print(table)
+
+
+@wiki_app.command(name="status")
+def wiki_status(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Show wiki layer status: page counts and lint summary."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+
+    wiki_root = cfg.data_root / cfg.wiki_dir
+    if not wiki_root.exists():
+        if cfg.json_mode:
+            json_output({"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0})
+            return
+        console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
+        return
+
+    summaries = _count_md_files(wiki_root / "summaries")
+    drafts = _count_md_files(wiki_root / "drafts")
+
+    from lilbee.services import get_services
+    from lilbee.wiki.lint import lint_all as _lint_all
+
+    report = _lint_all(get_services().store)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "wiki_enabled": cfg.wiki,
+                "summaries": summaries,
+                "drafts": drafts,
+                "pages": summaries + drafts,
+                "lint_errors": report.error_count,
+                "lint_warnings": report.warning_count,
+            }
+        )
+        return
+
+    color = "green" if cfg.wiki else "red"
+    label = "enabled" if cfg.wiki else "disabled"
+    console.print(f"Wiki: [{color}]{label}[/{color}]")
+    console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
+    console.print(f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]")
+    if report.error_count or report.warning_count:
+        console.print(
+            f"  Lint: [{theme.ERROR}]{report.error_count} error(s)[/{theme.ERROR}], "
+            f"[{theme.WARNING}]{report.warning_count} warning(s)[/{theme.WARNING}]"
+        )
+    else:
+        console.print("  Lint: all clean")
+
+
+@wiki_app.command(name="prune")
+def wiki_prune(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = _global_option,
+) -> None:
+    """Prune stale and orphaned wiki pages."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.services import get_services
+    from lilbee.wiki.prune import prune_wiki
+
+    report = prune_wiki(get_services().store)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_prune",
+                "records": [r.to_dict() for r in report.records],
+                "archived": report.archived_count,
+                "flagged": report.flagged_count,
+            }
+        )
+        return
+
+    if not report.records:
+        console.print("No pages pruned.")
+        return
+
+    table = Table(title="Wiki Prune Results")
+    table.add_column("Page", style=theme.ACCENT)
+    table.add_column("Action")
+    table.add_column("Reason")
+    for rec in report.records:
+        action_style = theme.ERROR if rec.action.value == "archived" else theme.WARNING
+        action_text = f"[{action_style}]{rec.action.value}[/{action_style}]"
+        table.add_row(rec.wiki_source, action_text, rec.reason)
+    console.print(table)
+
+
+def _count_md_files(directory: Path) -> int:
+    """Count markdown files in a directory."""
+    if not directory.exists():
+        return 0
+    return len(list(directory.rglob("*.md")))

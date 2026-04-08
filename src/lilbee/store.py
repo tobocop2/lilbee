@@ -1,21 +1,41 @@
 """LanceDB vector store operations."""
 
+from __future__ import annotations
+
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-import lancedb
 import pyarrow as pa
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from lilbee.config import CHUNKS_TABLE, SOURCES_TABLE, Config, cfg
+if TYPE_CHECKING:
+    import lancedb
+    import lancedb.table
+
+from lilbee.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, Config, cfg
 from lilbee.lock import write_lock
 from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
+
+# Suppress lancedb's LanceDBBackgroundEventLoop thread exception on shutdown.
+# lancedb has no close() API and its internal event loop thread crashes during
+# Python interpreter teardown. This is harmless — the process is exiting anyway.
+_original_excepthook = threading.excepthook
+
+
+def _suppress_lancedb_thread_error(args: threading.ExceptHookArgs) -> None:
+    if args.thread and "LanceDB" in args.thread.name:
+        return
+    _original_excepthook(args)
+
+
+threading.excepthook = _suppress_lancedb_thread_error
 
 # How often readers re-check the manifest for new versions from other processes.
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
@@ -34,6 +54,14 @@ class SearchChunk(BaseModel):
 
     source: str
     content_type: str
+    chunk_type: str = "raw"
+
+    @field_validator("chunk_type", mode="before")
+    @classmethod
+    def _coerce_none_chunk_type(cls, v: str | None) -> str:
+        """LanceDB rows from before the chunk_type column was added return None."""
+        return v if v is not None else "raw"
+
     page_start: int
     page_end: int
     line_start: int
@@ -104,6 +132,24 @@ class SourceRecord(TypedDict):
     file_hash: str
     ingested_at: str
     chunk_count: int
+    source_type: str
+
+
+class CitationRecord(TypedDict):
+    """A citation linking a wiki chunk to a specific source location."""
+
+    wiki_source: str
+    wiki_chunk_index: int
+    citation_key: str
+    claim_type: str
+    source_filename: str
+    source_hash: str
+    page_start: int
+    page_end: int
+    line_start: int
+    line_end: int
+    excerpt: str
+    created_at: str
 
 
 def _sources_schema() -> pa.Schema:
@@ -113,6 +159,26 @@ def _sources_schema() -> pa.Schema:
             pa.field("file_hash", pa.utf8()),
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
+            pa.field("source_type", pa.utf8()),
+        ]
+    )
+
+
+def _citations_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("wiki_source", pa.utf8()),
+            pa.field("wiki_chunk_index", pa.int32()),
+            pa.field("citation_key", pa.utf8()),
+            pa.field("claim_type", pa.utf8()),
+            pa.field("source_filename", pa.utf8()),
+            pa.field("source_hash", pa.utf8()),
+            pa.field("page_start", pa.int32()),
+            pa.field("page_end", pa.int32()),
+            pa.field("line_start", pa.int32()),
+            pa.field("line_end", pa.int32()),
+            pa.field("excerpt", pa.utf8()),
+            pa.field("created_at", pa.utf8()),
         ]
     )
 
@@ -120,7 +186,10 @@ def _sources_schema() -> pa.Schema:
 def _table_names(db: lancedb.DBConnection) -> list[str]:
     """Get list of table names, handling the ListTablesResponse object."""
     result = db.list_tables()
-    return result.tables if hasattr(result, "tables") else list(result)
+    try:
+        return result.tables  # type: ignore[no-any-return, union-attr]
+    except AttributeError:
+        return list(result)  # type: ignore[arg-type]
 
 
 def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
@@ -183,6 +252,19 @@ _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
+def _get_distance(chunk: SearchChunk) -> float:
+    """Extract distance as a sortable float (inf for None)."""
+    return chunk.distance if chunk.distance is not None else float("inf")
+
+
+def _count_within_threshold(sorted_results: list[SearchChunk], threshold: float) -> int:
+    """Count results whose distance is within the given threshold."""
+    for i, r in enumerate(sorted_results):
+        if _get_distance(r) > threshold:
+            return i
+    return len(sorted_results)
+
+
 class Store:
     """LanceDB vector store — wraps all DB operations with config-driven defaults."""
 
@@ -196,6 +278,7 @@ class Store:
             [
                 pa.field("source", pa.utf8()),
                 pa.field("content_type", pa.utf8()),
+                pa.field("chunk_type", pa.utf8()),
                 pa.field("page_start", pa.int32()),
                 pa.field("page_end", pa.int32()),
                 pa.field("line_start", pa.int32()),
@@ -208,8 +291,10 @@ class Store:
 
     def get_db(self) -> lancedb.DBConnection:
         if self._db is None:
+            import lancedb as _lancedb
+
             self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-            self._db = lancedb.connect(
+            self._db = _lancedb.connect(
                 str(self._config.lancedb_dir),
                 read_consistency_interval=READ_CONSISTENCY_INTERVAL,
             )
@@ -279,11 +364,13 @@ class Store:
         top_k: int | None = None,
         max_distance: float | None = None,
         query_text: str | None = None,
+        chunk_type: str | None = None,
     ) -> list[SearchChunk]:
         """Search for similar chunks — hybrid when FTS available, else vector-only.
 
         Results with distance > max_distance are filtered out (vector-only path).
         Pass max_distance=0 to disable filtering.
+        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
         """
         if top_k is None:
             top_k = self._config.top_k
@@ -298,12 +385,18 @@ class Store:
 
         if query_text and self._fts_ready:
             try:
-                return _hybrid_search(table, query_text, query_vector, top_k)
+                results = _hybrid_search(table, query_text, query_vector, top_k)
+                if chunk_type:
+                    results = [r for r in results if r.chunk_type == chunk_type]
+                return results
             except Exception:
                 log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
 
         candidate_k = top_k * self._config.candidate_multiplier
-        rows = table.search(query_vector).metric("cosine").limit(candidate_k).to_list()
+        query = table.search(query_vector).metric("cosine").limit(candidate_k)
+        if chunk_type:
+            query = query.where(f"chunk_type = '{escape_sql_string(chunk_type)}'")
+        rows = query.to_list()
         log.debug(
             "Vector search: query=%r, candidates=%d, max_distance=%.2f",
             query_text or "vector-only",
@@ -351,35 +444,23 @@ class Store:
         cap = max(initial_threshold, _MAX_THRESHOLD)
         step = self._config.adaptive_threshold_step
 
-        sorted_results = sorted(
-            results, key=lambda r: r.distance if r.distance is not None else float("inf")
-        )
+        sorted_results = sorted(results, key=_get_distance)
 
         threshold = initial_threshold
         for _ in range(_MAX_FILTER_ITERATIONS):
             if threshold > cap:
                 break
-            cutoff = 0
-            for i, r in enumerate(sorted_results):
-                dist = r.distance if r.distance is not None else float("inf")
-                if dist > threshold:
-                    break
-                cutoff = i + 1
+            cutoff = _count_within_threshold(sorted_results, threshold)
             if cutoff >= top_k:
                 return sorted_results[:cutoff]
             threshold += step
         # Final pass at cap
-        cutoff = 0
-        for i, r in enumerate(sorted_results):
-            dist = r.distance if r.distance is not None else float("inf")
-            if dist > cap:
-                break
-            cutoff = i + 1
+        cutoff = _count_within_threshold(sorted_results, cap)
         return sorted_results[:cutoff]
 
     def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
         """Simple fixed threshold filter - keep only results within distance threshold."""
-        return [r for r in results if r.distance is not None and r.distance <= threshold]
+        return [r for r in results if _get_distance(r) <= threshold]
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return all chunks for a given source file."""
@@ -405,7 +486,13 @@ class Store:
         result: list[SourceRecord] = table.to_arrow().to_pylist()  # type: ignore[assignment]
         return result
 
-    def upsert_source(self, filename: str, file_hash: str, chunk_count: int) -> None:
+    def upsert_source(
+        self,
+        filename: str,
+        file_hash: str,
+        chunk_count: int,
+        source_type: str = "document",
+    ) -> None:
         """Add or update a source file tracking record."""
         with write_lock():
             db = self.get_db()
@@ -418,6 +505,7 @@ class Store:
                         "file_hash": file_hash,
                         "ingested_at": datetime.now(UTC).isoformat(),
                         "chunk_count": chunk_count,
+                        "source_type": source_type,
                     }
                 ]
             )
@@ -475,6 +563,43 @@ class Store:
             table = self.open_table(name)
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
+
+    def add_citations(self, records: list[CitationRecord]) -> int:
+        """Add citation records to the store. Returns count added."""
+        if not records:
+            return 0
+        with write_lock():
+            db = self.get_db()
+            table = ensure_table(db, CITATIONS_TABLE, _citations_schema())
+            table.add(records)
+        return len(records)
+
+    def get_citations_for_wiki(self, wiki_source: str) -> list[CitationRecord]:
+        """Get all citations for a wiki page."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(wiki_source)
+        rows: list[CitationRecord] = table.search().where(f"wiki_source = '{escaped}'").to_list()
+        return rows
+
+    def get_citations_for_source(self, source_filename: str) -> list[CitationRecord]:
+        """Get all citations that reference a source document (reverse lookup)."""
+        table = self.open_table(CITATIONS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source_filename)
+        rows: list[CitationRecord] = (
+            table.search().where(f"source_filename = '{escaped}'").to_list()
+        )
+        return rows
+
+    def delete_citations_for_wiki(self, wiki_source: str) -> None:
+        """Delete all citations for a wiki page (used before regeneration)."""
+        self._clear_table(
+            CITATIONS_TABLE,
+            f"wiki_source = '{escape_sql_string(wiki_source)}'",
+        )
 
     def close(self) -> None:
         """Release the database connection and reset state."""

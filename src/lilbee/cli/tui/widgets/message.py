@@ -77,8 +77,8 @@ class AssistantMessage(Vertical):
         text = "".join(self._content_parts)
         new_widget.update(text)
         await self.mount(new_widget, after=old)
-        await old.remove()
         self._content_widget = new_widget
+        await old.remove()
 
     def append_reasoning(self, text: str) -> None:
         """Append reasoning token (shown in collapsible)."""

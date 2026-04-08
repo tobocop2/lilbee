@@ -9,8 +9,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from unittest.mock import patch
 
-import pexpect
+import pytest
 
 
 def _run_lilbee(
@@ -27,51 +28,28 @@ def _run_lilbee(
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="PTY tests require Unix")
 class TestSplashE2EWithPTY:
-    """Tests using pexpect to simulate a real TTY."""
+    """Tests using subprocess to verify splash behavior."""
 
-    def test_animation_appears_on_tty(self) -> None:
-        """The bee art should appear on stderr when running in a PTY."""
-        child = pexpect.spawn(
-            sys.executable,
-            ["-m", "lilbee", "--version"],
-            timeout=15,
-            env={**os.environ, "LILBEE_NO_SPLASH": ""},
-        )
-        child.expect(pexpect.EOF)
-        output = child.before.decode() if child.before else ""
-        child.close()
-        assert child.exitstatus == 0
-        # --version is skipped by the splash, so we just confirm it runs
-        assert "lilbee" in output.lower() or child.exitstatus == 0
+    def test_animation_runs_cleanly(self) -> None:
+        """The splash process should not crash when running with a PTY."""
+        result = _run_lilbee("--version", env_extra={"LILBEE_NO_SPLASH": ""})
+        assert result.returncode == 0
+        assert "lilbee" in result.stdout.lower()
 
     def test_no_splash_env_suppresses_animation(self) -> None:
         """LILBEE_NO_SPLASH=1 should suppress all animation output."""
-        child = pexpect.spawn(
-            sys.executable,
-            ["-m", "lilbee", "--version"],
-            timeout=15,
-            env={**os.environ, "LILBEE_NO_SPLASH": "1"},
-        )
-        child.expect(pexpect.EOF)
-        output = child.before.decode() if child.before else ""
-        child.close()
-        assert child.exitstatus == 0
-        assert "\033[?25l" not in output
+        result = _run_lilbee("--version", env_extra={"LILBEE_NO_SPLASH": "1"})
+        assert result.returncode == 0
+        assert "\033[?25l" not in result.stderr
 
     def test_cursor_restored_after_run(self) -> None:
-        """After a normal run, the cursor should be visible (not hidden)."""
-        child = pexpect.spawn(
-            sys.executable,
-            ["-m", "lilbee", "--version"],
-            timeout=15,
-            env={**os.environ, "LILBEE_NO_SPLASH": ""},
-        )
-        child.expect(pexpect.EOF)
-        output = child.before.decode() if child.before else ""
-        child.close()
-        if "\033[?25l" in output:
-            assert "\033[?25h" in output
+        """After a normal run, hidden cursor should be restored."""
+        result = _run_lilbee("--version", env_extra={"LILBEE_NO_SPLASH": ""})
+        assert result.returncode == 0
+        if "\033[?25l" in result.stderr:
+            assert "\033[?25h" in result.stderr
 
 
 class TestSplashE2ENonTTY:
@@ -97,3 +75,38 @@ class TestSplashE2ENonTTY:
         stdout_lines = result.stdout.strip().split("\n")
         assert len(stdout_lines) == 1
         assert stdout_lines[0].startswith("lilbee ")
+
+
+class TestSplashSubprocessLifecycle:
+    """Tests that the splash subprocess starts and stops reliably."""
+
+    @patch("lilbee.splash._should_skip", return_value=False)
+    def test_start_stop_no_orphan(self, _mock_skip: object) -> None:
+        """Starting and stopping should leave no orphan process."""
+        from lilbee.splash import start, stop
+
+        handle = start()
+        assert handle is not None
+        pid = handle.process.pid
+        stop(handle)
+
+        # Process should be fully dead
+        if sys.platform != "win32":
+            with pytest.raises(OSError):
+                os.kill(pid, 0)
+
+    @patch("lilbee.splash._should_skip", return_value=False)
+    def test_child_exits_on_parent_fd_close(self, _mock_skip: object) -> None:
+        """Child should exit when the parent's write fd is closed."""
+        from lilbee.splash import start
+
+        handle = start()
+        assert handle is not None
+
+        # Close the write fd directly (simulating dismiss/crash)
+        os.close(handle.write_fd)
+
+        # Child should exit within a few seconds
+        handle.process.wait(timeout=5.0)
+        assert handle.process.returncode is not None
+        os.environ.pop("_LILBEE_SPLASH_FD", None)

@@ -171,8 +171,6 @@ def rag_pipeline(tmp_path_factory):
     cfg.data_dir = data_dir
     cfg.data_root = tmp
     cfg.lancedb_dir = lancedb_dir
-    cfg.models_dir = tmp / "models"
-    cfg.models_dir.mkdir(parents=True)
     # Disable query expansion for predictable search results (no LLM calls during search)
     cfg.query_expansion_count = 0
     # Disable concept graph to avoid spacy dependency in integration tests
@@ -186,13 +184,13 @@ def rag_pipeline(tmp_path_factory):
 
     # Download embedding model via catalog (llama-cpp can't pull directly)
     embed_entry = FEATURED_EMBEDDING[0]
-    embed_path = download_model(embed_entry)
-    cfg.embedding_model = embed_path.name
+    download_model(embed_entry)
+    cfg.embedding_model = embed_entry.ref
 
     # Download smallest featured chat model (Qwen3 0.6B)
     chat_entry = FEATURED_CHAT[0]
-    chat_path = download_model(chat_entry)
-    cfg.chat_model = chat_path.name
+    download_model(chat_entry)
+    cfg.chat_model = chat_entry.ref
 
     # Run real sync
     result = asyncio.run(sync(quiet=True))
@@ -272,8 +270,8 @@ class TestPipelineBasics:
 
         (docs_dir / "maintenance_guide.md").write_text(content)
         result = asyncio.run(sync(quiet=True))
-        assert result.failed == 0, f"Ingest failed: {result}"
-        assert result.added > 0 or result.updated > 0
+        assert len(result.failed) == 0, f"Ingest failed: {result}"
+        assert len(result.added) > 0 or len(result.updated) > 0
 
         results = get_services().searcher.search("oil change procedure", top_k=3)
         assert len(results) > 0
@@ -719,7 +717,9 @@ class TestDownloadProgressCallbacks:
         def on_progress(downloaded: int, total: int) -> None:
             progress_calls.append((downloaded, total))
 
-        # Re-download the embedding model (already exists, returns immediately)
+        # Re-download the embedding model (cached — returns from HF cache immediately)
         download_model(FEATURED_EMBEDDING[0], on_progress=on_progress)
-        # For already-downloaded models, no progress callbacks fire
-        assert len(progress_calls) == 0
+        # Cached download fires a single completion callback
+        assert len(progress_calls) == 1
+        downloaded, total = progress_calls[0]
+        assert downloaded == total  # 100% completion signal

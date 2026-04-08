@@ -297,7 +297,7 @@ class TestIsUrl:
         assert is_url("https://example.com")
 
     def test_not_url(self):
-        assert not is_url("/tmp/file.txt")
+        assert not is_url("/some/file.txt")
 
     def test_ftp_not_url(self):
         assert not is_url("ftp://example.com")

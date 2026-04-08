@@ -34,7 +34,13 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.embedding_model = "test-model"
     cfg.chat_model = "test-model"
     cfg.subprocess_embed = False
-    return models
+    patcher = mock.patch(
+        "lilbee.providers.llama_cpp_provider._resolve_model_path",
+        side_effect=lambda m: models / f"{m}.gguf",
+    )
+    patcher.start()
+    yield models
+    patcher.stop()
 
 
 @pytest.fixture()

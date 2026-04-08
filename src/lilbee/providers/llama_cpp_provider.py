@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+_EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 
 
 @dataclass
@@ -93,7 +94,13 @@ class LlamaCppProvider(LLMProvider):
         Embeds one text at a time because some model architectures (e.g.
         nomic-bert) fail with llama_decode -1 on multi-text batches.
         """
-        llm = self._get_embed_llm()
+        try:
+            llm = self._get_embed_llm()
+        except Exception as exc:
+            for req in batch:
+                if not req.future.done():
+                    req.future.set_exception(exc)
+            return
         for req in batch:
             try:
                 vectors: list[list[float]] = []
@@ -152,7 +159,7 @@ class LlamaCppProvider(LLMProvider):
                 self._subprocess_enabled = False
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
-        return fut.result()
+        return fut.result(timeout=_EMBED_FUTURE_TIMEOUT_S)
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
         """Run vision OCR via the subprocess worker."""
@@ -186,7 +193,7 @@ class LlamaCppProvider(LLMProvider):
                 self._chat_lock.release()
 
     def list_models(self) -> list[str]:
-        """List installed models from the registry."""
+        """List installed models from registry."""
         from lilbee.services import get_services
 
         registry = get_services().registry
@@ -330,11 +337,11 @@ def _read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
 
 def _resolve_model_path(model: str) -> Path:
-    """Resolve a model name to a .gguf file path via the registry.
+    """Resolve a model name to a .gguf file path.
 
-    The registry is the single source of truth for installed models.
-    All models must be installed through the catalog/registry — no
-    loose .gguf file scanning.
+    Resolution order:
+    1. Registry (canonical source for installed models)
+    2. Absolute path (if it points to an existing file)
     """
     from lilbee.services import get_services
 
@@ -343,6 +350,13 @@ def _resolve_model_path(model: str) -> Path:
         return registry.resolve(model)
     except (KeyError, ValueError):
         pass
+
+    # Absolute path to a .gguf file
+    candidate = Path(model)
+    if candidate.is_absolute():
+        if candidate.exists():
+            return candidate
+        raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
 
     raise ProviderError(
         f"Model {model!r} not found in registry. "

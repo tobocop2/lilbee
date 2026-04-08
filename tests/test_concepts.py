@@ -537,6 +537,114 @@ class TestCommunityDataclass:
         assert len(fields(Community)) == 3
 
 
+class TestGetClusterSources:
+    def test_returns_clusters_spanning_min_sources(self, cg, mock_svc):
+        nodes_table = MagicMock()
+        nodes_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 3},
+            {"concept": "ml", "cluster_id": 0, "degree": 2},
+            {"concept": "web", "cluster_id": 1, "degree": 1},
+        ]
+        cc_table = MagicMock()
+        cc_table.to_arrow.return_value.to_pylist.return_value = [
+            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
+            {"chunk_source": "b.md", "chunk_index": 0, "concept": "python"},
+            {"chunk_source": "c.md", "chunk_index": 0, "concept": "ml"},
+            {"chunk_source": "d.md", "chunk_index": 0, "concept": "web"},
+        ]
+
+        def open_table(name):
+            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+
+            if name == CONCEPT_NODES_TABLE:
+                return nodes_table
+            if name == CHUNK_CONCEPTS_TABLE:
+                return cc_table
+            return None
+
+        mock_svc.store.open_table.side_effect = open_table
+        result = cg.get_cluster_sources(min_sources=3)
+        assert 0 in result
+        assert result[0] == {"a.md", "b.md", "c.md"}
+        assert 1 not in result
+
+    def test_skips_orphan_concepts(self, cg, mock_svc):
+        """Chunk-concepts referencing concepts not in any cluster are ignored."""
+        nodes_table = MagicMock()
+        nodes_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 3},
+        ]
+        cc_table = MagicMock()
+        cc_table.to_arrow.return_value.to_pylist.return_value = [
+            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
+            {"chunk_source": "b.md", "chunk_index": 0, "concept": "orphan_concept"},
+        ]
+
+        def open_table(name):
+            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+
+            if name == CONCEPT_NODES_TABLE:
+                return nodes_table
+            if name == CHUNK_CONCEPTS_TABLE:
+                return cc_table
+            return None
+
+        mock_svc.store.open_table.side_effect = open_table
+        result = cg.get_cluster_sources(min_sources=1)
+        assert 0 in result
+        assert result[0] == {"a.md"}
+
+    def test_returns_empty_when_no_tables(self, cg, mock_svc):
+        mock_svc.store.open_table.return_value = None
+        assert cg.get_cluster_sources() == {}
+
+    def test_returns_empty_when_no_qualifying_clusters(self, cg, mock_svc):
+        nodes_table = MagicMock()
+        nodes_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 1},
+        ]
+        cc_table = MagicMock()
+        cc_table.to_arrow.return_value.to_pylist.return_value = [
+            {"chunk_source": "a.md", "chunk_index": 0, "concept": "python"},
+        ]
+
+        def open_table(name):
+            from lilbee.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+
+            if name == CONCEPT_NODES_TABLE:
+                return nodes_table
+            if name == CHUNK_CONCEPTS_TABLE:
+                return cc_table
+            return None
+
+        mock_svc.store.open_table.side_effect = open_table
+        assert cg.get_cluster_sources(min_sources=3) == {}
+
+
+class TestGetClusterLabel:
+    def test_returns_highest_degree_concept(self, cg, mock_svc):
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 5},
+            {"concept": "ml", "cluster_id": 0, "degree": 3},
+            {"concept": "web", "cluster_id": 1, "degree": 2},
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        assert cg.get_cluster_label(0) == "python"
+
+    def test_returns_fallback_when_no_table(self, cg, mock_svc):
+        mock_svc.store.open_table.return_value = None
+        assert cg.get_cluster_label(42) == "cluster-42"
+
+    def test_returns_fallback_for_unknown_cluster(self, cg, mock_svc):
+        mock_table = MagicMock()
+        mock_table.to_arrow.return_value.to_pylist.return_value = [
+            {"concept": "python", "cluster_id": 0, "degree": 5},
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        assert cg.get_cluster_label(99) == "cluster-99"
+
+
 class TestFilterNounChunks:
     def test_filter_noun_chunks(self):
         from lilbee.concepts import _filter_noun_chunks

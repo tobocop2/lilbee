@@ -191,9 +191,11 @@ class MemoryAwareModelCache:
     def _unload_entry(self, key: str) -> None:
         """Remove and close a single cache entry. Must hold self._lock."""
         entry = self._cache.pop(key, None)
-        if entry is not None and hasattr(entry.model, "close"):
+        if entry is not None:
             try:
                 entry.model.close()
+            except AttributeError:
+                pass
             except Exception:
                 log.debug("Error closing model %s", entry.path.name, exc_info=True)
 
