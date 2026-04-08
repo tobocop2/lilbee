@@ -1054,7 +1054,8 @@ class TestRealDownloadProgress:
             await pilot.pause()
 
             setup = app.screen
-            setup._download_model(entry)
+            setup._download_models = [entry]
+            setup._run_downloads()
 
             # Wait for the @work(thread=True) download to complete
             for _ in range(60):
