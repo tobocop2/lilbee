@@ -226,18 +226,6 @@ def test_pipe_closed_windows_path():
     os.close(r)
 
 
-def test_pipe_closed_windows_via_mock():
-    """Cover Windows pipe_closed path by mocking sys.platform."""
-    from lilbee._splash_runner import pipe_closed
-
-    r, w = os.pipe()
-    os.close(w)
-    with patch("sys.platform", "win32"):
-        # Re-import to pick up the mock (pipe_closed checks sys.platform at call time)
-        assert pipe_closed(r) is True
-    os.close(r)
-
-
 def test_main_guard():
     """__main__ guard calls main()."""
     import runpy
