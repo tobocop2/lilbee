@@ -809,25 +809,44 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
 
 
 _EXTERNAL_MODELS_TTL = 60
-_external_cache: tuple[float, str, ExternalModelsResponse | None] = (0.0, "", None)
+
+
+class _ExternalModelsCache:
+    """TTL cache for external model listings (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._time: float = 0.0
+        self._key: str = ""
+        self._result: ExternalModelsResponse | None = None
+
+    def get(self, key: str) -> ExternalModelsResponse | None:
+        now = time.monotonic()
+        if self._result and key == self._key and (now - self._time) < _EXTERNAL_MODELS_TTL:
+            return self._result
+        return None
+
+    def set(self, key: str, result: ExternalModelsResponse) -> None:
+        self._time = time.monotonic()
+        self._key = key
+        self._result = result
+
+
+_external_cache = _ExternalModelsCache()
 
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
-    global _external_cache
-
-    cache_time, cache_key, cache_result = _external_cache
     key = f"{cfg.litellm_base_url}:{cfg.llm_api_key or ''}"
-    now = time.monotonic()
-    if cache_result and key == cache_key and (now - cache_time) < _EXTERNAL_MODELS_TTL:
-        return cache_result
+    cached = _external_cache.get(key)
+    if cached:
+        return cached
 
     try:
         from lilbee.services import get_services
 
         models = await asyncio.to_thread(get_services().provider.list_models)
         result = ExternalModelsResponse(models=models)
-        _external_cache = (now, key, result)
+        _external_cache.set(key, result)
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)

@@ -68,15 +68,9 @@ def _ensure_spacy_model() -> Any:
         return spacy.load(model_name)
 
 
-_nlp: Any = None
-
-
 def _get_nlp() -> Any:
-    """Lazy-load and cache the spaCy model."""
-    global _nlp
-    if _nlp is None:
-        _nlp = _ensure_spacy_model()
-    return _nlp
+    """Lazy-load and cache the spaCy model (used only by ConceptGraph)."""
+    return _ensure_spacy_model()
 
 
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
@@ -177,6 +171,13 @@ class ConceptGraph:
     def __init__(self, config: Config, store: Store) -> None:
         self._config = config
         self._store = store
+        self._nlp: Any = None
+
+    def _ensure_nlp(self) -> Any:
+        """Lazy-load and cache the spaCy model."""
+        if self._nlp is None:
+            self._nlp = _get_nlp()
+        return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
         """Extract noun-phrase concepts from text via spaCy."""
@@ -184,8 +185,7 @@ class ConceptGraph:
             max_concepts = self._config.concept_max_per_chunk
         if not text.strip():
             return []
-        nlp = _get_nlp()
-        doc = nlp(text)
+        doc = self._ensure_nlp()(text)
         return _filter_noun_chunks(doc, max_concepts)
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
@@ -193,7 +193,7 @@ class ConceptGraph:
         if not texts:
             return []
         max_concepts = self._config.concept_max_per_chunk
-        nlp = _get_nlp()
+        nlp = self._ensure_nlp()
         return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
 
     def build_from_chunks(
@@ -414,5 +414,4 @@ class ConceptGraph:
 
     def reset_nlp_cache(self) -> None:
         """Clear the spaCy model cache. For testing only."""
-        global _nlp
-        _nlp = None
+        self._nlp = None
