@@ -272,58 +272,72 @@ class TestErrors:
 
 
 class TestCrawlConcurrency:
-    """Verify the threading semaphore limits concurrent crawl operations.
+    """Verify the asyncio semaphore limits concurrent crawl operations.
 
-    crawl_and_save uses a threading.Semaphore which blocks the event loop
-    when called from async tasks. These tests use threads to avoid deadlock.
+    Uses real Playwright crawls against a local httpserver.
+    Concurrency is measured via server-side request timing.
     """
 
-    def test_semaphore_limits_to_configured_value(self):
-        """With crawl_max_concurrent=2, only 2 crawls run at once out of 3."""
+    async def test_semaphore_limits_to_configured_value(self, httpserver, allow_localhost):
+        """With crawl_max_concurrent=2, 3 crawls take at least 2 batches of wall time."""
+        import asyncio
         import threading
+
+        request_times: list[float] = []
+        lock = threading.Lock()
+
+        def slow_handler(request):
+            with lock:
+                request_times.append(time.monotonic())
+            time.sleep(0.3)
+            return f"<html><body><h1>{request.path}</h1><p>Content.</p></body></html>"
+
+        for i in range(3):
+            httpserver.expect_request(f"/conc{i}").respond_with_handler(slow_handler)
 
         cfg.crawl_max_concurrent = 2
         crawler_mod._state.semaphore = None
 
-        sem = crawler_mod._get_crawl_semaphore()
-        assert sem is not None
+        urls = [str(httpserver.url_for(f"/conc{i}")) for i in range(3)]
+        tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+        await asyncio.gather(*tasks)
 
-        peak_concurrent = 0
-        current_concurrent = 0
+        assert len(request_times) == 3
+        # With limit=2, the 3rd request starts after one of the first 2 finishes.
+        # So the gap between the 2nd and 3rd request should be >= the handler sleep.
+        request_times.sort()
+        gap = request_times[2] - request_times[1]
+        assert gap >= 0.2, f"3rd request started too soon (gap={gap:.3f}s), semaphore not limiting"
+
+    async def test_unlimited_when_zero(self, httpserver, allow_localhost):
+        """With crawl_max_concurrent=0 (unlimited), all 3 crawls overlap."""
+        import asyncio
+        import threading
+
+        request_times: list[float] = []
         lock = threading.Lock()
-        barrier = threading.Barrier(2, timeout=5)
 
-        def worker():
-            nonlocal peak_concurrent, current_concurrent
-            sem.acquire()
-            try:
-                with lock:
-                    current_concurrent += 1
-                    peak_concurrent = max(peak_concurrent, current_concurrent)
-                barrier.wait()  # Force overlap of the first 2
-                time.sleep(0.05)
-            finally:
-                with lock:
-                    current_concurrent -= 1
-                sem.release()
+        def handler(request):
+            with lock:
+                request_times.append(time.monotonic())
+            time.sleep(0.2)
+            return f"<html><body><h1>{request.path}</h1><p>Content.</p></body></html>"
 
-        threads = [threading.Thread(target=worker) for _ in range(3)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
+        for i in range(3):
+            httpserver.expect_request(f"/par{i}").respond_with_handler(handler)
 
-        assert peak_concurrent <= 2, (
-            f"Expected at most 2 concurrent crawls, observed {peak_concurrent}"
-        )
-
-    def test_unlimited_when_zero(self):
-        """With crawl_max_concurrent=0, _get_crawl_semaphore returns None."""
         cfg.crawl_max_concurrent = 0
         crawler_mod._state.semaphore = None
 
-        sem = crawler_mod._get_crawl_semaphore()
-        assert sem is None
+        urls = [str(httpserver.url_for(f"/par{i}")) for i in range(3)]
+        tasks = [asyncio.create_task(crawl_and_save(url)) for url in urls]
+        await asyncio.gather(*tasks)
+
+        assert len(request_times) == 3
+        # All 3 should start within a short window (no semaphore blocking)
+        request_times.sort()
+        spread = request_times[2] - request_times[0]
+        assert spread < 0.3, f"Requests not concurrent (spread={spread:.3f}s)"
 
 
 class TestPeriodicSync:
@@ -335,11 +349,12 @@ class TestPeriodicSync:
         import threading
         from unittest.mock import AsyncMock, patch
 
-        # Serve a page that takes time to "crawl"
-        httpserver.expect_request("/slow-page").respond_with_data(
-            "<html><body><h1>Slow</h1><p>Takes a while.</p></body></html>",
-            content_type="text/html",
-        )
+        # Serve a page that takes >1s to respond, triggering the sync interval
+        def slow_handler(request):
+            time.sleep(1.5)
+            return "<html><body><h1>Slow</h1><p>Takes a while.</p></body></html>"
+
+        httpserver.expect_request("/slow-page").respond_with_handler(slow_handler)
 
         cfg.crawl_sync_interval = 1
         crawler_mod._state.last_sync_time = 0.0
@@ -348,20 +363,9 @@ class TestPeriodicSync:
 
         mock_sync = AsyncMock()
 
-        from lilbee.crawler import CrawlResult
-
-        async def slow_crawl_single(url):
-            # Simulate a slow crawl to let the interval elapse
-            await asyncio.sleep(1.5)
-            return CrawlResult(url=url, markdown="# Slow", success=True)
-
-        with (
-            patch.object(crawler_mod, "crawl_single", side_effect=slow_crawl_single),
-            patch("lilbee.ingest.sync", mock_sync),
-        ):
+        with patch("lilbee.ingest.sync", mock_sync):
             url = str(httpserver.url_for("/slow-page"))
             await crawl_and_save(url)
-            # Let any background tasks complete
             await asyncio.sleep(0.1)
 
         mock_sync.assert_awaited_once()
