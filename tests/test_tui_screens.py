@@ -5089,7 +5089,9 @@ async def test_setup_wizard_on_partial_success():
             with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
                 screen._on_partial_success()
                 await pilot.pause()
-            assert screen._selections["embedding"] == (None, None)
+            from lilbee.models import ModelTask
+
+            assert screen._selections[ModelTask.EMBEDDING] == (None, None)
 
 
 async def test_setup_wizard_download_progress_callback():
