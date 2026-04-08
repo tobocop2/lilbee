@@ -101,43 +101,32 @@ def clear_screen() -> bytes:
     return b"\033[2J\033[H\033[?25h"
 
 
-if sys.platform == "win32":
-
-    def pipe_closed(pipe_fd: int) -> bool:
-        """Check if the pipe has been closed (EOF) without blocking."""
+def pipe_closed(pipe_fd: int) -> bool:
+    """Check if the pipe has been closed (EOF) without blocking."""
+    if sys.platform == "win32":
         import ctypes
         import msvcrt
 
         handle = msvcrt.get_osfhandle(pipe_fd)
         avail = ctypes.c_ulong(0)
-        ok = ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
-        if not ok:
-            return True  # pipe broken or closed
-        if avail.value > 0:
-            # Data available — read it to check for EOF
-            try:
-                data = os.read(pipe_fd, 1)
-                return len(data) == 0
-            except OSError:
-                return True
-        return False  # no data, pipe still open
-
-
-if sys.platform != "win32":
-
-    def pipe_closed(pipe_fd: int) -> bool:
-        """Check if the pipe has been closed (EOF) without blocking."""
+        if not ctypes.windll.kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(avail), None
+        ):
+            return True
+        if avail.value == 0:
+            return False
+    else:
         try:
             readable, _, _ = select.select([pipe_fd], [], [], 0)
         except (ValueError, OSError):
             return True
         if not readable:
             return False
-        try:
-            data = os.read(pipe_fd, 1)
-            return len(data) == 0
-        except OSError:
-            return True
+
+    try:
+        return len(os.read(pipe_fd, 1)) == 0
+    except OSError:
+        return True
 
 
 def animation_loop(pipe_fd: int) -> None:
