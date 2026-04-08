@@ -894,7 +894,6 @@ class TestRedirectStdio:
     def test_redirects_stdout_stderr_to_devnull(self) -> None:
         """_redirect_stdio points sys.stdout/stderr to devnull."""
         import os
-        import sys
 
         from lilbee.providers.worker_process import _redirect_stdio
 
