@@ -84,6 +84,13 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Cache uv packages
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/work/_temp/setup-uv-cache
+          key: uv-integration-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-integration-
+
       - name: Install dependencies
         run: uv sync --all-extras
         env:
@@ -91,6 +98,13 @@ jobs:
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('uv.lock') }}
+          restore-keys: playwright-
 
       - name: Install Playwright for crawl4ai
         run: uv run crawl4ai-setup
@@ -102,6 +116,13 @@ jobs:
           path: ~/.local/share/lilbee/models
           key: gguf-models-v3
           restore-keys: gguf-models-
+
+      - name: Cache sentence-transformers models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-models-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hf-models-
 
       - name: Run all tests with optional deps
         run: uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
