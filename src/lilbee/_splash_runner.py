@@ -117,6 +117,7 @@ if sys.platform == "win32":
             with contextlib.suppress(OSError):
                 os.set_blocking(pipe_fd, True)
 
+
 if sys.platform != "win32":
 
     def pipe_closed(pipe_fd: int) -> bool:
