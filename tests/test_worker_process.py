@@ -1,9 +1,4 @@
-"""Tests for the subprocess worker process for llama-cpp operations.
-
-Skipped on Windows: multiprocessing queues + mock.patch teardown cause
-pytest-xdist worker shutdown to hang (300s thread join timeout).
-The worker subprocess is tested on Ubuntu and macOS CI.
-"""
+"""Tests for the subprocess worker process for llama-cpp operations."""
 
 from __future__ import annotations
 
@@ -14,9 +9,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
-if sys.platform == "win32":
-    pytest.skip("worker process tests hang xdist on Windows", allow_module_level=True)
 
 from lilbee.providers.worker_process import (
     ConfigSnapshot,
