@@ -115,14 +115,13 @@ def pipe_closed(pipe_fd: int) -> bool:
             return True
         if avail.value == 0:
             return False
-    else:
+    if sys.platform != "win32":
         try:
             readable, _, _ = select.select([pipe_fd], [], [], 0)
         except (ValueError, OSError):
             return True
         if not readable:
             return False
-
     try:
         return len(os.read(pipe_fd, 1)) == 0
     except OSError:
