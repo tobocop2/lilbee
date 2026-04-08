@@ -110,9 +110,7 @@ if sys.platform == "win32":
 
         handle = msvcrt.get_osfhandle(pipe_fd)
         avail = ctypes.c_ulong(0)
-        ok = ctypes.windll.kernel32.PeekNamedPipe(
-            handle, None, 0, None, ctypes.byref(avail), None
-        )
+        ok = ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
         if not ok:
             return True  # pipe broken or closed
         if avail.value > 0:
