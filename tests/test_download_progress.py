@@ -27,7 +27,7 @@ def _tracker_tqdm_class(callback):
     return _ProgressTracker(callback).make_tqdm_class()
 
 
-def _test_entry(tmp_path: Path | None = None) -> CatalogModel:
+def _test_entry() -> CatalogModel:
     return CatalogModel(
         name="test-model",
         tag="tiny",

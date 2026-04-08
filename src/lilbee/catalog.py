@@ -41,6 +41,7 @@ class DownloadProgress:
 
 
 ProgressCallback = Callable[[int, int], None]
+_BYTES_PER_MB = 1024 * 1024
 
 
 def make_download_callback(
@@ -54,8 +55,6 @@ def make_download_callback(
     progress snapshots. Both the catalog and setup screens use this to avoid
     duplicating byte→MB conversion and cache-hit detection.
     """
-    import time as _time
-
     last_update_time = 0.0
     last_pct = -1
     seen_partial = False
@@ -68,18 +67,18 @@ def make_download_callback(
             return
         seen_partial = True
 
-        now = _time.monotonic()
+        now = time.monotonic()
         if now - last_update_time < throttle_interval:
             return
         last_update_time = now
 
-        mb_done = downloaded / (1024 * 1024)
+        mb_done = downloaded / _BYTES_PER_MB
         if total > 0:
             pct = min(int(downloaded * 100 / total), 100)
             if pct == last_pct and pct > 0:
                 return
             last_pct = pct
-            mb_total = total / (1024 * 1024)
+            mb_total = total / _BYTES_PER_MB
             on_update(
                 DownloadProgress(
                     percent=pct,
@@ -617,7 +616,7 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     return by_ref.get(q) or by_name.get(q) or by_display.get(q)
 
 
-def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
+def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
 
     Uses huggingface_hub for resumable downloads, caching, and auth.

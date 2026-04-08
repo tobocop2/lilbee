@@ -12,13 +12,14 @@ from collections.abc import Callable
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Label, ProgressBar, Static
 
 from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
 
 log = logging.getLogger(__name__)
 
-_DONE_FLASH_SECONDS = 1.5
+_DONE_FLASH_SECONDS = 1.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_INTERVAL = 0.1
 _MAX_VISIBLE_PANELS = 5
@@ -215,10 +216,6 @@ class TaskBar(Static):
 
         if task.status == TaskStatus.ACTIVE:
             icon = _SPINNER_FRAMES[self._spinner_index]
-        elif task.status == TaskStatus.DONE:
-            icon = STATUS_ICONS[TaskStatus.DONE]
-        elif task.status == TaskStatus.FAILED:
-            icon = STATUS_ICONS[TaskStatus.FAILED]
         else:
             icon = self._status_icon(task.status)
 
@@ -228,7 +225,7 @@ class TaskBar(Static):
             label.update(f" {icon} {task.name}{detail}")
             progress_bar = panel.query_one(ProgressBar)
             progress_bar.update(total=100, progress=task.progress)
-        except Exception:
+        except NoMatches:
             pass  # panel children not yet composed — next refresh will catch up
 
     @staticmethod
