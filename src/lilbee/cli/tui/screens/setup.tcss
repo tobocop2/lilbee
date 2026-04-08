@@ -1,13 +1,13 @@
 #setup-title {
     text-style: bold;
     text-align: center;
-    padding: 1 0;
+    padding: 1 0 0 0;
 }
 
-#setup-step-label {
+#setup-subtitle {
     text-align: center;
-    padding: 0 0 1 0;
     color: $text-muted;
+    padding: 0 0 1 0;
 }
 
 #setup-grid-container {
@@ -15,18 +15,28 @@
     padding: 0 1;
 }
 
-#setup-status {
-    height: 1;
+#setup-footer {
+    dock: bottom;
+    height: auto;
     padding: 0 1;
+}
+
+#setup-chat-slot {
+    width: 1fr;
+    text-style: bold;
+}
+
+#setup-embed-slot {
+    width: 1fr;
+    text-style: bold;
+}
+
+#setup-download-size {
+    width: auto;
     color: $text-muted;
 }
 
-#setup-progress {
-    height: 1;
-    margin: 0 1;
-}
-
-#setup-browse {
+#setup-action {
     margin: 0 1;
     width: 100%;
 }
@@ -36,15 +46,41 @@
     width: 100%;
 }
 
-.section-heading {
-    text-style: bold underline;
+#setup-status {
+    height: 1;
+    padding: 0 1;
     color: $text-muted;
-    padding: 1 0 0 2;
+    display: none;
+}
+
+#setup-progress {
+    height: 1;
+    margin: 0 1;
+    display: none;
+}
+
+SetupWizard.-downloading #setup-status {
+    display: block;
+}
+
+SetupWizard.-downloading #setup-progress {
+    display: block;
+}
+
+ModelCard.-selected {
+    border-left: thick $success;
+    background: $success 10%;
+}
+
+.section-heading {
+    text-style: bold;
+    color: $text-muted;
+    padding: 1 1 0 2;
 }
 
 GridSelect {
     height: auto;
     padding: 0;
     margin: 0 1;
-    grid-gutter: 0;
+    grid-gutter: 1;
 }

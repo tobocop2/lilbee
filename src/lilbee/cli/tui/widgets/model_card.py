@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from textual import containers, widgets
 from textual.app import ComposeResult
 from textual.content import Content
+from textual.reactive import reactive
 
 from lilbee.cli.tui.pill import pill
 from lilbee.models import ModelTask
@@ -26,6 +27,8 @@ _TASK_COLORS: dict[str, str] = {
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
+    selected: reactive[bool] = reactive(False)
+
     def __init__(self, row: TableRow) -> None:
         self._row = row
         super().__init__()
@@ -33,6 +36,9 @@ class ModelCard(containers.VerticalGroup):
     @property
     def row(self) -> TableRow:
         return self._row
+
+    def watch_selected(self, selected: bool) -> None:
+        self.set_class(selected, "-selected")
 
     def compose(self) -> ComposeResult:
         row = self._row
@@ -44,7 +50,7 @@ class ModelCard(containers.VerticalGroup):
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
         specs = _build_specs(row.params, row.quant, row.size)
         yield widgets.Label(specs, id="card-info")
-        status = _build_status(row)
+        status = _build_status(row, selected=self.selected)
         if status is not None:
             yield widgets.Label(status, id="card-status")
 
@@ -57,8 +63,10 @@ def _build_specs(params: str, quant: str, size: str) -> Content:
     return Content(f" {MIDDLE_DOT} ".join(parts))
 
 
-def _build_status(row: TableRow) -> Content | None:
-    """Build the status pill for installed or download count."""
+def _build_status(row: TableRow, *, selected: bool = False) -> Content | None:
+    """Build the status pill for selected, installed, or download count."""
+    if selected:
+        return pill("selected", "$success", "$text")
     if row.installed:
         return pill("installed", "$success", "$text")
     if row.sort_downloads > 0:

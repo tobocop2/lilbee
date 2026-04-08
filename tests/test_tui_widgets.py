@@ -1993,191 +1993,99 @@ class TestGridSelect:
 
 
 # ---------------------------------------------------------------------------
-# SetupModal widget tests
+# ModelCard selected reactive tests
 # ---------------------------------------------------------------------------
 
 
-class _SetupModalApp(App):
-    def compose(self) -> ComposeResult:
-        yield Static("base")
+class TestModelCardSelected:
+    def test_model_card_selected_reactive(self) -> None:
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
 
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = _catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.selected is False
+        card.selected = True
+        assert card.selected is True
 
-class TestSetupModal:
-    async def test_compose_without_remote_embeddings(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def test_build_status_selected(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="1K",
+            featured=False,
+            installed=False,
+            sort_downloads=1000,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=True)
+        assert result is not None
+        assert "selected" in str(result).lower()
 
-    async def test_compose_with_remote_embeddings(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def test_build_status_not_selected_installed(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal(remote_embeddings=["nomic-embed-text"]))
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="--",
+            featured=False,
+            installed=True,
+            sort_downloads=0,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is not None
+        assert "installed" in str(result).lower()
 
-    async def test_select_remote_row_dismisses_with_name(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
+    def test_build_status_not_selected_downloads(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(remote_embeddings=["nomic-embed-text"]),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            # Find the _RemoteRow and select it via the ListView
-            from textual.widgets import ListView
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="5K",
+            featured=False,
+            installed=False,
+            sort_downloads=5000,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is not None
 
-            lv = app.screen.query_one("#embed-picker", ListView)
-            # The _RemoteRow should be the second item (first is header label)
-            from lilbee.cli.tui.widgets.setup_modal import _RemoteRow
+    def test_build_status_none(self) -> None:
+        from lilbee.cli.tui.screens.catalog import TableRow
+        from lilbee.cli.tui.widgets.model_card import _build_status
 
-            for idx, item in enumerate(lv.children):
-                if isinstance(item, _RemoteRow):
-                    lv.post_message(ListView.Selected(lv, item, idx))
-                    break
-            await pilot.pause()
-        assert "nomic-embed-text" in results
-
-    async def test_select_embedding_row_triggers_download(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            from textual.widgets import ListView
-
-            from lilbee.cli.tui.widgets.setup_modal import _EmbeddingRow
-
-            lv = app.screen.query_one("#embed-picker", ListView)
-            with mock.patch(
-                "lilbee.cli.tui.widgets.setup_modal.SetupModal._download_model"
-            ) as mock_dl:
-                for idx, item in enumerate(lv.children):
-                    if isinstance(item, _EmbeddingRow):
-                        lv.post_message(ListView.Selected(lv, item, idx))
-                        break
-                await pilot.pause()
-                mock_dl.assert_called_once()
-
-    async def test_download_success_path(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            # Simulate successful download callback
-            modal._on_downloaded("test-embed-model")
-            await pilot.pause()
-            await pilot.pause()
-        assert "test-embed-model" in results
-
-    async def test_download_error_path(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            # Simulate the error path by calling _set_status directly
-            modal._set_status("Error: connection failed")
-            await pilot.pause()
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            assert "Error" in str(status.render())
-
-    async def test_cancel_action_dismisses_none(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            modal.action_cancel()
-            await pilot.pause()
-        assert None in results
-
-    async def test_set_status_updates_label(self) -> None:
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            modal._set_status("Downloading...")
-            await pilot.pause()
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            assert "Downloading" in str(status.render())
-
-    async def test_download_model_worker_success(self) -> None:
-        from lilbee.catalog import FEATURED_EMBEDDING
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        results: list[object] = []
-        async with app.run_test() as pilot:
-            app.push_screen(
-                SetupModal(),
-                callback=lambda r: results.append(r),
-            )
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            with mock.patch("lilbee.models.pull_with_progress"):
-                modal._download_model(FEATURED_EMBEDDING[0])
-                await pilot.pause(delay=0.5)
-        assert len(results) >= 1
-
-    async def test_download_model_worker_error(self) -> None:
-        from lilbee.catalog import FEATURED_EMBEDDING
-        from lilbee.cli.tui.widgets.setup_modal import SetupModal
-
-        app = _SetupModalApp()
-        async with app.run_test() as pilot:
-            app.push_screen(SetupModal())
-            await pilot.pause()
-            modal = app.screen
-            assert isinstance(modal, SetupModal)
-            with mock.patch(
-                "lilbee.models.pull_with_progress",
-                side_effect=RuntimeError("download failed"),
-            ):
-                modal._download_model(FEATURED_EMBEDDING[0])
-                await pilot.pause(delay=0.5)
-            # Modal should still be showing (not dismissed)
-            from textual.widgets import Label
-
-            status = modal.query_one("#setup-status", Label)
-            rendered = str(status.render())
-            assert "Error" in rendered or "download failed" in rendered
+        row = TableRow(
+            name="test",
+            task="chat",
+            params="8B",
+            size="4 GB",
+            quant="Q4_K_M",
+            downloads="--",
+            featured=False,
+            installed=False,
+            sort_downloads=0,
+            sort_size=4.0,
+        )
+        result = _build_status(row, selected=False)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
