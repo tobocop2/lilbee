@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 from multiprocessing import get_context
 from pathlib import Path
 from unittest import mock
@@ -890,6 +891,10 @@ class TestRedirectStdio:
         """Override the module-level autouse fixture — let _redirect_stdio run."""
         yield
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="fd-level redirect fights with pytest-xdist worker IPC on Windows",
+    )
     def test_redirects_stdout_stderr_to_devnull(self) -> None:
         import os
         import sys
