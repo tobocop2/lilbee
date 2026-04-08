@@ -143,7 +143,7 @@ jobs:
           ollama pull nomic-embed-text
 
       - name: Run all tests with optional deps
-        run: uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
+        run: make test-ci
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
