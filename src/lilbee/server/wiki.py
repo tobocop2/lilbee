@@ -8,6 +8,7 @@ from typing import Any
 from litestar import get, post
 from litestar.exceptions import HTTPException, NotFoundException
 from litestar.params import Parameter
+from litestar.response import Stream
 
 from lilbee import services as svc_mod
 from lilbee.config import cfg
@@ -15,13 +16,11 @@ from lilbee.security import validate_path_within
 from lilbee.server.models import (
     WikiCitationRecord,
     WikiCitationsResult,
-    WikiGenerateResult,
     WikiLintResult,
     WikiPageDetail,
     WikiPruneRecordResponse,
     WikiPruneResult,
 )
-from lilbee.wiki import gen as gen_mod
 from lilbee.wiki import lint as lint_mod
 from lilbee.wiki import prune as prune_mod
 from lilbee.wiki.browse import (
@@ -134,8 +133,14 @@ async def wiki_lint_route() -> WikiLintResult:
 
 
 @post("/api/wiki/generate/{source:path}")
-async def wiki_generate_route(source: str) -> WikiGenerateResult:
-    """Trigger wiki generation for a source document."""
+async def wiki_generate_route(source: str) -> Stream:
+    """Trigger wiki generation for a source document (SSE stream).
+
+    Emits ``progress`` events for each pipeline stage and a final ``done``
+    event with the generation result.
+    """
+    from lilbee.server import handlers
+
     _require_wiki()
     source = source.lstrip("/")
 
@@ -144,12 +149,7 @@ async def wiki_generate_route(source: str) -> WikiGenerateResult:
     except ValueError:
         raise NotFoundException(detail=f"invalid source path: {source}") from None
 
-    svc = svc_mod.get_services()
-    chunks = svc.store.get_chunks_by_source(source)
-    result = gen_mod.generate_summary_page(source, chunks, svc.provider, svc.store)
-    if result is None:
-        return WikiGenerateResult(status="failed", source=source)
-    return WikiGenerateResult(status="generated", source=source, path=str(result))
+    return Stream(handlers.wiki_generate_stream(source), media_type="text/event-stream")
 
 
 @post("/api/wiki/prune")

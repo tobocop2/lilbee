@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,23 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
+
+
+def _parse_sse_events(body: bytes) -> list[tuple[str, dict]]:
+    """Parse raw SSE bytes into a list of (event_type, data_dict) tuples."""
+    events = []
+    current_event = ""
+    current_data = ""
+    for line in body.decode().split("\n"):
+        if line.startswith("event: "):
+            current_event = line[7:]
+        elif line.startswith("data: "):
+            current_data = line[6:]
+        elif line == "" and current_event:
+            events.append((current_event, json.loads(current_data)))
+            current_event = ""
+            current_data = ""
+    return events
 
 
 def _h() -> dict[str, str]:
@@ -271,7 +289,7 @@ class TestWikiEnabled:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
         assert resp.status_code == 501
 
-    async def test_generate_returns_result(
+    async def test_generate_returns_sse_stream_failed(
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
@@ -283,11 +301,15 @@ class TestWikiEnabled:
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["source"] == "test.txt"
-        assert body["status"] == "failed"
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        events = _parse_sse_events(resp.content)
+        done_events = [e for e in events if e[0] == "done"]
+        assert len(done_events) == 1
+        assert done_events[0][1]["status"] == "failed"
 
-    async def test_generate_success(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
+    async def test_generate_returns_sse_stream_success(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from conftest import make_mock_services
         from lilbee import services as svc_mod
         from lilbee.wiki import gen as gen_mod
@@ -298,10 +320,12 @@ class TestWikiEnabled:
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
         assert resp.status_code == 201
-        body = resp.json()
-        assert body["status"] == "generated"
-        assert body["source"] == "test.txt"
-        assert "path" in body
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        events = _parse_sse_events(resp.content)
+        done_events = [e for e in events if e[0] == "done"]
+        assert len(done_events) == 1
+        assert done_events[0][1]["status"] == "generated"
+        assert done_events[0][1]["source"] == "test.txt"
 
     async def test_generate_path_traversal_blocked(self):
         async with AsyncTestClient(_create_app()) as client:
@@ -462,3 +486,128 @@ class TestPydanticModels:
         assert c.excerpt == ""
         assert c.wiki_chunk_index == 0
         assert c.created_at == ""
+
+
+class TestWikiGenerateStream:
+    """Unit tests for the wiki_generate_stream SSE handler."""
+
+    async def test_stream_emits_done_on_success(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.server.handlers import wiki_generate_stream
+        from lilbee.wiki import gen as gen_mod
+
+        page_path = isolated_env / "wiki" / "summaries" / "test.md"
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
+        cfg.wiki = True
+        events = []
+        async for chunk in wiki_generate_stream("test.txt"):
+            if chunk.strip():
+                events.append(chunk)
+        sse = _parse_sse_events(b"".join(e.encode() for e in events))
+        done_events = [e for e in sse if e[0] == "done"]
+        assert len(done_events) == 1
+        assert done_events[0][1]["status"] == "generated"
+
+    async def test_stream_emits_done_failed_on_none(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.server.handlers import wiki_generate_stream
+        from lilbee.wiki import gen as gen_mod
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
+        cfg.wiki = True
+        events = []
+        async for chunk in wiki_generate_stream("test.txt"):
+            if chunk.strip():
+                events.append(chunk)
+        sse = _parse_sse_events(b"".join(e.encode() for e in events))
+        done_events = [e for e in sse if e[0] == "done"]
+        assert len(done_events) == 1
+        assert done_events[0][1]["status"] == "failed"
+
+    async def test_stream_error_on_no_chunks(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.server.handlers import wiki_generate_stream
+
+        mock_svc = make_mock_services()
+        mock_svc.store.get_chunks_by_source.return_value = []
+        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
+        cfg.wiki = True
+        events = []
+        async for chunk in wiki_generate_stream("empty.txt"):
+            if chunk.strip():
+                events.append(chunk)
+        sse = _parse_sse_events(b"".join(e.encode() for e in events))
+        error_events = [e for e in sse if e[0] == "error"]
+        assert len(error_events) == 1
+        assert "No indexed chunks" in error_events[0][1]["message"]
+
+    async def test_stream_emits_progress_events(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Progress callback fires and emits SSE progress events."""
+        import asyncio
+
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.server.handlers import wiki_generate_stream
+        from lilbee.wiki import gen as gen_mod
+
+        loop = asyncio.get_running_loop()
+
+        def _fake_generate(*args, **kwargs):
+            cb = kwargs.get("on_progress")
+            if cb:
+                # Call from worker thread (exercises the threadsafe path)
+                cb("preparing", {"chunks": 5, "source": "test.txt"})
+                # Also call from the event loop thread (exercises the put_nowait path)
+                loop.call_soon_threadsafe(cb, "generating", {"source": "test.txt"})
+            return Path(isolated_env / "wiki" / "summaries" / "test.md")
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", _fake_generate)
+        cfg.wiki = True
+        events = []
+        async for chunk in wiki_generate_stream("test.txt"):
+            if chunk.strip():
+                events.append(chunk)
+        sse = _parse_sse_events(b"".join(e.encode() for e in events))
+        progress_events = [e for e in sse if e[0] == "progress"]
+        assert len(progress_events) >= 2
+        stages = [e[1]["stage"] for e in progress_events]
+        assert "preparing" in stages
+        assert "generating" in stages
+
+    async def test_stream_handles_exception(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Exception in generate_summary_page emits error event."""
+        from conftest import make_mock_services
+        from lilbee import services as svc_mod
+        from lilbee.server.handlers import wiki_generate_stream
+        from lilbee.wiki import gen as gen_mod
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("LLM exploded")
+
+        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr(gen_mod, "generate_summary_page", _boom)
+        cfg.wiki = True
+        events = []
+        async for chunk in wiki_generate_stream("test.txt"):
+            if chunk.strip():
+                events.append(chunk)
+        sse = _parse_sse_events(b"".join(e.encode() for e in events))
+        error_events = [e for e in sse if e[0] == "error"]
+        assert len(error_events) >= 1
+        assert "LLM exploded" in error_events[0][1]["message"]

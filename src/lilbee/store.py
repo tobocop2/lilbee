@@ -468,7 +468,13 @@ class Store:
         if table is None:
             return []
         escaped = escape_sql_string(source)
-        rows = table.search().where(f"source = '{escaped}'").to_list()
+        try:
+            rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
+        except Exception:
+            # Fallback: on tables with FTS indexes, search() may return an
+            # incompatible query builder.  Scan the Arrow table directly.
+            all_rows = table.to_arrow().to_pylist()
+            rows = [r for r in all_rows if r.get("source") == source]
         return [SearchChunk(**r) for r in rows]
 
     def delete_by_source(self, source: str) -> None:

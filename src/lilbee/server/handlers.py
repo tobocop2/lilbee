@@ -756,6 +756,67 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
         yield sse_done({"files_written": [str(p) for p in paths]})
 
 
+async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
+    """Yield SSE progress events while generating a wiki page for *source*.
+
+    Emits ``progress`` events for each pipeline stage (preparing, generating,
+    faithfulness_check) and a final ``done`` event with the result.
+    """
+    from lilbee.services import get_services
+    from lilbee.wiki.gen import generate_summary_page
+
+    yield ""  # force generator
+
+    svc = get_services()
+    chunks = svc.store.get_chunks_by_source(source)
+    if not chunks:
+        yield sse_error(f"No indexed chunks for source: {source}")
+        return
+
+    sse = SseStream()
+
+    def _on_progress(stage: str, data: dict[str, object]) -> None:
+        payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is sse._loop:
+            sse.queue.put_nowait(payload)
+        else:
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+
+    def _run_generate() -> str | None:
+        try:
+            result = generate_summary_page(
+                source, chunks, svc.provider, svc.store, on_progress=_on_progress
+            )
+            return str(result) if result is not None else None
+        except Exception as exc:
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
+            return None
+        finally:
+            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
+
+    task = asyncio.ensure_future(asyncio.to_thread(_run_generate))
+    async for event in sse.drain(task, "Wiki generate stream"):
+        yield event
+
+    # Ensure the thread has fully resolved before reading the result
+    if not task.done():
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await task
+
+    if not sse.cancel.is_set() and task.done() and not task.cancelled():
+        result_path = task.result()
+        if result_path is not None:
+            yield sse_done({"status": "generated", "source": source, "path": result_path})
+        else:
+            yield sse_done({"status": "failed", "source": source})
+
+
 _EXTERNAL_MODELS_TTL = 60
 _external_cache: tuple[float, str, ExternalModelsResponse | None] = (0.0, "", None)
 

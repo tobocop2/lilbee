@@ -233,15 +233,17 @@ class ConceptGraph:
 
         with write_lock():
             db = self._store.get_db()
+            # Always create tables so get_graph() returns True even when
+            # concept extraction yields no results for the current corpus.
+            nodes_tbl = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
+            edges_tbl = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
+            cc_tbl = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
             if node_records:
-                table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
-                table.add(node_records)
+                nodes_tbl.add(node_records)
             if edge_records:
-                table = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
-                table.add(edge_records)
+                edges_tbl.add(edge_records)
             if chunk_concept_records:
-                table = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-                table.add(chunk_concept_records)
+                cc_tbl.add(chunk_concept_records)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
         """Boost search results whose chunks overlap with query concepts."""

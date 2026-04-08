@@ -898,3 +898,53 @@ class TestSynthesisDriftDetection:
         assert "drafts" in str(result)
         # Original should be unchanged
         assert "Totally different synthesis" in existing.read_text()
+
+
+class TestProgressCallback:
+    """Test the on_progress callback in generate_summary_page."""
+
+    def test_callback_receives_stages(self, tmp_path: Path):
+        """on_progress is called with preparing, generating, faithfulness_check stages."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        stages: list[str] = []
+
+        def on_progress(stage: str, data: dict) -> None:
+            stages.append(stage)
+
+        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        assert result is not None
+        assert "preparing" in stages
+        assert "generating" in stages
+        assert "faithfulness_check" in stages
+
+    def test_callback_none_is_safe(self, tmp_path: Path):
+        """on_progress=None (default) does not raise."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text = (
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store, on_progress=None)
+        assert result is not None
