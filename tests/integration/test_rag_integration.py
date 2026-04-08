@@ -20,11 +20,8 @@ llama_cpp = pytest.importorskip("llama_cpp")
 from lilbee.catalog import FEATURED_EMBEDDING, download_model  # noqa: E402
 from lilbee.config import cfg  # noqa: E402
 from lilbee.ingest import sync  # noqa: E402
-from lilbee.model_manager import reset_model_manager  # noqa: E402
 from lilbee.services import get_services  # noqa: E402
 from lilbee.services import reset_services as reset_provider  # noqa: E402
-
-from .conftest import setup_rag_pipeline  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
@@ -35,23 +32,6 @@ def search_context(question, top_k=0):
 
 def ask_raw(question, top_k=0, history=None, options=None):
     return get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=options)
-
-
-@pytest.fixture(scope="module")
-def rag_pipeline(tmp_path_factory):
-    """Set up a real RAG pipeline with downloaded models and test documents.
-
-    Module-scoped: downloads models once, creates documents, runs sync,
-    yields pipeline data, then restores config.
-    """
-    snapshot = cfg.model_copy()
-    tmp = tmp_path_factory.mktemp("rag_integration")
-    data = setup_rag_pipeline(tmp)
-    yield data
-    reset_provider()
-    reset_model_manager()
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
 
 
 def _source_names(results):

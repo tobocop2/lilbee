@@ -17,26 +17,9 @@ import pytest
 llama_cpp = pytest.importorskip("llama_cpp")
 
 from lilbee.config import cfg  # noqa: E402
-from lilbee.model_manager import reset_model_manager  # noqa: E402
 from lilbee.services import get_services  # noqa: E402
-from lilbee.services import reset_services as reset_provider  # noqa: E402
-
-from .conftest import setup_rag_pipeline  # noqa: E402
 
 pytestmark = pytest.mark.slow
-
-
-@pytest.fixture(scope="module")
-def wiki_pipeline(tmp_path_factory):
-    """Set up a real pipeline with wiki enabled."""
-    snapshot = cfg.model_copy()
-    tmp = tmp_path_factory.mktemp("wiki_integration")
-    data = setup_rag_pipeline(tmp, wiki=True)
-    yield data
-    reset_provider()
-    reset_model_manager()
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
 
 
 class TestGenerateSummaryPage:
