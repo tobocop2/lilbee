@@ -1,72 +1,43 @@
-"""Integration tests for the Textual TUI.
+"""TUI integration tests with real backends.
 
-These tests exercise end-to-end flows through the TUI, verifying that
-multiple components work together correctly. Unit tests for individual
-widgets live in test_tui_widgets.py; screen-level tests in test_tui_screens.py.
+These tests exercise the Textual TUI against a real RAG pipeline with
+downloaded models and indexed documents. No mocks — real embeddings,
+real LLM streaming, real LanceDB queries.
+
+Run with:
+    uv run pytest tests/integration/test_tui_integration.py -v -m slow
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import asyncio
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Input
+from textual.widgets import DataTable, Footer, Input
 
-from lilbee.catalog import CatalogModel, CatalogResult
 from lilbee.config import cfg
+from lilbee.services import get_services
 
-_EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
-
-
-@pytest.fixture(autouse=True)
-def _isolated_cfg(tmp_path):
-    snapshot = cfg.model_copy()
-    cfg.data_dir = tmp_path / "data"
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.chat_model = "test-model:latest"
-    cfg.embedding_model = "test-embed:latest"
-    cfg.vision_model = ""
-    cfg.chunk_size = 512
-    with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False),
-    ):
-        yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
+pytestmark = pytest.mark.slow
 
 
-def _make_model(
-    name: str = "test-7B",
-    task: str = "chat",
-    featured: bool = False,
-    size_gb: float = 4.0,
-    tag: str = "latest",
-    display_name: str = "",
-) -> CatalogModel:
-    return CatalogModel(
-        name=name.lower().replace(" ", "-"),
-        tag=tag,
-        display_name=display_name or name,
-        hf_repo=f"org/{name}-GGUF",
-        gguf_filename="test.gguf",
-        size_gb=size_gb,
-        min_ram_gb=8.0,
-        description="A test model",
-        featured=featured,
-        downloads=100,
-        task=task,
-    )
-
-
-class _ChatApp(App[None]):
-    """Minimal app that pushes ChatScreen for integration tests."""
+class _IntegrationChatApp(App[None]):
+    """Minimal app that pushes ChatScreen with real services."""
 
     CSS = ""
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        yield TaskBar(id="app-task-bar")
         yield Footer()
+
+    @property
+    def task_bar(self):
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        return self.query_one("#app-task-bar", TaskBar)
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -74,993 +45,219 @@ class _ChatApp(App[None]):
         self.push_screen(ChatScreen())
 
 
-class _FullApp(App[None]):
-    """Minimal app with Footer only, for pushing arbitrary screens."""
+class TestChatFlow:
+    """Real chat with streaming LLM response."""
 
-    CSS = ""
-
-    def compose(self) -> ComposeResult:
-        yield Footer()
-
-
-class TestCommandRegistry:
-    """Verify the command registry is the single source of truth."""
-
-    def test_all_commands_in_dispatch(self) -> None:
-        from lilbee.cli.tui.command_registry import COMMANDS, build_dispatch_dict
-
-        dispatch = build_dispatch_dict()
-        for cmd in COMMANDS:
-            assert cmd.name in dispatch
-            for alias in cmd.aliases:
-                assert alias in dispatch
-
-    def test_command_names_are_primary_only(self) -> None:
-        from lilbee.cli.tui.command_registry import COMMANDS, command_names
-
-        names = command_names()
-        for cmd in COMMANDS:
-            assert cmd.name in names
-            for alias in cmd.aliases:
-                assert alias not in names
-
-
-class TestMessagesConstants:
-    """Verify message constants are used consistently."""
-
-    def test_all_message_constants_are_strings(self) -> None:
-        from lilbee.cli.tui import messages
-
-        for name in dir(messages):
-            if name.isupper() and not name.startswith("_"):
-                assert isinstance(getattr(messages, name), str)
-
-    def test_cmd_unknown_format(self) -> None:
-        from lilbee.cli.tui.messages import CMD_UNKNOWN
-
-        result = CMD_UNKNOWN.format(cmd="/foobar")
-        assert "/foobar" in result
-
-    def test_sync_file_progress_format(self) -> None:
-        from lilbee.cli.tui.messages import SYNC_FILE_PROGRESS
-
-        result = SYNC_FILE_PROGRESS.format(current=1, total=5, file="test.pdf")
-        assert "1" in result
-        assert "5" in result
-        assert "test.pdf" in result
-
-
-class TestChatScreenIntegration:
-    """End-to-end chat screen tests."""
-
-    async def test_startup_shows_input_focused(self) -> None:
-        app = _ChatApp()
+    async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
+        """Type a question about indexed docs, get a real streamed answer."""
+        app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input", Input)
-            assert inp is not None
-            assert inp.has_focus
-
-    async def test_send_message_creates_widgets(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch.object(app.screen, "_stream_response"):
-                inp = app.screen.query_one("#chat-input", Input)
-                inp.value = "What is RAG?"
-                await pilot.press("enter")
-                assert len(app.screen._history) == 1
-                assert app.screen._streaming is True
-
-    async def test_empty_input_ignored(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = ""
+            inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")
-            assert len(app.screen._history) == 0
 
-    async def test_input_not_chat_input_ignored(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            event = MagicMock()
-            event.input = MagicMock()
-            event.input.id = "other-input"
-            event.value = "test"
-            app.screen.on_input_submitted(event)
-            assert len(app.screen._history) == 0
-
-    async def test_cancel_stream_while_idle(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen.action_cancel_stream()
-            assert app.screen._streaming is False
-
-
-class TestSlashCommandIntegration:
-    """Slash commands dispatched through the registry end-to-end."""
-
-    async def test_slash_help_shows_panel(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/help")
-            await pilot.pause()
-            assert app.screen.query("HelpPanel")
-
-    async def test_slash_h_alias(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/h")
-            await pilot.pause()
-            assert app.screen.query("HelpPanel")
-
-    async def test_slash_quit_exits(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch.object(app, "exit") as mock_exit:
-                app.screen._handle_slash("/quit")
-                mock_exit.assert_called_once()
-
-    async def test_slash_q_alias(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch.object(app, "exit") as mock_exit:
-                app.screen._handle_slash("/q")
-                mock_exit.assert_called_once()
-
-    async def test_slash_exit_alias(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch.object(app, "exit") as mock_exit:
-                app.screen._handle_slash("/exit")
-                mock_exit.assert_called_once()
-
-    async def test_slash_model_switches(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/model qwen3:8b")
-            assert cfg.chat_model == "qwen3:8b"
-
-    async def test_slash_model_no_arg_opens_catalog(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with (
-                patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
-            ):
-                app.screen._handle_slash("/model")
+            # Wait for streaming to complete (timeout after 60s)
+            for _ in range(600):
                 await pilot.pause()
-                from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-                assert isinstance(app.screen, CatalogScreen)
-
-    async def test_slash_set_updates_config(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/set top_k 10")
-            assert cfg.top_k == 10
-
-    async def test_slash_set_invalid_value(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            old = cfg.top_k
-            app.screen._handle_slash("/set top_k not-a-number")
-            assert cfg.top_k == old
-
-    async def test_slash_set_nullable_type(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/set temperature none")
-            assert cfg.temperature is None
-
-    async def test_slash_status_shows_info(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = []
-                app.screen._handle_slash("/status")
-                await pilot.pause()
-                from lilbee.cli.tui.screens.status import StatusScreen
-
-                assert isinstance(app.screen, StatusScreen)
-
-    async def test_slash_unknown_shows_error(self) -> None:
-
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/foobar")
-            # Verify no crash; the notification uses CMD_UNKNOWN format
-
-    async def test_slash_add_nonexistent_path(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/add /nonexistent/path/abc.txt")
-
-    async def test_slash_add_with_file(self, tmp_path) -> None:
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("hello")
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with (
-                patch("lilbee.cli.helpers.copy_paths", return_value=["test.txt"]),
-                patch.object(app.screen, "_run_sync"),
-            ):
-                app.screen._handle_slash(f"/add {test_file}")
-
-    async def test_slash_add_copy_exception(self, tmp_path) -> None:
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("hello")
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.cli.helpers.copy_paths", side_effect=OSError("disk full")):
-                app.screen._handle_slash(f"/add {test_file}")
-
-    async def test_slash_delete_removes_document(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with (
-                patch("lilbee.services.get_services") as mock_svc,
-            ):
-                mock_store = mock_svc.return_value.store
-                mock_store.get_sources.return_value = [
-                    {"filename": "notes.md", "source": "notes.md"}
-                ]
-                app.screen._handle_slash("/delete notes.md")
-                mock_store.delete_by_source.assert_called_once_with("notes.md")
-                mock_store.delete_source.assert_called_once_with("notes.md")
-
-    async def test_slash_delete_no_documents(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = []
-                app.screen._handle_slash("/delete x")
-
-    async def test_slash_delete_unknown_name(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = [
-                    {"filename": "notes.md", "source": "notes.md"}
-                ]
-                app.screen._handle_slash("/delete nonexistent.md")
-
-    async def test_slash_delete_no_arg_shows_list(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = [
-                    {"filename": "a.md", "source": "a.md"}
-                ]
-                app.screen._handle_slash("/delete")
-
-    async def test_slash_cancel(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/cancel")
-
-    async def test_slash_version(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.cli.helpers.get_version", return_value="1.0.0"):
-                app.screen._handle_slash("/version")
-
-    async def test_slash_reset_confirm(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.cli.helpers.perform_reset"):
-                app.screen._handle_slash("/reset confirm")
-
-    async def test_slash_reset_no_confirm(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/reset")
-
-
-class TestAutocompleteIntegration:
-    """Tab completion from the chat input through the overlay."""
-
-    async def test_slash_prefix_shows_completions(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "/he"
-            with patch(
-                "lilbee.cli.tui.screens.chat.get_completions",
-                return_value=["/help"],
-            ):
-                app.screen.action_complete()
-                assert inp.value == "/help"
-
-    @patch("lilbee.models.list_installed_models", return_value=["qwen3:8b", "mistral:7b"])
-    async def test_model_name_completion(self, mock_models: MagicMock) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            inp = app.screen.query_one("#chat-input", Input)
-            inp.value = "/model qw"
-            with patch(
-                "lilbee.cli.tui.screens.chat.get_completions",
-                return_value=["qwen3:8b"],
-            ):
-                app.screen.action_complete()
-                assert "qwen3:8b" in inp.value
-
-
-class TestGlobalKeybindings:
-    """App-level keybindings from LilbeeApp."""
-
-    async def test_f1_opens_help(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.action_push_help()
-            await pilot.pause()
-            assert app.screen.query("HelpPanel")
-
-    async def test_f2_opens_catalog(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with (
-                patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
-            ):
-                app.action_push_catalog()
-                await pilot.pause()
-                from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-                assert isinstance(app.screen, CatalogScreen)
-
-    async def test_f3_opens_status(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = []
-                app.action_push_status()
-                await pilot.pause()
-                from lilbee.cli.tui.screens.status import StatusScreen
-
-                assert isinstance(app.screen, StatusScreen)
-
-    async def test_f4_opens_settings(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.action_push_settings()
-            await pilot.pause()
-            from lilbee.cli.tui.screens.settings import SettingsScreen
-
-            assert isinstance(app.screen, SettingsScreen)
-
-    async def test_ctrl_t_cycles_theme(self) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.action_cycle_theme()
-            assert app.theme == DARK_THEMES[1]
-
-    async def test_theme_cycles_wraps_around(self) -> None:
-        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            for _ in range(len(DARK_THEMES)):
-                app.action_cycle_theme()
-            app.action_cycle_theme()
-            assert app.theme == DARK_THEMES[1]
-
-
-class TestChatKeybindings:
-    """Chat screen keybindings."""
-
-    async def test_pageup_scrolls_chat(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen.action_scroll_up()
-
-    async def test_pagedown_scrolls_chat(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen.action_scroll_down()
-
-    async def test_escape_cancels_stream(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._streaming = True
-            app.screen.action_cancel_stream()
-            assert app.screen._streaming is False
-
-    async def test_j_scrolls_down_vim(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            from textual.containers import VerticalScroll
-
-            log = app.screen.query_one("#chat-log", VerticalScroll)
-            log.focus()
-            app.screen.action_enter_normal_mode()
-            app.screen.action_vim_scroll_down()
-
-    async def test_k_scrolls_up_vim(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            from textual.containers import VerticalScroll
-
-            log = app.screen.query_one("#chat-log", VerticalScroll)
-            log.focus()
-            app.screen.action_enter_normal_mode()
-            app.screen.action_vim_scroll_up()
-
-
-class TestCatalogKeybindings:
-    """Catalog screen keybindings."""
-
-    async def test_catalog_escape_closes(self) -> None:
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with (
-                patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
-            ):
-                screen = CatalogScreen()
-                app.push_screen(screen)
-                await pilot.pause()
-                screen.action_go_back()
-                await pilot.pause()
-                assert not isinstance(app.screen, CatalogScreen)
-
-    async def test_catalog_slash_focuses_search(self) -> None:
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with (
-                patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
-            ):
-                screen = CatalogScreen()
-                app.push_screen(screen)
-                await pilot.pause()
-                screen.action_focus_search()
-                assert app.screen.query_one("#catalog-search", Input).has_focus
-
-    async def test_catalog_sort_cycles(self) -> None:
-        from textual.widgets import ListView
-
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with (
-                patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-                patch("lilbee.model_manager.classify_remote_models", return_value=[]),
-            ):
-                screen = CatalogScreen()
-                app.push_screen(screen)
-                await pilot.pause()
-                lv = screen.query_one("#catlist-all", ListView)
-                lv.focus()
-                await pilot.pause()
-                old_sort = screen._current_sort
-                screen.action_cycle_sort()
-                assert screen._current_sort != old_sort
-
-
-class TestStatusKeybindings:
-    async def test_status_escape_closes(self) -> None:
-        from lilbee.cli.tui.screens.status import StatusScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = []
-                screen = StatusScreen()
-                app.push_screen(screen)
-                await pilot.pause()
-                screen.action_go_back()
-                await pilot.pause()
-                assert not isinstance(app.screen, StatusScreen)
-
-    async def test_status_j_k_navigates_table(self) -> None:
-        from lilbee.cli.tui.screens.status import StatusScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            with patch("lilbee.services.get_services") as mock_svc:
-                mock_svc.return_value.store.get_sources.return_value = [
-                    {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-                    {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-                ]
-                screen = StatusScreen()
-                app.push_screen(screen)
-                await pilot.pause()
-                screen.action_cursor_down()
-                screen.action_cursor_up()
-
-
-class TestSettingsKeybindings:
-    async def test_settings_escape_closes(self) -> None:
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            screen = SettingsScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            screen.action_go_back()
-            await pilot.pause()
-            assert not isinstance(app.screen, SettingsScreen)
-
-    async def test_settings_j_k_scrolls(self) -> None:
-        from lilbee.cli.tui.screens.settings import SettingsScreen
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            screen = SettingsScreen()
-            app.push_screen(screen)
-            await pilot.pause()
-            screen.action_scroll_down()
-            screen.action_scroll_up()
-
-
-class TestHelpPanel:
-    async def test_help_toggle_closes(self) -> None:
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.action_show_help_panel()
-            await pilot.pause()
-            assert app.screen.query("HelpPanel")
-            app.action_hide_help_panel()
-            await pilot.pause()
-            assert not app.screen.query("HelpPanel")
-
-
-class TestSetupWizardIntegration:
-    async def test_setup_wizard_mounts(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = _FullApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            assert len(app.screen_stack) == 2
-
-    async def test_setup_wizard_cancel_returns_skipped(self) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = _FullApp()
-        results: list[object] = []
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
-            await pilot.pause()
-            app.screen.action_cancel()
-            await pilot.pause()
-        assert "skipped" in results
-
-
-class TestAssistantMessageIntegration:
-    """Tests for AssistantMessage widget branches."""
-
-    async def test_reasoning_widget_none_is_noop(self) -> None:
-        from lilbee.cli.tui.widgets.message import AssistantMessage
-
-        am = AssistantMessage()
-        am._reasoning_widget = None
-        am.append_reasoning("test")
-        assert am._reasoning_parts == ["test"]
-
-    async def test_content_widget_none_is_noop(self) -> None:
-        from lilbee.cli.tui.widgets.message import AssistantMessage
-
-        am = AssistantMessage()
-        am._md_widget = None
-        am.append_content("test")
-        assert am._content_parts == ["test"]
-
-    async def test_finish_no_reasoning_hides_widget(self) -> None:
-        from lilbee.cli.tui.widgets.message import AssistantMessage
-
-        class _MsgApp(App):
-            def compose(self) -> ComposeResult:
-                self._am = AssistantMessage()
-                yield self._am
-
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._am.finish(sources=None)
-            assert app._am._reasoning_widget.display is False
-
-    async def test_finish_with_sources_shows_citation(self) -> None:
-        from lilbee.cli.tui.widgets.message import AssistantMessage
-
-        class _MsgApp(App):
-            def compose(self) -> ComposeResult:
-                self._am = AssistantMessage()
-                yield self._am
-
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._am.append_reasoning("think")
-            app._am.finish(sources=["doc.pdf:1"])
-            assert app._am._finished is True
-
-    async def test_finish_no_sources_hides_citation(self) -> None:
-        from lilbee.cli.tui.widgets.message import AssistantMessage
-
-        class _MsgApp(App):
-            def compose(self) -> ComposeResult:
-                self._am = AssistantMessage()
-                yield self._am
-
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._am.finish(sources=[])
-            assert app._am._citation_widget.display is False
-
-
-class TestSuggesterIntegration:
-    async def test_unknown_command_returns_none(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
-
-        s = SlashSuggester(use_cache=False)
-        result = await s.get_suggestion("/unknowncmd xyz")
-        assert result is None
-
-
-class TestOverlayEdgeCases:
-    async def test_cycle_wraps_around(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield CompletionOverlay()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            overlay = app.query_one(CompletionOverlay)
-            overlay.show_completions(["/a", "/b", "/c"])
-            overlay.cycle_next()
-            overlay.cycle_next()
-            result = overlay.cycle_next()
-            assert result == "/a"
-
-    async def test_get_current_out_of_bounds(self) -> None:
-        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
-
-        class _App(App):
-            def compose(self) -> ComposeResult:
-                yield CompletionOverlay()
-
-        app = _App()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            overlay = app.query_one(CompletionOverlay)
-            overlay._options = ["/a"]
-            overlay._index = 5
-            assert overlay.get_current() is None
-
-
-class TestHistoryManagement:
-    async def test_trim_history(self) -> None:
-        from lilbee.cli.tui.screens.chat import _MAX_HISTORY_MESSAGES
-
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._history = [
-                {"role": "user", "content": f"m-{i}"} for i in range(_MAX_HISTORY_MESSAGES + 20)
-            ]
-            app.screen._trim_history()
-            assert len(app.screen._history) == _MAX_HISTORY_MESSAGES
-
-    async def test_trim_history_under_limit_noop(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._history = [{"role": "user", "content": "hi"}]
-            app.screen._trim_history()
-            assert len(app.screen._history) == 1
-
-
-class TestAutoSync:
-    @patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync")
-    @patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True)
-    async def test_auto_sync_true_triggers_sync(
-        self, mock_embed: MagicMock, mock_sync: MagicMock
-    ) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp(auto_sync=True)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            mock_sync.assert_called()
-
-
-class TestVisionCommands:
-    async def test_vision_set(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with patch("lilbee.settings.set_value"):
-                app.screen._cmd_vision("llava:latest")
-                assert cfg.vision_model == "llava:latest"
-
-    async def test_vision_off(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            cfg.vision_model = "some-model"
-            with patch("lilbee.settings.set_value"):
-                app.screen._cmd_vision("off")
-                assert cfg.vision_model == ""
-
-    async def test_vision_no_arg_shows_status(self) -> None:
-        app = _ChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._cmd_vision("")
-
-
-class TestThemeCommand:
-    async def test_theme_with_arg(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/theme dracula")
-
-    async def test_theme_no_arg_lists_themes(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/theme")
-
-
-@pytest.mark.slow
-class TestRealDownloadProgress:
-    """Integration tests verifying real download progress works from HuggingFace.
-
-    These tests download actual files from HuggingFace (no mocks) to verify
-    the full progress callback chain works correctly. They use Qwen3 0.6B
-    (~0.5GB) - the smallest featured GGUF model.
-
-    Run with: uv run pytest tests/integration/test_tui_integration.py -v -m slow
-    """
-
-    @pytest.fixture(autouse=True)
-    def _isolated_cfg(self, tmp_path):
-        """Set up isolated config for each test."""
-        from lilbee.config import cfg
-        from lilbee.model_manager import reset_model_manager
-
-        snapshot = cfg.model_copy()
-        cfg.data_dir = tmp_path / "data"
-        cfg.data_root = tmp_path
-        cfg.documents_dir = tmp_path / "documents"
-        cfg.models_dir = tmp_path / "models"
-        cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-        cfg.chat_model = "test-model:latest"
-        cfg.embedding_model = "test-embed:latest"
-        cfg.vision_model = ""
-        cfg.chunk_size = 512
-
-        for d in [cfg.models_dir, cfg.data_dir, cfg.documents_dir]:
-            d.mkdir(parents=True, exist_ok=True)
-
-        yield
-
-        reset_model_manager()
-        for field in type(snapshot).model_fields:
-            setattr(cfg, field, getattr(snapshot, field))
-
-    async def test_real_download_progress_callback_invoked(self):
-        """Download small file from HuggingFace and verify progress callbacks work.
-
-        This test verifies the fix for progress_updater routing:
-        - Progress callbacks should be invoked with real byte values
-        - Not ignored (which was the original bug)
-
-        Uses celinah/dummy-xet-testing (~1MB file) for fast testing.
-        """
-        from lilbee.catalog import CatalogModel, download_model
-
-        # Use small test file from xet-enabled repo
-        entry = CatalogModel(
-            name="dummy-xet-test",
-            tag="latest",
-            display_name="Dummy XET Test",
-            hf_repo="celinah/dummy-xet-testing",
-            gguf_filename="dummy.safetensors",
-            size_gb=0.001,  # ~1MB
-            min_ram_gb=1,
-            description="Test file for progress verification",
-            featured=False,
-            downloads=0,
-            task="chat",
-        )
-
-        progress_calls = []
-
-        def on_progress(downloaded: int, total: int):
-            progress_calls.append((downloaded, total))
-
-        # REAL download - no mocks!
-        download_model(entry, on_progress=on_progress)
-
-        # KEY ASSERTIONS - prove the fix works
-        assert len(progress_calls) > 0, (
-            "Progress callback never invoked! "
-            "This means progress_updater is not being passed through correctly. "
-            "The fix in huggingface_hub/_download_to_tmp_and_move is not working."
-        )
-
-        # Verify we received real byte progress (not zeros)
-        total_bytes = sum(downloaded for downloaded, total in progress_calls)
-        assert total_bytes > 0, (
-            "Progress callback received zero bytes! The callback was invoked but with zero values."
-        )
-
-        # Verify we downloaded the expected amount (~1MB)
-        expected_size = 1 * 1024 * 1024  # ~1MB
-        assert total_bytes >= expected_size * 0.8, (
-            f"Total bytes {total_bytes} is much less than expected ~{expected_size}"
-        )
-
-        print("\n✓ Download progress verified")
-        print(f"  Progress calls: {len(progress_calls)}")
-        print(f"  Total bytes: {total_bytes / (1024 * 1024):.1f} MB")
-        print(f"  First callback: {progress_calls[0]}")
-        print(f"  Last callback: {progress_calls[-1]}")
-
-    async def test_tui_download_no_fd_error_in_worker_thread(self):
-        """Verify download with disable_progress_bars doesn't cause fd error.
-
-        The 'bad value(s) in fds_to_keep' error occurred when tqdm
-        was used in Textual worker threads. This test verifies the
-        fix (disable_progress_bars + progress_updater callback) works.
-        """
-        import threading
-
-        from lilbee.catalog import CatalogModel
-
-        # Use small test file (~1MB)
-        entry = CatalogModel(
-            name="dummy-xet-test",
-            tag="latest",
-            display_name="Dummy XET Test",
-            hf_repo="celinah/dummy-xet-testing",
-            gguf_filename="dummy.safetensors",
-            size_gb=0.001,
-            min_ram_gb=1,
-            description="Test file",
-            featured=False,
-            downloads=0,
-            task="chat",
-        )
-
-        # Track any errors from the worker thread
-        worker_errors = []
-
-        def download_in_thread():
-            """Run download in a thread like Textual's @work(thread=True)."""
-            try:
-                from lilbee.catalog import download_model
-
-                download_model(entry, on_progress=lambda d, t: None)
-            except Exception as e:
-                error_msg = str(e)
-                worker_errors.append(error_msg)
-                # Check for the specific fd error
-                if "fds_to_keep" in error_msg or "bad value" in error_msg.lower():
-                    worker_errors.append(f"FD_ERROR: {error_msg}")
-
-        # Run in a thread (simulating Textual's @work(thread=True))
-        thread = threading.Thread(target=download_in_thread)
-        thread.start()
-        thread.join(timeout=120)  # 2 minute timeout
-
-        # Verify thread completed without fd errors
-        assert not thread.is_alive(), "Download timed out"
-
-        # Check for fd error specifically
-        fd_errors = [e for e in worker_errors if "FD_ERROR" in e or "fds_to_keep" in e]
-        assert len(fd_errors) == 0, (
-            f"FD error occurred in worker thread: {fd_errors}. "
-            "The fix (disable_progress_bars + tqdm_class=None) is not working."
-        )
-
-        print("\n✓ Worker thread download completed without fd errors")
-
-    async def test_setup_wizard_progress_bar_updates_during_download(self):
-        """Verify TUI setup wizard completes download and updates progress.
-
-        Runs the actual TUI with a real (small) download to verify the
-        complete download → progress → completion flow works.
-        """
-        from lilbee.catalog import CatalogModel
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        entry = CatalogModel(
-            name="dummy-xet-test",
-            tag="latest",
-            display_name="Dummy XET Test",
-            hf_repo="celinah/dummy-xet-testing",
-            gguf_filename="dummy.safetensors",
-            size_gb=0.001,
-            min_ram_gb=1,
-            description="Test file",
-            featured=False,
-            downloads=0,
-            task="chat",
-        )
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-
-            setup = app.screen
-            setup._download_model(entry)
-
-            # Wait for the @work(thread=True) download to complete
-            for _ in range(60):
-                await pilot.pause(0.5)
-                if not setup.workers:
+                if not app.screen._streaming:
                     break
 
-            # The download should have completed (no workers left)
-            assert not setup.workers, "Download timed out — worker still running"
+            assert not app.screen._streaming, "Streaming did not complete in time"
+
+            # History should have user + assistant messages
+            assert len(app.screen._history) >= 2
+            assistant_reply = app.screen._history[-1]["content"]
+            assert len(assistant_reply) > 0, "Assistant reply was empty"
+
+            # The answer should reference facts from specs.md
+            reply_lower = assistant_reply.lower()
+            has_engine_fact = any(
+                term in reply_lower for term in ("v6", "3.5", "turboforce", "365")
+            )
+            assert has_engine_fact, (
+                f"Expected engine facts from specs.md in reply, got: {assistant_reply[:200]}"
+            )
+
+
+class TestAddAndSync:
+    """Add a file via the TUI and verify it becomes searchable."""
+
+    async def test_add_file_becomes_searchable(self, rag_pipeline, tmp_path) -> None:
+        """Add a file with unique content, verify search finds it."""
+        test_file = tmp_path / "quantum_test.md"
+        test_file.write_text(
+            "# Quantum Teleportation Protocol\n\n"
+            "Quantum entanglement enables instantaneous state transfer between "
+            "qubits separated by arbitrary distances using Bell state measurements."
+        )
+
+        app = _IntegrationChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen._handle_slash(f"/add {test_file}")
+
+            # Wait for add + sync workers to finish
+            for _ in range(600):
+                await pilot.pause()
+                if not app.screen._sync_active:
+                    break
+
+            assert not app.screen._sync_active, "Sync did not complete in time"
+
+            # Search for the unique content
+            results = get_services().searcher.search("quantum entanglement teleportation")
+            sources = [r.source for r in results]
+            assert "quantum_test.md" in sources, (
+                f"Expected quantum_test.md in search results, got: {sources}"
+            )
+
+
+class TestDelete:
+    """Delete a document and verify removal from search."""
+
+    async def test_delete_removes_from_search(self, rag_pipeline) -> None:
+        """Delete a document via /delete, verify it no longer appears in search."""
+        # First verify specs.md is searchable
+        results = get_services().searcher.search("Thunderbolt X500 engine")
+        sources_before = [r.source for r in results]
+        assert "specs.md" in sources_before, "specs.md should be findable before delete"
+
+        app = _IntegrationChatApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen._handle_slash("/delete specs.md")
+            await pilot.pause()
+
+        # Verify removed from search
+        results_after = get_services().searcher.search("Thunderbolt X500 engine")
+        sources_after = [r.source for r in results_after]
+        assert "specs.md" not in sources_after, "specs.md should be gone after delete"
+
+        # Re-sync to restore for other tests
+        from lilbee.ingest import sync
+
+        asyncio.get_event_loop().run_until_complete(sync(quiet=True))
+        get_services().store.ensure_fts_index()
+
+
+class TestStatusScreen:
+    """Status screen with real knowledge base data."""
+
+    async def test_status_shows_real_stats(self, rag_pipeline) -> None:
+        """Status screen displays real document names and chunk counts."""
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        class _StatusApp(App[None]):
+            CSS = ""
+
+            def compose(self) -> ComposeResult:
+                yield Footer()
+
+            def on_mount(self) -> None:
+                self.push_screen(StatusScreen())
+
+        app = _StatusApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one("#docs-table", DataTable)
+            row_count = table.row_count
+            # Should have at least the 9 test docs from rag_pipeline
+            assert row_count >= 9, f"Expected >= 9 document rows, got {row_count}"
+
+            # Verify a known document appears
+            rows = [table.get_row_at(i) for i in range(row_count)]
+            doc_names = [str(row[0]) for row in rows]
+            assert "specs.md" in doc_names, f"Expected specs.md in {doc_names}"
+
+
+class TestSetCommand:
+    """Config updates via /set."""
+
+    async def test_set_updates_config(self, rag_pipeline) -> None:
+        """'/set top_k 10' updates the config value."""
+        original_top_k = cfg.top_k
+        try:
+            app = _IntegrationChatApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.screen._handle_slash("/set top_k 10")
+                await pilot.pause()
+
+            assert cfg.top_k == 10, f"Expected top_k=10, got {cfg.top_k}"
+        finally:
+            cfg.top_k = original_top_k
+
+
+class TestModelSwitch:
+    """Model switch via /model."""
+
+    async def test_model_switch_updates_config(self, rag_pipeline) -> None:
+        """'/model qwen3:0.6b' updates cfg.chat_model."""
+        original_model = cfg.chat_model
+        try:
+            app = _IntegrationChatApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.screen._handle_slash("/model qwen3:0.6b")
+                await pilot.pause()
+
+            assert cfg.chat_model == "qwen3:0.6b", (
+                f"Expected chat_model='qwen3:0.6b', got '{cfg.chat_model}'"
+            )
+        finally:
+            cfg.chat_model = original_model
+
+
+class TestCrawlAndSync:
+    """Crawl a URL and verify content becomes searchable."""
+
+    async def test_crawl_becomes_searchable(self, rag_pipeline) -> None:
+        """Crawl a local HTTP page, verify its content is indexed."""
+        pytest.importorskip("crawl4ai")
+        pytest.importorskip("pytest_httpserver")
+
+        import ipaddress
+
+        from pytest_httpserver import HTTPServer
+
+        from lilbee import crawler as crawler_mod
+
+        html = (
+            "<html><head><title>Test</title></head><body>"
+            "<h1>Bioluminescent Jellyfish Research</h1>"
+            "<p>Deep-sea jellyfish produce light through luciferin-luciferase "
+            "reactions in specialized photocytes.</p>"
+            "</body></html>"
+        )
+
+        # Temporarily allow localhost crawling
+        loopback_v4 = ipaddress.ip_network("127.0.0.0/8")
+        loopback_v6 = ipaddress.ip_network("::1/128")
+        original_fn = crawler_mod.get_blocked_networks
+        filtered = tuple(net for net in original_fn() if net not in (loopback_v4, loopback_v6))
+        crawler_mod.get_blocked_networks = lambda: filtered
+
+        server = HTTPServer()
+        server.expect_request("/jellyfish").respond_with_data(html, content_type="text/html")
+        server.start()
+        try:
+            url = str(server.url_for("/jellyfish"))
+            app = _IntegrationChatApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.screen._handle_slash(f"/add {url}")
+
+                # Wait for crawl + sync to finish
+                for _ in range(600):
+                    await pilot.pause()
+                    if not app.screen._sync_active:
+                        break
+
+            # Search for unique crawled content
+            results = get_services().searcher.search("bioluminescent jellyfish luciferin")
+            assert len(results) > 0, "Expected crawled content to be searchable"
+        finally:
+            server.clear()
+            server.stop()
+            crawler_mod.get_blocked_networks = original_fn
