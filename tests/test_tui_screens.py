@@ -4997,7 +4997,7 @@ async def test_setup_wizard_run_downloads_all_succeed():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._run_downloads()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -5030,7 +5030,7 @@ async def test_setup_wizard_run_downloads_embed_fails():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._run_downloads()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -5055,7 +5055,7 @@ async def test_setup_wizard_run_downloads_chat_401():
                 raise PermissionError("401 Unauthorized")
 
             with patch("lilbee.catalog.download_model", side_effect=_fake):
-                screen._run_downloads()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -5120,7 +5120,7 @@ async def test_setup_wizard_download_progress_callback():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._run_downloads()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
