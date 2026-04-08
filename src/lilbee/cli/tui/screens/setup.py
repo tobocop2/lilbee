@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import on, work
@@ -99,7 +100,9 @@ def _pending_download(card: ModelCard | None) -> CatalogModel | None:
     return None
 
 
-def _make_progress_callback(wizard: SetupWizard) -> tuple[list[int], callable]:
+def _make_progress_callback(
+    wizard: SetupWizard,
+) -> tuple[list[int], Callable[[int, int], None]]:
     """Build a progress callback that updates the wizard's progress bar.
 
     Returns (state, callback) where state[0] tracks last_pct to avoid
@@ -154,6 +157,7 @@ class SetupWizard(Screen[str | None]):
             yield Label(msg.SETUP_SLOT_EMPTY, id="setup-embed-slot")
             yield Label("", id="setup-download-size")
         yield Button(msg.SETUP_INSTALL_BUTTON, id="setup-action", disabled=True)
+        yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse", variant="default")
         yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
         yield Label("", id="setup-status")
         yield ProgressBar(total=100, show_eta=False, id="setup-progress")
@@ -280,6 +284,14 @@ class SetupWizard(Screen[str | None]):
         task = card.row.task
         if task in self._selections:
             self._select_card(card, task)
+
+    @on(Button.Pressed, "#setup-browse")
+    def _on_browse_catalog(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.dismiss("skipped")
+            self.app.call_later(lambda: self.app.switch_view("Catalog"))
 
     @on(Button.Pressed, "#setup-action")
     def _on_install(self) -> None:

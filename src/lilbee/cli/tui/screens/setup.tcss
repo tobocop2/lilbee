@@ -41,6 +41,11 @@
     width: 100%;
 }
 
+#setup-browse {
+    margin: 0 1;
+    width: 100%;
+}
+
 #setup-skip {
     margin: 0 1;
     width: 100%;
