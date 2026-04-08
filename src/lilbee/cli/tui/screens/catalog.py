@@ -653,9 +653,10 @@ class CatalogScreen(Screen[None]):
             log.warning("Gated repo: %s", model.hf_repo)
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="warning")
-        except Exception:
+        except Exception as exc:
             log.warning("Download failed for %s", model.ref, exc_info=True)
-            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.display_name)
+            error_detail = str(exc) if str(exc) else type(exc).__name__
+            detail = f"{model.display_name}: {error_detail}"
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="error")
 

@@ -7,6 +7,7 @@ Three levels:
 """
 
 import functools
+import io
 import logging
 import os
 import re
@@ -30,19 +31,26 @@ HF_API_URL = "https://huggingface.co/api/models"
 
 
 class _CallbackProgressBar(_base_tqdm):
-    """tqdm subclass that forwards progress to a plain callback."""
+    """tqdm subclass that forwards progress to a plain callback.
+
+    Fully suppresses terminal output by disabling tqdm rendering and redirecting
+    its file handle to a devnull sink — prevents ANSI escape sequences from leaking
+    into Textual's managed terminal.
+    """
 
     _callback: Any = None
 
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs["disable"] = True
+        kwargs["file"] = io.StringIO()  # absorb any accidental tqdm output
         super().__init__(*args, **kwargs)
         self._cumulative = 0
 
     def update(self, n: float = 1) -> bool | None:
         self._cumulative += int(n)
         if self._callback is not None:
-            self._callback(int(self._cumulative), self.total)
+            total = self.total if self.total is not None else 0
+            self._callback(int(self._cumulative), int(total))
         return None
 
 
@@ -541,6 +549,10 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     For vision models, also downloads the mmproj (CLIP projection) file.
+
+    Raises:
+        PermissionError: gated repo requiring authentication
+        RuntimeError: repo not found or download failure with details
     """
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
@@ -575,6 +587,14 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
             ) from None
         except RepositoryNotFoundError:
             raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            raise RuntimeError(f"Network error downloading {entry.display_name}: {exc}") from None
+        except OSError as exc:
+            raise RuntimeError(f"I/O error downloading {entry.display_name}: {exc}") from None
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to download {entry.display_name}: {type(exc).__name__}: {exc}"
+            ) from None
 
         if on_progress:
             actual_size = cached.stat().st_size
