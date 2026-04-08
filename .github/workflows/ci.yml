@@ -74,6 +74,8 @@ jobs:
   integration:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+    env:
+      OLLAMA_MODELS: /home/runner/.ollama_models
     steps:
       - uses: actions/checkout@v6
 
@@ -125,15 +127,15 @@ jobs:
           key: hf-models-${{ hashFiles('pyproject.toml') }}
           restore-keys: hf-models-
 
-      - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
-
       - name: Cache Ollama models
         uses: actions/cache@v4
         with:
-          path: ~/.ollama/models
+          path: /home/runner/.ollama_models
           key: ollama-models-qwen3-nomic-v1
           restore-keys: ollama-models-
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
 
       - name: Start Ollama and pull models
         run: |
