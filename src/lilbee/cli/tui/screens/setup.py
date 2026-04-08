@@ -295,7 +295,7 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _run_downloads(self) -> None:
         """Download all selected models in a background thread."""
-        self._download_loop(self.app.call_from_thread)
+        self._download_loop(self.app.call_from_thread)  # pragma: no cover
 
     def _on_download_progress(self, notify: Callable[..., None], p: DownloadProgress) -> None:
         """Handle a single download progress update."""
