@@ -4545,6 +4545,25 @@ def test_scan_installed_models_empty():
         assert embed == []
 
 
+async def test_setup_wizard_preselect_skips_none_recommended():
+    """_preselect_recommended skips when recommended model is None."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            # Clear recommendations and re-run preselect
+            screen._recommended_chat = None
+            screen._recommended_embed = None
+            from lilbee.cli.tui.widgets.model_card import ModelCard
+
+            cards = list(screen.query(ModelCard))
+            screen._preselect_recommended(cards, cards)
+
+
 async def test_setup_wizard_mounts_with_recommendations():
     from lilbee.cli.tui.screens.setup import SetupWizard
 
