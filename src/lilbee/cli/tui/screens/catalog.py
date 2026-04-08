@@ -20,10 +20,12 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
     CatalogModel,
+    DownloadProgress,
     ModelFamily,
     ModelVariant,
     get_catalog,
     get_families,
+    make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -621,7 +623,6 @@ class CatalogScreen(Screen[None]):
 
     def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
         """Build a progress callback that reports download progress to the TaskBar."""
-        from lilbee.catalog import DownloadProgress, make_download_callback
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         tb: TaskBar = bar  # type: ignore[assignment]

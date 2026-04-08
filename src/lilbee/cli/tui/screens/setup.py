@@ -12,7 +12,14 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Label, ProgressBar, Static
 
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
+from lilbee.catalog import (
+    FEATURED_CHAT,
+    FEATURED_EMBEDDING,
+    CatalogModel,
+    DownloadProgress,
+    download_model,
+    make_download_callback,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -187,7 +194,6 @@ class SetupWizard(Screen[str | None]):
         """Download via catalog API with TUI-native progress (no Rich)."""
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
-            from lilbee.catalog import DownloadProgress, download_model, make_download_callback
 
             def _on_update(p: DownloadProgress) -> None:
                 self.app.call_from_thread(self._update_progress, p.percent)
