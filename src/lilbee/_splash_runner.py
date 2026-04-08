@@ -145,11 +145,13 @@ def animation_loop(pipe_fd: int) -> None:
 
     got_signal = False
 
-    def handle_term(signum: int, frame: object) -> None:
-        nonlocal got_signal
-        got_signal = True
+    if sys.platform != "win32":
 
-    signal.signal(signal.SIGTERM, handle_term)
+        def handle_term(signum: int, frame: object) -> None:
+            nonlocal got_signal
+            got_signal = True
+
+        signal.signal(signal.SIGTERM, handle_term)
 
     for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
         if got_signal or pipe_closed(pipe_fd):
