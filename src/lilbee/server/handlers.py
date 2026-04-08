@@ -7,6 +7,7 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -413,11 +414,13 @@ def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
 
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
-    """Validate, copy files, sync, and yield SSE progress events.
+    """Copy files, sync, and yield SSE progress events.
 
-    Raises ValueError on validation failure (before streaming starts).
+    Validation is handled by the route layer before this is called.
     """
-    paths, force, vision_model = validate_add_paths(data)
+    paths = data.get("paths", [])
+    force = bool(data.get("force", False))
+    vision_model = str(data.get("vision_model", "") or "")
     sse = SseStream()
     task = asyncio.create_task(_run_add(paths, force, vision_model, sse))
     async for event in sse.drain(task, "Add files stream"):
@@ -716,7 +719,7 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
         yield event
 
 
-async def models_delete(model: str, *, source: str = "litellm") -> ModelsDeleteResponse:
+async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:
     """Delete a model. Returns deletion status, model name, and freed space."""
     manager = get_model_manager()
     src = _parse_source(source)
@@ -731,10 +734,6 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     with the list of files written. On error emits crawl_error.
     Sets a cancel event on client disconnect so the crawl stops between pages.
     """
-    from lilbee.crawler import require_valid_crawl_url
-
-    require_valid_crawl_url(url)
-
     sse = SseStream()
 
     async def _run_crawl() -> list[Path]:
@@ -774,6 +773,8 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         return
 
     sse = SseStream()
+    result_holder: list[Path | None] = []
+    error_holder: list[str] = []
 
     def _on_progress(stage: str, data: dict[str, object]) -> None:
         payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
@@ -784,18 +785,27 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
             result = generate_summary_page(
                 source, chunks, svc.provider, svc.store, on_progress=_on_progress
             )
-            path = str(result) if result is not None else None
-            status = "generated" if path else "failed"
-            done = {"status": status, "source": source, "path": path or ""}
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
+            result_holder.append(result)
         except Exception as exc:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
+            error_holder.append(str(exc))
         finally:
             sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_run_blocking))
     async for event in sse.drain(task, "Wiki generate stream"):
         yield event
+
+    # Ensure the blocking task has fully resolved before reading results
+    if not task.done():
+        with contextlib.suppress(Exception):
+            await task
+
+    if error_holder:
+        yield sse_error(error_holder[0])
+    elif not sse.cancel.is_set() and not task.cancelled():
+        path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
+        status = "generated" if path else "failed"
+        yield sse_done({"status": status, "source": source, "path": path or ""})
 
 
 _EXTERNAL_MODELS_TTL = 60

@@ -276,13 +276,22 @@ class WikiCitationsResult(BaseModel):
     """Citations attached to a single wiki page."""
 
     slug: str
-    citations: list[dict[str, Any]] = []
+    citations: list[WikiCitationRecord] = []
+
+
+class WikiLintIssueItem(BaseModel):
+    """A single lint finding on a wiki page."""
+
+    wiki_source: str = ""
+    issue_type: str = ""
+    severity: str = ""
+    message: str = ""
 
 
 class WikiLintResult(BaseModel):
     """Result of a full wiki lint run."""
 
-    issues: list[dict[str, str]] = []
+    issues: list[WikiLintIssueItem] = []
     errors: int = 0
     warnings: int = 0
 
@@ -292,7 +301,7 @@ class WikiLintStatusResult(BaseModel):
 
     task_id: str
     status: str = "not_implemented"
-    issues: list[dict[str, str]] = []
+    issues: list[WikiLintIssueItem] = []
 
 
 class WikiPruneRecordResponse(BaseModel):

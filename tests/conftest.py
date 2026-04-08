@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lilbee.catalog import CatalogModel
 from lilbee.config import cfg
 from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord
@@ -151,3 +152,47 @@ def write_source(tmp_path: Path, name: str, content: str) -> Path:
 def source_hash(path: Path) -> str:
     """Get the SHA-256 hash of a file (delegates to ingest.file_hash)."""
     return file_hash(path)
+
+
+@pytest.fixture(autouse=False)
+def wiki_isolated_env(tmp_path: Path):
+    """Shared fixture for wiki tests: snapshot cfg, set wiki-related paths, restore."""
+    snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
+    cfg.documents_dir = tmp_path / "documents"
+    cfg.documents_dir.mkdir()
+    cfg.data_dir = tmp_path / "data"
+    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.wiki = True
+    cfg.wiki_dir = "wiki"
+    cfg.wiki_faithfulness_threshold = 0.7
+    cfg.wiki_prune_raw = False
+    cfg.chat_model = "test-model"
+    yield tmp_path
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
+
+
+def make_test_catalog_model(
+    name: str = "TestModel",
+    task: str = "chat",
+    featured: bool = False,
+    size_gb: float = 2.0,
+    description: str = "A test model",
+    tag: str = "latest",
+    display_name: str = "",
+) -> CatalogModel:
+    """Build a CatalogModel with sensible test defaults."""
+    return CatalogModel(
+        name=name.lower().replace(" ", "-"),
+        tag=tag,
+        display_name=display_name or name,
+        hf_repo=f"test/{name.lower().replace(' ', '-')}",
+        gguf_filename="*.gguf",
+        size_gb=size_gb,
+        min_ram_gb=4,
+        description=description,
+        featured=featured,
+        downloads=100,
+        task=task,
+    )

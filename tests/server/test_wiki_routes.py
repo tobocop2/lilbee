@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -10,23 +9,7 @@ from litestar.testing import AsyncTestClient
 
 from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
-
-
-def _parse_sse_events(body: bytes) -> list[tuple[str, dict]]:
-    """Parse raw SSE bytes into a list of (event_type, data_dict) tuples."""
-    events = []
-    current_event = ""
-    current_data = ""
-    for line in body.decode().split("\n"):
-        if line.startswith("event: "):
-            current_event = line[7:]
-        elif line.startswith("data: "):
-            current_data = line[6:]
-        elif line == "" and current_event:
-            events.append((current_event, json.loads(current_data)))
-            current_event = ""
-            current_data = ""
-    return events
+from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 
 def _h() -> dict[str, str]:

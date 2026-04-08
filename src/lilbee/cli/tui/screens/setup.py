@@ -23,9 +23,9 @@ from lilbee.catalog import (
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog import (
     TableRow,
-    _catalog_to_row,
-    _format_size_gb,
-    _parse_param_label,
+    catalog_to_row,
+    format_size_gb,
+    parse_param_label,
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -64,7 +64,7 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
     return TableRow(
         name=name,
         task=task,
-        params=_parse_param_label(name),
+        params=parse_param_label(name),
         size="--",
         quant="--",
         downloads="--",
@@ -160,7 +160,7 @@ class SetupWizard(Screen[str | None]):
     ) -> list[ModelCard]:
         """Build a heading + GridSelect for a list of catalog models."""
         widgets_out.append(Static(heading, classes="section-heading"))
-        cards = [ModelCard(_catalog_to_row(m, installed=False)) for m in models]
+        cards = [ModelCard(catalog_to_row(m, installed=False)) for m in models]
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
         return cards
 
@@ -240,7 +240,7 @@ class SetupWizard(Screen[str | None]):
 
         total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
         if total_gb > 0:
-            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=_format_size_gb(total_gb)))
+            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=format_size_gb(total_gb)))
         else:
             size_label.update("")
 
@@ -299,9 +299,7 @@ class SetupWizard(Screen[str | None]):
             is_first = idx == 1
             self.app.call_from_thread(
                 self._set_status,
-                msg.SETUP_DOWNLOADING_N.format(
-                    name=model.display_name, current=idx, total=total
-                ),
+                msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
             )
             self.app.call_from_thread(self._update_progress, 0)
 

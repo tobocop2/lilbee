@@ -935,16 +935,6 @@ class TestGetConfigReranker:
 
 
 class TestCrawlStream:
-    async def test_rejects_invalid_url(self):
-        with pytest.raises(ValueError, match="http"):
-            async for _ in handlers.crawl_stream("ftp://bad.com"):
-                pass  # pragma: no cover
-
-    async def test_rejects_non_url(self):
-        with pytest.raises(ValueError, match="http"):
-            async for _ in handlers.crawl_stream("not-a-url"):
-                pass  # pragma: no cover
-
     @patch("lilbee.crawler.crawl_and_save")
     @patch("lilbee.crawler.validate_crawl_url")
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):

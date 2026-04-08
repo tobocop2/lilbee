@@ -358,14 +358,14 @@ def _load_embed_model(config: ConfigSnapshot, model_name: str) -> Any:
     from pathlib import Path
 
     from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import _load_llama, _resolve_model_path
+    from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
 
     cfg.models_dir = Path(config.models_dir)
     cfg.embedding_model = config.embedding_model
     cfg.num_ctx = config.num_ctx
 
-    model_path = _resolve_model_path(model_name)
-    return _load_llama(model_path, embedding=True)
+    model_path = resolve_model_path(model_name)
+    return load_llama(model_path, embedding=True)
 
 
 def _load_vision_model(config: ConfigSnapshot, model_name: str) -> Any:
@@ -373,22 +373,22 @@ def _load_vision_model(config: ConfigSnapshot, model_name: str) -> Any:
     from pathlib import Path
 
     from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import _load_vision_llama, _resolve_model_path
+    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
 
     cfg.models_dir = Path(config.models_dir)
     cfg.vision_model = config.vision_model
     cfg.num_ctx = config.num_ctx
 
-    model_path = _resolve_model_path(model_name)
-    return _load_vision_llama(model_path)
+    model_path = resolve_model_path(model_name)
+    return load_vision_llama(model_path)
 
 
 def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
     """Process a single embed request, returning response with vectors or error."""
     try:
-        from lilbee.providers.llama_cpp_provider import _embed_one
+        from lilbee.providers.llama_cpp_provider import embed_one
 
-        vectors = [_embed_one(llm, text) for text in request.texts]
+        vectors = [embed_one(llm, text) for text in request.texts]
         return EmbedResponse(vectors=vectors, request_id=request.request_id)
     except Exception as exc:
         return EmbedResponse(error=str(exc), request_id=request.request_id)
@@ -397,10 +397,10 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
     """Process a single vision OCR request."""
     try:
-        from lilbee.vision import _OCR_PROMPT, _build_vision_messages
+        from lilbee.vision import OCR_PROMPT, build_vision_messages
 
-        prompt = request.prompt or _OCR_PROMPT
-        messages = _build_vision_messages(prompt, request.png_bytes)
+        prompt = request.prompt or OCR_PROMPT
+        messages = build_vision_messages(prompt, request.png_bytes)
         response = llm.create_chat_completion(messages=messages, stream=False)
         text: str = response["choices"][0]["message"]["content"] or ""
         return VisionResponse(text=text, request_id=request.request_id)

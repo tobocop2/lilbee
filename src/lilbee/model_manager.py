@@ -246,6 +246,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
         resp.raise_for_status()
         raw_models = resp.json().get("models", [])
     except Exception:
+        log.debug("Failed to classify remote models", exc_info=True)
         return []
 
     provider = detect_provider(base_url)

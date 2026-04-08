@@ -360,7 +360,7 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        self._store._clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
+        self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
         if node_records:
             with write_lock():
                 db = self._store.get_db()

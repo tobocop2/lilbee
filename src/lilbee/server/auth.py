@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import secrets
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-_session_token: str = ""
+_session_token: str | None = None  # None = auth disabled (tests), "" = not yet initialized
 
 
 def read_only(fn: F) -> F:
@@ -39,8 +40,6 @@ def generate_session_token() -> str:
     path = _server_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"token": _session_token}))
-    import sys
-
     if sys.platform != "win32":
         path.chmod(0o600)
     return _session_token
@@ -49,7 +48,7 @@ def generate_session_token() -> str:
 def cleanup_session_token() -> None:
     """Remove server.json on shutdown and clear the in-memory token."""
     global _session_token
-    _session_token = ""
+    _session_token = None
     path = _server_json_path()
     path.unlink(missing_ok=True)
 
@@ -75,7 +74,7 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if _session_token is None:
+        if _session_token is None:  # auth disabled (tests set token to None)
             await self.app(scope, receive, send)
             return
         if not _session_token:

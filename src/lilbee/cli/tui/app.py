@@ -160,7 +160,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
-        if isinstance(screen, ChatScreen) and screen._streaming:
+        if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
             return
         self.exit()

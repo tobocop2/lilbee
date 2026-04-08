@@ -13,9 +13,11 @@ from litestar.response import Stream
 from lilbee import services as svc_mod
 from lilbee.config import cfg
 from lilbee.security import validate_path_within
+from lilbee.server.auth import read_only
 from lilbee.server.models import (
     WikiCitationRecord,
     WikiCitationsResult,
+    WikiLintIssueItem,
     WikiLintResult,
     WikiPageDetail,
     WikiPruneRecordResponse,
@@ -49,6 +51,7 @@ def _find_page(slug: str) -> Path | None:
 
 
 @get("/api/wiki")
+@read_only
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
@@ -67,6 +70,7 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 
 
 @get("/api/wiki/drafts")
+@read_only
 async def wiki_drafts_route() -> list[dict[str, Any]]:
     """List draft pages that failed the quality gate."""
     _require_wiki()
@@ -74,6 +78,7 @@ async def wiki_drafts_route() -> list[dict[str, Any]]:
 
 
 @get("/api/wiki/citations")
+@read_only
 async def wiki_citations_reverse_route(
     source: str = Parameter(query="source", default=""),
 ) -> list[WikiCitationRecord]:
@@ -86,6 +91,7 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/lint/{task_id:str}")
+@read_only
 async def wiki_lint_status_route(task_id: str) -> None:
     """Poll lint task status by task ID."""
     _require_wiki()
@@ -93,6 +99,7 @@ async def wiki_lint_status_route(task_id: str) -> None:
 
 
 @get("/api/wiki/{slug:path}")
+@read_only
 async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()
@@ -117,7 +124,7 @@ def _citations_for_slug(slug: str) -> WikiCitationsResult:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
     wiki_source = f"{cfg.wiki_dir}/{slug}.md"
     records = svc_mod.get_services().store.get_citations_for_wiki(wiki_source)
-    return WikiCitationsResult(slug=slug, citations=[dict(r) for r in records])
+    return WikiCitationsResult(slug=slug, citations=[WikiCitationRecord(**r) for r in records])
 
 
 @post("/api/wiki/lint")
@@ -126,7 +133,7 @@ async def wiki_lint_route() -> WikiLintResult:
     _require_wiki()
     report = lint_mod.lint_all(svc_mod.get_services().store)
     return WikiLintResult(
-        issues=[i.to_dict() for i in report.issues],
+        issues=[WikiLintIssueItem(**i.to_dict()) for i in report.issues],
         errors=report.error_count,
         warnings=report.warning_count,
     )

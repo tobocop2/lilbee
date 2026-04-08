@@ -31,21 +31,8 @@ from lilbee.wiki.shared import make_slug
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path: Path):
-    snapshot = cfg.model_copy()
-    cfg.data_root = tmp_path
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.documents_dir.mkdir()
-    cfg.data_dir = tmp_path / "data"
-    cfg.lancedb_dir = tmp_path / "data" / "lancedb"
-    cfg.wiki = True
-    cfg.wiki_dir = "wiki"
-    cfg.wiki_faithfulness_threshold = 0.7
-    cfg.wiki_prune_raw = False
-    cfg.chat_model = "test-model"
-    yield tmp_path
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
+def isolated_env(wiki_isolated_env: Path):
+    yield wiki_isolated_env
 
 
 def _make_chunk(text: str, source: str = "doc.md", **kwargs) -> SearchChunk:

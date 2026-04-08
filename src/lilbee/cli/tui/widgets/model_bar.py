@@ -271,7 +271,7 @@ class ModelBar(Widget, can_focus=False):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen
-        if isinstance(screen, ChatScreen) and screen._streaming:
+        if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
 
         from lilbee.services import reset_services

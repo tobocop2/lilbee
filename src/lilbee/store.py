@@ -564,7 +564,7 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
-    def _clear_table(self, name: str, predicate: str) -> None:
+    def clear_table(self, name: str, predicate: str) -> None:
         """Delete rows matching *predicate* from *name*. Acquires write lock."""
         with write_lock():
             table = self.open_table(name)
@@ -603,7 +603,7 @@ class Store:
 
     def delete_citations_for_wiki(self, wiki_source: str) -> None:
         """Delete all citations for a wiki page (used before regeneration)."""
-        self._clear_table(
+        self.clear_table(
             CITATIONS_TABLE,
             f"wiki_source = '{escape_sql_string(wiki_source)}'",
         )

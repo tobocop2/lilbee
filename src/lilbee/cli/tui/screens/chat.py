@@ -107,7 +107,7 @@ class ChatScreen(Screen[None]):
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
-        self._streaming = False
+        self.streaming = False
         self._insert_mode: bool = True
         self._completing = False
         self._sync_active: bool = False
@@ -164,10 +164,10 @@ class ChatScreen(Screen[None]):
     def _needs_setup(self) -> bool:
         """Check if both chat and embedding models are resolvable."""
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            _resolve_model_path(cfg.chat_model)
-            _resolve_model_path(cfg.embedding_model)
+            resolve_model_path(cfg.chat_model)
+            resolve_model_path(cfg.embedding_model)
             return False
         except Exception:
             return True
@@ -175,9 +175,9 @@ class ChatScreen(Screen[None]):
     def _embedding_ready(self) -> bool:
         """Quick check if embedding model exists (no network calls)."""
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            _resolve_model_path(cfg.embedding_model)
+            resolve_model_path(cfg.embedding_model)
             return True
         except Exception:
             return False
@@ -274,8 +274,6 @@ class ChatScreen(Screen[None]):
             getattr(self, handler_name)(args)
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
-
-    # -- Slash command handlers (alphabetical) --------------------------------
 
     def _cmd_add(self, args: str) -> None:
         if not args:
@@ -606,8 +604,6 @@ class ChatScreen(Screen[None]):
         current = cfg.vision_model or "disabled"
         self.notify(msg.CMD_VISION_STATUS.format(current=current))
 
-    # -- Core chat logic ------------------------------------------------------
-
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         log = self.query_one("#chat-log", VerticalScroll)
@@ -619,7 +615,7 @@ class ChatScreen(Screen[None]):
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
-        self._streaming = True
+        self.streaming = True
         self._stream_response(text, assistant_msg)
 
     @work(thread=True)
@@ -653,7 +649,7 @@ class ChatScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
-            self._streaming = False
+            self.streaming = False
             full_response = "".join(response_parts)
             if full_response:
                 with self._history_lock:
@@ -682,10 +678,10 @@ class ChatScreen(Screen[None]):
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
-        if self._streaming:
+        if self.streaming:
             for worker in self.workers:
                 worker.cancel()
-            self._streaming = False
+            self.streaming = False
             return
         if isinstance(self.focused, Select):
             self.query_one("#chat-input", Input).focus()
@@ -696,10 +692,10 @@ class ChatScreen(Screen[None]):
 
     def action_cancel_stream(self) -> None:
         """Context-aware Escape: cancel stream -> blur input -> no-op."""
-        if self._streaming:
+        if self.streaming:
             for worker in self.workers:
                 worker.cancel()
-            self._streaming = False
+            self.streaming = False
             return
         inp = self.query_one("#chat-input", Input)
         if inp.has_focus:

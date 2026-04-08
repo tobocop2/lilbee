@@ -35,9 +35,9 @@ def store():
 def _embedding_model_available() -> bool:
     """Check if a real embedding model is available."""
     try:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        _resolve_model_path(cfg.embedding_model)
+        resolve_model_path(cfg.embedding_model)
         return True
     except Exception:
         return False

@@ -141,7 +141,7 @@ class TestExtractPageText:
         assert result is None
 
     def test_sends_ocr_prompt_and_image(self, mock_provider) -> None:
-        from lilbee.vision import _OCR_PROMPT, extract_page_text
+        from lilbee.vision import OCR_PROMPT, extract_page_text
 
         mock_provider.chat.return_value = "text"
         extract_page_text(b"png-bytes", "my-model")
@@ -155,7 +155,7 @@ class TestExtractPageText:
         assert content[0]["type"] == "image_url"
         assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert content[1]["type"] == "text"
-        assert content[1]["text"] == _OCR_PROMPT
+        assert content[1]["text"] == OCR_PROMPT
         assert call_args[1]["model"] == "my-model"
 
 
@@ -402,9 +402,9 @@ class TestPngToDataUrl:
 
 class TestBuildVisionMessages:
     def test_builds_openai_format(self) -> None:
-        from lilbee.vision import _build_vision_messages
+        from lilbee.vision import build_vision_messages
 
-        messages = _build_vision_messages("describe this", b"fake-png")
+        messages = build_vision_messages("describe this", b"fake-png")
         assert len(messages) == 1
         msg = messages[0]
         assert msg["role"] == "user"

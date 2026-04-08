@@ -46,7 +46,7 @@ _WORKER_FETCH_REMOTE = "fetch_remote_models"
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
 
-def _parse_param_label(name: str) -> str:
+def parse_param_label(name: str) -> str:
     """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
     from lilbee.catalog import PARAM_COUNT_RE
 
@@ -71,7 +71,7 @@ def _format_size_mb(size_mb: int) -> str:
     return f"{size_mb} MB"
 
 
-def _format_size_gb(size_gb: float) -> str:
+def format_size_gb(size_gb: float) -> str:
     """Format size in GB to a human-readable string."""
     if size_gb <= 0:
         return "--"
@@ -124,14 +124,14 @@ def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRo
     )
 
 
-def _catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
+def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     """Convert a CatalogModel to a TableRow."""
     quant = _extract_quant_from_filename(m.gguf_filename)
     return TableRow(
         name=m.display_name,
         task=m.task,
-        params=_parse_param_label(m.tag),
-        size=_format_size_gb(m.size_gb),
+        params=parse_param_label(m.tag),
+        size=format_size_gb(m.size_gb),
         quant=quant or "--",
         downloads=_format_downloads(m.downloads) if m.downloads > 0 else "--",
         featured=m.featured,
@@ -412,7 +412,7 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for m in self._hf_models:
             installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
-            row = _catalog_to_row(m, installed)
+            row = catalog_to_row(m, installed)
             if _matches_search(row, search):
                 rows.append(row)
         return rows

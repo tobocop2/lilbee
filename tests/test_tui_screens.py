@@ -19,13 +19,13 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_MORE_HF,
     _WORKER_FETCH_REMOTE,
     TableRow,
-    _catalog_to_row,
     _format_downloads,
-    _format_size_gb,
     _matches_search,
-    _parse_param_label,
     _remote_to_row,
     _row_display_name,
+    catalog_to_row,
+    format_size_gb,
+    parse_param_label,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -123,16 +123,16 @@ def _make_remote_model(
 
 class TestParseParamLabel:
     def test_extracts_integer(self):
-        assert _parse_param_label("qwen-8B-instruct") == "8B"
+        assert parse_param_label("qwen-8B-instruct") == "8B"
 
     def test_extracts_decimal(self):
-        assert _parse_param_label("phi-0.6B") == "0.6B"
+        assert parse_param_label("phi-0.6B") == "0.6B"
 
     def test_no_match(self):
-        assert _parse_param_label("nomic-embed-text") == "--"
+        assert parse_param_label("nomic-embed-text") == "--"
 
     def test_case_insensitive(self):
-        assert _parse_param_label("model-3b-chat") == "3B"
+        assert parse_param_label("model-3b-chat") == "3B"
 
 
 class TestFormatDownloads:
@@ -157,72 +157,72 @@ class TestFormatDownloads:
 
 class TestRowDisplayName:
     def test_featured_star(self):
-        row = _catalog_to_row(_make_catalog_model(featured=True), installed=False)
+        row = catalog_to_row(_make_catalog_model(featured=True), installed=False)
         name = _row_display_name(row)
         assert name.startswith("\u2605")
 
     def test_not_featured(self):
-        row = _catalog_to_row(_make_catalog_model(featured=False), installed=False)
+        row = catalog_to_row(_make_catalog_model(featured=False), installed=False)
         name = _row_display_name(row)
         assert not name.startswith("\u2605")
 
     def test_installed_tag(self):
-        row = _catalog_to_row(_make_catalog_model(), installed=True)
+        row = catalog_to_row(_make_catalog_model(), installed=True)
         name = _row_display_name(row)
         assert "[installed]" in name
 
     def test_not_installed_no_tag(self):
-        row = _catalog_to_row(_make_catalog_model(), installed=False)
+        row = catalog_to_row(_make_catalog_model(), installed=False)
         name = _row_display_name(row)
         assert "[installed]" not in name
 
 
 class TestFormatSizeGb:
     def test_positive_size(self):
-        assert _format_size_gb(4.0) == "4.0 GB"
+        assert format_size_gb(4.0) == "4.0 GB"
 
     def test_zero_size_shows_dash(self):
-        assert _format_size_gb(0.0) == "--"
+        assert format_size_gb(0.0) == "--"
 
     def test_negative_shows_dash(self):
-        assert _format_size_gb(-1.0) == "--"
+        assert format_size_gb(-1.0) == "--"
 
 
 class TestCatalogToRow:
     def test_contains_display_name(self):
         m = _make_catalog_model(display_name="My Model 8B", hf_repo="my-org/my-model-8B-GGUF")
-        row = _catalog_to_row(m, installed=False)
+        row = catalog_to_row(m, installed=False)
         assert "my model 8b" in row.name.lower()
 
     def test_zero_downloads(self):
         m = _make_catalog_model(downloads=0)
-        row = _catalog_to_row(m, installed=False)
+        row = catalog_to_row(m, installed=False)
         assert row.downloads == "--"
 
     def test_positive_downloads(self):
         m = _make_catalog_model(downloads=5000)
-        row = _catalog_to_row(m, installed=False)
+        row = catalog_to_row(m, installed=False)
         assert row.downloads == "5K"
 
 
 class TestMatchesSearch:
     def test_no_search(self):
-        row = _catalog_to_row(_make_catalog_model(task="chat"), installed=False)
+        row = catalog_to_row(_make_catalog_model(task="chat"), installed=False)
         assert _matches_search(row, "") is True
 
     def test_search_by_name(self):
-        row = _catalog_to_row(
+        row = catalog_to_row(
             _make_catalog_model(display_name="Qwen 8B", hf_repo="org/qwen-8B-GGUF"),
             installed=False,
         )
         assert _matches_search(row, "qwen") is True
 
     def test_search_by_task(self):
-        row = _catalog_to_row(_make_catalog_model(task="embedding"), installed=False)
+        row = catalog_to_row(_make_catalog_model(task="embedding"), installed=False)
         assert _matches_search(row, "embedding") is True
 
     def test_search_no_match(self):
-        row = _catalog_to_row(_make_catalog_model(display_name="Llama 7B"), installed=False)
+        row = catalog_to_row(_make_catalog_model(display_name="Llama 7B"), installed=False)
         assert _matches_search(row, "qwen") is False
 
     def test_search_by_quant(self):
@@ -647,11 +647,11 @@ def test_status_read_chat_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value={"architecture": "llama"},
         ),
     ):
@@ -666,11 +666,11 @@ def test_status_read_embed_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value={"architecture": "bert"},
         ),
     ):
@@ -685,15 +685,15 @@ def test_status_read_vision_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider._find_mmproj_for_model",
+            "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
             return_value="/fake/mmproj",
         ),
         patch(
-            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
             return_value="resampler",
         ),
     ):
@@ -1194,9 +1194,9 @@ async def test_chat_cancel_stream_not_streaming():
 async def test_chat_cancel_stream_while_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._streaming = True
+        app.screen.streaming = True
         app.screen.action_cancel_stream()
-        assert app.screen._streaming is False
+        assert app.screen.streaming is False
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
@@ -1999,7 +1999,7 @@ async def test_catalog_worker_non_success_ignored():
 
 
 async def test_catalog_select_catalog_row():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _catalog_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2008,7 +2008,7 @@ async def test_catalog_select_catalog_row():
             app.push_screen(screen)
             await _pilot.pause()
             m = _make_catalog_model(name="test-7B")
-            row = _catalog_to_row(m, installed=False)
+            row = catalog_to_row(m, installed=False)
             with patch.object(screen, "_install_model") as mock_install:
                 screen._select_row(row)
                 mock_install.assert_called_once_with(m)
@@ -2294,9 +2294,9 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
         await _pilot.press("enter")
         await _pilot.pause()
         # Now cancel while streaming
-        app.screen._streaming = True
+        app.screen.streaming = True
         app.screen.action_cancel_stream()
-        assert app.screen._streaming is False
+        assert app.screen.streaming is False
 
 
 async def test_chat_needs_setup_true_pushes_wizard():
@@ -5209,7 +5209,7 @@ async def test_catalog_get_highlighted_remote_name():
 
 async def test_catalog_get_highlighted_catalog_name():
     """_get_highlighted_model_name returns name for catalog row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen, _catalog_to_row
+    from lilbee.cli.tui.screens.catalog import CatalogScreen, catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5218,7 +5218,7 @@ async def test_catalog_get_highlighted_catalog_name():
             app.push_screen(screen)
             await _pilot.pause()
             m = _make_catalog_model(name="hf-model")
-            row = _catalog_to_row(m, installed=False)
+            row = catalog_to_row(m, installed=False)
             screen._rows = [row]
             table = screen.query_one("#catalog-table", DataTable)
             table.clear()
@@ -5465,9 +5465,9 @@ async def test_chat_enter_normal_mode_while_streaming():
     """action_enter_normal_mode cancels stream when streaming."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
-        app.screen._streaming = True
+        app.screen.streaming = True
         app.screen.action_enter_normal_mode()
-        assert app.screen._streaming is False
+        assert app.screen.streaming is False
         # Should NOT have entered normal mode
         assert app.screen._insert_mode is True
 
@@ -5783,7 +5783,7 @@ async def test_app_action_quit_when_streaming():
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, ChatScreen)
-        screen._streaming = True
+        screen.streaming = True
         with patch.object(screen, "action_cancel_stream") as mock_cancel:
             await app.action_quit()
             mock_cancel.assert_called_once()
@@ -5968,7 +5968,7 @@ async def test_chat_embedding_ready_false_on_exception():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         with patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             side_effect=FileNotFoundError("not found"),
         ):
             assert screen._embedding_ready() is False
@@ -6039,13 +6039,13 @@ async def test_chat_action_enter_normal_mode_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        app.screen._streaming = True
+        app.screen.streaming = True
         # Start a real Textual worker so self.workers is non-empty
         app.screen.run_worker(_slow_worker(), exclusive=False)
         await _pilot.pause()
         assert len(list(app.screen.workers)) > 0
         app.screen.action_enter_normal_mode()
-        assert app.screen._streaming is False
+        assert app.screen.streaming is False
 
 
 async def test_chat_action_toggle_markdown():

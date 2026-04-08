@@ -107,7 +107,7 @@ class TestHandleEmbed:
     def test_success(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._embed_one",
+            "lilbee.providers.llama_cpp_provider.embed_one",
             side_effect=[[0.1, 0.2], [0.3, 0.4]],
         ):
             req = EmbedRequest(texts=["a", "b"], model="m", request_id=5)
@@ -119,7 +119,7 @@ class TestHandleEmbed:
     def test_error_returns_error_response(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._embed_one",
+            "lilbee.providers.llama_cpp_provider.embed_one",
             side_effect=RuntimeError("GPU OOM"),
         ):
             req = EmbedRequest(texts=["a"], model="m", request_id=3)
@@ -135,7 +135,7 @@ class TestHandleVision:
             "choices": [{"message": {"content": "extracted text"}}]
         }
         req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=7)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]):
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
             resp = _handle_vision(llm, req)
         assert resp.text == "extracted text"
         assert resp.request_id == 7
@@ -144,7 +144,7 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.side_effect = RuntimeError("model failed")
         req = VisionRequest(png_bytes=b"png", model="v", request_id=8)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]):
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
             resp = _handle_vision(llm, req)
         assert resp.error == "model failed"
 
@@ -152,9 +152,9 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "text"}}]}
         req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=1)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]) as mock_build:
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]) as mock_build:
             _handle_vision(llm, req)
-        # Should use _OCR_PROMPT when prompt is empty
+        # Should use OCR_PROMPT when prompt is empty
         call_args = mock_build.call_args[0]
         assert len(call_args[0]) > 0  # Non-empty prompt passed
 
@@ -162,7 +162,7 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "text"}}]}
         req = VisionRequest(png_bytes=b"png", model="v", prompt="custom prompt", request_id=1)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]) as mock_build:
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]) as mock_build:
             _handle_vision(llm, req)
         assert mock_build.call_args[0][0] == "custom prompt"
 
@@ -781,11 +781,11 @@ class TestLoadEmbedModel:
         model_path = str(tmp_path / "model.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=model_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._load_llama",
+                "lilbee.providers.llama_cpp_provider.load_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
@@ -858,11 +858,11 @@ class TestLoadVisionModel:
         vision_path = str(tmp_path / "vision.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=vision_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._load_vision_llama",
+                "lilbee.providers.llama_cpp_provider.load_vision_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):

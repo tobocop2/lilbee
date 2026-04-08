@@ -150,7 +150,7 @@ class TestChatScreenIntegration:
                 inp.value = "What is RAG?"
                 await pilot.press("enter")
                 assert len(app.screen._history) == 1
-                assert app.screen._streaming is True
+                assert app.screen.streaming is True
 
     async def test_empty_input_ignored(self) -> None:
         app = _ChatApp()
@@ -177,7 +177,7 @@ class TestChatScreenIntegration:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.action_cancel_stream()
-            assert app.screen._streaming is False
+            assert app.screen.streaming is False
 
 
 class TestSlashCommandIntegration:
@@ -509,9 +509,9 @@ class TestChatKeybindings:
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._streaming = True
+            app.screen.streaming = True
             app.screen.action_cancel_stream()
-            assert app.screen._streaming is False
+            assert app.screen.streaming is False
 
     async def test_j_scrolls_down_vim(self) -> None:
         app = _ChatApp()
