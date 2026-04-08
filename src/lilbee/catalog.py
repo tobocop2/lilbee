@@ -7,10 +7,12 @@ Three levels:
 """
 
 import functools
+import io
 import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,30 +31,109 @@ log = logging.getLogger(__name__)
 HF_API_URL = "https://huggingface.co/api/models"
 
 
+@dataclass
+class DownloadProgress:
+    """Human-readable snapshot of download progress."""
+
+    percent: int
+    detail: str
+    is_cache_hit: bool
+
+
+ProgressCallback = Callable[[int, int], None]
+_BYTES_PER_MB = 1024 * 1024
+
+
+def make_download_callback(
+    on_update: Callable[[DownloadProgress], None],
+    *,
+    throttle_interval: float = 0.1,
+) -> ProgressCallback:
+    """Build a download progress callback that converts bytes to human-readable state.
+
+    *on_update(progress: DownloadProgress)* is called with throttled, deduplicated
+    progress snapshots. Both the catalog and setup screens use this to avoid
+    duplicating byte→MB conversion and cache-hit detection.
+    """
+    last_update_time = 0.0
+    last_pct = -1
+    seen_partial = False
+
+    def _on_progress(downloaded: int, total: int) -> None:
+        nonlocal last_update_time, last_pct, seen_partial
+
+        if total > 0 and downloaded >= total and not seen_partial:
+            on_update(DownloadProgress(percent=100, detail="already downloaded", is_cache_hit=True))
+            return
+        seen_partial = True
+
+        now = time.monotonic()
+        if now - last_update_time < throttle_interval:
+            return
+        last_update_time = now
+
+        mb_done = downloaded / _BYTES_PER_MB
+        if total > 0:
+            pct = min(int(downloaded * 100 / total), 100)
+            if pct == last_pct and pct > 0:
+                return
+            last_pct = pct
+            mb_total = total / _BYTES_PER_MB
+            on_update(
+                DownloadProgress(
+                    percent=pct,
+                    detail=f"{mb_done:.0f}/{mb_total:.0f} MB",
+                    is_cache_hit=False,
+                )
+            )
+        else:
+            on_update(DownloadProgress(percent=0, detail=f"{mb_done:.0f} MB", is_cache_hit=False))
+
+    return _on_progress
+
+
 class _CallbackProgressBar(_base_tqdm):
-    """tqdm subclass that forwards progress to a plain callback."""
+    """tqdm subclass that forwards progress to a plain callback.
+
+    Fully suppresses terminal output by disabling tqdm rendering and redirecting
+    its file handle to a devnull sink — prevents ANSI escape sequences from leaking
+    into Textual's managed terminal.
+    """
 
     _callback: Any = None
 
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs["disable"] = True
+        kwargs["file"] = io.StringIO()  # absorb any accidental tqdm output
         super().__init__(*args, **kwargs)
         self._cumulative = 0
 
     def update(self, n: float = 1) -> bool | None:
         self._cumulative += int(n)
         if self._callback is not None:
-            self._callback(int(self._cumulative), self.total)
+            total = self.total if self.total is not None else 0
+            self._callback(int(self._cumulative), int(total))
         return None
 
 
-def _make_progress_tqdm_class(callback: Any) -> type[_base_tqdm]:
-    """Build a tqdm_class that forwards updates to callback(downloaded, total)."""
+class _ProgressTracker:
+    """Wraps a tqdm_class to detect whether progress updates actually fired."""
 
-    class _Cls(_CallbackProgressBar):
-        _callback = staticmethod(callback)
+    def __init__(self, callback: Any) -> None:
+        self.was_used = False
+        self._callback = callback
 
-    return _Cls
+    def make_tqdm_class(self) -> type[_base_tqdm]:
+        tracker = self
+
+        class _Cls(_CallbackProgressBar):
+            _callback = staticmethod(tracker._callback)
+
+            def update(self, n: float = 1) -> bool | None:
+                tracker.was_used = True
+                return super().update(n)
+
+        return _Cls
 
 
 class DownloadConfig(BaseModel):
@@ -535,12 +616,16 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     return by_ref.get(q) or by_name.get(q) or by_display.get(q)
 
 
-def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
+def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
 
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     For vision models, also downloads the mmproj (CLIP projection) file.
+
+    Raises:
+        PermissionError: gated repo requiring authentication
+        RuntimeError: repo not found or download failure with details
     """
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
@@ -554,40 +639,52 @@ def download_model(entry: CatalogModel, *, on_progress: Any = None) -> Path:
         if on_progress is not None:
             size = dest.stat().st_size
             on_progress(size, size)  # Report 100% immediately
-    else:
-        log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
-        token = _hf_token()
+        return _finalize_download(entry, dest)
 
-        config = DownloadConfig(
-            repo_id=entry.hf_repo,
-            filename=filename,
-            token=token,
-            cache_dir=str(cfg.models_dir),
-            tqdm_class=_make_progress_tqdm_class(on_progress) if on_progress else None,
-        )
+    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
+    token = _hf_token()
 
-        try:
-            cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
-        except GatedRepoError:
-            raise PermissionError(
-                f"{entry.name} requires HuggingFace authentication. "
-                "Set HF_TOKEN env var or visit the repo page to request access."
-            ) from None
-        except RepositoryNotFoundError:
-            raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+    tracker = _ProgressTracker(on_progress) if on_progress else None
+    config = DownloadConfig(
+        repo_id=entry.hf_repo,
+        filename=filename,
+        token=token,
+        cache_dir=str(cfg.models_dir),
+        tqdm_class=tracker.make_tqdm_class() if tracker else None,
+    )
 
-        if on_progress:
-            actual_size = cached.stat().st_size
-            on_progress(actual_size, actual_size)
-        dest = cached
+    try:
+        cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+    except GatedRepoError:
+        raise PermissionError(
+            f"{entry.name} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        ) from None
+    except RepositoryNotFoundError:
+        raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        raise RuntimeError(f"Network error downloading {entry.display_name}: {exc}") from None
+    except OSError as exc:
+        raise RuntimeError(f"I/O error downloading {entry.display_name}: {exc}") from None
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to download {entry.display_name}: {type(exc).__name__}: {exc}"
+        ) from None
 
-    # Register in manifest so the model is visible to the registry
+    if on_progress:
+        actual_size = cached.stat().st_size
+        if not tracker or not tracker.was_used:
+            log.info("Model found in HuggingFace cache: %s", cached)
+        on_progress(actual_size, actual_size)
+    dest = cached
+    return _finalize_download(entry, dest)
+
+
+def _finalize_download(entry: CatalogModel, dest: Path) -> Path:
+    """Register the model in the manifest and download mmproj for vision models."""
     _register_model(entry, dest)
-
-    # Download mmproj file for vision models
     if entry.task == ModelTask.VISION:
         _download_mmproj(entry)
-
     return dest
 
 

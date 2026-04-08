@@ -2286,7 +2286,7 @@ class TestSetupWizardGrid:
                 assert len(grids) >= 1
 
     async def test_setup_step1_shows_chat_picks(self, _mock_resolve):
-        """Step 1 shows 'Our picks' heading for chat models."""
+        """Setup shows 'Chat Models' heading."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = ChatTestApp()
@@ -2300,7 +2300,7 @@ class TestSetupWizardGrid:
                 await pilot.pause()
                 headings = app.screen.query(".section-heading")
                 texts = [str(h.render()) for h in headings]
-                assert "Our picks" in texts
+                assert "Chat Models" in texts
 
     async def test_setup_browse_catalog_button(self, _mock_resolve):
         """Browse catalog button exists in setup wizard."""
