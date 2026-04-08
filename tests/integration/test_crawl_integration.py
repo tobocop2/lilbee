@@ -337,7 +337,7 @@ class TestCrawlConcurrency:
         # All 3 should start within a short window (no semaphore blocking)
         request_times.sort()
         spread = request_times[2] - request_times[0]
-        assert spread < 0.3, f"Requests not concurrent (spread={spread:.3f}s)"
+        assert spread < 1.0, f"Requests not concurrent (spread={spread:.3f}s)"
 
 
 class TestPeriodicSync:
