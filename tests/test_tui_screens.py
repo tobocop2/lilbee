@@ -3487,14 +3487,9 @@ async def test_chat_input_history_up_down():
         inp.focus()
         await pilot.pause()
 
-        # Submit two messages
-        inp.value = "hello"
-        await pilot.press("enter")
-        inp.value = "world"
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert app.screen._input_history == ["hello", "world"]
+        # Populate history directly — pressing enter spawns a @work(thread=True)
+        # LLM streaming thread that can hang the xdist worker on shutdown.
+        app.screen._input_history = ["hello", "world"]
 
         # Press up to recall "world"
         app.screen.action_history_prev()
