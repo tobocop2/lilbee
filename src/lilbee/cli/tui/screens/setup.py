@@ -187,42 +187,20 @@ class SetupWizard(Screen[str | None]):
         """Download via catalog API with TUI-native progress (no Rich)."""
         self.app.call_from_thread(self._set_status, msg.SETUP_CONNECTING)
         try:
-            from lilbee.catalog import download_model
+            from lilbee.catalog import DownloadProgress, download_model, make_download_callback
 
-            last_update_time = 0.0
-            last_pct = -1
-
-            def _on_progress(downloaded: int, total: int) -> None:
-                nonlocal last_update_time, last_pct
-                import time
-
-                current_time = time.time()
-                if current_time - last_update_time < 0.1:
-                    return
-                try:
-                    mb_done = downloaded / (1024 * 1024)
-                    if total > 0:
-                        pct = min(int(downloaded * 100 / total), 100)
-                        mb_total = total / (1024 * 1024)
-                        last_update_time = current_time
-                        if pct == last_pct and pct > 0:
-                            return
-                        last_pct = pct
-                        self.app.call_from_thread(self._update_progress, pct)
-                        self.app.call_from_thread(
-                            self._set_status,
-                            f"Downloading... {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
-                        )
-                    else:
-                        self.app.call_from_thread(
-                            self._set_status,
-                            f"Downloading... {mb_done:.0f} MB",
-                        )
-                except Exception:
-                    log.debug(
-                        "Progress callback failed",
-                        exc_info=True,
+            def _on_update(p: DownloadProgress) -> None:
+                self.app.call_from_thread(self._update_progress, p.percent)
+                if p.is_cache_hit:
+                    self.app.call_from_thread(
+                        self._set_status, f"{model.display_name} already downloaded"
                     )
+                else:
+                    self.app.call_from_thread(
+                        self._set_status, f"Downloading... {p.detail} ({p.percent}%)"
+                    )
+
+            _on_progress = make_download_callback(_on_update)
 
             download_model(model, on_progress=_on_progress)
             self.app.call_from_thread(self._on_download_complete, model.ref, model.display_name)

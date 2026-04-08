@@ -621,20 +621,15 @@ class CatalogScreen(Screen[None]):
 
     def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
         """Build a progress callback that reports download progress to the TaskBar."""
+        from lilbee.catalog import DownloadProgress, make_download_callback
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         tb: TaskBar = bar  # type: ignore[assignment]
 
-        def on_progress(downloaded: int, total: int) -> None:
-            mb_done = downloaded / (1024 * 1024)
-            if total > 0:
-                pct = min(int(downloaded * 100 / total), 100)
-                mb_total = total / (1024 * 1024)
-                self._safe_call(tb.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB")
-            else:
-                self._safe_call(tb.update_task, task_id, 0, f"{mb_done:.0f} MB")
+        def _on_update(p: DownloadProgress) -> None:
+            self._safe_call(tb.update_task, task_id, p.percent, p.detail)
 
-        return on_progress
+        return make_download_callback(_on_update)
 
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:

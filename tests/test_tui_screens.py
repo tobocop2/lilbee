@@ -4849,6 +4849,31 @@ async def test_setup_wizard_download_progress_exception_logged():
                     await pilot.pause()
 
 
+async def test_setup_wizard_download_cache_hit():
+    """Download that returns 100% immediately shows 'already downloaded' status."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with patch("lilbee.cli.tui.screens.setup._scan_installed_models", return_value=([], [])):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="cached-model")
+
+            def fake_download(model, on_progress=None):
+                if on_progress:
+                    # First callback at 100% — simulates cache hit
+                    on_progress(1000, 1000)
+                return MagicMock(stem="cached-model")
+
+            with patch("lilbee.catalog.download_model", side_effect=fake_download):
+                screen._download_model(cm)
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
 def test_param_sort_value_with_match():
     """_param_sort_value parses '8B' to 8.0."""
     from lilbee.cli.tui.screens.catalog import _param_sort_value

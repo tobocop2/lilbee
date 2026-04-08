@@ -14,10 +14,17 @@ import pytest
 
 from lilbee.catalog import (
     CatalogModel,
+    DownloadProgress,
     _CallbackProgressBar,
-    _make_progress_tqdm_class,
+    _ProgressTracker,
     download_model,
+    make_download_callback,
 )
+
+
+def _tracker_tqdm_class(callback):
+    """Helper: build a tqdm class from a callback via _ProgressTracker."""
+    return _ProgressTracker(callback).make_tqdm_class()
 
 
 def _test_entry(tmp_path: Path | None = None) -> CatalogModel:
@@ -42,7 +49,7 @@ class TestCallbackProgressBarTerminalSuppression:
     def test_no_terminal_output(self, capsys: pytest.CaptureFixture[str]) -> None:
         """tqdm output is fully suppressed — nothing leaks to stderr/stdout."""
         calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm_class(lambda d, t: calls.append((d, t)))
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=1000)
         bar.update(500)
         bar.update(500)
@@ -75,7 +82,7 @@ class TestCallbackProgressBarIncrementalUpdates:
     def test_incremental_progress(self) -> None:
         """Simulates chunked download: callback must fire per-chunk with cumulative bytes."""
         calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm_class(lambda d, t: calls.append((d, t)))
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         total = 10_000_000  # 10 MB
         chunk_size = 1_000_000  # 1 MB chunks
 
@@ -96,7 +103,7 @@ class TestCallbackProgressBarIncrementalUpdates:
     def test_progress_never_exceeds_total(self) -> None:
         """Even if update overshoots, cumulative is reported honestly."""
         calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm_class(lambda d, t: calls.append((d, t)))
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=100)
         bar.update(150)  # overshoot
         bar.close()
@@ -105,7 +112,7 @@ class TestCallbackProgressBarIncrementalUpdates:
     def test_total_none_reports_zero(self) -> None:
         """When total is unknown (None), callback receives total=0."""
         calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm_class(lambda d, t: calls.append((d, t)))
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=None)
         bar.update(500)
         bar.close()
@@ -120,7 +127,7 @@ class TestCallbackProgressBarIncrementalUpdates:
     def test_small_chunks_fire_many_callbacks(self) -> None:
         """50 small chunks each produce a callback — no coalescing/skipping."""
         calls: list[tuple[int, int]] = []
-        cls = _make_progress_tqdm_class(lambda d, t: calls.append((d, t)))
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
         bar = cls(total=5000)
         for _ in range(50):
             bar.update(100)
@@ -198,6 +205,37 @@ class TestDownloadModelProgressChain:
 
         assert len(calls) == 1
         assert calls[0][0] == calls[0][1]  # downloaded == total
+
+    def test_hf_cache_hit_detected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When hf_hub_download returns instantly (HF cache hit), progress still reports."""
+        import hashlib
+
+        from lilbee import catalog
+
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+
+        def fake_cached_download(**kwargs: Any) -> str:
+            # Return a file without calling tqdm_class — simulates HF cache hit
+            content = b"cached model"
+            digest = hashlib.sha256(content).hexdigest()
+            repo_id = kwargs.get("repo_id", "")
+            safe_repo = repo_id.replace("/", "--")
+            model_dir = Path(kwargs["cache_dir"]) / f"models--{safe_repo}"
+            blobs_dir = model_dir / "blobs"
+            blobs_dir.mkdir(parents=True, exist_ok=True)
+            dest = blobs_dir / digest
+            dest.write_bytes(content)
+            return str(dest)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_cached_download)
+        entry = _test_entry()
+        calls: list[tuple[int, int]] = []
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+
+        # Should get exactly 1 call with downloaded == total (final 100%)
+        assert len(calls) == 1
+        assert calls[0][0] == calls[0][1]
 
 
 class TestDownloadModelErrorPropagation:
@@ -312,3 +350,89 @@ class TestDownloadModelErrorPropagation:
 
         with pytest.raises(RuntimeError, match="not found on HuggingFace"):
             download_model(entry)
+
+
+class TestMakeDownloadCallback:
+    """Tests for the shared make_download_callback helper."""
+
+    def test_cache_hit_detected(self) -> None:
+        """First callback at 100% is detected as cache hit."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=0)
+        cb(1000, 1000)  # first call already at 100%
+        assert len(updates) == 1
+        assert updates[0].is_cache_hit is True
+        assert updates[0].percent == 100
+        assert updates[0].detail == "already downloaded"
+
+    def test_incremental_progress(self) -> None:
+        """Partial callbacks are not cache hits and show MB detail."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=0)
+        cb(500_000, 1_000_000)
+        cb(1_000_000, 1_000_000)
+        assert len(updates) == 2
+        assert updates[0].is_cache_hit is False
+        assert updates[0].percent == 50
+        assert "MB" in updates[0].detail
+        assert updates[1].percent == 100
+
+    def test_unknown_total_reports_zero_percent(self) -> None:
+        """When total is 0 (unknown), percent is 0 and detail shows MB downloaded."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=0)
+        cb(5_000_000, 0)
+        assert len(updates) == 1
+        assert updates[0].percent == 0
+        assert "MB" in updates[0].detail
+
+    def test_deduplicates_same_percent(self) -> None:
+        """Repeated callbacks at the same percentage are suppressed."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=0)
+        cb(10, 1000)  # 1%
+        cb(11, 1000)  # still 1%
+        cb(12, 1000)  # still 1%
+        cb(20, 1000)  # 2%
+        assert len(updates) == 2
+        assert updates[0].percent == 1
+        assert updates[1].percent == 2
+
+    def test_throttle_suppresses_rapid_calls(self) -> None:
+        """Calls within throttle_interval are suppressed."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=10.0)
+        cb(100, 1000)  # passes (first call)
+        cb(200, 1000)  # throttled
+        cb(300, 1000)  # throttled
+        assert len(updates) == 1
+
+    def test_cache_hit_not_triggered_after_partial(self) -> None:
+        """If partial progress was seen, a 100% call is NOT a cache hit."""
+        updates: list[DownloadProgress] = []
+        cb = make_download_callback(updates.append, throttle_interval=0)
+        cb(500, 1000)  # partial
+        cb(1000, 1000)  # 100% but after partial — not a cache hit
+        assert len(updates) == 2
+        assert updates[0].is_cache_hit is False
+        assert updates[1].is_cache_hit is False
+        assert updates[1].percent == 100
+
+
+class TestProgressTracker:
+    """Tests for _ProgressTracker.was_used detection."""
+
+    def test_was_used_false_when_no_updates(self) -> None:
+        tracker = _ProgressTracker(lambda d, t: None)
+        cls = tracker.make_tqdm_class()
+        bar = cls(total=100)
+        bar.close()
+        assert tracker.was_used is False
+
+    def test_was_used_true_after_update(self) -> None:
+        tracker = _ProgressTracker(lambda d, t: None)
+        cls = tracker.make_tqdm_class()
+        bar = cls(total=100)
+        bar.update(50)
+        bar.close()
+        assert tracker.was_used is True
