@@ -17,7 +17,7 @@ from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 def _auth_headers() -> dict[str, str]:
     """Return Authorization header using the current session token."""
-    return {"Authorization": f"Bearer {_auth_mod._session_token}"}
+    return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
 
 
 @pytest.fixture(autouse=True)
