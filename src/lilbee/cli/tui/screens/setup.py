@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -15,13 +15,16 @@ from textual.widgets import Button, Label, ProgressBar, Static
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens.catalog import (
+    TableRow,
+    _catalog_to_row,
+    _format_size_gb,
+    _parse_param_label,
+)
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
-from lilbee.models import ModelTask
-
-if TYPE_CHECKING:
-    from lilbee.cli.tui.screens.catalog import TableRow
+from lilbee.models import ModelTask, get_system_ram_gb
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +55,6 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
     (for config persistence) and also in ``name`` (for display) since we
     don't have a richer display label for already-installed models.
     """
-    from lilbee.cli.tui.screens.catalog import TableRow, _parse_param_label
-
     return TableRow(
         name=name,
         task=task,
@@ -98,26 +99,6 @@ def _pending_download(card: ModelCard | None) -> CatalogModel | None:
     if card and not card.row.installed:
         return card.row.catalog_model
     return None
-
-
-def _make_progress_callback(
-    wizard: SetupWizard,
-) -> tuple[list[int], Callable[[int, int], None]]:
-    """Build a progress callback that updates the wizard's progress bar.
-
-    Returns (state, callback) where state[0] tracks last_pct to avoid
-    redundant UI updates.
-    """
-    state = [-1]
-
-    def on_progress(downloaded: int, total_bytes: int) -> None:
-        if total_bytes > 0:
-            pct = min(int(downloaded * 100 / total_bytes), 100)
-            if pct != state[0]:
-                state[0] = pct
-                wizard.app.call_from_thread(wizard._update_progress, pct)
-
-    return state, on_progress
 
 
 class SetupWizard(Screen[str | None]):
@@ -172,8 +153,6 @@ class SetupWizard(Screen[str | None]):
         widgets_out: list[Static | GridSelect],
     ) -> list[ModelCard]:
         """Build a heading + GridSelect for a list of catalog models."""
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
-
         widgets_out.append(Static(heading, classes="section-heading"))
         cards = [ModelCard(_catalog_to_row(m, installed=False)) for m in models]
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
@@ -181,8 +160,6 @@ class SetupWizard(Screen[str | None]):
 
     def _build_grid(self) -> None:
         """Build all model sections and pre-select recommended combo."""
-        from lilbee.models import get_system_ram_gb
-
         ram_gb = get_system_ram_gb()
         rec_chat, rec_embed = _pick_recommended(ram_gb)
         self._recommended_chat = rec_chat
@@ -257,8 +234,6 @@ class SetupWizard(Screen[str | None]):
 
         total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
         if total_gb > 0:
-            from lilbee.cli.tui.screens.catalog import _format_size_gb
-
             size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=_format_size_gb(total_gb)))
         else:
             size_label.update("")
@@ -323,7 +298,7 @@ class SetupWizard(Screen[str | None]):
                 msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
             )
             self.app.call_from_thread(self._update_progress, 0)
-            _state, on_progress = _make_progress_callback(self)
+            _state, on_progress = self._make_progress_callback()
 
             try:
                 download_model(model, on_progress=on_progress)
@@ -358,6 +333,23 @@ class SetupWizard(Screen[str | None]):
 
     def _update_progress(self, percent: int) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
+
+    def _make_progress_callback(self) -> tuple[list[int], Callable[[int, int], None]]:
+        """Build a progress callback for download_model.
+
+        Returns (state, callback) where state[0] tracks last_pct to avoid
+        redundant UI updates.
+        """
+        state = [-1]
+
+        def on_progress(downloaded: int, total_bytes: int) -> None:
+            if total_bytes > 0:
+                pct = min(int(downloaded * 100 / total_bytes), 100)
+                if pct != state[0]:
+                    state[0] = pct
+                    self.app.call_from_thread(self._update_progress, pct)
+
+        return state, on_progress
 
     def _save_and_dismiss(self, result: str) -> None:
         """Persist selected models to config and dismiss."""

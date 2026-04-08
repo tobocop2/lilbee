@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -9,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from lilbee.catalog import CatalogModel
+from lilbee.cli.tui.screens.catalog import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
@@ -1992,11 +1994,6 @@ class TestGridSelect:
             assert grid._reactive_highlighted == 999
 
 
-# ---------------------------------------------------------------------------
-# ModelCard selected reactive tests
-# ---------------------------------------------------------------------------
-
-
 class TestModelCardSelected:
     def test_model_card_selected_reactive(self) -> None:
         from lilbee.cli.tui.screens.catalog import _catalog_to_row
@@ -2009,82 +2006,45 @@ class TestModelCardSelected:
         card.selected = True
         assert card.selected is True
 
+    def _make_row(self, **overrides: Any) -> TableRow:
+        defaults: dict[str, Any] = {
+            "name": "test",
+            "task": "chat",
+            "params": "8B",
+            "size": "4 GB",
+            "quant": "Q4_K_M",
+            "downloads": "--",
+            "featured": False,
+            "installed": False,
+            "sort_downloads": 0,
+            "sort_size": 4.0,
+        }
+        defaults.update(overrides)
+        return TableRow(**defaults)
+
     def test_build_status_with_downloads(self) -> None:
-        from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
-        row = TableRow(
-            name="test",
-            task="chat",
-            params="8B",
-            size="4 GB",
-            quant="Q4_K_M",
-            downloads="1K",
-            featured=False,
-            installed=False,
-            sort_downloads=1000,
-            sort_size=4.0,
-        )
-        result = _build_status(row)
-        assert result is not None
+        row = self._make_row(downloads="1K", sort_downloads=1000)
+        assert _build_status(row) is not None
 
     def test_build_status_installed(self) -> None:
-        from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
-        row = TableRow(
-            name="test",
-            task="chat",
-            params="8B",
-            size="4 GB",
-            quant="Q4_K_M",
-            downloads="--",
-            featured=False,
-            installed=True,
-            sort_downloads=0,
-            sort_size=4.0,
-        )
-        result = _build_status(row)
+        result = _build_status(self._make_row(installed=True))
         assert result is not None
         assert "installed" in str(result).lower()
 
     def test_build_status_downloads_positive(self) -> None:
-        from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
-        row = TableRow(
-            name="test",
-            task="chat",
-            params="8B",
-            size="4 GB",
-            quant="Q4_K_M",
-            downloads="5K",
-            featured=False,
-            installed=False,
-            sort_downloads=5000,
-            sort_size=4.0,
-        )
-        result = _build_status(row)
-        assert result is not None
+        row = self._make_row(downloads="5K", sort_downloads=5000)
+        assert _build_status(row) is not None
 
     def test_build_status_none(self) -> None:
-        from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
-        row = TableRow(
-            name="test",
-            task="chat",
-            params="8B",
-            size="4 GB",
-            quant="Q4_K_M",
-            downloads="--",
-            featured=False,
-            installed=False,
-            sort_downloads=0,
-            sort_size=4.0,
-        )
-        result = _build_status(row)
-        assert result is None
+        assert _build_status(self._make_row()) is None
 
 
 # ---------------------------------------------------------------------------
