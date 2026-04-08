@@ -299,9 +299,7 @@ class SetupWizard(Screen[str | None]):
             is_first = idx == 1
             self.app.call_from_thread(
                 self._set_status,
-                msg.SETUP_DOWNLOADING_N.format(
-                    name=model.display_name, current=idx, total=total
-                ),
+                msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
             )
             self.app.call_from_thread(self._update_progress, 0)
 
