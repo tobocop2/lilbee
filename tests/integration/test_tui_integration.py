@@ -10,8 +10,6 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Input
@@ -137,7 +135,7 @@ class TestDelete:
         # Re-sync to restore for other tests
         from lilbee.ingest import sync
 
-        asyncio.get_event_loop().run_until_complete(sync(quiet=True))
+        await sync(quiet=True)
         get_services().store.ensure_fts_index()
 
 
