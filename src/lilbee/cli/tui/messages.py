@@ -115,7 +115,8 @@ APP_CANCELLED = "Cancelled"
 
 SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
-SETUP_RECOMMENDED = "Recommended for your system"
+SETUP_HEADING_CHAT = "Chat Models"
+SETUP_HEADING_EMBED = "Embedding Models"
 SETUP_CHAT_SLOT = "Chat: {name}"
 SETUP_EMBED_SLOT = "Embed: {name}"
 SETUP_SLOT_EMPTY = "not selected"
@@ -126,8 +127,6 @@ SETUP_CONTINUE_NO_SEARCH = "Continue without search"
 SETUP_DOWNLOADING_N = "Downloading {name} ({current}/{total})..."
 SETUP_ALL_DONE = "All set!"
 SETUP_PARTIAL_FAIL = "Chat model installed. Embedding failed \u2014 install later from catalog."
-SETUP_CONNECTING = "Connecting to HuggingFace..."
-SETUP_INSTALLED_STATUS = "{name} installed!"
 SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 
 # -- Status bar ----------------------------------------------------------------

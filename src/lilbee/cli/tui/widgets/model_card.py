@@ -50,7 +50,7 @@ class ModelCard(containers.VerticalGroup):
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
         specs = _build_specs(row.params, row.quant, row.size)
         yield widgets.Label(specs, id="card-info")
-        status = _build_status(row, selected=self.selected)
+        status = _build_status(row)
         if status is not None:
             yield widgets.Label(status, id="card-status")
 
@@ -63,10 +63,8 @@ def _build_specs(params: str, quant: str, size: str) -> Content:
     return Content(f" {MIDDLE_DOT} ".join(parts))
 
 
-def _build_status(row: TableRow, *, selected: bool = False) -> Content | None:
-    """Build the status pill for selected, installed, or download count."""
-    if selected:
-        return pill("selected", "$success", "$text")
+def _build_status(row: TableRow) -> Content | None:
+    """Build the status pill for installed or download count."""
     if row.installed:
         return pill("installed", "$success", "$text")
     if row.sort_downloads > 0:

@@ -4536,18 +4536,6 @@ def test_pick_recommended_always_nomic_embed():
     assert embed.name == FEATURED_EMBEDDING[0].name
 
 
-def test_format_download_size_gb():
-    from lilbee.cli.tui.screens.setup import _format_download_size
-
-    assert _format_download_size(2.5) == "2.5 GB"
-
-
-def test_format_download_size_mb():
-    from lilbee.cli.tui.screens.setup import _format_download_size
-
-    assert _format_download_size(0.3) == "307 MB"
-
-
 def test_scan_installed_models_empty():
     from lilbee.cli.tui.screens.setup import _scan_installed_models
 
@@ -4661,8 +4649,8 @@ async def test_setup_wizard_skip_saves_chat_if_selected():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            screen._selected_chat = "my-chat:latest"
-            screen._selected_embed = None
+            screen._selections["chat"] = ("my-chat:latest", None)
+            screen._selections["embedding"] = (None, None)
             with (
                 patch("lilbee.settings.set_value") as mock_set,
                 patch("lilbee.services.reset_services"),
@@ -4681,13 +4669,13 @@ async def test_setup_wizard_finish_saves_config():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            screen._selected_chat = "my-chat:latest"
-            screen._selected_embed = "my-embed:latest"
+            screen._selections["chat"] = ("my-chat:latest", None)
+            screen._selections["embedding"] = ("my-embed:latest", None)
             with (
                 patch("lilbee.settings.set_value") as mock_set,
                 patch("lilbee.services.reset_services"),
             ):
-                screen._finish()
+                screen._save_and_dismiss("completed")
                 assert cfg.chat_model == "my-chat:latest"
                 assert cfg.embedding_model == "my-embed:latest"
                 assert mock_set.call_count == 2
@@ -4702,13 +4690,13 @@ async def test_setup_wizard_finish_no_embed():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            screen._selected_chat = "my-chat:latest"
-            screen._selected_embed = None
+            screen._selections["chat"] = ("my-chat:latest", None)
+            screen._selections["embedding"] = (None, None)
             with (
                 patch("lilbee.settings.set_value") as mock_set,
                 patch("lilbee.services.reset_services"),
             ):
-                screen._finish()
+                screen._save_and_dismiss("completed")
                 assert mock_set.call_count == 1
 
 
@@ -4894,10 +4882,8 @@ async def test_setup_wizard_footer_updates():
             assert isinstance(screen, SetupWizard)
             action_btn = screen.query_one("#setup-action")
             assert action_btn.disabled is False
-            screen._selected_chat = None
-            screen._selected_embed = None
-            screen._selected_chat_card = None
-            screen._selected_embed_card = None
+            screen._selections["chat"] = (None, None)
+            screen._selections["embedding"] = (None, None)
             screen._update_footer()
             assert action_btn.disabled is True
 

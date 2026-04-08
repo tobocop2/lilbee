@@ -83,11 +83,38 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
     return chat, embed
 
 
-def _format_download_size(size_gb: float) -> str:
-    """Format a download size in GB to a human-readable string."""
-    if size_gb < 1.0:
-        return f"{size_gb * 1024:.0f} MB"
-    return f"{size_gb:.1f} GB"
+def _card_download_size(card: ModelCard | None) -> float:
+    """Return download size in GB for a non-installed card, or 0."""
+    if card and not card.row.installed:
+        cm = card.row.catalog_model
+        if cm:
+            return cm.size_gb
+    return 0.0
+
+
+def _pending_download(card: ModelCard | None) -> CatalogModel | None:
+    """Return the CatalogModel to download for a non-installed card, or None."""
+    if card and not card.row.installed:
+        return card.row.catalog_model
+    return None
+
+
+def _make_progress_callback(wizard: SetupWizard) -> tuple[list[int], callable]:
+    """Build a progress callback that updates the wizard's progress bar.
+
+    Returns (state, callback) where state[0] tracks last_pct to avoid
+    redundant UI updates.
+    """
+    state = [-1]
+
+    def on_progress(downloaded: int, total_bytes: int) -> None:
+        if total_bytes > 0:
+            pct = min(int(downloaded * 100 / total_bytes), 100)
+            if pct != state[0]:
+                state[0] = pct
+                wizard.app.call_from_thread(wizard._update_progress, pct)
+
+    return state, on_progress
 
 
 class SetupWizard(Screen[str | None]):
@@ -101,14 +128,22 @@ class SetupWizard(Screen[str | None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self._selected_chat: str | None = None
-        self._selected_embed: str | None = None
-        self._selected_chat_card: ModelCard | None = None
-        self._selected_embed_card: ModelCard | None = None
+        self._selections: dict[str, tuple[str | None, ModelCard | None]] = {
+            ModelTask.CHAT: (None, None),
+            ModelTask.EMBEDDING: (None, None),
+        }
         self._chat_installed, self._embed_installed = _scan_installed_models()
         self._recommended_chat: CatalogModel | None = None
         self._recommended_embed: CatalogModel | None = None
         self._download_models: list[CatalogModel] = []
+
+    @property
+    def _selected_chat(self) -> str | None:
+        return self._selections[ModelTask.CHAT][0]
+
+    @property
+    def _selected_embed(self) -> str | None:
+        return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
         yield Static(msg.SETUP_WELCOME, id="setup-title")
@@ -126,9 +161,22 @@ class SetupWizard(Screen[str | None]):
     def on_mount(self) -> None:
         self._build_grid()
 
+    def _build_section(
+        self,
+        heading: str,
+        models: tuple[CatalogModel, ...],
+        widgets_out: list[Static | GridSelect],
+    ) -> list[ModelCard]:
+        """Build a heading + GridSelect for a list of catalog models."""
+        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+
+        widgets_out.append(Static(heading, classes="section-heading"))
+        cards = [ModelCard(_catalog_to_row(m, installed=False)) for m in models]
+        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
+        return cards
+
     def _build_grid(self) -> None:
         """Build all model sections and pre-select recommended combo."""
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
         from lilbee.models import get_system_ram_gb
 
         ram_gb = get_system_ram_gb()
@@ -139,77 +187,50 @@ class SetupWizard(Screen[str | None]):
         container = self.query_one("#setup-grid-container", VerticalScroll)
         widgets_to_mount: list[Static | GridSelect] = []
 
-        # Installed section
         if self._chat_installed or self._embed_installed:
             widgets_to_mount.append(Static(msg.HEADING_INSTALLED, classes="section-heading"))
-            installed_cards: list[ModelCard] = []
-            for name in self._chat_installed:
-                installed_cards.append(ModelCard(_installed_name_to_row(name, ModelTask.CHAT)))
-            for name in self._embed_installed:
-                installed_cards.append(ModelCard(_installed_name_to_row(name, ModelTask.EMBEDDING)))
+            installed_cards = [
+                ModelCard(_installed_name_to_row(n, ModelTask.CHAT)) for n in self._chat_installed
+            ] + [
+                ModelCard(_installed_name_to_row(n, ModelTask.EMBEDDING))
+                for n in self._embed_installed
+            ]
             widgets_to_mount.append(
                 GridSelect(*installed_cards, min_column_width=30, max_column_width=50)
             )
 
-        # Chat models section
-        widgets_to_mount.append(Static("Chat Models", classes="section-heading"))
-        chat_cards: list[ModelCard] = []
-        for m in FEATURED_CHAT:
-            row = _catalog_to_row(m, installed=False)
-            card = ModelCard(row)
-            chat_cards.append(card)
-        widgets_to_mount.append(GridSelect(*chat_cards, min_column_width=30, max_column_width=50))
-
-        # Embedding models section
-        widgets_to_mount.append(Static("Embedding Models", classes="section-heading"))
-        embed_cards: list[ModelCard] = []
-        for m in FEATURED_EMBEDDING:
-            row = _catalog_to_row(m, installed=False)
-            card = ModelCard(row)
-            embed_cards.append(card)
-        widgets_to_mount.append(GridSelect(*embed_cards, min_column_width=30, max_column_width=50))
+        chat_cards = self._build_section(msg.SETUP_HEADING_CHAT, FEATURED_CHAT, widgets_to_mount)
+        embed_cards = self._build_section(
+            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, widgets_to_mount
+        )
 
         container.mount_all(widgets_to_mount)
-
-        # Pre-select recommended models (cards already exist, just set state)
         self._preselect_recommended(chat_cards, embed_cards)
 
     def _preselect_recommended(
         self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
     ) -> None:
         """Pre-select the RAM-appropriate recommended models."""
-        for card in chat_cards:
-            if (
-                card.row.catalog_model
-                and self._recommended_chat
-                and card.row.catalog_model.name == self._recommended_chat.name
-            ):
-                self._select_card(card, ModelTask.CHAT)
-                break
-        for card in embed_cards:
-            if (
-                card.row.catalog_model
-                and self._recommended_embed
-                and card.row.catalog_model.name == self._recommended_embed.name
-            ):
-                self._select_card(card, ModelTask.EMBEDDING)
-                break
+        for cards, recommended in [
+            (chat_cards, self._recommended_chat),
+            (embed_cards, self._recommended_embed),
+        ]:
+            if not recommended:
+                continue
+            for card in cards:
+                cm = card.row.catalog_model
+                if cm and cm.ref == recommended.ref:
+                    self._select_card(card, card.row.task)
+                    break
 
     def _select_card(self, card: ModelCard, task: str) -> None:
         """Select a card, deselecting the previous selection for that task."""
+        _ref, prev_card = self._selections[task]
+        if prev_card is not None:
+            prev_card.selected = False
         ref = card.row.ref or card.row.name
-        if task == ModelTask.CHAT:
-            if self._selected_chat_card is not None:
-                self._selected_chat_card.selected = False
-            self._selected_chat_card = card
-            self._selected_chat = ref
-            card.selected = True
-        else:
-            if self._selected_embed_card is not None:
-                self._selected_embed_card.selected = False
-            self._selected_embed_card = card
-            self._selected_embed = ref
-            card.selected = True
+        card.selected = True
+        self._selections[task] = (ref, card)
         self._update_footer()
 
     def _update_footer(self) -> None:
@@ -220,39 +241,31 @@ class SetupWizard(Screen[str | None]):
         action_btn = self.query_one("#setup-action", Button)
         skip_btn = self.query_one("#setup-skip", Button)
 
-        if self._selected_chat:
-            chat_slot.update(msg.SETUP_CHAT_SLOT.format(name=self._selected_chat))
-        else:
-            chat_slot.update(msg.SETUP_SLOT_EMPTY)
+        chat_ref, chat_card = self._selections[ModelTask.CHAT]
+        embed_ref, embed_card = self._selections[ModelTask.EMBEDDING]
 
-        if self._selected_embed:
-            embed_slot.update(msg.SETUP_EMBED_SLOT.format(name=self._selected_embed))
-        else:
-            embed_slot.update(msg.SETUP_SLOT_EMPTY)
+        chat_slot.update(
+            msg.SETUP_CHAT_SLOT.format(name=chat_ref) if chat_ref else msg.SETUP_SLOT_EMPTY
+        )
+        embed_slot.update(
+            msg.SETUP_EMBED_SLOT.format(name=embed_ref) if embed_ref else msg.SETUP_SLOT_EMPTY
+        )
 
-        # Calculate total download size from catalog models
-        total_gb = 0.0
-        if self._selected_chat_card and not self._selected_chat_card.row.installed:
-            cm = self._selected_chat_card.row.catalog_model
-            if cm:
-                total_gb += cm.size_gb
-        if self._selected_embed_card and not self._selected_embed_card.row.installed:
-            cm = self._selected_embed_card.row.catalog_model
-            if cm:
-                total_gb += cm.size_gb
-
+        total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
         if total_gb > 0:
-            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=_format_download_size(total_gb)))
+            from lilbee.cli.tui.screens.catalog import _format_size_gb
+
+            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=_format_size_gb(total_gb)))
         else:
             size_label.update("")
 
-        both_selected = self._selected_chat is not None and self._selected_embed is not None
+        both_selected = chat_ref is not None and embed_ref is not None
         action_btn.disabled = not both_selected
 
         if both_selected:
             action_btn.label = msg.SETUP_INSTALL_BUTTON
             skip_btn.display = False
-        elif self._selected_chat:
+        elif chat_ref:
             skip_btn.label = msg.SETUP_CONTINUE_NO_SEARCH
             skip_btn.display = True
         else:
@@ -265,25 +278,20 @@ class SetupWizard(Screen[str | None]):
             return
         card = event.widget
         task = card.row.task
-        if task in (ModelTask.CHAT, ModelTask.EMBEDDING):
+        if task in self._selections:
             self._select_card(card, task)
 
     @on(Button.Pressed, "#setup-action")
     def _on_install(self) -> None:
         """Start downloading selected models."""
-        self._download_models = []
-        if self._selected_chat_card and not self._selected_chat_card.row.installed:
-            cm = self._selected_chat_card.row.catalog_model
-            if cm:
-                self._download_models.append(cm)
-        if self._selected_embed_card and not self._selected_embed_card.row.installed:
-            cm = self._selected_embed_card.row.catalog_model
-            if cm:
-                self._download_models.append(cm)
+        self._download_models = [
+            cm
+            for task in (ModelTask.CHAT, ModelTask.EMBEDDING)
+            if (cm := _pending_download(self._selections[task][1]))
+        ]
 
         if not self._download_models:
-            # Both already installed, just finish
-            self._finish()
+            self._save_and_dismiss("completed")
             return
 
         self.add_class("-downloading")
@@ -297,37 +305,27 @@ class SetupWizard(Screen[str | None]):
 
         total = len(self._download_models)
         for idx, model in enumerate(self._download_models, 1):
+            is_first = idx == 1
             self.app.call_from_thread(
                 self._set_status,
                 msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
             )
             self.app.call_from_thread(self._update_progress, 0)
-
-            last_pct = -1
-
-            def _on_progress(downloaded: int, total_bytes: int) -> None:
-                nonlocal last_pct
-                if total_bytes > 0:
-                    pct = min(int(downloaded * 100 / total_bytes), 100)
-                    if pct != last_pct:
-                        last_pct = pct
-                        self.app.call_from_thread(self._update_progress, pct)
+            _state, on_progress = _make_progress_callback(self)
 
             try:
-                download_model(model, on_progress=_on_progress)
+                download_model(model, on_progress=on_progress)
             except Exception as exc:
                 log.warning("Download failed for %s", model.ref, exc_info=True)
                 error_msg = str(exc)
                 if "401" in error_msg or "PermissionError" in error_msg:
                     error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
                 self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
-                if idx == 1 and total > 1:
-                    # Chat failed — don't continue to embedding
+                if is_first and total > 1:
                     return
-                if idx == 2:
-                    # Embedding failed but chat succeeded — partial success
+                if not is_first:
+                    # Embedding failed but chat succeeded
                     self.app.call_from_thread(self._on_partial_success)
-                    return
                 return
 
         self.app.call_from_thread(self._on_all_downloads_complete)
@@ -335,13 +333,13 @@ class SetupWizard(Screen[str | None]):
     def _on_all_downloads_complete(self) -> None:
         self._set_status(msg.SETUP_ALL_DONE)
         self._update_progress(100)
-        self._finish()
+        self._save_and_dismiss("completed")
 
     def _on_partial_success(self) -> None:
         """Chat downloaded but embedding failed."""
         self._set_status(msg.SETUP_PARTIAL_FAIL)
-        self._selected_embed = None
-        self._finish()
+        self._selections[ModelTask.EMBEDDING] = (None, None)
+        self._save_and_dismiss("completed")
 
     def _set_status(self, text: str) -> None:
         self.query_one("#setup-status", Label).update(text)
@@ -349,34 +347,26 @@ class SetupWizard(Screen[str | None]):
     def _update_progress(self, percent: int) -> None:
         self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
 
-    def _finish(self) -> None:
+    def _save_and_dismiss(self, result: str) -> None:
+        """Persist selected models to config and dismiss."""
         from lilbee import settings
         from lilbee.services import reset_services
 
-        if self._selected_chat:
-            cfg.chat_model = self._selected_chat
-            settings.set_value(cfg.data_root, "chat_model", self._selected_chat)
-        if self._selected_embed:
-            cfg.embedding_model = self._selected_embed
-            settings.set_value(
-                cfg.data_root,
-                "embedding_model",
-                self._selected_embed,
-            )
+        chat_ref = self._selected_chat
+        embed_ref = self._selected_embed
+        if chat_ref:
+            cfg.chat_model = chat_ref
+            settings.set_value(cfg.data_root, "chat_model", chat_ref)
+        if embed_ref:
+            cfg.embedding_model = embed_ref
+            settings.set_value(cfg.data_root, "embedding_model", embed_ref)
         reset_services()
-        self.dismiss("completed")
+        self.dismiss(result)
 
     @on(Button.Pressed, "#setup-skip")
     def _on_skip(self) -> None:
         """Skip setup — save any partial selection."""
-        if self._selected_chat:
-            from lilbee import settings
-            from lilbee.services import reset_services
-
-            cfg.chat_model = self._selected_chat
-            settings.set_value(cfg.data_root, "chat_model", self._selected_chat)
-            reset_services()
-        self.dismiss("skipped")
+        self._save_and_dismiss("skipped")
 
     def action_cancel(self) -> None:
         self.dismiss("skipped")

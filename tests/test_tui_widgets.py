@@ -2009,7 +2009,7 @@ class TestModelCardSelected:
         card.selected = True
         assert card.selected is True
 
-    def test_build_status_selected(self) -> None:
+    def test_build_status_with_downloads(self) -> None:
         from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
@@ -2025,11 +2025,10 @@ class TestModelCardSelected:
             sort_downloads=1000,
             sort_size=4.0,
         )
-        result = _build_status(row, selected=True)
+        result = _build_status(row)
         assert result is not None
-        assert "selected" in str(result).lower()
 
-    def test_build_status_not_selected_installed(self) -> None:
+    def test_build_status_installed(self) -> None:
         from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
@@ -2045,11 +2044,11 @@ class TestModelCardSelected:
             sort_downloads=0,
             sort_size=4.0,
         )
-        result = _build_status(row, selected=False)
+        result = _build_status(row)
         assert result is not None
         assert "installed" in str(result).lower()
 
-    def test_build_status_not_selected_downloads(self) -> None:
+    def test_build_status_downloads_positive(self) -> None:
         from lilbee.cli.tui.screens.catalog import TableRow
         from lilbee.cli.tui.widgets.model_card import _build_status
 
@@ -2065,7 +2064,7 @@ class TestModelCardSelected:
             sort_downloads=5000,
             sort_size=4.0,
         )
-        result = _build_status(row, selected=False)
+        result = _build_status(row)
         assert result is not None
 
     def test_build_status_none(self) -> None:
@@ -2084,7 +2083,7 @@ class TestModelCardSelected:
             sort_downloads=0,
             sort_size=4.0,
         )
-        result = _build_status(row, selected=False)
+        result = _build_status(row)
         assert result is None
 
 
