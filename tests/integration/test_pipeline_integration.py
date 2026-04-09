@@ -12,10 +12,15 @@ import pytest
 from lilbee.config import cfg
 from lilbee.store import Store
 
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
-def isolated_db(tmp_path):
-    """Point store at a temp directory, force llama-cpp provider."""
+def isolated_db(tmp_path, rag_pipeline):
+    """Point store at a temp directory, force llama-cpp provider.
+
+    Depends on rag_pipeline to guarantee the embedding model is downloaded.
+    """
     from lilbee.services import reset_services
 
     original_dir = cfg.lancedb_dir
@@ -35,24 +40,6 @@ def store():
     return Store(cfg)
 
 
-def _embedding_model_available() -> bool:
-    """Check if a real embedding model is available."""
-    try:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
-
-        _resolve_model_path(cfg.embedding_model)
-        return True
-    except Exception:
-        return False
-
-
-requires_embedding = pytest.mark.skipif(
-    not _embedding_model_available(),
-    reason="Embedding model not available",
-)
-
-
-@requires_embedding
 class TestEmbedder:
     def test_embed_returns_float_vector(self):
         from lilbee.services import get_services
@@ -74,7 +61,6 @@ class TestEmbedder:
         assert get_services().embedder.embed_batch([]) == []
 
 
-@requires_embedding
 class TestStoreRoundTrip:
     def test_add_and_search(self, store):
         from lilbee.services import get_services
