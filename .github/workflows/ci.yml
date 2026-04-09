@@ -158,7 +158,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "$env:TEMP\OllamaSetup.exe" -TimeoutSec 120
+          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "$env:TEMP\OllamaSetup.exe" -TimeoutSec 600
           Start-Process "$env:TEMP\OllamaSetup.exe" -ArgumentList "/VERYSILENT","/NORESTART","/SP-" -Wait
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
           ollama --version
