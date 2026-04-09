@@ -56,9 +56,14 @@ class TestChatFlow:
 
     async def test_chat_returns_real_answer(self, rag_pipeline) -> None:
         """Type a question about indexed docs, get a real streamed answer."""
+        from lilbee.catalog import FEATURED_CHAT
+        from lilbee.services import reset_services
+
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            cfg.chat_model = next(m for m in FEATURED_CHAT if m.name == "smollm2").ref
+            reset_services()
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "What engine does the Thunderbolt X500 have?"
             await pilot.press("enter")

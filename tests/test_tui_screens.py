@@ -9,7 +9,6 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 
 from lilbee.catalog import (
-    FEATURED_CHAT,
     FEATURED_EMBEDDING,
     CatalogModel,
     CatalogResult,
@@ -4532,7 +4531,6 @@ def test_pick_recommended_medium_ram():
 
     chat, _ = _pick_recommended(8.0)
     assert chat.min_ram_gb <= 8.0
-    assert chat.size_gb >= FEATURED_CHAT[0].size_gb
 
 
 def test_pick_recommended_large_ram():

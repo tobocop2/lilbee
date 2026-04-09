@@ -62,9 +62,7 @@ def rag_pipeline(tmp_path_factory):
     download_model(embed_entry)
     cfg.embedding_model = embed_entry.ref
 
-    import sys
-
-    chat_entry = FEATURED_CHAT[1] if sys.platform == "linux" else FEATURED_CHAT[0]
+    chat_entry = next(m for m in FEATURED_CHAT if m.name == "smollm2")
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 

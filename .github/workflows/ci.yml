@@ -100,6 +100,18 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
+      - name: Install Tesseract (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+
+      - name: Install Tesseract (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract
+
+      - name: Install Tesseract (Windows)
+        if: runner.os == 'Windows'
+        run: choco install tesseract -y
+
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
@@ -220,6 +232,10 @@ jobs:
           C:\ollama\ollama.exe pull qwen3:0.6b
           C:\ollama\ollama.exe pull nomic-embed-text
 
+      - name: Download vision model (Linux only)
+        if: runner.os == 'Linux'
+        run: uv run python -c "from lilbee.catalog import FEATURED_VISION, download_model; download_model(FEATURED_VISION[0])"
+
       - name: Run integration tests
         run: make test-integration
         env:
@@ -227,6 +243,7 @@ jobs:
           LILBEE_LLM_PROVIDER: llama-cpp
           OLLAMA_HOST: http://localhost:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+          LILBEE_VISION_MODEL: ${{ runner.os == 'Linux' && 'lightonocr:2-1b' || '' }}
 
   deploy-pages:
     needs: test
