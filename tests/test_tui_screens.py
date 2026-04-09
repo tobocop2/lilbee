@@ -869,6 +869,9 @@ async def test_chat_slash_model_with_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.tui.screens.chat.settings.set_value"):
             app.screen._handle_slash("/model new-model:latest")
+            await _pilot.pause()
+            for worker in list(app.screen.workers):
+                await worker.wait()
             assert cfg.chat_model == "new-model:latest"
 
 
