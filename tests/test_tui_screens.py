@@ -19,7 +19,7 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_MORE_HF,
     _WORKER_FETCH_REMOTE,
 )
-from lilbee.cli.tui.screens.catalog_types import (
+from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     _format_downloads,
     _remote_to_row,
@@ -1953,7 +1953,7 @@ async def test_catalog_install_new_model():
 
 async def test_catalog_select_remote_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import _remote_to_row
+    from lilbee.cli.tui.screens.catalog_utils import _remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2104,7 +2104,7 @@ async def test_catalog_worker_non_success_ignored():
 
 async def test_catalog_select_catalog_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import catalog_to_row
+    from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5106,7 +5106,7 @@ async def test_setup_wizard_grid_selected_non_model():
 
 def test_param_sort_value_with_match():
     """_param_sort_value parses '8B' to 8.0."""
-    from lilbee.cli.tui.screens.catalog_types import _param_sort_value
+    from lilbee.cli.tui.screens.catalog_utils import _param_sort_value
 
     assert _param_sort_value("8B") == 8.0
     assert _param_sort_value("0.6B") == 0.6
@@ -5114,7 +5114,7 @@ def test_param_sort_value_with_match():
 
 def test_param_sort_value_no_match():
     """_param_sort_value returns 0.0 for non-numeric."""
-    from lilbee.cli.tui.screens.catalog_types import _param_sort_value
+    from lilbee.cli.tui.screens.catalog_utils import _param_sort_value
 
     assert _param_sort_value("--") == 0.0
 
@@ -5159,7 +5159,7 @@ async def test_catalog_select_variant_row():
     """_select_row with a variant row triggers _install_variant."""
     from lilbee.catalog import ModelFamily, ModelVariant
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import _variant_to_row
+    from lilbee.cli.tui.screens.catalog_utils import _variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5303,7 +5303,7 @@ async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import _variant_to_row
+    from lilbee.cli.tui.screens.catalog_utils import _variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5342,7 +5342,7 @@ async def test_catalog_get_highlighted_variant_name():
 async def test_catalog_get_highlighted_remote_name():
     """_get_highlighted_model_name returns name for remote row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import _remote_to_row
+    from lilbee.cli.tui.screens.catalog_utils import _remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5364,7 +5364,7 @@ async def test_catalog_get_highlighted_remote_name():
 async def test_catalog_get_highlighted_catalog_name():
     """_get_highlighted_model_name returns name for catalog row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import catalog_to_row
+    from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6545,7 +6545,7 @@ async def test_chat_crawl_background_success():
 def test_on_row_selected_valid_index():
     """_on_row_selected calls _select_row for a valid row index."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import TableRow
 
     screen = MagicMock()
     row = TableRow(
@@ -6743,7 +6743,7 @@ async def test_catalog_delete_when_input_focused():
 async def test_catalog_get_highlighted_model_name_catalog():
     """_get_highlighted_model_name returns catalog model name."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import TableRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6779,7 +6779,7 @@ async def test_catalog_get_highlighted_model_name_catalog():
 async def test_catalog_get_highlighted_model_name_fallback_none():
     """_get_highlighted_model_name returns None when row has no model ref."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import TableRow
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6829,7 +6829,7 @@ async def test_catalog_browse_more_clicked():
 async def test_catalog_grid_selected_with_model_card():
     """Grid selection with ModelCard delegates to _select_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_types import TableRow
+    from lilbee.cli.tui.screens.catalog_utils import TableRow
     from lilbee.cli.tui.widgets.grid_select import GridSelect
     from lilbee.cli.tui.widgets.model_card import ModelCard
 

@@ -21,7 +21,7 @@ from lilbee.catalog import (
     make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.screens.catalog_types import (
+from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     catalog_to_row,
     format_size_gb,

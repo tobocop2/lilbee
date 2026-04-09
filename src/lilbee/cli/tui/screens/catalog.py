@@ -27,7 +27,7 @@ from lilbee.catalog import (
     make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.screens.catalog_types import (
+from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
     TableRow,
     _remote_to_row,

@@ -1,8 +1,4 @@
-"""Catalog data types and row-builder functions.
-
-Extracted from catalog.py to reduce monolith size. Pure functions with
-no screen or widget dependencies.
-"""
+"""Catalog data types, row builders, and formatting helpers."""
 
 from __future__ import annotations
 
