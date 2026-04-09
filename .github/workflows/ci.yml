@@ -207,19 +207,13 @@ jobs:
 
       - name: Start Ollama and pull models (Windows)
         if: runner.os == 'Windows'
+        shell: cmd
         run: |
-          $ollamaPath = (Get-Command ollama -ErrorAction SilentlyContinue).Source
-          if (-not $ollamaPath) {
-            $ollamaPath = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
-          }
-          if (-not $ollamaPath -or -not (Test-Path $ollamaPath)) {
-            $ollamaPath = (Get-ChildItem -Path "C:\ProgramData\chocolatey" -Recurse -Filter "ollama.exe" | Select-Object -First 1).FullName
-          }
-          Write-Host "Ollama at: $ollamaPath"
-          Start-Process $ollamaPath -ArgumentList "serve" -NoNewWindow
-          Start-Sleep -Seconds 5
-          & $ollamaPath pull qwen3:0.6b
-          & $ollamaPath pull nomic-embed-text
+          where ollama || dir /s /b "C:\ProgramData\chocolatey\bin\ollama.exe"
+          start /b ollama serve
+          timeout /t 5 /nobreak >nul
+          ollama pull qwen3:0.6b
+          ollama pull nomic-embed-text
 
       - name: Run integration tests
         run: make test-integration
