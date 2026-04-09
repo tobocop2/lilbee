@@ -96,6 +96,13 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
+      - name: Cache Chocolatey packages (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:\ProgramData\chocolatey\lib
+          key: choco-${{ runner.os }}-ollama-v1
+
       - name: Install dependencies
         run: uv sync --all-extras
         env:
