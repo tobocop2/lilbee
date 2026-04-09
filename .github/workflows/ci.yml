@@ -110,7 +110,9 @@ jobs:
 
       - name: Install Tesseract (Windows)
         if: runner.os == 'Windows'
-        run: choco install tesseract -y
+        run: |
+          choco install tesseract -y
+          echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
@@ -237,7 +239,7 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
-          OLLAMA_HOST: http://localhost:11434
+          OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
   deploy-pages:
