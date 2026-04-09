@@ -100,6 +100,14 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
+      - name: Install OpenBLAS (Windows)
+        if: runner.os == 'Windows'
+        run: choco install openblas -y
+
+      - name: Install OpenBLAS (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
         id: ollama-bin-cache
@@ -108,10 +116,24 @@ jobs:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
 
-      - name: Install dependencies
+      # llama-cpp build optimizations per platform:
+      # - GGML_NATIVE=ON: AVX2 on x86 (Linux/Windows), NEON on ARM (macOS)
+      # - GGML_BLAS=ON: OpenBLAS on Linux/Windows (3-5x prompt speedup)
+      # - GGML_ACCELERATE: auto-enabled on macOS (Apple's native BLAS)
+      # - GGML_METAL=OFF: GitHub macOS runners are VMs without GPU passthrough
+      # - GGML_CPU_AARCH64=OFF: avoids i8mm instructions unsupported on CI M1
+      # - GGML_CUDA=OFF: no NVIDIA GPU on CI runners
+      - name: Install dependencies (Linux/Windows)
+        if: runner.os != 'macOS'
         run: uv sync --all-extras
         env:
-          CMAKE_ARGS: "-DGGML_NATIVE=ON -DGGML_CUDA=OFF -DGGML_CPU_AARCH64=OFF"
+          CMAKE_ARGS: "-DGGML_NATIVE=ON -DGGML_CUDA=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: "-DGGML_NATIVE=ON -DGGML_METAL=OFF -DGGML_CPU_AARCH64=OFF"
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
