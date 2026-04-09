@@ -96,9 +96,10 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      - name: Cache Chocolatey packages (Windows)
+      - name: Restore Chocolatey cache (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        id: choco-cache
+        uses: actions/cache/restore@v4
         with:
           path: C:\ProgramData\chocolatey\lib
           key: choco-${{ runner.os }}-ollama-v1
@@ -106,7 +107,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
         env:
-          CMAKE_ARGS: "-DGGML_CUDA=OFF"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF"
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
@@ -184,6 +185,13 @@ jobs:
       - name: Install Ollama (Windows)
         if: runner.os == 'Windows'
         run: choco install ollama -y
+
+      - name: Save Chocolatey cache (Windows)
+        if: runner.os == 'Windows' && steps.choco-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\ProgramData\chocolatey\lib
+          key: choco-${{ runner.os }}-ollama-v1
 
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
