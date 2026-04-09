@@ -1,4 +1,14 @@
 [[chat]]
+name = "smollm2"
+tag = "135m"
+display_name = "SmolLM2 135M"
+hf_repo = "bartowski/SmolLM2-135M-Instruct-GGUF"
+gguf_filename = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+size_gb = 0.09
+min_ram_gb = 0.5
+description = "Ultra-tiny — Raspberry Pi, low-RAM devices"
+
+[[chat]]
 name = "qwen3"
 tag = "0.6b"
 display_name = "Qwen3 0.6B"
