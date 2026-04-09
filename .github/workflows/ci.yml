@@ -104,21 +104,28 @@ jobs:
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+      - name: Restore Playwright cache
+        id: pw-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: playwright-${{ runner.os }}-
 
       - name: Install Playwright for crawl4ai
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: uv run crawl4ai-setup
         continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+
+      - name: Save Playwright cache
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.playwright-browsers
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
 
       - name: Cache GGUF models (Linux)
         if: runner.os == 'Linux'
