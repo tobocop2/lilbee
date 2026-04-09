@@ -101,6 +101,14 @@ def clear_screen() -> bytes:
     return b"\033[2J\033[H\033[?25h"
 
 
+def _read_eof(pipe_fd: int) -> bool:
+    """Try to read one byte — returns True if EOF, False if data available."""
+    try:
+        return len(os.read(pipe_fd, 1)) == 0
+    except OSError:
+        return True
+
+
 def pipe_closed(pipe_fd: int) -> bool:
     """Check if the pipe has been closed (EOF) without blocking."""
     if sys.platform == "win32":
@@ -115,6 +123,7 @@ def pipe_closed(pipe_fd: int) -> bool:
             return True
         if avail.value == 0:
             return False
+        return _read_eof(pipe_fd)
     if sys.platform != "win32":
         try:
             readable, _, _ = select.select([pipe_fd], [], [], 0)
@@ -122,10 +131,8 @@ def pipe_closed(pipe_fd: int) -> bool:
             return True
         if not readable:
             return False
-    try:
-        return len(os.read(pipe_fd, 1)) == 0
-    except OSError:
-        return True
+        return _read_eof(pipe_fd)
+    return True  # pragma: no cover
 
 
 def animation_loop(pipe_fd: int) -> None:
