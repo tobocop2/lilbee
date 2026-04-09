@@ -115,9 +115,10 @@ class TestPickDefaultModel:
         result = models.pick_default_model(32.0)
         assert result.min_ram_gb <= 32.0
 
-    def test_tiny_ram_picks_first(self):
+    def test_tiny_ram_picks_smallest(self):
         result = models.pick_default_model(2.0)
-        assert result == MODEL_CATALOG[0]
+        assert result.min_ram_gb <= 2.0
+        assert result.ref == "smollm2:135m"
 
 
 class TestModelDownloadSizeGb:
@@ -328,7 +329,7 @@ class TestEnsureChatModel:
             models.ensure_chat_model()
         mock_pull.assert_called_once_with(MODEL_CATALOG[0].ref, console=None)
 
-    @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
+    @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
     @mock.patch("lilbee.model_manager.get_model_manager")
     def test_insufficient_disk_raises(

@@ -82,6 +82,24 @@ def test_pipe_closed_returns_false_when_open():
     os.close(r)
 
 
+def test_pipe_closed_with_data_available():
+    """pipe_closed returns False when data is written but pipe not closed."""
+    r, w = os.pipe()
+    os.write(w, b"x")
+    from lilbee._splash_runner import pipe_closed
+
+    assert pipe_closed(r) is False
+    os.close(w)
+    os.close(r)
+
+
+def test_read_eof_with_bad_fd():
+    """_read_eof returns True when os.read raises OSError."""
+    from lilbee._splash_runner import _read_eof
+
+    assert _read_eof(-1) is True
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
 def test_pipe_closed_select_error_returns_true():
     """pipe_closed returns True when select raises."""
@@ -113,7 +131,7 @@ def test_animation_loop_exits_on_closed_pipe():
 
 
 @patch("lilbee._splash_runner.STARTUP_DELAY", 0)
-@patch("lilbee._splash_runner.FRAME_INTERVAL", 0)
+@patch("lilbee._splash_runner.FRAME_INTERVAL", 0.003)
 @patch("lilbee._splash_runner.POLL_INTERVAL", 0.001)
 @patch("time.sleep")
 def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
@@ -125,9 +143,9 @@ def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
     def mock_pipe_closed(_fd: int) -> bool:
         nonlocal call_count
         call_count += 1
-        # Let startup delay pass (returns False), one full frame render,
-        # then close on the second frame check
-        return call_count > 20
+        # Return False for outer while (call 1), then True on 2nd inner
+        # loop iteration (call 3) to exercise the inner break path
+        return call_count >= 3
 
     written: list[bytes] = []
 
@@ -226,18 +244,6 @@ def test_pipe_closed_windows_path():
     os.close(r)
 
 
-def test_pipe_closed_windows_via_mock():
-    """Cover Windows pipe_closed path by mocking sys.platform."""
-    from lilbee._splash_runner import pipe_closed
-
-    r, w = os.pipe()
-    os.close(w)
-    with patch("sys.platform", "win32"):
-        # Re-import to pick up the mock (pipe_closed checks sys.platform at call time)
-        assert pipe_closed(r) is True
-    os.close(r)
-
-
 def test_main_guard():
     """__main__ guard calls main()."""
     import runpy
@@ -246,7 +252,14 @@ def test_main_guard():
         patch("lilbee._splash_runner.main"),
         pytest.raises(SystemExit),
     ):
-        runpy.run_module("lilbee._splash_runner", run_name="__main__")
+        # Remove from sys.modules after patch setup (which imports it)
+        # so runpy doesn't warn about pre-existing module
+        saved = sys.modules.pop("lilbee._splash_runner", None)
+        try:
+            runpy.run_module("lilbee._splash_runner", run_name="__main__")
+        finally:
+            if saved is not None:
+                sys.modules["lilbee._splash_runner"] = saved
 
 
 def test_main_missing_args():

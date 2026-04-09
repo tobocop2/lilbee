@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
 	uv run ruff check src/ tests/
@@ -13,13 +13,16 @@ typecheck:
 	uv run mypy src/lilbee/
 
 test:
-	uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
+	uv run pytest --cov=lilbee --cov-report=term-missing -v
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n auto
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
+
+test-integration:
+	uv run pytest tests/integration/ -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 

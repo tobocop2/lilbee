@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 from multiprocessing import get_context
 from pathlib import Path
 from unittest import mock
@@ -26,6 +27,17 @@ from lilbee.providers.worker_process import (
     _worker_main,
     config_snapshot_from_cfg,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_stdio_redirect():
+    """Prevent _worker_main from redirecting stdout/stderr to /dev/null.
+
+    In a real child process the redirect suppresses llama-cpp C-level output.
+    In tests it leaks unclosed devnull files and fights with pytest capture.
+    """
+    with mock.patch("lilbee.providers.worker_process._redirect_stdio"):
+        yield
 
 
 @pytest.fixture()
@@ -869,3 +881,34 @@ class TestLoadVisionModel:
             result = _load_vision_model(config_snap, "test-vision")
         assert result is mock_llm
         mock_load.assert_called_once_with(vision_path)
+
+
+class TestRedirectStdio:
+    """Test _redirect_stdio without the autouse mock (override the fixture)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_stdio_redirect(self):
+        """Override the module-level autouse fixture — let _redirect_stdio run."""
+        yield
+
+    def test_redirects_stdout_stderr_to_devnull(self) -> None:
+        """_redirect_stdio points sys.stdout/stderr to devnull."""
+        import os
+
+        from lilbee.providers.worker_process import _redirect_stdio
+
+        orig_out, orig_err = sys.stdout, sys.stderr
+        orig_fd1, orig_fd2 = os.dup(1), os.dup(2)
+        try:
+            _redirect_stdio()
+            assert sys.stdout.name == os.devnull
+            assert sys.stderr.name == os.devnull
+        finally:
+            sys.stdout.close()
+            sys.stderr.close()
+            sys.stdout = orig_out
+            sys.stderr = orig_err
+            os.dup2(orig_fd1, 1)
+            os.dup2(orig_fd2, 2)
+            os.close(orig_fd1)
+            os.close(orig_fd2)
