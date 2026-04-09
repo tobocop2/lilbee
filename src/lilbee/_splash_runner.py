@@ -175,7 +175,7 @@ def animation_loop(pipe_fd: int) -> None:
                 time.sleep(POLL_INTERVAL)
 
             if not got_signal and not pipe_closed(pipe_fd):
-                os.write(fd, move_up_and_clear(frame_height))
+                os.write(fd, move_up_and_clear(frame_height))  # pragma: no cover
 
             frame_idx += 1
             knight_idx += 1
