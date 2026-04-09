@@ -873,7 +873,7 @@ async def test_chat_slash_unknown_command():
 async def test_chat_slash_version():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.helpers.get_version", return_value="1.2.3"):
+        with patch("lilbee.cli.tui.screens.chat.get_version", return_value="1.2.3"):
             with patch.object(app.screen, "notify") as mock_notify:
                 app.screen._handle_slash("/version")
                 mock_notify.assert_called_once()
@@ -2809,8 +2809,8 @@ async def test_chat_slash_crawl_valid_url():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url"),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com")
@@ -2822,7 +2822,7 @@ async def test_chat_slash_crawl_with_flags():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
@@ -5577,9 +5577,9 @@ async def test_chat_crawl_invalid_url():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)):
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
             patch(
-                "lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url",
+                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
                 side_effect=ValueError("bad url"),
             ),
             patch.object(app.screen, "notify") as mock_notify,
@@ -6262,8 +6262,8 @@ async def test_chat_cmd_crawl_with_valid_url():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url"),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
             patch.object(app.screen, "_run_crawl_background") as mock_crawl,
         ):
             app.screen._cmd_crawl("https://example.com")
@@ -6276,9 +6276,9 @@ async def test_chat_cmd_crawl_invalid_url():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
             patch(
-                "lilbee.cli.tui.screens.chat_commands.require_valid_crawl_url",
+                "lilbee.cli.tui.screens.chat.require_valid_crawl_url",
                 side_effect=ValueError("bad url"),
             ),
             patch.object(app.screen, "notify") as mock_notify,
@@ -6394,7 +6394,7 @@ async def test_chat_cmd_crawl_no_args():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.cli.tui.screens.chat_commands.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._cmd_crawl("")
