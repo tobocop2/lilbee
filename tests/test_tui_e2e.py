@@ -197,7 +197,10 @@ class TestModelSwitchSafety:
             event.select = mock.MagicMock()
             event.select.id = "chat-model-select"
 
-            with mock.patch("lilbee.services.reset_services"):
+            with (
+                mock.patch("lilbee.services.reset_services"),
+                mock.patch.object(bar, "_deferred_reset"),
+            ):
                 bar._on_chat_model_changed(event)
 
             screen.action_cancel_stream.assert_called_once()
