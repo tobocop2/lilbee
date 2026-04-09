@@ -70,10 +70,10 @@ class TestChatFlow:
 
             for _ in range(600):
                 await pilot.pause()
-                if not app.screen._streaming:
+                if not app.screen.streaming:
                     break
 
-            assert not app.screen._streaming, "Streaming did not complete in time"
+            assert not app.screen.streaming, "Streaming did not complete in time"
 
             # Wait for all workers to finish before app teardown
             # (llama-cpp segfaults if model is freed while worker thread reads from it)

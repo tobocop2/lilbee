@@ -2789,7 +2789,7 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             mock_screen = mock.MagicMock(spec=ChatScreen)
-            mock_screen._streaming = True
+            mock_screen.streaming = True
             mock_screen.workers = []
             with (
                 mock.patch.object(

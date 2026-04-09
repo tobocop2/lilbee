@@ -1239,9 +1239,9 @@ async def test_chat_scroll_actions():
 async def test_chat_cancel_stream_not_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._streaming = False
+        app.screen.streaming = False
         app.screen.action_cancel_stream()
-        assert app.screen._streaming is False
+        assert app.screen.streaming is False
 
 
 async def test_chat_cancel_stream_while_streaming():
