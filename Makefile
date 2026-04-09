@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
 	uv run ruff check src/ tests/
@@ -20,6 +20,9 @@ test-ci:
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
+
+test-integration:
+	uv run pytest tests/integration/ -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 

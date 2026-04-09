@@ -196,7 +196,7 @@ jobs:
           ollama pull nomic-embed-text
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v
+        run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
