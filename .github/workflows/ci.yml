@@ -104,6 +104,8 @@ jobs:
       - name: Install Playwright for crawl4ai
         run: uv run crawl4ai-setup
         continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Cache GGUF models (Linux)
         if: runner.os == 'Linux'
@@ -155,7 +157,8 @@ jobs:
       - name: Install Ollama (Windows)
         if: runner.os == 'Windows'
         run: |
-          curl -fsSL -o "$env:TEMP\OllamaSetup.exe" https://ollama.com/download/OllamaSetup.exe
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "$env:TEMP\OllamaSetup.exe" -TimeoutSec 120
           Start-Process "$env:TEMP\OllamaSetup.exe" -ArgumentList "/VERYSILENT","/NORESTART","/SP-" -Wait
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
           ollama --version
