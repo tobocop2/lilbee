@@ -82,6 +82,17 @@ def test_pipe_closed_returns_false_when_open():
     os.close(r)
 
 
+def test_pipe_closed_with_data_available():
+    """pipe_closed returns False when data is written but pipe not closed."""
+    r, w = os.pipe()
+    os.write(w, b"x")
+    from lilbee._splash_runner import pipe_closed
+
+    assert pipe_closed(r) is False
+    os.close(w)
+    os.close(r)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
 def test_pipe_closed_select_error_returns_true():
     """pipe_closed returns True when select raises."""
