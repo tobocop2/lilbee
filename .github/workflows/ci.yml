@@ -100,13 +100,34 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      - name: Install OpenBLAS (Windows)
+      - name: Restore OpenBLAS cache (Windows)
         if: runner.os == 'Windows'
-        run: choco install openblas -y
+        id: openblas-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\OpenBLAS
+          key: openblas-Windows-0.3.28
 
-      - name: Install OpenBLAS (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      - name: Install OpenBLAS (Windows)
+        if: runner.os == 'Windows' && steps.openblas-cache.outputs.cache-hit != 'true'
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/OpenMathLib/OpenBLAS/releases/download/v0.3.28/OpenBLAS-0.3.28-x64.zip" -OutFile "$env:TEMP\openblas.zip"
+          Expand-Archive "$env:TEMP\openblas.zip" -DestinationPath "C:\OpenBLAS" -Force
+
+      - name: Save OpenBLAS cache (Windows)
+        if: runner.os == 'Windows' && steps.openblas-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\OpenBLAS
+          key: openblas-Windows-0.3.28
+
+      - name: Set OpenBLAS env (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          echo "OPENBLAS_HOME=C:\OpenBLAS" | Out-File -Append -FilePath $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:\OpenBLAS" | Out-File -Append -FilePath $env:GITHUB_ENV
+
 
       - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
@@ -123,8 +144,14 @@ jobs:
       # - GGML_METAL=OFF: GitHub macOS runners are VMs without GPU passthrough
       # - GGML_CPU_AARCH64=OFF: avoids i8mm instructions unsupported on CI M1
       # - GGML_CUDA=OFF: no NVIDIA GPU on CI runners
-      - name: Install dependencies (Linux/Windows)
-        if: runner.os != 'macOS'
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: "-DGGML_NATIVE=ON -DGGML_CUDA=OFF"
+
+      - name: Install dependencies (Windows with OpenBLAS)
+        if: runner.os == 'Windows'
         run: uv sync --all-extras
         env:
           CMAKE_ARGS: "-DGGML_NATIVE=ON -DGGML_CUDA=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
