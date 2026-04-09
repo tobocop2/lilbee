@@ -101,28 +101,38 @@ def clear_screen() -> bytes:
     return b"\033[2J\033[H\033[?25h"
 
 
+def _read_eof(pipe_fd: int) -> bool:
+    """Try to read one byte — returns True if EOF, False if data available."""
+    try:
+        return len(os.read(pipe_fd, 1)) == 0
+    except OSError:
+        return True
+
+
 def pipe_closed(pipe_fd: int) -> bool:
     """Check if the pipe has been closed (EOF) without blocking."""
     if sys.platform == "win32":
-        try:
-            data = os.read(pipe_fd, 1)
-            return len(data) == 0
-        except OSError:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(pipe_fd)
+        avail = ctypes.c_ulong(0)
+        if not ctypes.windll.kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(avail), None
+        ):
             return True
-
-    try:
-        readable, _, _ = select.select([pipe_fd], [], [], 0)
-    except (ValueError, OSError):
-        return True
-
-    if not readable:
-        return False
-
-    try:
-        data = os.read(pipe_fd, 1)
-        return len(data) == 0
-    except OSError:
-        return True
+        if avail.value == 0:
+            return False
+        return _read_eof(pipe_fd)
+    if sys.platform != "win32":
+        try:
+            readable, _, _ = select.select([pipe_fd], [], [], 0)
+        except (ValueError, OSError):
+            return True
+        if not readable:
+            return False
+        return _read_eof(pipe_fd)
+    return True  # pragma: no cover
 
 
 def animation_loop(pipe_fd: int) -> None:
@@ -135,11 +145,13 @@ def animation_loop(pipe_fd: int) -> None:
 
     got_signal = False
 
-    def handle_term(signum: int, frame: object) -> None:
-        nonlocal got_signal
-        got_signal = True
+    if sys.platform != "win32":
 
-    signal.signal(signal.SIGTERM, handle_term)
+        def handle_term(signum: int, frame: object) -> None:
+            nonlocal got_signal
+            got_signal = True
+
+        signal.signal(signal.SIGTERM, handle_term)
 
     for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
         if got_signal or pipe_closed(pipe_fd):
@@ -163,7 +175,7 @@ def animation_loop(pipe_fd: int) -> None:
                 time.sleep(POLL_INTERVAL)
 
             if not got_signal and not pipe_closed(pipe_fd):
-                os.write(fd, move_up_and_clear(frame_height))
+                os.write(fd, move_up_and_clear(frame_height))  # pragma: no cover
 
             frame_idx += 1
             knight_idx += 1

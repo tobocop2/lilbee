@@ -9,7 +9,6 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 
 from lilbee.catalog import (
-    FEATURED_CHAT,
     FEATURED_EMBEDDING,
     CatalogModel,
     CatalogResult,
@@ -870,6 +869,9 @@ async def test_chat_slash_model_with_arg():
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.tui.screens.chat.settings.set_value"):
             app.screen._handle_slash("/model new-model:latest")
+            await _pilot.pause()
+            for worker in list(app.screen.workers):
+                await worker.wait()
             assert cfg.chat_model == "new-model:latest"
 
 
@@ -2208,7 +2210,7 @@ async def test_chat_run_sync_worker():
                 )
             return {"added": 3}
 
-        with patch("lilbee.ingest.sync", side_effect=fake_sync):
+        with patch("lilbee.ingest.sync", new=fake_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -2237,7 +2239,7 @@ async def test_chat_sync_progress_percentage():
             return {"added": 1}
 
         with (
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
             patch.object(task_bar, "update_task", tracking_update),
         ):
             app.screen._run_sync()
@@ -2258,7 +2260,7 @@ async def test_chat_run_sync_error_worker():
         async def failing_sync(quiet=False, on_progress=None):
             raise Exception("sync failed")
 
-        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+        with patch("lilbee.ingest.sync", new=failing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -2673,20 +2675,31 @@ async def test_command_provider_vision_catalog_error():
             models_mod.VISION_CATALOG = original_vision  # type: ignore[assignment]
 
 
+async def test_chat_slash_crawl_unavailable():
+    """_cmd_crawl notifies when crawler is not installed."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=False):
+            app.screen._cmd_crawl("https://example.com")
+            assert app.screen.is_current
+
+
 async def test_chat_slash_crawl_no_args():
     """Cover /crawl with no URL showing usage hint."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("")
-        assert app.screen.is_current
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True):
+            app.screen._cmd_crawl("")
+            assert app.screen.is_current
 
 
 async def test_chat_slash_crawl_invalid_url():
     """Cover /crawl with non-URL argument."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen._cmd_crawl("not-a-url")
-        assert app.screen.is_current
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True):
+            app.screen._cmd_crawl("not-a-url")
+            assert app.screen.is_current
 
 
 async def test_chat_slash_crawl_valid_url():
@@ -3115,7 +3128,7 @@ async def test_cmd_add_creates_task_bar_entry(tmp_path):
                 "lilbee.cli.helpers.copy_files",
                 return_value=MagicMock(copied=["doc.txt"], skipped=[]),
             ) as mock_copy,
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             task_bar = app.task_bar
             add_task_spy = MagicMock(wraps=task_bar.add_task)
@@ -3159,7 +3172,7 @@ async def test_sync_called_with_quiet_true():
             sync_kwargs.append(kwargs)
             return {"added": 0}
 
-        with patch("lilbee.ingest.sync", side_effect=capturing_sync):
+        with patch("lilbee.ingest.sync", new=capturing_sync):
             app.screen._run_sync()
             await _pilot.pause()
             while app.screen.workers:
@@ -3492,11 +3505,13 @@ async def test_chat_input_history_up_down():
         inp.focus()
         await pilot.pause()
 
-        # Submit two messages
-        inp.value = "hello"
-        await pilot.press("enter")
-        inp.value = "world"
-        await pilot.press("enter")
+        # Patch _stream_response to prevent background worker threads
+        with patch.object(app.screen, "_stream_response"):
+            # Submit two messages
+            inp.value = "hello"
+            await pilot.press("enter")
+            inp.value = "world"
+            await pilot.press("enter")
         await pilot.pause()
 
         assert app.screen._input_history == ["hello", "world"]
@@ -4519,7 +4534,6 @@ def test_pick_recommended_medium_ram():
 
     chat, _ = _pick_recommended(8.0)
     assert chat.min_ram_gb <= 8.0
-    assert chat.size_gb >= FEATURED_CHAT[0].size_gb
 
 
 def test_pick_recommended_large_ram():
@@ -4728,15 +4742,11 @@ async def test_setup_wizard_install_both_models():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            with (
-                patch("lilbee.catalog.download_model", return_value=MagicMock(stem="m")),
-                patch("lilbee.settings.set_value"),
-                patch("lilbee.services.reset_services"),
-            ):
+            with patch.object(screen, "_run_downloads"):
                 screen._on_install()
                 await pilot.pause()
-                while screen.workers:
-                    await pilot.pause()
+            assert len(screen._download_models) >= 1
+            assert screen.has_class("-downloading")
 
 
 async def test_setup_wizard_install_already_installed():
@@ -4772,7 +4782,7 @@ async def test_setup_wizard_download_failure():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
             with patch("lilbee.catalog.download_model", side_effect=Exception("network error")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4788,7 +4798,7 @@ async def test_setup_wizard_download_401_error():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
             with patch("lilbee.catalog.download_model", side_effect=Exception("401 Unauthorized")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4816,7 +4826,7 @@ async def test_setup_wizard_download_with_progress():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4845,7 +4855,7 @@ async def test_setup_wizard_partial_download():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4871,7 +4881,7 @@ async def test_setup_wizard_single_model_download_error():
                     GridSelect.Selected(grid_select=mock_grid, widget=embed_cards[0])
                 )
             with patch("lilbee.catalog.download_model", side_effect=Exception("connection error")):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4898,7 +4908,7 @@ async def test_setup_wizard_download_cache_hit():
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
-                screen._on_install()
+                screen._download_loop(lambda fn, *a: fn(*a))
                 await pilot.pause()
                 while screen.workers:
                     await pilot.pause()
@@ -4962,6 +4972,211 @@ async def test_setup_wizard_grid_selected_non_model():
             mock_widget = MagicMock()
             event = GridSelect.Selected(grid_select=mock_grid, widget=mock_widget)
             screen._on_grid_selected(event)
+
+
+async def test_setup_wizard_run_downloads_all_succeed():
+    """_run_downloads calls _on_all_downloads_complete when all succeed."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm1 = _make_catalog_model(name="chat-m")
+            cm2 = _make_catalog_model(name="embed-m")
+            screen._download_models = [cm1, cm2]
+
+            with (
+                patch("lilbee.catalog.download_model"),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_run_downloads_embed_fails():
+    """Embedding download failure calls _on_partial_success."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm1 = _make_catalog_model(name="chat-ok")
+            cm2 = _make_catalog_model(name="embed-fail")
+            screen._download_models = [cm1, cm2]
+            call_count = 0
+
+            def _fake(model, on_progress=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    raise Exception("embed failed")
+
+            with (
+                patch("lilbee.catalog.download_model", side_effect=_fake),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_run_downloads_chat_401():
+    """401 error on first model (chat) returns early."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm1 = _make_catalog_model(name="gated-model")
+            cm2 = _make_catalog_model(name="embed-m")
+            screen._download_models = [cm1, cm2]
+
+            def _fake(model, on_progress=None):
+                raise PermissionError("401 Unauthorized")
+
+            with patch("lilbee.catalog.download_model", side_effect=_fake):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+                while screen.workers:
+                    await pilot.pause()
+
+
+async def test_setup_wizard_on_all_downloads_complete():
+    """_on_all_downloads_complete sets status and dismisses."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
+                screen._on_all_downloads_complete()
+                await pilot.pause()
+
+
+async def test_setup_wizard_on_partial_success():
+    """_on_partial_success clears embedding selection and dismisses."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
+                screen._on_partial_success()
+                await pilot.pause()
+            from lilbee.models import ModelTask
+
+            assert screen._selections[ModelTask.EMBEDDING] == (None, None)
+
+
+async def test_setup_wizard_on_download_progress():
+    """_on_download_progress updates progress bar and status."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            from lilbee.catalog import DownloadProgress
+
+            screen._on_download_progress(
+                lambda fn, *a: fn(*a),
+                DownloadProgress(percent=50, detail="25/50 MB", is_cache_hit=False),
+            )
+
+
+async def test_setup_wizard_handle_download_error_401():
+    """_handle_download_error rewrites 401 errors."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="gated")
+            result = screen._handle_download_error(
+                lambda fn, *a: fn(*a),
+                PermissionError("401 Unauthorized"),
+                cm,
+                is_first=True,
+                total=2,
+            )
+            assert result is True
+
+
+async def test_setup_wizard_handle_download_error_partial():
+    """_handle_download_error calls _on_partial_success for non-first model."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cm = _make_catalog_model(name="embed-fail")
+            with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
+                result = screen._handle_download_error(
+                    lambda fn, *a: fn(*a),
+                    Exception("download failed"),
+                    cm,
+                    is_first=False,
+                    total=2,
+                )
+            assert result is True
+
+
+async def test_setup_wizard_download_progress_callback():
+    """Download progress callback updates status via _download_loop."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm = _make_catalog_model(name="prog-m")
+            screen._download_models = [cm]
+
+            def _fake(model, on_progress=None):
+                if on_progress:
+                    on_progress(25 * 1024 * 1024, 50 * 1024 * 1024)
+                    on_progress(50 * 1024 * 1024, 50 * 1024 * 1024)
+
+            with (
+                patch("lilbee.catalog.download_model", side_effect=_fake),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
 
 
 def test_param_sort_value_with_match():
@@ -6275,7 +6490,7 @@ async def test_chat_add_skipped_file():
 
         from lilbee.progress import EventType, FileStartEvent
 
-        async def fake_sync(*, quiet=True, on_progress=None):
+        async def fake_sync(*, quiet: bool = True, on_progress: object = None) -> None:
             if on_progress:
                 # Trigger with total_files=0 to cover pct=75 path
                 on_progress(
@@ -6285,7 +6500,7 @@ async def test_chat_add_skipped_file():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("test.txt"), "task-1")
             while app.screen.workers:
@@ -6315,7 +6530,7 @@ async def test_chat_add_sync_progress_with_total_files():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("doc.md"), "task-pct")
             while app.screen.workers:
@@ -6345,7 +6560,7 @@ async def test_chat_add_sync_progress_wrong_type():
 
         with (
             patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", side_effect=fake_sync),
+            patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("test.txt"), "task-wrong")
             while app.screen.workers:

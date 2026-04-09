@@ -1250,7 +1250,7 @@ wheels = [
 [[package]]
 name = "huggingface-hub"
 version = "1.10.0.dev0"
-source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Fxet-tqdm-combined#a3f6e18b4c18cdfaa972c8f8a49c072276914a8e" }
+source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety#8411df922aea9f8a62625c8d35bb737d4331b56e" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -1646,7 +1646,7 @@ requires-dist = [
     { name = "filelock" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
-    { name = "huggingface-hub", git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Fxet-tqdm-combined" },
+    { name = "huggingface-hub", git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety" },
     { name = "kreuzberg", specifier = ">=4.6.3" },
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'" },
