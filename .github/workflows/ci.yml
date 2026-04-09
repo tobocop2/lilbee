@@ -106,8 +106,10 @@ jobs:
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
         with:
-          path: ~/.cache/ms-playwright
+          path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: playwright-${{ runner.os }}-
 
@@ -116,6 +118,7 @@ jobs:
         continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
       - name: Cache GGUF models (Linux)
         if: runner.os == 'Linux'
@@ -194,6 +197,7 @@ jobs:
         run: make test-ci
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
       - name: Run integration tests
         run: uv run pytest tests/integration/ -v
@@ -201,6 +205,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
           OLLAMA_HOST: http://localhost:11434
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
   deploy-pages:
     needs: test
