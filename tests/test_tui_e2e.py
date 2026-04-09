@@ -483,13 +483,6 @@ def _mock_status_deps():
     )
 
 
-def _create_lilbee_app():
-    """Create a LilbeeApp with all network deps mocked."""
-    from lilbee.cli.tui.app import LilbeeApp
-
-    return LilbeeApp()
-
-
 class TestScreenTransitions:
     """Test that switching between screens does not crash."""
 

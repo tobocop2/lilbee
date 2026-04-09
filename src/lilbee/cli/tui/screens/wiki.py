@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 def _wiki_root() -> Path:
     """Resolve the wiki root directory from config."""
-    return cfg.data_dir / cfg.wiki_dir
+    return cfg.data_root / cfg.wiki_dir
 
 
 def _format_page_header(

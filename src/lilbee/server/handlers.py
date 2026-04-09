@@ -151,7 +151,7 @@ class SseStream:
     def __init__(self) -> None:
         self.queue: asyncio.Queue[str | None] = asyncio.Queue()
         self.cancel = threading.Event()
-        self._loop = asyncio.get_running_loop()
+        self.loop = asyncio.get_running_loop()
         self.callback: DetailedProgressCallback = self._build_callback()
 
     def _build_callback(self) -> DetailedProgressCallback:
@@ -159,7 +159,7 @@ class SseStream:
 
         Safe to call from both the event-loop thread and worker threads.
         """
-        loop = self._loop
+        loop = self.loop
         queue = self.queue
 
         def _callback(event_type: EventType, data: ProgressEvent) -> None:
@@ -284,7 +284,7 @@ async def _stream_rag_response(
     sse = SseStream()
     error_holder: list[str] = []
 
-    executor_fut = sse._loop.run_in_executor(
+    executor_fut = sse.loop.run_in_executor(
         None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
     )
     task = asyncio.ensure_future(executor_fut)
@@ -705,14 +705,14 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             if sse.cancel.is_set():
                 return
             payload = sse_event(SseEvent.PROGRESS, data)
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
         try:
             manager.pull(model, src, on_progress=_on_progress)
         except Exception as exc:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
     async for event in sse.drain(task, "Model pull stream"):
@@ -778,7 +778,7 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
 
     def _on_progress(stage: str, data: dict[str, object]) -> None:
         payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
-        sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+        sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
     def _run_blocking() -> None:
         try:
@@ -789,7 +789,7 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         except Exception as exc:
             error_holder.append(str(exc))
         finally:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_run_blocking))
     async for event in sse.drain(task, "Wiki generate stream"):

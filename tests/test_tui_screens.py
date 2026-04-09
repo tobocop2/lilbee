@@ -4182,10 +4182,9 @@ class TestWikiScreenEmptyState:
     async def test_shows_empty_when_no_pages(self, tmp_path):
         """Shows empty state when wiki is enabled but no pages exist."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        cfg.data_dir.mkdir(parents=True)
-        wiki_dir = cfg.data_dir / cfg.wiki_dir
-        wiki_dir.mkdir()
+        cfg.data_root = tmp_path
+        wiki_dir = cfg.data_root / cfg.wiki_dir
+        wiki_dir.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
             from textual.widgets import OptionList
@@ -4198,8 +4197,8 @@ class TestWikiScreenWithPages:
     async def test_lists_pages(self, tmp_path):
         """WikiScreen lists pages when wiki data exists."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test-doc", "Test Document")
         _create_wiki_page(wiki_root, "concepts", "some-concept", "Some Concept")
 
@@ -4213,8 +4212,8 @@ class TestWikiScreenWithPages:
     async def test_displays_selected_page_content(self, tmp_path):
         """Selecting a page renders its content."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(
             wiki_root, "summaries", "my-page", "My Page", "# Hello World\nSome text here."
         )
@@ -4235,8 +4234,8 @@ class TestWikiScreenWithPages:
     async def test_displays_faithfulness_in_header(self, tmp_path):
         """Page header shows faithfulness score from frontmatter."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "scored-page", "Scored Page")
 
         app = WikiTestApp()
@@ -4257,8 +4256,8 @@ class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "alpha-doc", "Alpha Document")
         _create_wiki_page(wiki_root, "summaries", "beta-doc", "Beta Document")
 
@@ -4279,8 +4278,8 @@ class TestWikiScreenSearch:
     async def test_escape_clears_search(self, tmp_path):
         """Escape clears search text when search has a value."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test-page", "Test Page")
 
         app = WikiTestApp()
@@ -4321,8 +4320,8 @@ class TestWikiScreenNavigation:
     async def test_focus_search(self, tmp_path):
         """Pressing / focuses the search input."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "page-one", "Page One")
 
         app = WikiTestApp()
@@ -4414,8 +4413,8 @@ class TestWikiDisplayPageMissing:
     async def test_display_nonexistent_page(self, tmp_path):
         """Displaying a nonexistent page shows placeholder."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         wiki_root.mkdir(parents=True)
 
         app = WikiTestApp()
@@ -4448,8 +4447,8 @@ class TestWikiCoverageEdgeCases:
     async def test_on_page_selected_none_id(self, tmp_path):
         """Selecting an option with no id (heading) is a no-op."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test", "Test Page")
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4466,8 +4465,8 @@ class TestWikiCoverageEdgeCases:
     async def test_action_focus_search(self, tmp_path):
         """action_focus_search focuses the search input."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         wiki_root.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4480,8 +4479,8 @@ class TestWikiCoverageEdgeCases:
     async def test_dismiss_or_back_empty_search(self, tmp_path):
         """Escape with empty search calls go_back."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         wiki_root.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4498,8 +4497,8 @@ class TestWikiCoverageEdgeCases:
         from lilbee.cli.tui.screens.wiki import WikiScreen
 
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         wiki_root.mkdir(parents=True)
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4512,8 +4511,8 @@ class TestWikiCoverageEdgeCases:
         from lilbee.cli.tui.app import LilbeeApp
 
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test", "Test")
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4529,8 +4528,8 @@ class TestWikiCoverageEdgeCases:
     async def test_vim_nav_noop_when_input_focused(self, tmp_path):
         """Vim navigation is suppressed when Input is focused."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test", "Test Page")
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4550,8 +4549,8 @@ class TestWikiCoverageEdgeCases:
     async def test_on_page_selected_valid_slug(self, tmp_path):
         """Selecting a page with a valid slug displays it."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "hello", "Hello Page")
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4567,8 +4566,8 @@ class TestWikiCoverageEdgeCases:
     async def test_vim_nav_when_not_input_focused(self, tmp_path):
         """Vim nav dispatches to OptionList when Input is not focused."""
         cfg.wiki = True
-        cfg.data_dir = tmp_path / "data"
-        wiki_root = cfg.data_dir / cfg.wiki_dir
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "a", "Page A")
         _create_wiki_page(wiki_root, "summaries", "b", "Page B")
         app = WikiTestApp()

@@ -62,14 +62,6 @@ def mock_svc():
     svc_mod.set_services(None)
 
 
-def _fake_embed_batch(texts, **kwargs):
-    return [[0.1] * 768 for _ in texts]
-
-
-def _fake_embed(text):
-    return [0.1] * 768
-
-
 def _make_kreuzberg_result(text="Some extracted text. " * 20, num_chunks=1, has_pages=False):
     """Build a mock kreuzberg ExtractionResult."""
     chunks = []

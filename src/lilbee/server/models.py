@@ -296,14 +296,6 @@ class WikiLintResult(BaseModel):
     warnings: int = 0
 
 
-class WikiLintStatusResult(BaseModel):
-    """Status of a lint task (stub)."""
-
-    task_id: str
-    status: str = "not_implemented"
-    issues: list[WikiLintIssueItem] = []
-
-
 class WikiPruneRecordResponse(BaseModel):
     """A single pruning action."""
 
