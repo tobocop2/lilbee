@@ -169,13 +169,7 @@ jobs:
 
       - name: Install Ollama (Windows)
         if: runner.os == 'Windows'
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://ollama.com/download/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
-          Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "$env:LOCALAPPDATA\Ollama" -Force
-          echo "$env:LOCALAPPDATA\Ollama" | Out-File -Append -FilePath $env:GITHUB_PATH
-          & "$env:LOCALAPPDATA\Ollama\ollama.exe" --version
-          echo "Ollama installed to $env:LOCALAPPDATA\Ollama"
+        run: choco install ollama -y
 
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
