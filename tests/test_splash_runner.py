@@ -93,6 +93,13 @@ def test_pipe_closed_with_data_available():
     os.close(r)
 
 
+def test_read_eof_with_bad_fd():
+    """_read_eof returns True when os.read raises OSError."""
+    from lilbee._splash_runner import _read_eof
+
+    assert _read_eof(-1) is True
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
 def test_pipe_closed_select_error_returns_true():
     """pipe_closed returns True when select raises."""
