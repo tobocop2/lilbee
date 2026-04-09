@@ -2777,7 +2777,7 @@ class TestModelBarPopulateBranches:
             assert bar.display is True
 
     async def test_after_model_change_with_streaming_chat(self) -> None:
-        """Cover line 259: cancel stream when chat screen is streaming."""
+        """Cancel stream and defer reset when chat screen is streaming."""
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -2789,13 +2789,59 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             mock_screen = mock.MagicMock(spec=ChatScreen)
-            mock_screen.streaming = True
+            mock_screen._streaming = True
+            mock_screen.workers = []
             with (
                 mock.patch.object(
                     type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
                 ),
-                mock.patch("lilbee.services.reset_services"),
+                mock.patch("lilbee.services.reset_services") as mock_reset,
             ):
                 bar._after_model_change()
-            mock_screen.action_cancel_stream.assert_called_once()
+                mock_screen.action_cancel_stream.assert_called_once()
+                mock_reset.assert_not_called()
+                await pilot.pause()
+                await pilot.pause()
+                mock_reset.assert_called_once()
+
+    async def test_after_model_change_no_streaming(self) -> None:
+        """Reset services immediately when not streaming."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
             await pilot.pause()
+            bar = app.query_one(ModelBar)
+            with mock.patch("lilbee.services.reset_services") as mock_reset:
+                bar._after_model_change()
+            mock_reset.assert_called_once()
+
+    async def test_deferred_reset_waits_for_workers(self) -> None:
+        """_deferred_reset retries when workers are still running."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            mock_screen = mock.MagicMock(spec=ChatScreen)
+            mock_screen.workers = [mock.MagicMock()]
+            with (
+                mock.patch.object(
+                    type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
+                ),
+                mock.patch("lilbee.services.reset_services") as mock_reset,
+            ):
+                bar._deferred_reset()
+                mock_reset.assert_not_called()
+                mock_screen.workers = []
+                await pilot.pause()
+                await pilot.pause()
+                mock_reset.assert_called_once()

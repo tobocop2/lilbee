@@ -280,14 +280,12 @@ class WorkerProcess:
         self._request_queue.put(LoadModelRequest(model=model, model_type=model_type))
 
 
-def _worker_main(
-    req_q: multiprocessing.Queue[_WorkerRequest],
-    resp_q: multiprocessing.Queue[_WorkerResponse],
-    config: ConfigSnapshot,
-) -> None:
-    """Child process entry point. Loads models lazily, processes requests."""
-    # Redirect stdout/stderr to devnull so llama-cpp's C-level prints
-    # don't corrupt the parent TUI. Queues use pipes, not stdout.
+def _redirect_stdio() -> None:
+    """Redirect stdout/stderr to /dev/null for the worker subprocess.
+
+    Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
+    Queues use pipes, not stdout.
+    """
     import os
     import sys
 
@@ -297,6 +295,15 @@ def _worker_main(
     os.close(devnull_fd)
     sys.stdout = open(os.devnull, "w")  # noqa: SIM115
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+
+
+def _worker_main(
+    req_q: multiprocessing.Queue[_WorkerRequest],
+    resp_q: multiprocessing.Queue[_WorkerResponse],
+    config: ConfigSnapshot,
+) -> None:
+    """Child process entry point. Loads models lazily, processes requests."""
+    _redirect_stdio()
 
     embed_llm: Any = None
     vision_llm: Any = None

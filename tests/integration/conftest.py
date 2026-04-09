@@ -22,11 +22,11 @@ def _preserve_models_dir():
     yield
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def rag_pipeline(tmp_path_factory):
     """Set up a real RAG pipeline with downloaded models and test documents.
 
-    Module-scoped: downloads models once, creates documents, runs sync,
+    Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
@@ -62,7 +62,7 @@ def rag_pipeline(tmp_path_factory):
     download_model(embed_entry)
     cfg.embedding_model = embed_entry.ref
 
-    chat_entry = FEATURED_CHAT[0]
+    chat_entry = next(m for m in FEATURED_CHAT if m.name == "smollm2")
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 
@@ -83,11 +83,11 @@ def rag_pipeline(tmp_path_factory):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def wiki_pipeline(tmp_path_factory):
     """Set up a real pipeline with wiki enabled.
 
-    Module-scoped: downloads models once, creates documents + wiki dir,
+    Session-scoped: downloads models once, creates documents + wiki dir,
     runs sync, yields pipeline data, then restores config.
     """
     from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
@@ -126,7 +126,7 @@ def wiki_pipeline(tmp_path_factory):
     download_model(embed_entry)
     cfg.embedding_model = embed_entry.ref
 
-    chat_entry = FEATURED_CHAT[0]
+    chat_entry = next(m for m in FEATURED_CHAT if m.name == "smollm2")
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 

@@ -18,15 +18,12 @@ import os
 from unittest import mock
 
 import pytest
+from typer.testing import CliRunner
 
-llama_cpp = pytest.importorskip("llama_cpp")
-
-from typer.testing import CliRunner  # noqa: E402
-
-from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model  # noqa: E402
-from lilbee.cli.app import app  # noqa: E402
-from lilbee.config import cfg  # noqa: E402
-from lilbee.services import reset_services as reset_provider  # noqa: E402
+from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
+from lilbee.cli.app import app
+from lilbee.config import cfg
+from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
 

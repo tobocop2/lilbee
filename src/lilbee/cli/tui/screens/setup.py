@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import ClassVar
 
 from textual import on, work
@@ -293,38 +294,54 @@ class SetupWizard(Screen[str | None]):
 
     @work(thread=True)
     def _run_downloads(self) -> None:
+        """Download all selected models in a background thread."""
+        self._download_loop(self.app.call_from_thread)  # pragma: no cover
+
+    def _on_download_progress(self, notify: Callable[..., None], p: DownloadProgress) -> None:
+        """Handle a single download progress update."""
+        notify(self._update_progress, p.percent)
+        notify(self._set_status, f"Downloading... {p.detail} ({p.percent}%)")
+
+    def _handle_download_error(
+        self,
+        notify: Callable[..., None],
+        exc: Exception,
+        model: CatalogModel,
+        *,
+        is_first: bool,
+        total: int,
+    ) -> bool:
+        """Handle a download error. Returns True if the loop should stop."""
+        log.warning("Download failed for %s", model.ref, exc_info=True)
+        error_msg = str(exc)
+        if "401" in error_msg or "PermissionError" in error_msg:
+            error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
+        notify(self._set_status, f"Error: {error_msg}")
+        if is_first and total > 1:
+            return True
+        if not is_first:
+            notify(self._on_partial_success)
+        return True
+
+    def _download_loop(self, notify: Callable[..., None]) -> None:
         """Download all selected models sequentially."""
         total = len(self._download_models)
         for idx, model in enumerate(self._download_models, 1):
             is_first = idx == 1
-            self.app.call_from_thread(
+            notify(
                 self._set_status,
                 msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
             )
-            self.app.call_from_thread(self._update_progress, 0)
+            notify(self._update_progress, 0)
 
-            def _on_update(p: DownloadProgress) -> None:
-                self.app.call_from_thread(self._update_progress, p.percent)
-                self.app.call_from_thread(
-                    self._set_status, f"Downloading... {p.detail} ({p.percent}%)"
-                )
-
+            callback = make_download_callback(lambda p: self._on_download_progress(notify, p))
             try:
-                download_model(model, on_progress=make_download_callback(_on_update))
+                download_model(model, on_progress=callback)
             except Exception as exc:
-                log.warning("Download failed for %s", model.ref, exc_info=True)
-                error_msg = str(exc)
-                if "401" in error_msg or "PermissionError" in error_msg:
-                    error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
-                self.app.call_from_thread(self._set_status, f"Error: {error_msg}")
-                if is_first and total > 1:
+                if self._handle_download_error(notify, exc, model, is_first=is_first, total=total):
                     return
-                if not is_first:
-                    # Embedding failed but chat succeeded
-                    self.app.call_from_thread(self._on_partial_success)
-                return
 
-        self.app.call_from_thread(self._on_all_downloads_complete)
+        notify(self._on_all_downloads_complete)
 
     def _on_all_downloads_complete(self) -> None:
         self._set_status(msg.SETUP_ALL_DONE)

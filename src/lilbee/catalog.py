@@ -654,6 +654,9 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
     )
 
     try:
+        os.environ.setdefault(
+            "HF_HUB_DISABLE_XET", "1"
+        )  # pragma: no cover  # TODO: remove once huggingface_hub#4065 merges
         cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except GatedRepoError:
         raise PermissionError(

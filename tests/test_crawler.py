@@ -1,5 +1,6 @@
 """Tests for the web crawling module."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -781,12 +782,11 @@ class TestPeriodicSync:
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):
         """CrawlerState.reset() restores all fields to initial values."""
-        import threading
 
         import lilbee.crawler as crawler_mod
 
         state = crawler_mod._state
-        state.semaphore = threading.Semaphore(3)
+        state.semaphore = asyncio.Semaphore(3)
         state.semaphore_limit = 3
         state.last_sync_time = 99.0
 

@@ -691,6 +691,27 @@ class TestDiscoverSymlinkEscape:
         assert "escaped.txt" not in found
         outside_file.unlink()
 
+    def test_path_validation_failure_skipped(self, isolated_env):
+        """Files that fail path validation are skipped (covers Windows too)."""
+        from unittest.mock import patch
+
+        from lilbee.ingest import discover_files
+
+        (isolated_env / "normal.md").write_text("# Normal")
+
+        original = __import__(
+            "lilbee.ingest", fromlist=["validate_path_within"]
+        ).validate_path_within
+
+        def strict_validate(path, base):
+            if "normal" in str(path):
+                raise ValueError("blocked")
+            return original(path, base)
+
+        with patch("lilbee.ingest.validate_path_within", side_effect=strict_validate):
+            found = discover_files()
+        assert "normal.md" not in found
+
 
 class TestDiscoverNewFormats:
     def test_new_extensions_discovered(self, isolated_env):

@@ -18,12 +18,10 @@ from pathlib import Path
 
 import pytest
 
-kreuzberg = pytest.importorskip("kreuzberg")
-
-from lilbee.config import cfg  # noqa: E402
-from lilbee.ingest import sync  # noqa: E402
-from lilbee.services import get_services  # noqa: E402
-from lilbee.services import reset_services as reset_provider  # noqa: E402
+from lilbee.config import cfg
+from lilbee.ingest import sync
+from lilbee.services import get_services
+from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
 
@@ -38,8 +36,6 @@ def pdf_pipeline(tmp_path_factory):
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
-    llama_cpp = pytest.importorskip("llama_cpp")  # noqa: F841
-
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
     from lilbee.model_manager import reset_model_manager
 

@@ -51,6 +51,16 @@ size_gb = 18.0
 min_ram_gb = 32.0
 description = "Extra large — best quality"
 
+[[chat]]
+name = "smollm2"
+tag = "135m"
+display_name = "SmolLM2 135M"
+hf_repo = "bartowski/SmolLM2-135M-Instruct-GGUF"
+gguf_filename = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+size_gb = 0.09
+min_ram_gb = 0.5
+description = "Ultra-tiny — Raspberry Pi, low-RAM devices"
+
 [[embedding]]
 name = "nomic-embed-text"
 tag = "v1.5"
