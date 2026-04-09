@@ -59,7 +59,7 @@ Issues = "https://github.com/tobocop2/lilbee/issues"
 lilbee = "lilbee.launcher:main"
 
 [tool.uv.sources]
-huggingface_hub = { git = "https://github.com/tobocop2/huggingface_hub.git", branch = "fix/xet-tqdm-combined" }
+huggingface_hub = { git = "https://github.com/tobocop2/huggingface_hub.git", branch = "fix/tqdm-bad-fd-safety" }
 
 [build-system]
 requires = ["hatchling"]
