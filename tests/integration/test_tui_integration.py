@@ -69,6 +69,12 @@ class TestChatFlow:
                     break
 
             assert not app.screen._streaming, "Streaming did not complete in time"
+
+            # Wait for all workers to finish before app teardown
+            # (llama-cpp segfaults if model is freed while worker thread reads from it)
+            for worker in list(app.screen.workers):
+                await worker.wait()
+
             assert len(app.screen._history) >= 2
             assistant_reply = app.screen._history[-1]["content"]
             assert len(assistant_reply) > 0, "Assistant reply was empty"
