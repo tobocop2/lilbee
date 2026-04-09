@@ -78,8 +78,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    env:
-      OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
     steps:
       - uses: actions/checkout@v6
 
@@ -138,6 +136,8 @@ jobs:
 
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
+        env:
+          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
         run: |
           ollama serve &
           sleep 2
@@ -146,6 +146,8 @@ jobs:
 
       - name: Start Ollama and pull models (Windows)
         if: runner.os == 'Windows'
+        env:
+          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
         run: |
           Start-Process ollama -ArgumentList "serve" -NoNewWindow
           Start-Sleep -Seconds 5
@@ -158,11 +160,12 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
           OLLAMA_HOST: http://localhost:11434
+          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
+        run: uv run pytest tests/integration/ -v
 
   deploy-pages:
     needs: test
