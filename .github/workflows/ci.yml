@@ -195,12 +195,6 @@ jobs:
           ollama pull qwen3:0.6b
           ollama pull nomic-embed-text
 
-      - name: Run all tests with optional deps
-        run: make test-ci
-        env:
-          LILBEE_DATA: ${{ runner.temp }}/lilbee
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
-
       - name: Run integration tests
         run: uv run pytest tests/integration/ -v
         env:

@@ -143,9 +143,9 @@ def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
     def mock_pipe_closed(_fd: int) -> bool:
         nonlocal call_count
         call_count += 1
-        # Let startup delay pass (returns False), one full frame render,
-        # then close on the second frame check
-        return call_count > 20
+        # Return False for outer while (call 1), then True on 2nd inner
+        # loop iteration (call 3) to exercise the inner break path
+        return call_count >= 3
 
     written: list[bytes] = []
 
