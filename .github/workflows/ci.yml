@@ -122,13 +122,18 @@ jobs:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
 
-      # Metal OFF: GitHub macOS runners are VMs without GPU passthrough.
+      # Metal OFF: CI macOS runners are VMs without GPU passthrough.
       # Native OFF: avoids i8mm compile errors on CI M1 runners.
-      # SmolLM2-135M (88MB) is fast enough on baseline CPU for macOS/Windows.
+      # BLAS ON (macOS): uses built-in Accelerate framework for faster matrix ops.
+      # BLAS/CUDA OFF (Linux/Windows): no GPU or BLAS library available.
       - name: Install dependencies
         run: uv sync --all-extras
         env:
-          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
+          CMAKE_ARGS: >-
+            -DGGML_METAL=OFF
+            -DGGML_NATIVE=OFF
+            -DGGML_CUDA=OFF
+            ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
 
       - name: Install spacy model
         run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
