@@ -227,12 +227,11 @@ jobs:
 
       - name: Start Ollama and pull models (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
         run: |
-          start /b C:\ollama\ollama.exe serve
-          timeout /t 5 /nobreak >nul
-          C:\ollama\ollama.exe pull qwen3:0.6b
-          C:\ollama\ollama.exe pull nomic-embed-text
+          Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          & C:\ollama\ollama.exe pull qwen3:0.6b
+          & C:\ollama\ollama.exe pull nomic-embed-text
 
       - name: Run integration tests
         run: make test-integration
