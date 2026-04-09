@@ -100,13 +100,13 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      - name: Restore Chocolatey cache (Windows)
+      - name: Restore Ollama binary cache (Windows)
         if: runner.os == 'Windows'
-        id: choco-cache
+        id: ollama-bin-cache
         uses: actions/cache/restore@v4
         with:
-          path: C:\ProgramData\chocolatey\lib
-          key: choco-${{ runner.os }}-ollama-v1
+          path: C:\ollama
+          key: ollama-bin-${{ runner.os }}-v1
 
       - name: Install dependencies
         run: uv sync --all-extras
@@ -187,15 +187,18 @@ jobs:
           sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
 
       - name: Install Ollama (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ollama -y
+        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://ollama.com/download/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
+          Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
 
-      - name: Save Chocolatey cache (Windows)
-        if: runner.os == 'Windows' && steps.choco-cache.outputs.cache-hit != 'true'
+      - name: Save Ollama binary cache (Windows)
+        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: C:\ProgramData\chocolatey\lib
-          key: choco-${{ runner.os }}-ollama-v1
+          path: C:\ollama
+          key: ollama-bin-${{ runner.os }}-v1
 
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
@@ -209,11 +212,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          where ollama || dir /s /b "C:\ProgramData\chocolatey\bin\ollama.exe"
-          start /b ollama serve
+          start /b C:\ollama\ollama.exe serve
           timeout /t 5 /nobreak >nul
-          ollama pull qwen3:0.6b
-          ollama pull nomic-embed-text
+          C:\ollama\ollama.exe pull qwen3:0.6b
+          C:\ollama\ollama.exe pull nomic-embed-text
 
       - name: Run integration tests
         run: make test-integration
