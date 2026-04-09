@@ -105,14 +105,28 @@ jobs:
         run: uv run crawl4ai-setup
         continue-on-error: true
 
-      - name: Cache GGUF models
+      - name: Cache GGUF models (Linux)
+        if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: ~/.local/share/lilbee/models
-          key: gguf-models-${{ runner.os }}-v3
-          restore-keys: gguf-models-${{ runner.os }}-
+          key: gguf-models-Linux-v3
 
-      - name: Cache sentence-transformers models
+      - name: Cache GGUF models (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/lilbee/models
+          key: gguf-models-macOS-v3
+
+      - name: Cache GGUF models (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\lilbee\models
+          key: gguf-models-Windows-v3
+
+      - name: Cache HuggingFace models
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface/hub
@@ -122,35 +136,44 @@ jobs:
       - name: Cache Ollama models
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/ollama_models
+          path: ~/.ollama/models
           key: ollama-models-${{ runner.os }}-qwen3-nomic-v1
           restore-keys: ollama-models-${{ runner.os }}-
 
-      - name: Install Ollama (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Install Ollama (Linux)
+        if: runner.os == 'Linux'
         run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Install Ollama (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL https://ollama.com/download/Ollama-darwin.zip -o /tmp/ollama.zip
+          unzip -q /tmp/ollama.zip -d /tmp/ollama
+          sudo mv /tmp/ollama/Ollama.app /Applications/
+          sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
 
       - name: Install Ollama (Windows)
         if: runner.os == 'Windows'
-        run: choco install ollama -y
+        run: |
+          curl -fsSL -o "$env:TEMP\OllamaSetup.exe" https://ollama.com/download/OllamaSetup.exe
+          Start-Process "$env:TEMP\OllamaSetup.exe" -ArgumentList "/VERYSILENT","/NORESTART","/SP-" -Wait
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+          ollama --version
 
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
-        env:
-          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
         run: |
-          ollama serve &
-          sleep 2
+          nohup ollama serve > /dev/null 2>&1 &
+          sleep 3
           ollama pull qwen3:0.6b
           ollama pull nomic-embed-text
 
       - name: Start Ollama and pull models (Windows)
         if: runner.os == 'Windows'
-        env:
-          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
+        shell: cmd
         run: |
-          Start-Process ollama -ArgumentList "serve" -NoNewWindow
-          Start-Sleep -Seconds 5
+          start /b ollama serve
+          timeout /t 5 /nobreak >nul
           ollama pull qwen3:0.6b
           ollama pull nomic-embed-text
 
@@ -160,12 +183,11 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
       - name: Run integration tests
+        run: uv run pytest tests/integration/ -v
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
           OLLAMA_HOST: http://localhost:11434
-          OLLAMA_MODELS: ${{ runner.temp }}/ollama_models
-        run: uv run pytest tests/integration/ -v
 
   deploy-pages:
     needs: test
