@@ -1471,17 +1471,17 @@ class TestEnrichCatalog:
 
 class TestFormatSizeMb:
     def test_zero_returns_dash(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _format_size_mb
+        from lilbee.cli.tui.screens.catalog_utils import _format_size_mb
 
         assert _format_size_mb(0) == "--"
 
     def test_mb_value(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _format_size_mb
+        from lilbee.cli.tui.screens.catalog_utils import _format_size_mb
 
         assert _format_size_mb(512) == "512 MB"
 
     def test_gb_value(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _format_size_mb
+        from lilbee.cli.tui.screens.catalog_utils import _format_size_mb
 
         assert _format_size_mb(2048) == "2.0 GB"
 

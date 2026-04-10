@@ -30,7 +30,7 @@ class PageText(NamedTuple):
     text: str
 
 
-_OCR_PROMPT = (
+OCR_PROMPT = (
     "Extract ALL text from this page as clean markdown. "
     "Preserve table structure using markdown table syntax. "
     "Include all rows, columns, headers, and page text exactly as shown."
@@ -90,7 +90,7 @@ def _png_to_data_url(png_bytes: bytes) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def _build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
+def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
     """Build OpenAI-compatible messages with image content for vision models.
 
     Uses the multipart content format expected by llama-cpp-python's
@@ -122,10 +122,10 @@ def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = N
 
         # vision_ocr is optional — only llama-cpp provider implements it
         if hasattr(provider, "vision_ocr"):
-            result: str = provider.vision_ocr(png_bytes, model, _OCR_PROMPT)  # type: ignore[attr-defined]
+            result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT)  # type: ignore[attr-defined]
             return result
 
-        messages = _build_vision_messages(_OCR_PROMPT, png_bytes)
+        messages = build_vision_messages(OCR_PROMPT, png_bytes)
 
         if timeout and timeout > 0:
             from concurrent.futures import ThreadPoolExecutor

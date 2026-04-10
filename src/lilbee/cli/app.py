@@ -30,14 +30,14 @@ model_option = typer.Option(
     help="Override chat model (default: $LILBEE_CHAT_MODEL or 'qwen3:8b')",
 )
 
-_json_option = typer.Option(
+json_option = typer.Option(
     False,
     "--json",
     "-j",
     help="Emit structured JSON output (for agent/script consumption).",
 )
 
-_global_option = typer.Option(
+global_option = typer.Option(
     False,
     "--global",
     "-g",
@@ -117,8 +117,8 @@ def _default(
     ctx: typer.Context,
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
-    json_output: bool = _json_option,
-    use_global: bool = _global_option,
+    json_output: bool = json_option,
+    use_global: bool = global_option,
     log_level: str | None = _log_level_option,
     show_version: bool = typer.Option(
         False,

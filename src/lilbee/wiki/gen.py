@@ -20,9 +20,13 @@ from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
+from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import MIN_CLUSTER_SOURCES, PageTarget, make_slug
 
 log = logging.getLogger(__name__)
+
+WikiProgressCallback = Callable[[str, dict[str, object]], None]
+"""Callback for wiki generation progress: (stage, data) -> None."""
 
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
@@ -311,8 +315,6 @@ def _persist_and_finalize(
         for name in source_names:
             store.delete_by_source(name)
 
-    from lilbee.wiki.index import append_wiki_log, update_wiki_index
-
     update_wiki_index(config)
     append_wiki_log(
         "generated",
@@ -334,9 +336,18 @@ def _generate_page(
     provider: LLMProvider,
     store: Store,
     config: Config,
+    on_progress: WikiProgressCallback | None = None,
 ) -> Path | None:
     """Core generation pipeline shared by summary and synthesis pages."""
+
+    def _emit(stage: str, **data: object) -> None:
+        if on_progress is not None:
+            on_progress(stage, data)
+
+    _emit("preparing", chunks=len(chunks), source=label)
+
     messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+    _emit("generating", source=label)
     try:
         response = provider.chat(messages, stream=False)
         wiki_text = cast(str, response).strip()
@@ -353,6 +364,7 @@ def _generate_page(
         log.warning("No valid citations for %s, skipping", label)
         return None
 
+    _emit("faithfulness_check")
     score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
     threshold = config.wiki_faithfulness_threshold
     subdir = page_type if score >= threshold else "drafts"
@@ -390,6 +402,7 @@ def generate_summary_page(
     provider: LLMProvider,
     store: Store,
     config: Config | None = None,
+    on_progress: WikiProgressCallback | None = None,
 ) -> Path | None:
     """Generate a wiki summary page for a source document.
 
@@ -426,6 +439,7 @@ def generate_summary_page(
         provider=provider,
         store=store,
         config=config,
+        on_progress=on_progress,
     )
 
 
@@ -452,6 +466,11 @@ def _resolve_multi_source_citations(
         if not matched_source:
             matched_source = _find_excerpt_source(excerpt, chunks_by_source)
         if not matched_source and source_names:
+            # No citation match found; default to first listed source
+            log.warning(
+                "No citation match for chunk — defaulting to first source: %s",
+                source_names[0],
+            )
             matched_source = source_names[0]
 
         search_chunks = chunks_by_source.get(matched_source, all_chunks)

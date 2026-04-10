@@ -25,9 +25,6 @@ from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.pill import pill
-from lilbee.cli.tui.screens.catalog import CatalogScreen
-from lilbee.cli.tui.screens.settings import SettingsScreen
-from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -107,7 +104,7 @@ class ChatScreen(Screen[None]):
         self._auto_sync = auto_sync
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
-        self._streaming = False
+        self.streaming = False
         self._insert_mode: bool = True
         self._completing = False
         self._sync_active: bool = False
@@ -164,10 +161,10 @@ class ChatScreen(Screen[None]):
     def _needs_setup(self) -> bool:
         """Check if both chat and embedding models are resolvable."""
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            _resolve_model_path(cfg.chat_model)
-            _resolve_model_path(cfg.embedding_model)
+            resolve_model_path(cfg.chat_model)
+            resolve_model_path(cfg.embedding_model)
             return False
         except Exception:
             return True
@@ -175,9 +172,9 @@ class ChatScreen(Screen[None]):
     def _embedding_ready(self) -> bool:
         """Quick check if embedding model exists (no network calls)."""
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            _resolve_model_path(cfg.embedding_model)
+            resolve_model_path(cfg.embedding_model)
             return True
         except Exception:
             return False
@@ -201,11 +198,6 @@ class ChatScreen(Screen[None]):
     def action_open_setup(self) -> None:
         """Open the setup wizard."""
         self._cmd_setup("")
-
-    def _cmd_setup(self, _args: str) -> None:
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        self.app.push_screen(SetupWizard(), self._on_setup_complete)
 
     def _enter_insert_mode(self) -> None:
         """Switch to insert mode: focus input, update border style."""
@@ -275,15 +267,12 @@ class ChatScreen(Screen[None]):
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
 
-    # -- Slash command handlers (alphabetical) --------------------------------
-
     def _cmd_add(self, args: str) -> None:
         if not args:
             return
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
-        # Auto-detect URLs and route to crawl logic
         if is_url(args):
             self._cmd_crawl(args)
             return
@@ -418,10 +407,11 @@ class ChatScreen(Screen[None]):
             )
             return
 
-        # Trigger sync to ingest the crawled markdown files
         self.app.call_from_thread(self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
@@ -490,6 +480,8 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_MODEL_SET.format(name=tagged))
             self._refresh_model_bar()
         else:
+            from lilbee.cli.tui.screens.catalog import CatalogScreen
+
             self.app.push_screen(CatalogScreen())
 
     def _cmd_quit(self, _args: str) -> None:
@@ -570,15 +562,24 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
 
     def _cmd_settings(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
         self.app.push_screen(SettingsScreen())
 
+    def _cmd_setup(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.app.push_screen(SetupWizard(), self._on_setup_complete)
+
     def _cmd_status(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
         self.app.push_screen(StatusScreen())
 
     def _cmd_theme(self, args: str) -> None:
         from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
 
-        if args and isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+        if args and isinstance(self.app, LilbeeApp):
             self.app.set_theme(args)
             self.notify(msg.THEME_SET.format(name=args))
         else:
@@ -606,8 +607,6 @@ class ChatScreen(Screen[None]):
         current = cfg.vision_model or "disabled"
         self.notify(msg.CMD_VISION_STATUS.format(current=current))
 
-    # -- Core chat logic ------------------------------------------------------
-
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         log = self.query_one("#chat-log", VerticalScroll)
@@ -619,7 +618,7 @@ class ChatScreen(Screen[None]):
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
-        self._streaming = True
+        self.streaming = True
         self._stream_response(text, assistant_msg)
 
     @work(thread=True)
@@ -653,7 +652,7 @@ class ChatScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
-            self._streaming = False
+            self.streaming = False
             full_response = "".join(response_parts)
             if full_response:
                 with self._history_lock:
@@ -682,10 +681,10 @@ class ChatScreen(Screen[None]):
 
     def action_enter_normal_mode(self) -> None:
         """Escape: cancel stream, return from model bar, or enter normal mode."""
-        if self._streaming:
+        if self.streaming:
             for worker in self.workers:
                 worker.cancel()
-            self._streaming = False
+            self.streaming = False
             return
         if isinstance(self.focused, Select):
             self.query_one("#chat-input", Input).focus()
@@ -696,10 +695,10 @@ class ChatScreen(Screen[None]):
 
     def action_cancel_stream(self) -> None:
         """Context-aware Escape: cancel stream -> blur input -> no-op."""
-        if self._streaming:
+        if self.streaming:
             for worker in self.workers:
                 worker.cancel()
-            self._streaming = False
+            self.streaming = False
             return
         inp = self.query_one("#chat-input", Input)
         if inp.has_focus:

@@ -364,4 +364,5 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
             models = [m for m in models if m not in vision_refs]
         return models
     except Exception:
+        log.debug("Failed to list installed models", exc_info=True)
         return []

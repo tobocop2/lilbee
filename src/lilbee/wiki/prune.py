@@ -18,10 +18,13 @@ from pathlib import Path
 
 from lilbee.config import Config, cfg
 from lilbee.store import Store
+from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import MIN_CLUSTER_SOURCES
 
 log = logging.getLogger(__name__)
+
+_STALE_TYPES = {IssueType.STALE_HASH, IssueType.EXCERPT_MISSING}
 
 
 class PruneAction(Enum):
@@ -129,7 +132,6 @@ def _check_stale_majority(
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
         return False
-    _STALE_TYPES = {IssueType.STALE_HASH, IssueType.EXCERPT_MISSING}
     stale_count = sum(1 for i in issues if i.issue_type in _STALE_TYPES)
     return stale_count / len(citations) > config.wiki_stale_citation_threshold
 
@@ -180,8 +182,6 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
         report.archived_count,
         report.flagged_count,
     )
-    from lilbee.wiki.index import append_wiki_log, update_wiki_index
-
     update_wiki_index(config)
     for rec in report.records:
         append_wiki_log(f"pruned ({rec.action.value})", f"{rec.wiki_source}: {rec.reason}", config)

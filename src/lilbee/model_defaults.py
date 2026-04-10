@@ -45,22 +45,28 @@ class ModelDefaults:
     max_tokens: int | None = None
 
 
-_cache: dict[str, ModelDefaults] = {}
+class _DefaultsCache:
+    """Encapsulates the per-model defaults cache (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, ModelDefaults] = {}
+
+    def get(self, model_name: str) -> ModelDefaults | None:
+        return self._data.get(model_name)
+
+    def set(self, model_name: str, defaults: ModelDefaults) -> None:
+        self._data[model_name] = defaults
+
+    def clear(self) -> None:
+        self._data.clear()
 
 
-def get_defaults(model_name: str) -> ModelDefaults | None:
-    """Return cached defaults for *model_name*, or None if not cached."""
-    return _cache.get(model_name)
+_defaults_cache = _DefaultsCache()
 
-
-def set_defaults(model_name: str, defaults: ModelDefaults) -> None:
-    """Store *defaults* in the in-memory cache keyed by *model_name*."""
-    _cache[model_name] = defaults
-
-
-def clear_cache() -> None:
-    """Remove all cached model defaults (for test isolation)."""
-    _cache.clear()
+# Public API — preserves existing call sites.
+get_defaults = _defaults_cache.get
+set_defaults = _defaults_cache.set
+clear_cache = _defaults_cache.clear
 
 
 def parse_kv_parameters(text: str) -> ModelDefaults:

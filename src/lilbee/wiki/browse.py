@@ -77,6 +77,7 @@ def build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
     page_type = _page_type_from_path(path, wiki_root)
     source_count = parse_source_count(text)
     raw_at = fm.get("generated_at", "")
+    # yaml.safe_load returns datetime/date objects for date-like strings
     created_at = raw_at.isoformat() if isinstance(raw_at, (datetime, date)) else str(raw_at)
     return WikiPageInfo(
         slug=slug,

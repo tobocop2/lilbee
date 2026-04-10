@@ -40,7 +40,7 @@ def _isolated_cfg(tmp_path):
 def _mock_resolve():
     """Mock model resolution to succeed without real files."""
     with mock.patch(
-        "lilbee.providers.llama_cpp_provider._resolve_model_path",
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield
@@ -87,7 +87,7 @@ class TestEmbeddingAvailable:
         assert embedder.embedding_available() is True
 
     def test_resolves_via_registry(self):
-        """When _resolve_model_path succeeds, embedding is available."""
+        """When resolve_model_path succeeds, embedding is available."""
         from lilbee.embedder import Embedder
 
         mock_provider = mock.MagicMock()
@@ -95,7 +95,7 @@ class TestEmbeddingAvailable:
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=cfg.models_dir / "test.gguf",
         ):
             assert embedder.embedding_available() is True
@@ -185,7 +185,7 @@ class TestModelSwitchSafety:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = app.screen
-            screen._streaming = True
+            screen.streaming = True
             screen.action_cancel_stream = mock.MagicMock()
 
             bar = screen.query_one("#model-bar", ModelBar)
@@ -481,13 +481,6 @@ def _mock_status_deps():
         "lilbee.cli.tui.screens.status",
         get_model_architecture=mock.MagicMock(return_value=ModelArchInfo()),
     )
-
-
-def _create_lilbee_app():
-    """Create a LilbeeApp with all network deps mocked."""
-    from lilbee.cli.tui.app import LilbeeApp
-
-    return LilbeeApp()
 
 
 class TestScreenTransitions:
@@ -874,10 +867,10 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._streaming = True
+            app.screen.streaming = True
             app.screen.action_enter_normal_mode()
             await pilot.pause()
-            assert app.screen._streaming is False
+            assert app.screen.streaming is False
 
     async def test_submit_empty_does_nothing(self, _mock_resolve):
         """Submitting empty input is a no-op."""
@@ -890,7 +883,7 @@ class TestChatInteractions:
             inp.value = ""
             event = Input.Submitted(inp, "")
             app.screen._on_chat_submitted(event)
-            assert app.screen._streaming is False
+            assert app.screen.streaming is False
             await pilot.pause()
 
     async def test_submit_message_mocked_llm(self, _mock_resolve, _mock_services):
@@ -1852,7 +1845,7 @@ class TestAppQuit:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen._streaming = True
+            app.screen.streaming = True
             with (
                 mock.patch.object(app.screen, "action_cancel_stream") as mock_cancel,
                 mock.patch.object(app, "exit") as mock_exit,
@@ -1975,7 +1968,7 @@ class TestChatSlashCommands:
             await pilot.pause()
             app.screen._handle_slash("/cancel")
             await pilot.pause()
-            assert app.screen._streaming is False
+            assert app.screen.streaming is False
 
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
@@ -2389,7 +2382,7 @@ class TestChatEmbeddingReadyCoverage:
     """Cover _embedding_ready exception path (lines 172-173 in chat.py)."""
 
     async def test_embedding_ready_returns_false_on_resolve_error(self, _mock_resolve):
-        """_embedding_ready returns False when _resolve_model_path raises."""
+        """_embedding_ready returns False when resolve_model_path raises."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         app = ChatTestApp()
@@ -2398,7 +2391,7 @@ class TestChatEmbeddingReadyCoverage:
             screen = app.screen
             assert isinstance(screen, ChatScreen)
             with mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 side_effect=FileNotFoundError("not found"),
             ):
                 assert screen._embedding_ready() is False

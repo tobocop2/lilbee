@@ -468,7 +468,14 @@ class Store:
         if table is None:
             return []
         escaped = escape_sql_string(source)
-        rows = table.search().where(f"source = '{escaped}'").to_list()
+        try:
+            rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
+        except Exception:
+            # Fallback: on tables with FTS indexes, search() may return an
+            # incompatible query builder.  Scan the Arrow table directly.
+            log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
+            all_rows = table.to_arrow().to_pylist()
+            rows = [r for r in all_rows if r.get("source") == source]
         return [SearchChunk(**r) for r in rows]
 
     def delete_by_source(self, source: str) -> None:
@@ -557,7 +564,7 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
-    def _clear_table(self, name: str, predicate: str) -> None:
+    def clear_table(self, name: str, predicate: str) -> None:
         """Delete rows matching *predicate* from *name*. Acquires write lock."""
         with write_lock():
             table = self.open_table(name)
@@ -596,7 +603,7 @@ class Store:
 
     def delete_citations_for_wiki(self, wiki_source: str) -> None:
         """Delete all citations for a wiki page (used before regeneration)."""
-        self._clear_table(
+        self.clear_table(
             CITATIONS_TABLE,
             f"wiki_source = '{escape_sql_string(wiki_source)}'",
         )

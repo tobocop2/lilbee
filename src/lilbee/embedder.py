@@ -62,9 +62,9 @@ class Embedder:
         except Exception:
             log.debug("embedding_available provider check failed", exc_info=True)
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            _resolve_model_path(model)
+            resolve_model_path(model)
             return True
         except Exception:
             return False

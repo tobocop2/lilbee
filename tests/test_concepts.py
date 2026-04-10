@@ -49,13 +49,11 @@ def mock_svc():
 
 
 @pytest.fixture(autouse=True)
-def reset_singletons():
-    """Reset module-level singletons between tests."""
-    import lilbee.concepts as concepts_mod
-
-    concepts_mod._nlp = None
+def reset_singletons(mock_svc):
+    """Reset ConceptGraph nlp cache between tests."""
+    mock_svc.concepts.reset_nlp_cache()
     yield
-    concepts_mod._nlp = None
+    mock_svc.concepts.reset_nlp_cache()
 
 
 @pytest.fixture()
@@ -207,18 +205,14 @@ class TestExtractConceptsBatch:
 
 class TestGetNlp:
     @patch("lilbee.concepts._ensure_spacy_model")
-    def test_caches_nlp_model(self, mock_ensure):
-        """_get_nlp calls _ensure_spacy_model on first call and caches."""
+    def test_caches_nlp_model(self, mock_ensure, cg):
+        """ConceptGraph._ensure_nlp caches the spaCy model after first call."""
         mock_ensure.return_value = MagicMock()
-        import lilbee.concepts as concepts_mod
-        from lilbee.concepts import _get_nlp
-
-        concepts_mod._nlp = None
-        nlp1 = _get_nlp()
-        nlp2 = _get_nlp()
+        cg.reset_nlp_cache()
+        nlp1 = cg._ensure_nlp()
+        nlp2 = cg._ensure_nlp()
         mock_ensure.assert_called_once()
         assert nlp1 is nlp2
-        concepts_mod._nlp = None
 
 
 class TestEnsureSpacyModel:
@@ -447,11 +441,9 @@ class TestGetGraph:
 class TestResetGraph:
     def test_clears_nlp_cache(self, cg):
         """reset_nlp_cache clears the spaCy model cache."""
-        import lilbee.concepts as concepts_mod
-
-        concepts_mod._nlp = MagicMock()
+        cg._nlp = MagicMock()
         cg.reset_nlp_cache()
-        assert concepts_mod._nlp is None
+        assert cg._nlp is None
 
 
 class TestComputePmi:

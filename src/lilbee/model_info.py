@@ -42,10 +42,10 @@ def get_model_architecture() -> ModelArchInfo:
 def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read chat model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata, _resolve_model_path
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata, resolve_model_path
 
-        path = _resolve_model_path(cfg.chat_model)
-        meta = _read_gguf_metadata(path)
+        path = resolve_model_path(cfg.chat_model)
+        meta = read_gguf_metadata(path)
         if meta:
             info.chat_arch = meta.get("architecture", "unknown")
             info.active_handler = "llama-cpp"
@@ -57,10 +57,10 @@ def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
 def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read embedding model architecture from GGUF metadata."""
     try:
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata, _resolve_model_path
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata, resolve_model_path
 
-        path = _resolve_model_path(cfg.embedding_model)
-        meta = _read_gguf_metadata(path)
+        path = resolve_model_path(cfg.embedding_model)
+        meta = read_gguf_metadata(path)
         if meta:
             info.embed_arch = meta.get("architecture", "unknown")
     except Exception:
@@ -74,14 +74,14 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
         return info
     try:
         from lilbee.providers.llama_cpp_provider import (
-            _find_mmproj_for_model,
-            _read_mmproj_projector_type,
-            _resolve_model_path,
+            find_mmproj_for_model,
+            read_mmproj_projector_type,
+            resolve_model_path,
         )
 
-        path = _resolve_model_path(cfg.vision_model)
-        mmproj = _find_mmproj_for_model(path)
-        proj_type = _read_mmproj_projector_type(mmproj)
+        path = resolve_model_path(cfg.vision_model)
+        mmproj = find_mmproj_for_model(path)
+        proj_type = read_mmproj_projector_type(mmproj)
         info.vision_projector = proj_type or "unknown"
     except Exception:
         log.debug("Failed to read vision projector type", exc_info=True)
