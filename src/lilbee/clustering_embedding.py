@@ -95,48 +95,58 @@ def _auto_k(n: int) -> int:
     return max(_MIN_K, min(_MAX_K, raw))
 
 
+def _parse_chunk_row(
+    row: dict[str, object],
+) -> tuple[_ChunkRecord, list[float] | tuple[float, ...]] | None:
+    """Extract a chunk record + vector from a raw Arrow row, or None on invalid."""
+    vector = row.get("vector")
+    if not isinstance(vector, (list, tuple)):
+        return None
+    source = row.get("source")
+    if not isinstance(source, str):
+        return None
+    raw_text = row.get("chunk")
+    chunk_text = raw_text if isinstance(raw_text, str) else ""
+    raw_index = row.get("chunk_index")
+    chunk_index = raw_index if isinstance(raw_index, int) else 0
+    record = _ChunkRecord(
+        source=source,
+        chunk_index=chunk_index,
+        text=chunk_text,
+        tokens=tokenize(chunk_text),
+    )
+    return record, vector
+
+
 def _load_chunk_records(
     store: Store,
 ) -> tuple[list[_ChunkRecord], np.ndarray]:
     """Scan the chunks table once and return records plus a float32 matrix.
 
-    Rows with an unparseable vector are skipped. Rows are sorted by
+    Rows with an unparseable vector are skipped. Records are sorted by
     ``(source, chunk_index)`` so downstream cluster IDs are stable
-    regardless of LanceDB's row return order. Records are tokenized
-    once here so TF-IDF labeling does not re-tokenize.
+    regardless of LanceDB's row return order. Records are tokenized once
+    here so TF-IDF labeling does not re-tokenize. The vector matrix is
+    preallocated and populated via numpy row-assignment, which pushes
+    the Python-level float cast into numpy's C loop and avoids building
+    a transient ``list[list[float]]``.
     """
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    arrow = table.to_arrow().to_pylist()
-    pairs: list[tuple[_ChunkRecord, list[float]]] = []
-    for row in arrow:
-        vector = row.get("vector")
-        if not isinstance(vector, (list, tuple)):
-            continue
-        source = row.get("source")
-        if not isinstance(source, str):
-            continue
-        raw_text = row.get("chunk")
-        chunk_text = raw_text if isinstance(raw_text, str) else ""
-        raw_index = row.get("chunk_index")
-        chunk_index = raw_index if isinstance(raw_index, int) else 0
-        record = _ChunkRecord(
-            source=source,
-            chunk_index=chunk_index,
-            text=chunk_text,
-            tokens=tokenize(chunk_text),
-        )
-        pairs.append((record, [float(v) for v in vector]))
-
-    if not pairs:
+    parsed = [pair for pair in map(_parse_chunk_row, table.to_arrow().to_pylist()) if pair]
+    if not parsed:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    pairs.sort(key=lambda pair: (pair[0].source, pair[0].chunk_index))
-    records = [record for record, _ in pairs]
-    vectors = [vec for _, vec in pairs]
-    return records, np.asarray(vectors, dtype=np.float32)
+    parsed.sort(key=lambda pair: (pair[0].source, pair[0].chunk_index))
+    dim = len(parsed[0][1])
+    matrix = np.empty((len(parsed), dim), dtype=np.float32)
+    records: list[_ChunkRecord] = []
+    for row_idx, (record, vector) in enumerate(parsed):
+        records.append(record)
+        matrix[row_idx] = vector
+    return records, matrix
 
 
 def _normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -174,10 +184,14 @@ def _mutual_knn(matrix: np.ndarray, k: int) -> dict[int, set[int]]:
     for start in range(0, n, _BLOCK_SIZE):
         stop = min(start + _BLOCK_SIZE, n)
         sim_block = matrix[start:stop] @ matrix.T  # (block, n)
-        # Mask self-similarity so each row's own index cannot be returned.
+        # Mask self-similarity so each row's own index is never returned.
+        # For the tail block where stop-start < _BLOCK_SIZE the fancy-index
+        # pairing still lines up because both sides are length stop-start.
         block_rows = np.arange(stop - start)
         sim_block[block_rows, np.arange(start, stop)] = -math.inf
-        neighbor_idx = np.argpartition(-sim_block, effective_k - 1, axis=1)[:, :effective_k]
+        # Partition by largest similarities without allocating a negated
+        # copy of the block — pass a negative kth to select the tail.
+        neighbor_idx = np.argpartition(sim_block, -effective_k, axis=1)[:, -effective_k:]
         for local_row, global_row in enumerate(range(start, stop)):
             top_neighbors[global_row] = set(neighbor_idx[local_row].tolist())
 
@@ -285,6 +299,10 @@ def _label_community(
 
     scored: list[tuple[float, str]] = []
     for term, term_tf in tf.items():
+        # Standard ``log(N / (1 + df))`` smoothing: the +1 keeps the
+        # denominator non-zero for new terms and damps the score of
+        # terms that appear in every chunk (where idf goes negative
+        # and the term is filtered out entirely).
         idf = math.log(total_chunks / (1 + df.get(term, 0)))
         if idf <= 0:
             continue
@@ -394,6 +412,16 @@ class EmbeddingClusterer:
         configured_k = self._config.wiki_clusterer_k
         k = configured_k if configured_k > 0 else _auto_k(len(records))
         adjacency = _mutual_knn(matrix, k)
+        if not any(adjacency.values()):
+            # WARNING (not INFO) so users see why synthesis produced zero
+            # pages at the default log level — matches the other degenerate
+            # clustering outcome, ``_warn_if_undersegmented``.
+            log.warning(
+                "wiki clustering: N=%d k=%d no mutual edges — skipping synthesis",
+                len(records),
+                k,
+            )
+            return []
         labels = _label_propagation(adjacency, order=list(range(len(records))))
         communities = _communities_by_label(labels)
 

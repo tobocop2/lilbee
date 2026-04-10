@@ -8,7 +8,13 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from lilbee.clustering import SourceCluster, SourceClusterer
+from lilbee.clustering import (
+    CLUSTERER_CONCEPTS,
+    CLUSTERER_EMBEDDING,
+    Clusterer,
+    SourceCluster,
+    SourceClusterer,
+)
 from lilbee.clustering_embedding import (
     EmbeddingClusterer,
     _auto_k,
@@ -469,6 +475,17 @@ class TestEmbeddingClustererGetClusters:
         run_b = EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
         assert [(c.sources, c.label) for c in run_a] == [(c.sources, c.label) for c in run_b]
 
+    def test_empty_adjacency_bails_out_before_labeling(self, caplog: pytest.LogCaptureFixture):
+        # A single chunk leaves effective_k=0 inside _mutual_knn, so the
+        # adjacency dict comes back with every value empty. get_clusters
+        # should short-circuit before running LPA or TF-IDF.
+        rows = [_row("only.md", [1.0, 0.0], chunk="alpha beta gamma delta")]
+        store = self._store_with_rows(rows)
+        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
+            result = EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
+        assert result == []
+        assert any("no mutual edges" in rec.message for rec in caplog.records)
+
     def test_warns_when_one_cluster_dominates(self, caplog: pytest.LogCaptureFixture):
         # Five sources all collapsing to a single community.
         rows = [
@@ -522,6 +539,55 @@ class TestWarnIfUndersegmented:
                 {},
             )
         assert caplog.records == []
+
+
+class TestClustererFacade:
+    def test_default_backend_is_embedding(self):
+        cfg.wiki_clusterer = CLUSTERER_EMBEDDING
+        clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, EmbeddingClusterer)
+
+    def test_unknown_choice_falls_back_to_embedding(self):
+        cfg.wiki_clusterer = "no-such-backend"
+        clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, EmbeddingClusterer)
+
+    def test_concepts_choice_returns_graph_backend_when_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from lilbee.concepts import ConceptGraphClusterer
+
+        cfg.wiki_clusterer = CLUSTERER_CONCEPTS
+        monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: True)
+        clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, ConceptGraphClusterer)
+
+    def test_concepts_choice_falls_back_when_unavailable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        from lilbee.concepts import ConceptGraphClusterer
+
+        cfg.wiki_clusterer = CLUSTERER_CONCEPTS
+        monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
+        with caplog.at_level(logging.WARNING, logger="lilbee.clustering"):
+            clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, EmbeddingClusterer)
+        assert any("falling back" in rec.message.lower() for rec in caplog.records)
+
+    def test_facade_forwards_available_and_get_clusters(self):
+        cfg.wiki_clusterer = CLUSTERER_EMBEDDING
+        backend = MagicMock(spec=SourceClusterer)
+        backend.available.return_value = True
+        backend.get_clusters.return_value = [
+            SourceCluster(cluster_id="x", label="t", sources=frozenset({"a.md"}))
+        ]
+        clusterer = Clusterer.__new__(Clusterer)
+        clusterer._backend = backend  # type: ignore[attr-defined]
+        assert clusterer.available() is True
+        assert clusterer.get_clusters(min_sources=3)[0].cluster_id == "x"
+        backend.get_clusters.assert_called_once_with(min_sources=3)
 
 
 class TestConceptGraphClusterer:

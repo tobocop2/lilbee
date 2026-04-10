@@ -9,25 +9,18 @@ between runs.
 from __future__ import annotations
 
 import atexit
-import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lilbee.clustering import SourceClusterer
+    from lilbee.clustering import Clusterer
     from lilbee.concepts import ConceptGraph
-    from lilbee.config import Config
     from lilbee.embedder import Embedder
     from lilbee.providers.base import LLMProvider
     from lilbee.query import Searcher
     from lilbee.registry import ModelRegistry
     from lilbee.reranker import Reranker
     from lilbee.store import Store
-
-log = logging.getLogger(__name__)
-
-_CLUSTERER_EMBEDDING = "embedding"
-_CLUSTERER_CONCEPTS = "concepts"
 
 
 @dataclass(frozen=True)
@@ -39,37 +32,12 @@ class Services:
     embedder: Embedder
     reranker: Reranker
     concepts: ConceptGraph
-    clusterer: SourceClusterer
+    clusterer: Clusterer
     searcher: Searcher
     registry: ModelRegistry
 
 
 _svc: Services | None = None
-
-
-def _build_clusterer(cfg: Config, store: Store) -> SourceClusterer:
-    """Select a :class:`SourceClusterer` backend with safe fallback.
-
-    Respects ``cfg.wiki_clusterer``. If the user asked for the concept
-    graph but the optional ``[graph]`` extras are missing or the graph
-    has not been built, logs a warning and falls back to the embedding
-    clusterer so wiki synthesis keeps working.
-    """
-    from lilbee.clustering_embedding import EmbeddingClusterer
-
-    choice = cfg.wiki_clusterer
-    if choice == _CLUSTERER_CONCEPTS:
-        from lilbee.concepts import ConceptGraphClusterer
-
-        graph_clusterer = ConceptGraphClusterer(cfg, store)
-        if graph_clusterer.available():
-            return graph_clusterer
-        log.warning(
-            "wiki_clusterer=concepts but the [graph] extra is not installed or "
-            "the concept graph has not been built. Falling back to the "
-            "embedding clusterer."
-        )
-    return EmbeddingClusterer(cfg, store)
 
 
 def get_services() -> Services:
@@ -78,6 +46,7 @@ def get_services() -> Services:
     if _svc is not None:
         return _svc
 
+    from lilbee.clustering import Clusterer
     from lilbee.concepts import ConceptGraph
     from lilbee.config import cfg
     from lilbee.embedder import Embedder
@@ -92,7 +61,7 @@ def get_services() -> Services:
     embedder = Embedder(cfg, provider)
     reranker = Reranker(cfg)
     concepts = ConceptGraph(cfg, store)
-    clusterer = _build_clusterer(cfg, store)
+    clusterer = Clusterer(cfg, store)
     registry = ModelRegistry(cfg.models_dir)
     searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
     _svc = Services(
