@@ -39,7 +39,6 @@ def crawler_available() -> bool:
 
 class CrawlerState:
     """Per-process mutable state for the crawler (semaphore, periodic sync tracking).
-
     Encapsulates state that would otherwise live as bare module-level globals.
     A single module-level instance (_state) is used because this state is inherently
     per-process (threading primitives, asyncio tasks tied to the running loop).
@@ -104,7 +103,6 @@ def is_url(value: str) -> bool:
 
 def validate_crawl_url(url: str) -> None:
     """Validate a URL for crawling. Raises ValueError for unsafe URLs.
-
     Rejects private IPs, loopback, link-local, and non-HTTP schemes.
     """
     parsed = urlparse(url)
@@ -147,7 +145,6 @@ class CrawlResult:
 
 def url_to_filename(url: str) -> str:
     """Convert a URL to a safe filesystem path ending in .md.
-
     Examples:
         https://docs.python.org/3/tutorial/ → docs.python.org/3/tutorial/index.md
         https://example.com/page?q=1#frag   → example.com/page.md
@@ -194,7 +191,6 @@ def _web_dir() -> Path:
 
 def save_crawl_results(results: list[CrawlResult]) -> list[Path]:
     """Write successful crawl results as .md files under documents/_web/.
-
     Returns list of paths written.
     """
     written: list[Path] = []
@@ -322,7 +318,6 @@ async def crawl_recursive(
     on_progress: DetailedProgressCallback | None = None,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, returning results for all pages.
-
     Uses crawl4ai's deep crawl strategy for link discovery.
     Falls back to cfg defaults when max_depth/max_pages are 0.
     """
@@ -375,7 +370,6 @@ async def crawl_recursive(
 
 async def _maybe_periodic_sync() -> None:
     """Fire off a background sync if the crawl_sync_interval has elapsed.
-
     Skips if a sync is already running or periodic sync is disabled (interval=0).
     Uses a threading.Lock to avoid asyncio event-loop binding issues when called
     from different loops.
@@ -415,7 +409,6 @@ async def crawl_and_save(
     cancel: threading.Event | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
-
     Uses hash-based change detection: always fetches, but only saves files
     whose content has changed (or is new).
     When *cancel* is set, returns early with an empty list.

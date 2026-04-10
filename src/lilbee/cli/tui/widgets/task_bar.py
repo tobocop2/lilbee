@@ -59,7 +59,6 @@ class _TaskPanel(Static):
 
 class TaskBar(Static):
     """Docked panel showing browser-style download progress bars.
-
     Each task gets its own panel with a label and progress bar.
     Panels auto-hide when complete. Auto-hides when no tasks are present.
     """

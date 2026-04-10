@@ -35,7 +35,6 @@ class PageTarget:
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
     """Extract YAML frontmatter fields from a wiki page string.
-
     Uses line-by-line scanning so ``---`` inside YAML content is not
     mistaken for the closing delimiter.
     """
@@ -58,7 +57,6 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
 
 def make_slug(label: str) -> str:
     """Turn a concept label into a filesystem-safe slug.
-
     Lowercases, replaces spaces with hyphens, slashes with double-hyphens,
     and strips non-alphanumeric characters (except hyphens).
     """

@@ -48,6 +48,7 @@ from lilbee.server.models import (
     StatusResponse,
     SyncSummary,
 )
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.query import ChatMessage
@@ -142,7 +143,6 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
 
 class SseStream:
     """Context object for SSE streaming with cancellation support.
-
     Bundles the queue, cancel event, and progress callback that every SSE
     endpoint needs.  Call :meth:`drain` to yield events until the task
     completes or the client disconnects.
@@ -156,7 +156,6 @@ class SseStream:
 
     def _build_callback(self) -> DetailedProgressCallback:
         """Create a progress callback that serializes events into the queue.
-
         Safe to call from both the event-loop thread and worker threads.
         """
         loop = self.loop
@@ -180,7 +179,6 @@ class SseStream:
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
         """Yield SSE strings from the queue until *task* completes.
-
         On ``CancelledError`` / ``GeneratorExit`` (client disconnect),
         sets :attr:`cancel` and cancels *task*.
         """
@@ -212,16 +210,12 @@ async def status() -> StatusResponse:
 
 async def search(q: str, top_k: int = 5) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
-    from lilbee.services import get_services
-
     results = get_services().searcher.search(q, top_k=top_k)
     return group(results)
 
 
 async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
-    from lilbee.services import get_services
-
     opts = _resolve_generation_options(options)
     result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
     return AskResponse(
@@ -241,8 +235,6 @@ def _run_llm_stream(
     from lilbee.reasoning import filter_reasoning
 
     try:
-        from lilbee.services import get_services
-
         provider = get_services().provider
         stream = provider.chat(
             cast("list[dict[str, Any]]", messages),
@@ -270,8 +262,6 @@ async def _stream_rag_response(
 ) -> AsyncGenerator[str, None]:
     """Shared SSE streaming for ask_stream and chat_stream."""
     yield ""  # force generator
-
-    from lilbee.services import get_services
 
     rag = get_services().searcher.build_rag_context(question, top_k=top_k, history=history)
     if rag is None:
@@ -318,8 +308,6 @@ async def chat(
     options: dict[str, Any] | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources."""
-    from lilbee.services import get_services
-
     opts = _resolve_generation_options(options)
     result = get_services().searcher.ask_raw(question, top_k=top_k, history=history, options=opts)
     return AskResponse(
@@ -359,7 +347,6 @@ async def _run_add(
     sse: SseStream,
 ) -> AddSummary:
     """Copy files and sync, pushing SSE events to the queue.
-
     Returns the summary so the caller can emit the final done event.
     """
     from lilbee.ingest import sync
@@ -415,7 +402,6 @@ def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     """Copy files, sync, and yield SSE progress events.
-
     Validation is handled by the route layer before this is called.
     """
     paths = data.get("paths", [])
@@ -515,7 +501,6 @@ def _validate_config_updates(updates: dict[str, Any]) -> None:
 
 def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
     """Apply updates to the in-memory config, rolling back on error.
-
     Returns (fields_to_persist, fields_to_delete) for disk write.
     """
     snapshot = {k: getattr(cfg, k) for k in updates}
@@ -538,7 +523,6 @@ def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list
 
 async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     """Partial update of writable config fields.
-
     Algorithm: validate-then-apply with rollback.
 
     1. Validate all keys and null-acceptability upfront (no mutations yet).
@@ -569,8 +553,6 @@ async def delete_documents(
     names: list[str], *, delete_files: bool = False
 ) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
-    from lilbee.services import get_services
-
     result = get_services().store.remove_documents(names, delete_files=delete_files)
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
@@ -581,8 +563,6 @@ async def list_documents(
     offset: int = 0,
 ) -> DocumentListResponse:
     """Return indexed documents with metadata, paginated and filterable."""
-    from lilbee.services import get_services
-
     sources = get_services().store.get_sources()
     if search:
         search_lower = search.lower()
@@ -618,8 +598,6 @@ async def get_config() -> ConfigResponse:
 
 async def models_show(model: str) -> ModelsShowResponse:
     """Return model metadata/parameters. Returns empty model if unavailable."""
-    from lilbee.services import get_services
-
     provider = get_services().provider
     result = provider.show_model(model)
     return ModelsShowResponse(**(result or {}))
@@ -653,7 +631,6 @@ async def models_catalog(
         limit=limit,
         offset=offset,
     )
-    from lilbee.services import get_services
 
     provider = get_services().provider
     installed_names = set(provider.list_models())
@@ -693,7 +670,6 @@ async def models_installed() -> ModelsInstalledResponse:
 
 async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[str, None]:
     """Yield SSE progress events while pulling a model in real time.
-
     Sets a cancel event on client disconnect so the pull stops.
     """
     manager = get_model_manager()
@@ -729,7 +705,6 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
 
 async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGenerator[str, None]:
     """Stream crawl progress as SSE events.
-
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
     with the list of files written. On error emits crawl_error.
     Sets a cancel event on client disconnect so the crawl stops between pages.
@@ -757,11 +732,9 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
 
 async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
     """Yield SSE progress events while generating a wiki page for *source*.
-
     Emits ``progress`` events for each pipeline stage (preparing, generating,
     faithfulness_check) and a final ``done`` event with the result.
     """
-    from lilbee.services import get_services
     from lilbee.wiki.gen import generate_summary_page
 
     yield ""  # force generator
@@ -841,8 +814,6 @@ async def list_external_models() -> ExternalModelsResponse:
         return cached
 
     try:
-        from lilbee.services import get_services
-
         models = await asyncio.to_thread(get_services().provider.list_models)
         result = ExternalModelsResponse(models=models)
         _external_cache.set(key, result)

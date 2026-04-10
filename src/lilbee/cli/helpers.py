@@ -20,6 +20,7 @@ from lilbee.cli import theme
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
 from lilbee.security import validate_path_within
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
@@ -119,8 +120,6 @@ def clean_result(result: SearchChunk) -> dict:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    from lilbee.services import get_services
-
     sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
@@ -198,7 +197,6 @@ def add_paths(
     sync_status: SyncStatus | None = None,
 ) -> None:
     """Copy *paths* into the knowledge base and sync (human output).
-
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after copying files.
     """
@@ -266,7 +264,6 @@ def sync_result_to_json(result: object) -> dict:
 
 def auto_sync(con: Console, *, background: bool = False) -> None:
     """Run document sync before queries.
-
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
     sync blocks until complete (for ``lilbee ask``).

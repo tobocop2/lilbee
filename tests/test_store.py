@@ -683,31 +683,48 @@ class TestDeleteSourceNoneTable:
 
 
 class TestSuppressLancedbThreadError:
-    """Tests for the threading.excepthook that silences lancedb shutdown noise."""
+    """Tests for the opt-in threading.excepthook that silences lancedb shutdown noise."""
 
-    def test_suppresses_lancedb_thread(self):
+    def test_install_suppresses_lancedb_thread(self):
         """Errors from LanceDB background threads are silently dropped."""
         import threading
 
-        from lilbee.store import _suppress_lancedb_thread_error
+        from lilbee.store import install_lancedb_thread_error_suppressor
 
-        lance_thread = threading.Thread(target=lambda: None, name="LanceDBBackgroundEventLoop")
-        args = threading.ExceptHookArgs(
-            (RuntimeError, RuntimeError("shutdown"), None, lance_thread)
-        )
-        # Should return without calling original hook — no exception raised
-        _suppress_lancedb_thread_error(args)
+        original = threading.excepthook
+        try:
+            install_lancedb_thread_error_suppressor()
+            lance_thread = threading.Thread(target=lambda: None, name="LanceDBBackgroundEventLoop")
+            args = threading.ExceptHookArgs(
+                (RuntimeError, RuntimeError("shutdown"), None, lance_thread)
+            )
+            # Should return without calling original hook — no exception raised.
+            threading.excepthook(args)
+        finally:
+            threading.excepthook = original
 
-    @mock.patch("lilbee.store._original_excepthook")
-    def test_propagates_non_lancedb_thread(self, mock_hook):
+    def test_install_propagates_non_lancedb_thread(self):
         """Errors from other threads are forwarded to the original excepthook."""
         import threading
 
-        from lilbee.store import _suppress_lancedb_thread_error
+        from lilbee.store import install_lancedb_thread_error_suppressor
 
-        other_thread = threading.Thread(target=lambda: None, name="SomeOtherThread")
-        args = threading.ExceptHookArgs(
-            (RuntimeError, RuntimeError("real error"), None, other_thread)
-        )
-        _suppress_lancedb_thread_error(args)
-        mock_hook.assert_called_once_with(args)
+        calls: list[threading.ExceptHookArgs] = []
+
+        def fake_original(args: threading.ExceptHookArgs) -> None:
+            calls.append(args)
+
+        saved = threading.excepthook
+        threading.excepthook = fake_original
+        try:
+            install_lancedb_thread_error_suppressor()
+            other_thread = threading.Thread(target=lambda: None, name="SomeOtherThread")
+            args = threading.ExceptHookArgs(
+                (RuntimeError, RuntimeError("real error"), None, other_thread)
+            )
+            threading.excepthook(args)
+        finally:
+            threading.excepthook = saved
+
+        assert len(calls) == 1
+        assert calls[0] is args

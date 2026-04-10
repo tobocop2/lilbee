@@ -44,7 +44,6 @@ class ParsedCitation:
 
 def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
     """Extract citation footnote definitions from the auto-generated citation block.
-
     Returns a ParsedCitation for each ``[^srcN]: ...`` line found after the
     citation block separator.
     """
@@ -69,7 +68,6 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
 
 def render_citation_block(citations: list[CitationRecord]) -> str:
     """Generate the markdown footnote footer from CitationRecord objects.
-
     Returns the full citation block including separator and comment,
     or an empty string when there are no citations.
     """
@@ -83,7 +81,6 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
 
 def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatus:
     """Check whether a citation's excerpt exists in the source text.
-
     Does not check hash staleness or source existence — caller handles those
     by comparing ``citation.source_hash`` against the current file hash and
     checking file presence.
@@ -97,7 +94,6 @@ def verify_citation(citation: CitationRecord, source_text: str) -> CitationStatu
 
 def find_unmarked_claims(markdown: str) -> list[str]:
     """Find statements that are neither cited ``[^srcN]`` nor marked ``[*inference*]``.
-
     Scans non-empty, non-metadata lines in the body (before the citation block).
     Returns the text of each unmarked line.
     """

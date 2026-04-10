@@ -416,7 +416,6 @@ class Config(BaseSettings):
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build LLM generation options with 3-layer merge.
-
         Layer 1 (base): model defaults from ``_model_defaults``
         Layer 2 (override): user config fields — only if explicitly set (not None)
         Layer 3 (override): per-call ``overrides`` parameter
@@ -445,7 +444,6 @@ class Config(BaseSettings):
 
 def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     """Convert a ModelDefaults instance to a dict with provider key names.
-
     Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
     Filters out None values.
     """
@@ -462,7 +460,6 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
 
 class _PlainEnvSource:
     """Env source that reads LILBEE_* env vars as plain strings.
-
     Avoids pydantic-settings' default JSON parsing of complex types (list, frozenset)
     so that comma-separated values like ``LILBEE_CORS_ORIGINS=a,b`` pass through to
     field validators instead of failing JSON decode.

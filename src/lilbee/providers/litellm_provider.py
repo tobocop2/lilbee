@@ -14,12 +14,22 @@ from typing import Any
 
 import httpx
 
+from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
 
 log = logging.getLogger(__name__)
 
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
+
+# litellm routes local models via the ollama/ prefix. Any model without this
+# prefix is assumed to be an ollama-hosted model and gets the prefix added.
+_OLLAMA_PREFIX = "ollama/"
+
+
+def _prefix_ollama(name: str) -> str:
+    """Prefix ``name`` with ``ollama/`` for litellm routing if not already prefixed."""
+    return name if name.startswith(_OLLAMA_PREFIX) else f"{_OLLAMA_PREFIX}{name}"
 
 
 def litellm_available() -> bool:
@@ -46,21 +56,11 @@ class LiteLLMProvider(LLMProvider):
 
     def _model_name(self, model: str | None = None) -> str:
         """Prefix model name with ollama/ for litellm routing when needed."""
-        from lilbee.config import cfg
-
-        resolved = model or cfg.chat_model
-        if not resolved.startswith("ollama/"):
-            return f"ollama/{resolved}"
-        return resolved
+        return _prefix_ollama(model or cfg.chat_model)
 
     def _embed_model_name(self) -> str:
         """Prefix embedding model with ollama/ for litellm routing when needed."""
-        from lilbee.config import cfg
-
-        name = cfg.embedding_model
-        if not name.startswith("ollama/"):
-            return f"ollama/{name}"
-        return name
+        return _prefix_ollama(cfg.embedding_model)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via litellm."""
@@ -146,7 +146,6 @@ class LiteLLMProvider(LLMProvider):
 
     def show_model(self, model: str) -> dict[str, str] | None:
         """Get model info via the /api/show endpoint.
-
         Also parses and caches per-model generation defaults from the
         ``parameters`` field so they can be applied via config.
         """

@@ -22,7 +22,6 @@ class ModelArchInfo:
 
 def get_model_architecture() -> ModelArchInfo:
     """Return architecture metadata for the currently configured models.
-
     Reads GGUF headers for chat, embedding, and (optionally) vision models.
     Falls back gracefully if llama-cpp-python is not installed or models
     are not available.

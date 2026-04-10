@@ -14,6 +14,7 @@ from textual.widgets import Label, Select
 from lilbee import settings
 from lilbee.config import cfg
 from lilbee.models import ModelTask
+from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,6 @@ def _is_mmproj(name: str) -> bool:
 
 def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption], list[ModelOption]]:
     """Classify installed models into (chat, embedding, vision) lists.
-
     Uses registry manifests for native models and the litellm backend's
     backend metadata for remote models. Filters out mmproj files.
     """
@@ -94,7 +94,6 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Set options and value for a model Select widget.
-
     Preserves the current value if it's in the options. Falls back to
     *default* (typically the configured model from ``cfg``). If the
     resolved value isn't in *opts*, prepends it so it remains selectable.
@@ -289,8 +288,6 @@ class ModelBar(Widget, can_focus=False):
 
     @staticmethod
     def _reset_services() -> None:
-        from lilbee.services import reset_services
-
         reset_services()
 
     def refresh_models(self) -> None:

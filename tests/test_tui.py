@@ -9,7 +9,7 @@ from textual.binding import Binding
 
 from conftest import make_test_catalog_model as _make_model
 from lilbee.catalog import CatalogResult
-from lilbee.cli.tui.screens.catalog_utils import _remote_to_row, catalog_to_row
+from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
 
@@ -347,8 +347,10 @@ class TestStatusScreenAsync:
         mock_svc.store.get_sources.return_value = []
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
+        from lilbee.services import set_services
 
-        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+        set_services(mock_svc)
+        try:
             app = LilbeeApp()
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -356,6 +358,8 @@ class TestStatusScreenAsync:
                 await pilot.pause()
                 info = app.screen.query_one("#config-info")
                 assert info is not None
+        finally:
+            set_services(None)
 
 
 class TestCLIIntegration:
@@ -488,7 +492,7 @@ class TestRemoteToRow:
         from lilbee.model_manager import RemoteModel
 
         rm = RemoteModel(name="mistral:latest", task="chat", family="llama", parameter_size="7.2B")
-        row = _remote_to_row(rm)
+        row = remote_to_row(rm)
         assert row.remote_model.name == "mistral:latest"
         assert row.installed is True
 

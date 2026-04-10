@@ -45,7 +45,6 @@ def parse_source_count(text: str) -> int:
 
 def update_wiki_index(config: Config | None = None) -> Path:
     """Scan summaries/ and concepts/ directories and write wiki/index.md.
-
     Returns the path to the generated index file.
     """
     if config is None:
@@ -80,7 +79,6 @@ def append_wiki_log(
     config: Config | None = None,
 ) -> Path:
     """Append an entry to wiki/log.md.
-
     Format: ## [YYYY-MM-DD] action | details
 
     Returns the path to the log file.

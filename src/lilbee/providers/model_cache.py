@@ -45,7 +45,6 @@ class _CacheEntry:
 
 def estimate_model_memory(model_path: Path, n_ctx: int = _DEFAULT_CTX_LEN) -> int:
     """Estimate memory consumption for a GGUF model.
-
     Approximation: file_size (weights) + KV cache + 10% buffer overhead.
     """
     file_bytes = model_path.stat().st_size if model_path.exists() else 0
@@ -56,7 +55,6 @@ def estimate_model_memory(model_path: Path, n_ctx: int = _DEFAULT_CTX_LEN) -> in
 
 def get_available_memory(fraction: float) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
-
     - macOS (Apple Silicon): unified memory via psutil
     - Linux with NVIDIA GPU: pynvml -> nvidia-smi -> psutil fallback
     - Other: psutil system memory
@@ -111,7 +109,6 @@ def _try_nvidia_memory() -> int | None:
 
 class MemoryAwareModelCache:
     """LRU cache for Llama model instances with memory-aware eviction.
-
     Models are evicted when:
     - A new model won't fit in the memory budget (LRU evicted first)
     - A model's keep-alive TTL has expired (checked on load and via evict_stale)
@@ -131,7 +128,6 @@ class MemoryAwareModelCache:
 
     def load_model(self, model_path: Path, embedding: bool) -> Any:
         """Load or return a cached Llama model instance.
-
         Evicts stale entries first, then evicts LRU if memory is tight.
         """
         key = str(model_path)

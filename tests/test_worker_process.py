@@ -32,7 +32,6 @@ from lilbee.providers.worker_process import (
 @pytest.fixture(autouse=True)
 def _no_stdio_redirect():
     """Prevent _worker_main from redirecting stdout/stderr to /dev/null.
-
     In a real child process the redirect suppresses llama-cpp C-level output.
     In tests it leaks unclosed devnull files and fights with pytest capture.
     """
@@ -696,26 +695,30 @@ class TestGetResponse:
         assert result is resp
 
     def test_returns_none_when_worker_dead(self, config_snap: ConfigSnapshot) -> None:
+        import queue as _queue
+
         wp = WorkerProcess(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = False
         wp._process = mock_proc
 
         resp_q = mock.MagicMock()
-        resp_q.get.side_effect = Exception("empty")
+        resp_q.get.side_effect = _queue.Empty()
         wp._response_queue = resp_q
 
         result = wp._get_response(timeout=0.1)
         assert result is None
 
     def test_timeout_raises(self, config_snap: ConfigSnapshot) -> None:
+        import queue as _queue
+
         wp = WorkerProcess(config_snap)
         mock_proc = mock.MagicMock()
         mock_proc.is_alive.return_value = True
         wp._process = mock_proc
 
         resp_q = mock.MagicMock()
-        resp_q.get.side_effect = Exception("empty")
+        resp_q.get.side_effect = _queue.Empty()
         wp._response_queue = resp_q
 
         with pytest.raises(TimeoutError):
@@ -801,7 +804,7 @@ class TestLoadEmbedModel:
                 return_value=mock_llm,
             ) as mock_load,
         ):
-            result = _load_embed_model(config_snap, "test-embed")
+            result = _load_embed_model("test-embed")
         assert result is mock_llm
         mock_load.assert_called_once_with(model_path, embedding=True)
 
@@ -809,43 +812,33 @@ class TestLoadEmbedModel:
 class TestWorkerNotStartedGuards:
     """Cover all 'Worker not started' RuntimeError guards when _request_queue is None."""
 
-    def test_send_and_receive_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+    def test_round_trip_not_started(self, config_snap: ConfigSnapshot) -> None:
         wp = WorkerProcess(config_snap)
         wp._started = True
         wp._request_queue = None
         req = EmbedRequest(texts=["hello"], model="m", request_id=1)
         with pytest.raises(RuntimeError, match="Worker not started"):
-            wp._send_and_receive_embed(req)
+            wp._put_and_get(req, timeout=1.0)
 
-    def test_retry_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+    def test_put_and_get_retry_not_started(self, config_snap: ConfigSnapshot) -> None:
+        """After a crash the retry leg hits the same Worker-not-started guard."""
         wp = WorkerProcess(config_snap)
         wp._started = True
         wp._request_queue = None
-        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+
+        def _clear_queue() -> None:
+            wp._request_queue = None
+
         with (
-            mock.patch.object(wp, "restart"),
+            mock.patch.object(wp, "restart", side_effect=_clear_queue),
             pytest.raises(RuntimeError, match="Worker not started"),
         ):
-            wp._retry_embed(req)
-
-    def test_send_and_receive_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
-        wp._started = True
-        wp._request_queue = None
-        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
-        with pytest.raises(RuntimeError, match="Worker not started"):
-            wp._send_and_receive_vision(req)
-
-    def test_retry_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
-        wp = WorkerProcess(config_snap)
-        wp._started = True
-        wp._request_queue = None
-        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
-        with (
-            mock.patch.object(wp, "restart"),
-            pytest.raises(RuntimeError, match="Worker not started"),
-        ):
-            wp._retry_vision(req)
+            wp._round_trip(
+                EmbedRequest(texts=["hello"], model="m", request_id=1),
+                EmbedResponse,
+                timeout=1.0,
+                label="embed",
+            )
 
     def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
         wp = WorkerProcess(config_snap)
@@ -878,7 +871,7 @@ class TestLoadVisionModel:
                 return_value=mock_llm,
             ) as mock_load,
         ):
-            result = _load_vision_model(config_snap, "test-vision")
+            result = _load_vision_model("test-vision")
         assert result is mock_llm
         mock_load.assert_called_once_with(vision_path)
 

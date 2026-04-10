@@ -44,7 +44,6 @@ class CrawlTask:
 
 class TaskRegistry:
     """In-memory registry of active and completed crawl tasks.
-
     A single module-level instance (_registry) is used because task tracking
     is inherently per-process state (asyncio.Task references, etc.).
     """
@@ -122,7 +121,6 @@ def start_crawl(
     max_pages: int = 0,
 ) -> str:
     """Create a crawl task and launch it as an asyncio background task.
-
     Returns the task_id for status polling.
     """
     _evict_completed()

@@ -20,7 +20,6 @@ def _clean_vision_module() -> None:
 @pytest.fixture()
 def mock_provider():
     """Create a mock provider and inject it via Services.
-
     Uses spec_set to exclude vision_ocr — tests that need the subprocess
     path should set it explicitly on the mock.
     """

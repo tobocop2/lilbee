@@ -83,7 +83,6 @@ def _lint_citation(
     documents_dir: Path,
 ) -> LintIssue | None:
     """Check a single citation record against the filesystem.
-
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
     source_path = documents_dir / rec["source_filename"]
@@ -196,7 +195,6 @@ def lint_changed_sources(
     config: Config | None = None,
 ) -> LintReport:
     """Lightweight lint: check only wiki pages citing changed/removed sources.
-
     Intended to run automatically after sync.
     """
     # TODO: wire into sync pipeline

@@ -7,6 +7,8 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
+from lilbee.config import cfg
+
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
 CMD_ADD_SUCCESS = "Added {count} file(s), syncing..."
@@ -112,8 +114,6 @@ _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings
 
 def get_nav_views() -> list[str]:
     """Return the active nav view names, including Wiki when enabled."""
-    from lilbee.config import cfg
-
     views = list(_BASE_NAV_VIEWS)
     if cfg.wiki:
         views.append("Wiki")

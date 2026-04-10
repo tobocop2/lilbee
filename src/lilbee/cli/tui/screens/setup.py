@@ -32,6 +32,7 @@ from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.models import ModelTask, get_system_ram_gb
+from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +58,6 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 def _installed_name_to_row(name: str, task: str) -> TableRow:
     """Create a minimal TableRow for an already-installed model.
-
     ``name`` is a ref string like ``qwen3:0.6b``.  We store it in ``ref``
     (for config persistence) and also in ``name`` (for display) since we
     don't have a richer display label for already-installed models.
@@ -79,7 +79,6 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
 
 def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
     """Pick chat + embedding models appropriate for system RAM.
-
     Selects the largest featured chat model whose min_ram_gb fits,
     and always picks the first embedding model (Nomic).
     """
@@ -363,7 +362,6 @@ class SetupWizard(Screen[str | None]):
     def _save_and_dismiss(self, result: str) -> None:
         """Persist selected models to config and dismiss."""
         from lilbee import settings
-        from lilbee.services import reset_services
 
         chat_ref = self._selected_chat
         embed_ref = self._selected_embed

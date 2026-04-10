@@ -139,7 +139,6 @@ class TestSync:
         return_value=SyncResult(added=["test.txt"]),
     )
     def test_sync_with_file(self, mock_sync, isolated_env):
-
         (cfg.documents_dir / "test.txt").write_text("Hello world content.")
         result = runner.invoke(app, ["sync"])
         assert result.exit_code == 0
@@ -206,7 +205,6 @@ class TestAdd:
 
     def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
         """Re-adding a directory with --force updates content."""
-
         src_dir = tmp_path / "source" / "docs"
         src_dir.mkdir(parents=True)
         (src_dir / "file1.txt").write_text("Version 1")
@@ -237,7 +235,6 @@ class TestAdd:
 class TestAddIgnoresDirs:
     def test_add_directory_skips_git_and_node_modules(self, isolated_env, tmp_path):
         """Adding a directory filters out .git/ and node_modules/."""
-
         src_dir = tmp_path / "source" / "project"
         src_dir.mkdir(parents=True)
         (src_dir / "readme.txt").write_text("Real content")
@@ -981,7 +978,6 @@ class TestReset:
 
     def test_reset_deletes_everything(self, isolated_env):
         """With --yes, both dirs are cleared."""
-
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "doc.txt").write_text("content")
         (cfg.data_dir / "db_file").write_text("data")
@@ -994,7 +990,6 @@ class TestReset:
 
     def test_reset_without_yes_prompts(self, isolated_env):
         """Without --yes, prompts and aborts on 'n'."""
-
         (cfg.documents_dir / "doc.txt").write_text("content")
 
         result = runner.invoke(app, ["reset"], input="n\n")
@@ -1005,7 +1000,6 @@ class TestReset:
 
     def test_reset_without_yes_confirms(self, isolated_env):
         """Without --yes, confirming with 'y' deletes everything."""
-
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "doc.txt").write_text("content")
 
@@ -1016,7 +1010,6 @@ class TestReset:
 
     def test_reset_json_output(self, isolated_env):
         """JSON mode returns structured output."""
-
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "doc.txt").write_text("content")
 
@@ -1042,7 +1035,6 @@ class TestReset:
 
     def test_reset_with_subdirectories(self, isolated_env):
         """Reset removes subdirectories too."""
-
         sub = cfg.documents_dir / "subdir"
         sub.mkdir()
         (sub / "nested.txt").write_text("nested content")
@@ -1053,7 +1045,6 @@ class TestReset:
 
     def test_reset_data_dir_with_subdirectories(self, isolated_env):
         """Reset removes subdirectories in data dir too."""
-
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         sub = cfg.data_dir / "lancedb"
         sub.mkdir()

@@ -30,11 +30,11 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
     SORT_KEYS,
     TableRow,
-    _remote_to_row,
-    _row_display_name,
-    _variant_to_row,
     catalog_to_row,
     matches_search,
+    remote_to_row,
+    row_display_name,
+    variant_to_row,
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
@@ -261,7 +261,7 @@ class CatalogScreen(Screen[None]):
                 installed = self._is_installed(
                     f"{fam.slug}:{v.tag}", repo=v.hf_repo, filename=v.filename
                 )
-                row = _variant_to_row(v, fam, installed)
+                row = variant_to_row(v, fam, installed)
                 if matches_search(row, search):
                     rows.append(row)
         return rows
@@ -280,7 +280,7 @@ class CatalogScreen(Screen[None]):
         """Build rows from remote (inference-only) models."""
         rows: list[TableRow] = []
         for rm in self._remote_models:
-            row = _remote_to_row(rm)
+            row = remote_to_row(rm)
             if matches_search(row, search):
                 rows.append(row)
         return rows
@@ -381,7 +381,7 @@ class CatalogScreen(Screen[None]):
         table.clear()
         for row in self._rows:
             table.add_row(
-                _row_display_name(row),
+                row_display_name(row),
                 row.task,
                 row.params,
                 row.size,

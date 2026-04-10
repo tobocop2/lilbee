@@ -62,7 +62,6 @@ class TestPipelineBasics:
 
     def test_ingest_realistic_length_document(self, rag_pipeline):
         """Verify embedding works with realistic text lengths, not just short strings.
-
         Regression test: llama-cpp-python defaults n_batch=512, silently
         truncating embeddings. With multiple chunks exceeding this limit,
         llama_decode returns -1. This test catches that by ingesting a
@@ -129,7 +128,6 @@ class TestSearchQuality:
 
     def test_expansion_bridges_vocabulary(self, rag_pipeline):
         """'how to ship code to production' finds deploy.md.
-
         Even without LLM expansion (disabled for speed), the semantic
         similarity between 'ship code to production' and deployment
         vocabulary should bridge the gap.
@@ -150,7 +148,6 @@ class TestSearchQuality:
 
     def test_concept_boost_promotes_related(self, rag_pipeline):
         """'connection pooling' finds both db-perf.md and api-perf.md.
-
         Both documents discuss connection pooling in different contexts
         (database vs API). Semantic search should surface both.
         """
@@ -189,7 +186,6 @@ class TestAnswerGeneration:
 class TestRegressionGuards:
     def test_empty_query(self, rag_pipeline):
         """Empty string search returns results but they are low relevance.
-
         Vector search on an empty string embedding still returns results
         (cosine distance to all vectors), but all results should have high
         distance (low relevance), confirming the pipeline handles it gracefully.
@@ -360,7 +356,6 @@ class TestTemporalFilter:
 
     def test_temporal_query_returns_results(self, rag_pipeline):
         """A temporal query like 'recent changes' still returns results.
-
         All test docs were ingested at the same time (now), so temporal
         filtering keeps them all. The key assertion is that the filter
         runs without error and does not discard everything.

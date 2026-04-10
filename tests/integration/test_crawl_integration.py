@@ -273,7 +273,6 @@ class TestErrors:
 
 class TestCrawlConcurrency:
     """Verify the asyncio semaphore limits concurrent crawl operations.
-
     Uses real Playwright crawls against a local httpserver.
     Concurrency is measured via server-side request timing.
     """

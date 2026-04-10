@@ -21,12 +21,12 @@ from lilbee.cli.tui.screens.catalog import (
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     _format_downloads,
-    _remote_to_row,
-    _row_display_name,
     catalog_to_row,
     format_size_gb,
     matches_search,
     parse_param_label,
+    remote_to_row,
+    row_display_name,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -159,22 +159,22 @@ class TestFormatDownloads:
 class TestRowDisplayName:
     def test_featured_star(self):
         row = catalog_to_row(_make_catalog_model(featured=True), installed=False)
-        name = _row_display_name(row)
+        name = row_display_name(row)
         assert name.startswith("\u2605")
 
     def test_not_featured(self):
         row = catalog_to_row(_make_catalog_model(featured=False), installed=False)
-        name = _row_display_name(row)
+        name = row_display_name(row)
         assert not name.startswith("\u2605")
 
     def test_installed_tag(self):
         row = catalog_to_row(_make_catalog_model(), installed=True)
-        name = _row_display_name(row)
+        name = row_display_name(row)
         assert "[installed]" in name
 
     def test_not_installed_no_tag(self):
         row = catalog_to_row(_make_catalog_model(), installed=False)
-        name = _row_display_name(row)
+        name = row_display_name(row)
         assert "[installed]" not in name
 
 
@@ -245,7 +245,7 @@ class TestMatchesSearch:
 class TestRemoteToRow:
     def test_creates_row(self):
         rm = _make_remote_model(name="qwen:latest", task="chat", parameter_size="7B")
-        row = _remote_to_row(rm)
+        row = remote_to_row(rm)
         assert row.name == "qwen:latest"
         assert row.task == "chat"
         assert row.params == "7B"
@@ -253,7 +253,7 @@ class TestRemoteToRow:
 
     def test_no_parameter_size(self):
         rm = _make_remote_model(parameter_size="")
-        row = _remote_to_row(rm)
+        row = remote_to_row(rm)
         assert row.params == "--"
 
 
@@ -1955,7 +1955,7 @@ async def test_catalog_install_new_model():
 
 async def test_catalog_select_remote_row():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import _remote_to_row
+    from lilbee.cli.tui.screens.catalog_utils import remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1964,7 +1964,7 @@ async def test_catalog_select_remote_row():
             app.push_screen(screen)
             await _pilot.pause()
             om = _make_remote_model(name="remote-chat:latest")
-            row = _remote_to_row(om)
+            row = remote_to_row(om)
             screen._select_row(row)
             assert cfg.chat_model == "remote-chat:latest"
 
@@ -2360,7 +2360,6 @@ async def test_chat_sync_progress_percentage():
 
 async def test_chat_run_sync_error_worker():
     """Cover the sync error branch."""
-
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
 
@@ -5376,7 +5375,7 @@ async def test_catalog_select_variant_row():
     """_select_row with a variant row triggers _install_variant."""
     from lilbee.catalog import ModelFamily, ModelVariant
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import _variant_to_row
+    from lilbee.cli.tui.screens.catalog_utils import variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5400,7 +5399,7 @@ async def test_catalog_select_variant_row():
                 description="Test",
                 variants=(variant,),
             )
-            row = _variant_to_row(variant, family, installed=False)
+            row = variant_to_row(variant, family, installed=False)
             with patch.object(screen, "_install_variant") as mock_iv:
                 screen._select_row(row)
                 mock_iv.assert_called_once_with(variant, family)
@@ -5520,7 +5519,7 @@ async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import _variant_to_row
+    from lilbee.cli.tui.screens.catalog_utils import variant_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5544,7 +5543,7 @@ async def test_catalog_get_highlighted_variant_name():
                 description="Test",
                 variants=(variant,),
             )
-            row = _variant_to_row(variant, family, installed=False)
+            row = variant_to_row(variant, family, installed=False)
             screen._rows = [row]
             screen._grid_view = False
             # Add a row to the table
@@ -5559,7 +5558,7 @@ async def test_catalog_get_highlighted_variant_name():
 async def test_catalog_get_highlighted_remote_name():
     """_get_highlighted_model_name returns name for remote row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.catalog_utils import _remote_to_row
+    from lilbee.cli.tui.screens.catalog_utils import remote_to_row
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -5568,7 +5567,7 @@ async def test_catalog_get_highlighted_remote_name():
             app.push_screen(screen)
             await _pilot.pause()
             rm = _make_remote_model(name="remote:latest")
-            row = _remote_to_row(rm)
+            row = remote_to_row(rm)
             screen._rows = [row]
             table = screen.query_one("#catalog-table", DataTable)
             table.clear()
@@ -6195,7 +6194,7 @@ async def test_app_force_quit_calls_os_exit():
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
-            patch("lilbee.services.reset_services") as mock_reset,
+            patch("lilbee.cli.tui.app.reset_services") as mock_reset,
             patch("os._exit") as mock_exit,
         ):
             app._force_quit()

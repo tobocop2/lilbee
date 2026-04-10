@@ -49,11 +49,16 @@ def _mock_resolve():
 @pytest.fixture()
 def _mock_services():
     """Mock services to prevent real provider initialization."""
+    from lilbee.services import set_services
+
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
     mock_svc.searcher._embedder.embedding_available.return_value = True
-    with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+    set_services(mock_svc)
+    try:
         yield mock_svc
+    finally:
+        set_services(None)
 
 
 class ChatTestApp(App[None]):
@@ -648,7 +653,6 @@ class TestScreenTransitions:
 
     async def test_pop_from_settings_returns_to_chat(self, _mock_resolve):
         """From Settings, action_go_back returns to Chat.
-
         Note: 'q' keystroke is consumed by the search Input when focused,
         so we test the action directly.
         """
@@ -2005,7 +2009,7 @@ class TestChatSlashCommands:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            with mock.patch("lilbee.services.get_services") as mock_svc:
+            with mock.patch("lilbee.cli.tui.screens.chat.get_services") as mock_svc:
                 mock_svc.return_value.store.get_sources.return_value = []
                 app.screen._handle_slash("/delete")
                 await pilot.pause()

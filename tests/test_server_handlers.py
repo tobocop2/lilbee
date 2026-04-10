@@ -1023,21 +1023,21 @@ class TestListExternalModels:
         yield
         h._external_cache = h._ExternalModelsCache()
 
-    @patch("lilbee.services.get_services")
+    @patch("lilbee.server.handlers.get_services")
     async def test_returns_provider_models(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a", "model-b"]
         result = await handlers.list_external_models()
         assert result.models == ["model-a", "model-b"]
         assert result.error is None
 
-    @patch("lilbee.services.get_services")
+    @patch("lilbee.server.handlers.get_services")
     async def test_error_returns_empty_with_message(self, mock_svc):
         mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
         assert result.models == []
         assert result.error is not None
 
-    @patch("lilbee.services.get_services")
+    @patch("lilbee.server.handlers.get_services")
     async def test_cache_reuses_result(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         result1 = await handlers.list_external_models()
@@ -1047,7 +1047,7 @@ class TestListExternalModels:
         mock_svc.return_value.provider.list_models.assert_called_once()
 
     @patch("lilbee.server.handlers.time")
-    @patch("lilbee.services.get_services")
+    @patch("lilbee.server.handlers.get_services")
     async def test_cache_expires(self, mock_svc, mock_time):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         mock_time.monotonic.return_value = 0.0
@@ -1058,7 +1058,7 @@ class TestListExternalModels:
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
 
-    @patch("lilbee.services.get_services")
+    @patch("lilbee.server.handlers.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
         mock_svc.return_value.provider.list_models.return_value = ["model-a"]
         cfg.litellm_base_url = "https://provider-a.example"
@@ -1091,7 +1091,7 @@ class TestRunLlmStreamCancel:
         stream_data = iter(["token1", "token2"])
         mock_provider.chat.return_value = stream_data
 
-        with patch("lilbee.services.get_services") as mock_svc:
+        with patch("lilbee.server.handlers.get_services") as mock_svc:
             mock_svc.return_value.provider = mock_provider
             handlers._run_llm_stream(
                 [{"role": "user", "content": "hi"}],

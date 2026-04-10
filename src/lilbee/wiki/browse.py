@@ -90,7 +90,6 @@ def build_page_info(path: Path, wiki_root: Path) -> WikiPageInfo:
 
 def find_page(wiki_root: Path, slug: str) -> Path | None:
     """Resolve a slug to a wiki page path, or None if not found.
-
     Validates the resolved path stays within wiki_root to prevent
     path traversal attacks.
     """
@@ -118,7 +117,6 @@ def list_draft_pages(wiki_root: Path) -> list[WikiPageInfo]:
 
 def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:
     """Read a wiki page's content and parsed frontmatter.
-
     Returns None if the page does not exist or the slug escapes wiki_root.
     """
     path = find_page(wiki_root, slug)

@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.providers.worker_process import WorkerProcess
@@ -39,7 +41,6 @@ class _EmbedRequest:
 
 class LlamaCppProvider(LLMProvider):
     """Provider backed by llama-cpp-python for local GGUF model inference.
-
     Embedding calls are funnelled through a single background worker thread
     that batches concurrent requests into one ``create_embedding`` call.
     Chat calls are serialized via a lock (no batching possible).
@@ -47,7 +48,6 @@ class LlamaCppProvider(LLMProvider):
     """
 
     def __init__(self) -> None:
-        from lilbee.config import cfg
         from lilbee.providers.model_cache import MemoryAwareModelCache
 
         self._cache = MemoryAwareModelCache(
@@ -56,6 +56,7 @@ class LlamaCppProvider(LLMProvider):
             loader=load_llama,
         )
         self._vision_llm: Any | None = None
+        self._vision_model_path: str | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
         self._chat_lock = threading.Lock()
         self._embed_thread = threading.Thread(target=self._embed_worker, daemon=True)
@@ -90,7 +91,6 @@ class LlamaCppProvider(LLMProvider):
 
     def _dispatch_batch(self, batch: list[_EmbedRequest]) -> None:
         """Serialize embedding requests and resolve all futures.
-
         Embeds one text at a time because some model architectures (e.g.
         nomic-bert) fail with llama_decode -1 on multi-text batches.
         """
@@ -114,8 +114,6 @@ class LlamaCppProvider(LLMProvider):
 
     def _get_chat_llm(self, model: str | None = None) -> Any:
         """Load or return a cached Llama instance for chat."""
-        from lilbee.config import cfg
-
         resolved_model = model or cfg.chat_model
 
         if _is_vision_model(resolved_model):
@@ -128,16 +126,13 @@ class LlamaCppProvider(LLMProvider):
         """Lazy-load a Llama instance with a vision chat handler."""
         model_path = resolve_model_path(model)
 
-        cached = getattr(self._vision_llm, "_model_path", None)
-        if self._vision_llm is None or cached != str(model_path):
+        if self._vision_llm is None or self._vision_model_path != str(model_path):
             self._vision_llm = load_vision_llama(model_path)
-            self._vision_llm._model_path = str(model_path)
+            self._vision_model_path = str(model_path)
         return self._vision_llm
 
     def _get_embed_llm(self) -> Any:
         """Load or return a cached Llama instance for embeddings."""
-        from lilbee.config import cfg
-
         model_path = resolve_model_path(cfg.embedding_model)
         return self._cache.load_model(model_path, embedding=True)
 
@@ -194,8 +189,6 @@ class LlamaCppProvider(LLMProvider):
 
     def list_models(self) -> list[str]:
         """List installed models from registry."""
-        from lilbee.services import get_services
-
         registry = get_services().registry
         return sorted(f"{m.name}:{m.tag}" for m in registry.list_installed())
 
@@ -226,7 +219,6 @@ class LlamaCppProvider(LLMProvider):
 
 class _LockedStreamIterator:
     """Wraps a streaming response so the chat lock is held until iteration ends.
-
     The lock must already be acquired by the caller; this iterator releases it
     when the underlying stream is exhausted (or on explicit close).
     """
@@ -275,7 +267,6 @@ _STDERR_LOCK = threading.Lock()
 
 def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call *fn* with C-level stderr suppressed.
-
     llama.cpp prints noisy messages (e.g. 'init: embeddings required...')
     that bypass Python logging. This redirects fd 2 to /dev/null for the
     duration of the call. A lock serializes access to fd 2 so concurrent
@@ -304,7 +295,6 @@ def embed_one(llm: Any, text: str) -> list[float]:
 
 def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
-
     Returns a dict with keys like 'architecture', 'context_length',
     'embedding_length', 'chat_template', 'file_type'.
     """
@@ -338,13 +328,10 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
 def resolve_model_path(model: str) -> Path:
     """Resolve a model name to a .gguf file path.
-
     Resolution order:
     1. Registry (canonical source for installed models)
     2. Absolute path (if it points to an existing file)
     """
-    from lilbee.services import get_services
-
     registry = get_services().registry
     try:
         return registry.resolve(model)
@@ -368,8 +355,6 @@ def resolve_model_path(model: str) -> Path:
 def load_llama(model_path: Path, *, embedding: bool) -> Any:
     """Load a llama_cpp.Llama instance."""
     from llama_cpp import Llama
-
-    from lilbee.config import cfg
 
     kwargs: dict[str, Any] = {
         "model_path": str(model_path),
@@ -402,8 +387,6 @@ def load_llama(model_path: Path, *, embedding: bool) -> Any:
 
 def _is_vision_model(model: str) -> bool:
     """Check if a model name corresponds to a vision model in the catalog."""
-    from lilbee.config import cfg
-
     if model == cfg.vision_model and cfg.vision_model:
         return True
 
@@ -418,7 +401,6 @@ def _is_vision_model(model: str) -> bool:
 
 def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
-
     Searches the same directory as the model for mmproj .gguf files.
     Raises ProviderError if no mmproj file is found.
     """
@@ -521,13 +503,10 @@ def _resolve_vision_handler(mmproj_path: Path) -> Any:
 
 def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a Llama instance with the correct vision chat handler.
-
     Reads the mmproj GGUF metadata to determine which chat handler to use,
     rather than hardcoding Llava15ChatHandler for all models.
     """
     from llama_cpp import Llama
-
-    from lilbee.config import cfg
 
     if mmproj_path is None:
         mmproj_path = find_mmproj_for_model(model_path)

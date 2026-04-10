@@ -18,7 +18,6 @@ pytestmark = pytest.mark.slow
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path, rag_pipeline):
     """Point store at a temp directory, force llama-cpp provider.
-
     Depends on rag_pipeline to guarantee the embedding model is downloaded.
     """
     from lilbee.services import reset_services

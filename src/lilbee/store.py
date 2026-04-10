@@ -23,19 +23,24 @@ from lilbee.security import validate_path_within
 
 log = logging.getLogger(__name__)
 
-# Suppress lancedb's LanceDBBackgroundEventLoop thread exception on shutdown.
-# lancedb has no close() API and its internal event loop thread crashes during
-# Python interpreter teardown. This is harmless — the process is exiting anyway.
-_original_excepthook = threading.excepthook
 
+def install_lancedb_thread_error_suppressor() -> None:
+    """Install a ``threading.excepthook`` that swallows lancedb shutdown noise.
+    lancedb has no ``close()`` API and its internal event loop thread crashes
+    during Python interpreter teardown. The exception is harmless (the process
+    is exiting anyway) but pollutes CLI/TUI output. This is opt-in so importing
+    ``lilbee.store`` has no hidden side effects; call it once from the CLI/TUI
+    bootstrap.
+    """
+    original = threading.excepthook
 
-def _suppress_lancedb_thread_error(args: threading.ExceptHookArgs) -> None:
-    if args.thread and "LanceDB" in args.thread.name:
-        return
-    _original_excepthook(args)
+    def _hook(args: threading.ExceptHookArgs) -> None:
+        if args.thread and "LanceDB" in args.thread.name:
+            return
+        original(args)
 
+    threading.excepthook = _hook
 
-threading.excepthook = _suppress_lancedb_thread_error
 
 # How often readers re-check the manifest for new versions from other processes.
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
@@ -45,7 +50,6 @@ READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
 class SearchChunk(BaseModel):
     """A search result from LanceDB.
-
     Hybrid results have ``relevance_score`` set (higher = better).
     Vector-only results have ``distance`` set (lower = better).
     """
@@ -90,7 +94,6 @@ def mmr_rerank(
     mmr_lambda: float | None = None,
 ) -> list[SearchChunk]:
     """Maximal Marginal Relevance — select diverse results.
-
     Algorithm: Carbonell & Goldstein 1998,
     "The Use of MMR, Diversity-Based Reranking for Reordering Documents
     and Producing Summaries."
@@ -309,7 +312,6 @@ class Store:
 
     def ensure_fts_index(self) -> None:
         """Create or replace the FTS index on the chunks table.
-
         No-op when the table doesn't exist or is empty.  Sets _fts_ready
         on success so hybrid_search can be used.
         """
@@ -367,7 +369,6 @@ class Store:
         chunk_type: str | None = None,
     ) -> list[SearchChunk]:
         """Search for similar chunks — hybrid when FTS available, else vector-only.
-
         Results with distance > max_distance are filtered out (vector-only path).
         Pass max_distance=0 to disable filtering.
         When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
@@ -433,7 +434,6 @@ class Store:
         self, results: list[SearchChunk], top_k: int, initial_threshold: float
     ) -> list[SearchChunk]:
         """Widen cosine distance threshold when too few results.
-
         Inspired by grantflow's (grantflow-ai/grantflow) adaptive retrieval
         pattern which widens thresholds on recursive retry. Step size and
         cap are configurable via ``self._config.adaptive_threshold_step``.
@@ -532,7 +532,6 @@ class Store:
         documents_dir: Path | None = None,
     ) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
-
         Looks up known sources, deletes chunks and source records for each.
         If *delete_files* is True, resolves the path and verifies it is
         contained within *documents_dir* before unlinking (path traversal guard).

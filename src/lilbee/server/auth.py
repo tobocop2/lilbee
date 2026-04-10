@@ -33,7 +33,6 @@ def _server_json_path() -> Path:
 
 class SessionManager:
     """Manages the server session token lifecycle.
-
     Replaces the old module-level ``_session_token`` global so that auth
     state is explicit and injectable rather than hidden mutable state.
     """
