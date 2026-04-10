@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Generator, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -18,96 +19,42 @@ from typing_extensions import TypedDict
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
-from lilbee.store import CitationRecord, SearchChunk, Store
+from lilbee.store import CitationRecord, SearchChunk, Store, _cosine_sim
 
 log = logging.getLogger(__name__)
 
-# English stop words used ONLY for query-side token overlap checks. If we
-# let "the" and "and" count toward the overlap between a user's question
-# and a candidate chunk, every chunk looks similar to every query. This is
-# a deliberate, scoped heuristic; it is not used anywhere else in the code
-# base because nothing else does bag-of-words overlap.
-_STOP_WORDS: frozenset[str] = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "will",
-        "would",
-        "could",
-        "should",
-        "may",
-        "might",
-        "shall",
-        "can",
-        "to",
-        "of",
-        "in",
-        "for",
-        "on",
-        "with",
-        "at",
-        "by",
-        "from",
-        "as",
-        "into",
-        "about",
-        "between",
-        "through",
-        "after",
-        "before",
-        "above",
-        "below",
-        "and",
-        "or",
-        "but",
-        "not",
-        "no",
-        "if",
-        "then",
-        "than",
-        "that",
-        "this",
-        "it",
-        "its",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "how",
-        "when",
-        "where",
-        "why",
-        "i",
-        "me",
-        "my",
-        "we",
-        "our",
-        "you",
-        "your",
-        "he",
-        "she",
-        "they",
-    }
-)
+# Minimum token length — single characters carry no selection signal.
+_MIN_TOKEN_LEN = 2
 
 
-def _tokenize_query(text: str) -> set[str]:
-    """Lowercase whitespace tokens, drop stopwords and single characters."""
-    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
+def _tokenize(text: str) -> list[str]:
+    """Lowercase alphanumeric tokens for IDF-weighted context selection."""
+    result: list[str] = []
+    for raw in text.lower().split():
+        word = "".join(ch for ch in raw if ch.isalnum())
+        if len(word) >= _MIN_TOKEN_LEN:
+            result.append(word)
+    return result
+
+
+def _idf_weights(
+    question_terms: set[str],
+    chunk_tokens: list[set[str]],
+) -> dict[str, float]:
+    """Return IDF weight per question term over the candidate corpus.
+
+    ``log(N / (1 + df))`` is clamped to zero for terms that appear in
+    (almost) every candidate chunk — the corpus-specific stopwords that
+    a hand-curated English list would otherwise approximate.
+    """
+    n = len(chunk_tokens)
+    if n == 0:
+        return {t: 0.0 for t in question_terms}
+    df: dict[str, int] = {}
+    for tokens in chunk_tokens:
+        for term in tokens & question_terms:
+            df[term] = df.get(term, 0) + 1
+    return {t: max(0.0, math.log(n / (1 + df.get(t, 0)))) for t in question_terms}
 
 
 class ChatMessage(TypedDict):
@@ -267,9 +214,6 @@ _EXPANSION_PROMPT = (
 _EXPANSION_MAX_TOKENS = 200
 
 
-_MIN_OVERLAP_RATIO = 0.3
-
-
 class AskResult(BaseModel):
     """Structured result from ask_raw -- answer text + raw search results."""
 
@@ -325,21 +269,23 @@ class Searcher:
                 filtered.append(r)
         return filtered if filtered else results
 
-    def _apply_guardrails(self, variants: list[str], question: str) -> list[str]:
+    def _apply_guardrails(
+        self,
+        variants: list[tuple[str, list[float]]],
+        question_vec: list[float],
+    ) -> list[tuple[str, list[float]]]:
+        """Drop expansion variants that drift too far from the question.
+
+        Compares sentence-level cosine similarity between the question
+        embedding and each variant embedding. Language-agnostic and uses
+        embeddings already computed by the caller.
+        """
         if not self._config.expansion_guardrails:
             return variants
-        original_tokens = _tokenize_query(question)
-        if not original_tokens:
-            return variants
-        validated: list[str] = []
-        for variant in variants:
-            variant_tokens = _tokenize_query(variant)
-            if not variant_tokens:
-                continue
-            overlap = len(original_tokens & variant_tokens) / len(original_tokens)
-            if overlap >= _MIN_OVERLAP_RATIO:
-                validated.append(variant)
-        return validated
+        threshold = self._config.expansion_similarity_threshold
+        return [
+            (text, vec) for text, vec in variants if _cosine_sim(question_vec, vec) >= threshold
+        ]
 
     def _concept_query_expansion(self, question: str) -> list[str]:
         if not self._config.concept_graph:
@@ -352,23 +298,38 @@ class Searcher:
             log.debug("Concept query expansion failed", exc_info=True)
             return []
 
-    def _expand_query(self, question: str) -> list[str]:
-        count = self._config.query_expansion_count
-        if count == 0:
+    def _llm_expand(self, question: str, count: int) -> list[str]:
+        """Call the LLM to produce ``count`` alternative phrasings."""
+        prompt = _EXPANSION_PROMPT.format(count=count, question=question)
+        messages = [{"role": "user", "content": prompt}]
+        response = self._provider.chat(
+            messages, stream=False, options={"num_predict": _EXPANSION_MAX_TOKENS}
+        )
+        if not isinstance(response, str):
             return []
+        variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
+        return variants[:count]
+
+    def _expand_query(
+        self, question: str, question_vec: list[float]
+    ) -> list[tuple[str, list[float]]]:
+        """Return ``(variant, variant_vec)`` pairs for downstream search.
+
+        LLM expansions run through the similarity guardrail; concept-graph
+        expansions bypass it because they come from deterministic graph
+        traversal and are expected to be partial phrases with lower
+        similarity to the full question.
+        """
+        count = self._config.query_expansion_count
         try:
-            prompt = _EXPANSION_PROMPT.format(count=count, question=question)
-            messages = [{"role": "user", "content": prompt}]
-            response = self._provider.chat(
-                messages, stream=False, options={"num_predict": _EXPANSION_MAX_TOKENS}
-            )
-            if not isinstance(response, str):
-                return []
-            variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
-            variants = variants[:count]
-            variants = self._apply_guardrails(variants, question)
-            variants.extend(self._concept_query_expansion(question))
-            return variants
+            llm_variants: list[tuple[str, list[float]]] = []
+            if count > 0:
+                for text in self._llm_expand(question, count):
+                    llm_variants.append((text, self._embedder.embed(text)))
+            llm_variants = self._apply_guardrails(llm_variants, question_vec)
+            for concept in self._concept_query_expansion(question):
+                llm_variants.append((concept, self._embedder.embed(concept)))
+            return llm_variants
         except Exception:
             log.debug("Query expansion failed", exc_info=True)
             return []
@@ -441,40 +402,56 @@ class Searcher:
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
     ) -> list[SearchChunk]:
-        """Select context chunks covering distinct query terms.
-        Greedy set-cover: pick chunks that add the most uncovered query
-        terms until the budget is exhausted or all terms are covered.
+        """Greedy IDF-weighted cover: pick chunks whose distinctive query
+        terms add the most information, then fill any remaining budget
+        in retrieval order.
+
+        IDF is computed over the candidate ``results`` list itself, so
+        terms that appear in every candidate (the corpus-specific
+        stopwords) contribute zero weight without needing a hand-curated
+        stoplist.
         """
         if max_sources is None:
             max_sources = self._config.max_context_sources
         if len(results) <= max_sources:
             return results
-        query_terms = _tokenize_query(question)
-        if not query_terms:
+
+        question_terms = set(_tokenize(question))
+        if not question_terms:
             return results[:max_sources]
-        chunk_tokens = [_tokenize_query(r.chunk) for r in results]
-        selected: list[SearchChunk] = []
+
+        chunk_tokens = [set(_tokenize(r.chunk)) for r in results]
+        term_weights = _idf_weights(question_terms, chunk_tokens)
+        if not any(term_weights.values()):
+            return results[:max_sources]
+
+        selected_indices: list[int] = []
         covered: set[str] = set()
-        remaining_indices = list(range(len(results)))
-        for _ in range(max_sources):
-            if not remaining_indices or covered == query_terms:
-                break
-            best_pos = 0
-            best_gain = -1
-            for pos, idx in enumerate(remaining_indices):
-                gain = len((chunk_tokens[idx] & query_terms) - covered)
-                # First-best-wins on ties: ``pos`` increases monotonically so a
-                # tie-break on smaller ``pos`` never fires, and the earliest
-                # candidate with the current best gain is always kept.
+        remaining = list(range(len(results)))
+        while remaining and len(selected_indices) < max_sources:
+            best_pos = -1
+            best_gain = 0.0
+            for pos, idx in enumerate(remaining):
+                new_terms = (chunk_tokens[idx] & question_terms) - covered
+                gain = sum(term_weights[t] for t in new_terms)
                 if gain > best_gain:
                     best_gain = gain
                     best_pos = pos
-            if best_gain <= 0 and selected:
+            if best_pos < 0:
                 break
-            chosen_idx = remaining_indices.pop(best_pos)
-            selected.append(results[chosen_idx])
-            covered |= chunk_tokens[chosen_idx] & query_terms
-        return selected
+            chosen_idx = remaining.pop(best_pos)
+            selected_indices.append(chosen_idx)
+            covered |= chunk_tokens[chosen_idx] & question_terms
+
+        # Fill any remaining budget in retrieval order so callers always
+        # receive ``max_sources`` chunks when that many are available.
+        for idx in remaining:
+            if len(selected_indices) >= max_sources:
+                break
+            selected_indices.append(idx)
+
+        selected_indices.sort()
+        return [results[i] for i in selected_indices]
 
     def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
@@ -490,16 +467,13 @@ class Searcher:
         if self._should_skip_expansion(question):
             return results[: top_k * 2]
         seen = {(r.source, r.chunk_index) for r in results}
-        variants = self._expand_query(question)
-        if variants:
-            for variant in variants:
-                variant_vec = self._embedder.embed(variant)
-                variant_results = self._store.search(variant_vec, top_k=top_k, query_text=variant)
-                for r in variant_results:
-                    key = (r.source, r.chunk_index)
-                    if key not in seen:
-                        results.append(r)
-                        seen.add(key)
+        for variant, variant_vec in self._expand_query(question, query_vec):
+            variant_results = self._store.search(variant_vec, top_k=top_k, query_text=variant)
+            for r in variant_results:
+                key = (r.source, r.chunk_index)
+                if key not in seen:
+                    results.append(r)
+                    seen.add(key)
         if self._config.hyde:
             hyde_results = self._hyde_search(question, top_k)
             for r in hyde_results:

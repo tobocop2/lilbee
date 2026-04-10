@@ -147,10 +147,15 @@ class Config(BaseSettings):
     # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
     adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
 
-    # Validate LLM-generated expansion variants to prevent query drift.
-    # Checks token overlap with original query (>= 0.3) and deduplicates
-    # near-identical variants (cosine similarity > 0.85).
+    # Validate LLM-generated expansion variants to prevent query drift
+    # by comparing the cosine similarity of the variant's embedding to
+    # the original question's embedding.
     expansion_guardrails: bool = True
+
+    # Minimum cosine similarity (question vs variant embedding) for an
+    # expansion variant to survive the guardrail. 0.5 accepts rephrases
+    # and related questions while rejecting semantic drift.
+    expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # BM25 confidence score above which query expansion is skipped entirely.
     # Based on 90th percentile of sigmoid-normalized BM25 score distribution.

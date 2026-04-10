@@ -234,32 +234,35 @@ class TestSearchContext:
 
 
 class TestExpandQuery:
+    _QUESTION_VEC = [0.1] * 768  # matches mock_svc.embedder default
+
     def test_returns_variants(self, mock_svc):
         mock_svc.provider.chat.return_value = (
             "explain how X works in detail\nexplain the purpose of X"
         )
-        variants = get_services().searcher._expand_query("explain X in detail")
+        variants = get_services().searcher._expand_query("explain X in detail", self._QUESTION_VEC)
         assert len(variants) == 2
+        for text, vec in variants:
+            assert isinstance(text, str)
+            assert len(vec) == 768
 
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = "A\nB\nC\nD\nE"
-        assert len(get_services().searcher._expand_query("q")) == 3
+        variants = get_services().searcher._expand_query("q", self._QUESTION_VEC)
+        assert len(variants) == 3
 
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
-        assert get_services().searcher._expand_query("q") == []
+        assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
 
     def test_disabled_when_count_zero(self, mock_svc):
-        old = cfg.query_expansion_count
         cfg.query_expansion_count = 0
-        try:
-            assert get_services().searcher._expand_query("anything") == []
-        finally:
-            cfg.query_expansion_count = old
+        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC) == []
+        cfg.query_expansion_count = 3
 
     def test_returns_empty_on_non_string(self, mock_svc):
         mock_svc.provider.chat.return_value = iter(["stream"])
-        assert get_services().searcher._expand_query("q") == []
+        assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
 
 
 class TestAskRaw:
@@ -460,65 +463,75 @@ class TestProviderError:
 
 
 class TestApplyGuardrails:
-    def test_filters_drifted_variants(self, mock_svc):
-        variants = ["completely unrelated topic", "explain kubernetes deployment"]
-        searcher = get_services().searcher
-        result = searcher._apply_guardrails(variants, "explain kubernetes deployment")
-        assert "completely unrelated topic" not in result
-        assert "explain kubernetes deployment" in result
+    def test_rejects_orthogonal_variant(self, mock_svc):
+        question_vec = [1.0, 0.0, 0.0]
+        variants = [("related rephrase", [0.9, 0.1, 0.0]), ("drifted", [0.0, 1.0, 0.0])]
+        result = get_services().searcher._apply_guardrails(variants, question_vec)
+        texts = [text for text, _ in result]
+        assert "drifted" not in texts
+        assert "related rephrase" in texts
 
-    def test_keeps_overlapping_variants(self, mock_svc):
-        variants = ["kubernetes deployment steps", "deploying kubernetes clusters"]
-        result = get_services().searcher._apply_guardrails(variants, "kubernetes deployment guide")
-        assert len(result) >= 1
-
-    def test_returns_all_when_guardrails_disabled(self, mock_svc):
-        old = cfg.expansion_guardrails
-        cfg.expansion_guardrails = False
-        try:
-            result = get_services().searcher._apply_guardrails(["anything"], "question")
-            assert result == ["anything"]
-        finally:
-            cfg.expansion_guardrails = old
-
-    def test_empty_variants(self, mock_svc):
-        assert get_services().searcher._apply_guardrails([], "question") == []
-
-    def test_empty_original_tokens(self, mock_svc):
-        result = get_services().searcher._apply_guardrails(["variant"], "a the is")
-        assert result == ["variant"]
-
-    def test_empty_variant_tokens(self, mock_svc):
-        result = get_services().searcher._apply_guardrails(
-            ["a the is", "real content here"], "real content here"
-        )
+    def test_keeps_near_duplicate(self, mock_svc):
+        question_vec = [1.0, 0.0, 0.0]
+        variants = [("same topic", [0.95, 0.05, 0.0])]
+        result = get_services().searcher._apply_guardrails(variants, question_vec)
         assert len(result) == 1
 
+    def test_returns_all_when_disabled(self, mock_svc):
+        cfg.expansion_guardrails = False
+        try:
+            variants = [("drifted", [0.0, 1.0, 0.0])]
+            result = get_services().searcher._apply_guardrails(variants, [1.0, 0.0, 0.0])
+            assert result == variants
+        finally:
+            cfg.expansion_guardrails = True
 
-class TestTokenizeQuery:
-    def test_removes_stop_words(self):
-        from lilbee.query import _tokenize_query
+    def test_respects_configurable_threshold(self, mock_svc):
+        # Cosine = 0.6; passes at default 0.5 but not at 0.8.
+        question_vec = [1.0, 0.0]
+        variants = [("borderline", [0.6, 0.8])]
+        searcher = get_services().searcher
+        cfg.expansion_similarity_threshold = 0.5
+        assert len(searcher._apply_guardrails(variants, question_vec)) == 1
+        cfg.expansion_similarity_threshold = 0.8
+        assert searcher._apply_guardrails(variants, question_vec) == []
 
-        result = _tokenize_query("how does the system work")
-        assert "how" not in result
-        assert "does" not in result
-        assert "the" not in result
-        assert "system" in result
-        assert "work" in result
+    def test_empty_variants(self, mock_svc):
+        assert get_services().searcher._apply_guardrails([], [1.0, 0.0, 0.0]) == []
 
-    def test_lowercases(self):
-        from lilbee.query import _tokenize_query
 
-        result = _tokenize_query("Kubernetes Deployment")
-        assert "kubernetes" in result
+class TestTokenize:
+    def test_lowercases_and_strips_punctuation(self):
+        from lilbee.query import _tokenize
 
-    def test_removes_single_chars(self):
-        from lilbee.query import _tokenize_query
+        assert _tokenize("Kubernetes, deployment!") == ["kubernetes", "deployment"]
 
-        result = _tokenize_query("a b c real word")
-        assert "real" in result
-        assert "word" in result
-        assert "b" not in result
+    def test_drops_single_chars(self):
+        from lilbee.query import _tokenize
+
+        assert _tokenize("a b cc real") == ["cc", "real"]
+
+    def test_preserves_duplicates(self):
+        from lilbee.query import _tokenize
+
+        assert _tokenize("alpha alpha beta") == ["alpha", "alpha", "beta"]
+
+
+class TestIdfWeights:
+    def test_high_weight_for_distinctive_term(self):
+        from lilbee.query import _idf_weights
+
+        # "kafka" in 1/3 chunks, "python" in 3/3 → python gets zero weight.
+        chunk_tokens = [{"python", "kafka"}, {"python", "typing"}, {"python", "async"}]
+        weights = _idf_weights({"kafka", "python"}, chunk_tokens)
+        assert weights["kafka"] > 0
+        assert weights["python"] == 0.0
+
+    def test_empty_corpus_returns_zero_weights(self):
+        from lilbee.query import _idf_weights
+
+        weights = _idf_weights({"anything"}, [])
+        assert weights == {"anything": 0.0}
 
 
 class TestSelectContext:
@@ -533,8 +546,7 @@ class TestSelectContext:
         )
         assert len(result) == 2
         texts = " ".join(r.chunk for r in result)
-        assert "kubernetes" in texts
-        assert "networking" in texts
+        assert "networking" in texts  # distinctive term must be covered
 
     def test_passes_through_when_under_max(self, mock_svc):
         chunks = [_make_result(chunk="only one")]
@@ -543,10 +555,12 @@ class TestSelectContext:
 
     def test_empty_query_returns_top_n(self, mock_svc):
         chunks = [_make_result(chunk=f"chunk {i}") for i in range(10)]
-        result = get_services().searcher.select_context(chunks, "a the is", max_sources=3)
+        result = get_services().searcher.select_context(chunks, "", max_sources=3)
         assert len(result) == 3
 
-    def test_stops_on_full_coverage(self, mock_svc):
+    def test_all_zero_weight_falls_back_to_top_n(self, mock_svc):
+        # Every chunk contains both question terms → IDF is zero for both →
+        # no term adds any weight → fall back to top-N by retrieval order.
         chunks = [
             _make_result(chunk="alpha beta gamma delta", source="a.md"),
             _make_result(chunk="alpha beta gamma delta", source="b.md"),
@@ -557,21 +571,24 @@ class TestSelectContext:
         result = get_services().searcher.select_context(
             chunks, "alpha beta gamma delta", max_sources=3
         )
-        assert len(result) == 1
+        assert len(result) == 3
 
-    def test_stops_on_zero_gain(self, mock_svc):
+    def test_fills_budget_with_retrieval_order(self, mock_svc):
+        # The distinctive term pulls b.md first; the remaining slot is
+        # filled from the top of the retrieval order (a.md), not another
+        # duplicate. Final ordering is retrieval-stable.
         chunks = [
-            _make_result(chunk="alpha beta unique1", source="a.md"),
-            _make_result(chunk="alpha beta unique1", source="b.md"),
-            _make_result(chunk="alpha beta unique1", source="c.md"),
-            _make_result(chunk="alpha beta unique1", source="d.md"),
-            _make_result(chunk="alpha beta unique1", source="e.md"),
-            _make_result(chunk="alpha beta unique1", source="f.md"),
+            _make_result(chunk="kafka rebalance broker", source="a.md"),
+            _make_result(chunk="kafka streams consumer group rebalance", source="b.md"),
+            _make_result(chunk="kafka broker replication", source="c.md"),
         ]
         result = get_services().searcher.select_context(
-            chunks, "alpha beta unique1 unique2", max_sources=5
+            chunks, "kafka consumer group", max_sources=2
         )
-        assert len(result) < 5
+        assert len(result) == 2
+        sources = [r.source for r in result]
+        assert "b.md" in sources  # cover pick
+        assert sources == sorted(sources)
 
 
 class TestShouldSkipExpansion:
@@ -769,8 +786,9 @@ class TestSearchContextIntegration:
             [hyde_only_result],
         ]
         mock_svc.provider.chat.return_value = "hypothetical document"
-        old_hyde = cfg.hyde
-        old_weight = cfg.hyde_weight
+        # Disable query expansion so the HyDE path owns the second
+        # store.search call.
+        cfg.query_expansion_count = 0
         cfg.hyde = True
         cfg.hyde_weight = 0.5
         try:
@@ -781,8 +799,9 @@ class TestSearchContextIntegration:
             hyde_r = next(r for r in results if r.source == "hyde.md")
             assert hyde_r.distance == pytest.approx(0.8 / 0.5)
         finally:
-            cfg.hyde = old_hyde
-            cfg.hyde_weight = old_weight
+            cfg.query_expansion_count = 3
+            cfg.hyde = False
+            cfg.hyde_weight = 0.7
 
 
 class TestAskRawWithReranker:
@@ -909,8 +928,9 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            variants = searcher._expand_query("python frameworks")
-            assert "python web frameworks" in variants
+            variants = searcher._expand_query("python frameworks", [0.1] * 768)
+            texts = [text for text, _ in variants]
+            assert "python web frameworks" in texts
         finally:
             cfg.concept_graph = old
 
