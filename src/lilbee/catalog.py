@@ -639,7 +639,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         if on_progress is not None:
             size = dest.stat().st_size
             on_progress(size, size)  # Report 100% immediately
-        return _finalize_download(entry, dest)
+        return _finalize_download(entry, dest, on_progress=on_progress)
 
     log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
     token = _hf_token()
@@ -654,9 +654,9 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
     )
 
     try:
-        os.environ.setdefault(
-            "HF_HUB_DISABLE_XET", "1"
-        )  # pragma: no cover  # TODO: remove once huggingface_hub#4065 merges
+        # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time.
+        # Setting it here is too late — huggingface_hub.constants already
+        # captured the value when this module first imported it.
         cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except GatedRepoError:
         raise PermissionError(
@@ -680,14 +680,19 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
             log.info("Model found in HuggingFace cache: %s", cached)
         on_progress(actual_size, actual_size)
     dest = cached
-    return _finalize_download(entry, dest)
+    return _finalize_download(entry, dest, on_progress=on_progress)
 
 
-def _finalize_download(entry: CatalogModel, dest: Path) -> Path:
+def _finalize_download(
+    entry: CatalogModel,
+    dest: Path,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
     """Register the model in the manifest and download mmproj for vision models."""
     _register_model(entry, dest)
     if entry.task == ModelTask.VISION:
-        _download_mmproj(entry)
+        _download_mmproj(entry, on_progress=on_progress)
     return dest
 
 
@@ -714,10 +719,16 @@ def _register_model(entry: CatalogModel, file_path: Path) -> None:
         log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
 
 
-def _download_mmproj(entry: CatalogModel) -> Path | None:
+def _download_mmproj(
+    entry: CatalogModel,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path | None:
     """Download the mmproj (CLIP projection) file for a vision model.
 
     Returns the path to the downloaded file, or None if no mmproj is configured.
+    The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
+    counts and is wired through the same tqdm hook used by the main download.
     """
     mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
 
@@ -729,16 +740,21 @@ def _download_mmproj(entry: CatalogModel) -> Path | None:
     dest = cfg.models_dir / mmproj_filename
     if dest.exists():
         log.info("mmproj already downloaded: %s", dest)
+        if on_progress is not None:
+            size = dest.stat().st_size
+            on_progress(size, size)
         return dest
 
     from huggingface_hub import hf_hub_download
 
+    tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, cfg.models_dir)
     path = hf_hub_download(
         repo_id=entry.hf_repo,
         filename=mmproj_filename,
         local_dir=cfg.models_dir,
         token=_hf_token(),
+        tqdm_class=tracker.make_tqdm_class() if tracker else None,
     )
     return Path(path)
 
