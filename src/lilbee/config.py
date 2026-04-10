@@ -295,15 +295,16 @@ class Config(BaseSettings):
     )
 
     # Wiki synthesis clusterer backend. "embedding" (default, no extra deps)
-    # groups sources by mean-embedding cosine similarity. "concepts" uses the
-    # concept graph adapter and requires the [graph] extra; when [graph] is
-    # missing the services factory logs a warning and falls back to "embedding".
+    # runs chunk-level mutual kNN + label propagation over chunk embeddings.
+    # "concepts" uses the concept graph adapter and requires the [graph]
+    # extra; when [graph] is missing the services factory logs a warning
+    # and falls back to "embedding".
     wiki_clusterer: str = ConfigField(default="embedding", writable=True)
 
-    # Cosine similarity threshold for the embedding clusterer. Two sources
-    # join the same cluster when their mean embeddings meet or exceed this
-    # value. Lower = fewer, broader clusters; higher = more, tighter clusters.
-    wiki_clusterer_threshold: float = ConfigField(default=0.6, ge=0.0, le=1.0, writable=True)
+    # Neighborhood size for the embedding clusterer's mutual-kNN graph.
+    # 0 means "auto-scale from corpus size" via clamp(log2(N)+2, 5, 20).
+    # Raise to get larger, looser clusters; lower for tighter, smaller ones.
+    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
 
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search

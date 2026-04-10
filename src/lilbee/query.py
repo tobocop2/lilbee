@@ -19,6 +19,7 @@ from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
+from lilbee.text import tokenize_unique as _tokenize_query
 
 log = logging.getLogger(__name__)
 
@@ -184,89 +185,7 @@ _EXPANSION_PROMPT = (
 _EXPANSION_MAX_TOKENS = 200
 
 
-_STOP_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "will",
-        "would",
-        "could",
-        "should",
-        "may",
-        "might",
-        "shall",
-        "can",
-        "to",
-        "of",
-        "in",
-        "for",
-        "on",
-        "with",
-        "at",
-        "by",
-        "from",
-        "as",
-        "into",
-        "about",
-        "between",
-        "through",
-        "after",
-        "before",
-        "above",
-        "below",
-        "and",
-        "or",
-        "but",
-        "not",
-        "no",
-        "if",
-        "then",
-        "than",
-        "that",
-        "this",
-        "it",
-        "its",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "how",
-        "when",
-        "where",
-        "why",
-        "i",
-        "me",
-        "my",
-        "we",
-        "our",
-        "you",
-        "your",
-        "he",
-        "she",
-        "they",
-    }
-)
-
 _MIN_OVERLAP_RATIO = 0.3
-
-
-def _tokenize_query(text: str) -> set[str]:
-    """Tokenize into lowercase words, removing stop words."""
-    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
 
 
 class AskResult(BaseModel):
