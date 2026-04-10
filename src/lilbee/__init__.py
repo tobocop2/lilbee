@@ -13,6 +13,11 @@ import os
 # opt back into xet by setting HF_HUB_DISABLE_XET=0 in their environment.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+# Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
+# leaked cursor escapes into the TUI. Our custom tqdm_class bypasses this
+# flag so download callbacks still fire.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

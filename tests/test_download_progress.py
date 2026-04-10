@@ -135,6 +135,92 @@ class TestCallbackProgressBarIncrementalUpdates:
         assert len(calls) == 50
 
 
+class TestCallbackProgressBarLockSafety:
+    """Verify _CallbackProgressBar survives environments where stderr lacks a real fd.
+
+    Vanilla ``tqdm.auto.tqdm`` acquires ``self._lock`` inside the ``disable=True``
+    branch (std.py:988). That lock is lazily constructed as a multiprocessing
+    lock, whose init raises ``ValueError`` when ``sys.stderr.fileno() == -1``
+    (Textual, Jupyter, pytest capture). ``_CallbackProgressBar`` overrides
+    ``get_lock`` with a ``threading.RLock`` to sidestep that failure.
+
+    Without this override, constructing the bar inside Textual crashes, HF
+    falls back to its internal ``_SafeTqdm``, the callback never fires, and
+    a visible progress bar leaks into the caller's output stream.
+    """
+
+    def test_get_lock_returns_threading_lock(self) -> None:
+        """The class-level lock is a threading lock, not a multiprocessing one."""
+        import threading
+
+        lock = _CallbackProgressBar.get_lock()
+        # threading.RLock() returns an _RLock instance whose repr starts with
+        # "<unlocked _thread.RLock" — compare via the factory type.
+        assert isinstance(lock, type(threading.RLock()))
+
+    def test_init_survives_bad_stderr_fileno(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Constructing the bar under a fake stderr with fileno=-1 does not raise.
+
+        Simulates the Textual/Jupyter environment where tqdm's default
+        multiprocessing lock init would otherwise crash with ValueError.
+        """
+
+        class _FakeStderr:
+            def write(self, _s: str) -> int:
+                return 0
+
+            def flush(self) -> None:
+                pass
+
+            def isatty(self) -> bool:
+                return True
+
+            def fileno(self) -> int:
+                return -1
+
+        monkeypatch.setattr("sys.stderr", _FakeStderr())
+        bar = _CallbackProgressBar(total=100, desc="test")
+        try:
+            assert bar.disable is True
+        finally:
+            bar.close()
+
+    def test_callback_still_fires_under_bad_stderr_fileno(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Progress callbacks continue to fire in a broken-stderr environment.
+
+        Regression: before the lock override, the ``_CallbackProgressBar``
+        init crashed under a bad stderr, HF swapped in a plain ``_SafeTqdm``
+        (no callback wiring), and the progress bar stayed stuck at 0%.
+        """
+
+        class _FakeStderr:
+            def write(self, _s: str) -> int:
+                return 0
+
+            def flush(self) -> None:
+                pass
+
+            def isatty(self) -> bool:
+                return True
+
+            def fileno(self) -> int:
+                return -1
+
+        monkeypatch.setattr("sys.stderr", _FakeStderr())
+
+        calls: list[tuple[int, int]] = []
+        cls = _tracker_tqdm_class(lambda d, t: calls.append((d, t)))
+        bar = cls(total=1000, desc="test")
+        bar.update(250)
+        bar.update(250)
+        bar.update(500)
+        bar.close()
+
+        assert calls == [(250, 1000), (500, 1000), (1000, 1000)]
+
+
 class TestDownloadModelProgressChain:
     """Verify download_model correctly chains progress through to the user callback."""
 

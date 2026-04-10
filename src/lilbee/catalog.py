@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -98,9 +99,20 @@ class _CallbackProgressBar(_base_tqdm):
     Fully suppresses terminal output by disabling tqdm rendering and redirecting
     its file handle to a devnull sink — prevents ANSI escape sequences from leaking
     into Textual's managed terminal.
+
+    Overrides ``get_lock`` to return a threading lock instead of tqdm's default
+    multiprocessing lock. Vanilla tqdm acquires ``self._lock`` even on the
+    ``disable=True`` path (std.py:988), and the multiprocessing lock's lazy init
+    raises ``ValueError`` when ``sys.stderr.fileno() == -1`` (Textual, Jupyter,
+    pytest capture). A thread lock sidesteps that fd handling entirely.
     """
 
+    _lock = threading.RLock()
     _callback: Any = None
+
+    @classmethod
+    def get_lock(cls) -> threading.RLock:
+        return cls._lock
 
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs["disable"] = True
