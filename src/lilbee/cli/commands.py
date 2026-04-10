@@ -16,11 +16,11 @@ from rich.table import Table
 from lilbee import settings
 from lilbee.cli import theme
 from lilbee.cli.app import (
-    _global_option,
     app,
     apply_overrides,
     console,
     data_dir_option,
+    global_option,
     model_option,
     num_ctx_option,
     repeat_penalty_option,
@@ -183,7 +183,7 @@ def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -220,7 +220,7 @@ def search(
 @app.command(name="sync")
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     vision: bool = _vision_option,
     vision_timeout: float | None = _vision_timeout_option,
 ) -> None:
@@ -249,7 +249,7 @@ def sync_cmd(
 @app.command()
 def rebuild(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     vision: bool = _vision_option,
     vision_timeout: float | None = _vision_timeout_option,
 ) -> None:
@@ -340,7 +340,7 @@ def _crawl_urls_blocking(
 def add(
     paths: list[str] = _paths_argument,
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     force: bool = _force_option,
     vision: bool = _vision_option,
     vision_timeout: float | None = _vision_timeout_option,
@@ -426,7 +426,7 @@ _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunk
 def chunks(
     source: str = _chunks_source_argument,
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -477,7 +477,7 @@ _delete_file_option = typer.Option(
 def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     delete_file: bool = _delete_file_option,
 ) -> None:
     """Remove documents from the knowledge base by source name."""
@@ -509,7 +509,7 @@ def ask(
     question: str = typer.Argument(..., help="Question to ask"),
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     temperature: float | None = temperature_option,
     top_p: float | None = top_p_option,
     top_k_sampling: int | None = top_k_sampling_option,
@@ -565,7 +565,7 @@ def ask(
 def chat(
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     temperature: float | None = temperature_option,
     top_p: float | None = top_p_option,
     top_k_sampling: int | None = top_k_sampling_option,
@@ -607,7 +607,7 @@ def version() -> None:
 @app.command()
 def status(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Show indexed documents, paths, and chunk counts."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -623,7 +623,7 @@ _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.
 @app.command()
 def reset(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
     yes: bool = _yes_option,
 ) -> None:
     """Delete all documents and data (full factory reset)."""
@@ -706,7 +706,7 @@ def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Start the HTTP API server."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -733,7 +733,7 @@ def topics(
     query: str = typer.Argument(None, help="Optional query to find related concepts."),
     top_k: int = typer.Option(10, "--top-k", "-k", help="Number of results."),
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Show top concept communities or concepts related to a query."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -860,7 +860,7 @@ app.add_typer(wiki_app, name="wiki")
 def wiki_lint(
     wiki_source: str = typer.Argument("", help="Wiki page path (empty = lint all)."),
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Lint wiki pages for stale citations, missing sources, and unmarked claims."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -904,7 +904,7 @@ def wiki_lint(
 def wiki_citations(
     wiki_source: str = typer.Argument(..., help="Wiki page path, e.g. wiki/summaries/doc.md."),
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Show citations for a wiki page."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -941,7 +941,7 @@ def wiki_citations(
 @wiki_app.command(name="status")
 def wiki_status(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Show wiki layer status: page counts and lint summary."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
@@ -992,7 +992,7 @@ def wiki_status(
 @wiki_app.command(name="prune")
 def wiki_prune(
     data_dir: Path | None = data_dir_option,
-    use_global: bool = _global_option,
+    use_global: bool = global_option,
 ) -> None:
     """Prune stale and orphaned wiki pages."""
     apply_overrides(data_dir=data_dir, use_global=use_global)

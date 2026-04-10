@@ -13,11 +13,7 @@ from litestar.openapi import OpenAPIConfig
 
 from lilbee.cli.helpers import get_version
 from lilbee.config import cfg
-from lilbee.server.auth import (
-    AuthMiddleware,
-    cleanup_session_token,
-    generate_session_token,
-)
+from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -67,7 +63,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
-    generate_session_token()
+    session_manager.generate()
     from lilbee.services import get_services
 
     try:
@@ -83,7 +79,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        cleanup_session_token()
+        session_manager.cleanup()
 
 
 def create_app() -> Litestar:

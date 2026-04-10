@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -28,11 +27,20 @@ from lilbee.catalog import (
     make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens.catalog_utils import (
+    SORT_KEYS,
+    TableRow,
+    _remote_to_row,
+    _row_display_name,
+    _variant_to_row,
+    catalog_to_row,
+    matches_search,
+)
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
-from lilbee.models import FEATURED_STAR, ModelTask
+from lilbee.models import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -44,155 +52,6 @@ _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
-
-
-def _parse_param_label(name: str) -> str:
-    """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
-    from lilbee.catalog import PARAM_COUNT_RE
-
-    match = PARAM_COUNT_RE.search(name)
-    return match.group(1).upper() if match else "--"
-
-
-def _format_downloads(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
-    return str(n)
-
-
-def _format_size_mb(size_mb: int) -> str:
-    """Format size in MB to a human-readable string."""
-    if size_mb == 0:
-        return "--"
-    if size_mb >= 1024:
-        return f"{size_mb / 1024:.1f} GB"
-    return f"{size_mb} MB"
-
-
-def _format_size_gb(size_gb: float) -> str:
-    """Format size in GB to a human-readable string."""
-    if size_gb <= 0:
-        return "--"
-    return f"{size_gb:.1f} GB"
-
-
-@dataclass
-class TableRow:
-    """A row in the catalog DataTable with source metadata.
-
-    ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
-    ``ref`` is the canonical name:tag identifier used for config persistence
-    (e.g. "qwen3:0.6b").  When ``ref`` is empty, fall back to ``name``.
-    """
-
-    name: str
-    task: str
-    params: str
-    size: str
-    quant: str
-    downloads: str
-    featured: bool
-    installed: bool
-    sort_downloads: int
-    sort_size: float
-    ref: str = ""
-    variant: ModelVariant | None = None
-    family: ModelFamily | None = None
-    catalog_model: CatalogModel | None = None
-    remote_model: RemoteModel | None = None
-
-
-def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
-    """Convert a ModelVariant + family to a TableRow."""
-    prefix = "* " if v.recommended else ""
-    return TableRow(
-        name=f"{prefix}{f.name} {v.param_count}",
-        task=f.task,
-        params=v.param_count,
-        size=_format_size_mb(v.size_mb),
-        quant=v.quant or "--",
-        downloads="--",
-        featured=True,
-        installed=installed,
-        sort_downloads=0,
-        sort_size=v.size_mb / 1024,
-        ref=f"{f.slug}:{v.tag}",
-        variant=v,
-        family=f,
-    )
-
-
-def _catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
-    """Convert a CatalogModel to a TableRow."""
-    quant = _extract_quant_from_filename(m.gguf_filename)
-    return TableRow(
-        name=m.display_name,
-        task=m.task,
-        params=_parse_param_label(m.tag),
-        size=_format_size_gb(m.size_gb),
-        quant=quant or "--",
-        downloads=_format_downloads(m.downloads) if m.downloads > 0 else "--",
-        featured=m.featured,
-        installed=installed,
-        sort_downloads=m.downloads,
-        sort_size=m.size_gb,
-        ref=m.ref,
-        catalog_model=m,
-    )
-
-
-def _remote_to_row(rm: RemoteModel) -> TableRow:
-    """Convert a RemoteModel to a TableRow."""
-    return TableRow(
-        name=rm.name,
-        task=rm.task,
-        params=rm.parameter_size or "--",
-        size="--",
-        quant="--",
-        downloads="--",
-        featured=False,
-        installed=True,
-        sort_downloads=0,
-        sort_size=0.0,
-        ref=rm.name,
-        remote_model=rm,
-    )
-
-
-def _extract_quant_from_filename(filename: str) -> str:
-    """Extract quantization label from a GGUF filename pattern."""
-    m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
-
-
-def _row_display_name(row: TableRow) -> str:
-    """Build the display name with featured/installed markers."""
-    parts: list[str] = []
-    if row.featured:
-        parts.append(FEATURED_STAR)
-    parts.append(row.name)
-    if row.installed:
-        parts.append("[installed]")
-    return " ".join(parts)
-
-
-# Column sort key extractors
-_SORT_KEYS = {
-    "Name": lambda r: r.name.lower(),
-    "Task": lambda r: r.task,
-    "Params": lambda r: _param_sort_value(r.params),
-    "Size": lambda r: r.sort_size,
-    "Quant": lambda r: r.quant,
-    "Downloads": lambda r: r.sort_downloads,
-}
-
-
-def _param_sort_value(params: str) -> float:
-    """Convert param label to sortable float (e.g. '8B' -> 8.0)."""
-    match = re.search(r"(\d+\.?\d*)", params)
-    return float(match.group(1)) if match else 0.0
 
 
 _GRID_PAGE_ROWS = 3
@@ -403,7 +262,7 @@ class CatalogScreen(Screen[None]):
                     f"{fam.slug}:{v.tag}", repo=v.hf_repo, filename=v.filename
                 )
                 row = _variant_to_row(v, fam, installed)
-                if _matches_search(row, search):
+                if matches_search(row, search):
                     rows.append(row)
         return rows
 
@@ -412,8 +271,8 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for m in self._hf_models:
             installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
-            row = _catalog_to_row(m, installed)
-            if _matches_search(row, search):
+            row = catalog_to_row(m, installed)
+            if matches_search(row, search):
                 rows.append(row)
         return rows
 
@@ -422,7 +281,7 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for rm in self._remote_models:
             row = _remote_to_row(rm)
-            if _matches_search(row, search):
+            if matches_search(row, search):
                 rows.append(row)
         return rows
 
@@ -436,7 +295,7 @@ class CatalogScreen(Screen[None]):
 
     def _sort_rows(self, rows: list[TableRow]) -> list[TableRow]:
         """Sort rows: featured first, then by current sort column."""
-        key_fn = _SORT_KEYS.get(self._sort_column, _SORT_KEYS["Name"])
+        key_fn = SORT_KEYS.get(self._sort_column, SORT_KEYS["Name"])
         # Stable sort: featured always first, then by column
         return sorted(
             rows,
@@ -490,7 +349,7 @@ class CatalogScreen(Screen[None]):
         """Filter visible cards by search text without recreating widgets."""
         search = self._get_search_text()
         for card in self.query(ModelCard):
-            card.display = _matches_search(card.row, search)
+            card.display = matches_search(card.row, search)
         container = self.query_one("#catalog-grid", VerticalScroll)
         children = list(container.children)
         for i, child in enumerate(children):
@@ -819,15 +678,3 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
         GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
         GridSection(ModelTask.VISION.capitalize(), vision),
     ]
-
-
-def _matches_search(row: TableRow, search: str) -> bool:
-    """Return True if the row matches the search text."""
-    if not search:
-        return True
-    return (
-        search in row.name.lower()
-        or search in row.task.lower()
-        or search in row.params.lower()
-        or search in row.quant.lower()
-    )

@@ -36,9 +36,9 @@ def _parse_title(text: str) -> str:
 def parse_source_count(text: str) -> int:
     """Count sources from frontmatter sources field."""
     sources = parse_frontmatter(text).get("sources")
-    if isinstance(sources, list):
+    if isinstance(sources, list):  # yaml.safe_load may return str or list
         return len(sources)
-    if isinstance(sources, str):
+    if isinstance(sources, str):  # yaml.safe_load may return str or list
         return len([s for s in sources.split(",") if s.strip()])
     return 0
 

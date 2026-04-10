@@ -9,8 +9,8 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from lilbee.catalog import CatalogModel
-from lilbee.cli.tui.screens.catalog import TableRow
+from conftest import make_test_catalog_model as _make_model
+from lilbee.cli.tui.screens.catalog_utils import TableRow
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
@@ -28,29 +28,6 @@ def _isolated_cfg(tmp_path):
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-
-
-def _make_model(
-    name: str = "TestModel",
-    task: str = "chat",
-    featured: bool = False,
-    size_gb: float = 2.0,
-    tag: str = "latest",
-    display_name: str = "",
-) -> CatalogModel:
-    return CatalogModel(
-        name=name.lower().replace(" ", "-"),
-        tag=tag,
-        display_name=display_name or name,
-        hf_repo=f"test/{name.lower().replace(' ', '-')}",
-        gguf_filename="*.gguf",
-        size_gb=size_gb,
-        min_ram_gb=4,
-        description="A test model",
-        featured=featured,
-        downloads=100,
-        task=task,
-    )
 
 
 class _MsgApp(App):
@@ -1403,11 +1380,11 @@ class TestSetupWizard:
         assert row.featured is False
 
     def test_model_card_from_table_row(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
         model = _make_model("Test 8B", task="chat", featured=True)
-        row = _catalog_to_row(model, installed=False)
+        row = catalog_to_row(model, installed=False)
         card = ModelCard(row)
         assert card.row is row
         assert card.row.featured is True
@@ -1425,18 +1402,18 @@ class TestAllTasksFetched:
 
 class TestMatchesSearchWidget:
     def test_matches_name(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
-        row = _catalog_to_row(m, installed=False)
-        assert _matches_search(row, "qwen") is True
+        row = catalog_to_row(m, installed=False)
+        assert matches_search(row, "qwen") is True
 
     def test_no_match(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
-        row = _catalog_to_row(m, installed=False)
-        assert _matches_search(row, "llama") is False
+        row = catalog_to_row(m, installed=False)
+        assert matches_search(row, "llama") is False
 
 
 class TestLoginCommandRegistered:
@@ -1996,11 +1973,11 @@ class TestGridSelect:
 
 class TestModelCardSelected:
     def test_model_card_selected_reactive(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
         model = _make_model("Test 8B", task="chat", featured=True)
-        row = _catalog_to_row(model, installed=False)
+        row = catalog_to_row(model, installed=False)
         card = ModelCard(row)
         assert card.selected is False
         card.selected = True
@@ -2812,7 +2789,7 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             mock_screen = mock.MagicMock(spec=ChatScreen)
-            mock_screen._streaming = True
+            mock_screen.streaming = True
             mock_screen.workers = []
             with (
                 mock.patch.object(

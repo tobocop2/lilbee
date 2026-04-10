@@ -97,7 +97,7 @@ class TestLlamaCppProvider:
     def _shutdown_provider(self, models_dir: Path) -> None:
         """Ensure any LlamaCppProvider created in a test is shut down.
 
-        Also patches _resolve_model_path so the daemon embed thread
+        Also patches resolve_model_path so the daemon embed thread
         doesn't block on registry lookups for test .gguf files.
         """
         cfg.models_dir = models_dir
@@ -106,7 +106,7 @@ class TestLlamaCppProvider:
         cfg.subprocess_embed = False
         self._providers: list = []
         self._resolve_patcher = mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             side_effect=lambda m: models_dir / f"{m}.gguf",
         )
         self._resolve_patcher.start()
@@ -240,15 +240,15 @@ class TestLlamaCppProvider:
         provider = self._make_provider()
         # Override the class-level resolve mock to raise for this test
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             side_effect=ProviderError("not found"),
         ):
             assert provider.show_model("some-model") is None
 
-    def test_read_gguf_metadata(self, models_dir: Path) -> None:
+    def testread_gguf_metadata(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {
@@ -260,7 +260,7 @@ class TestLlamaCppProvider:
             "tokenizer.chat_template": "{% if messages %}...",
         }
         with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+            result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result["architecture"] == "qwen3"
         assert result["context_length"] == "32768"
         assert result["embedding_length"] == "4096"
@@ -268,106 +268,106 @@ class TestLlamaCppProvider:
         assert result["name"] == "Qwen3 8B"
         mock_llm.close.assert_called_once()
 
-    def test_read_gguf_metadata_empty(self, models_dir: Path) -> None:
+    def testread_gguf_metadata_empty(self, models_dir: Path) -> None:
         from unittest.mock import MagicMock, patch
 
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
 
         mock_llm = MagicMock()
         mock_llm.metadata = {}
         with patch("llama_cpp.Llama", return_value=mock_llm):
-            result = _read_gguf_metadata(models_dir / "test-model.gguf")
+            result = read_gguf_metadata(models_dir / "test-model.gguf")
         assert result is None
 
-    def test_load_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
+    def testload_llama_sets_n_batch_for_embedding(self, models_dir: Path) -> None:
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = None
         with (
             patch("llama_cpp.Llama") as mock_llama_cls,
             patch(
-                "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
                 return_value={"context_length": "2048"},
             ),
         ):
-            _load_llama(models_dir / "test-model.gguf", embedding=True)
+            load_llama(models_dir / "test-model.gguf", embedding=True)
             call_kwargs = mock_llama_cls.call_args[1]
             assert call_kwargs["n_batch"] == 2048
             assert call_kwargs["n_ubatch"] == 2048
             assert call_kwargs["embedding"] is True
 
-    def test_load_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
+    def testload_llama_no_n_batch_for_chat(self, models_dir: Path) -> None:
         from unittest.mock import patch
 
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         with patch("llama_cpp.Llama"):
-            _load_llama(models_dir / "test-model.gguf", embedding=False)
+            load_llama(models_dir / "test-model.gguf", embedding=False)
             import llama_cpp
 
             call_kwargs = llama_cpp.Llama.call_args[1]
             assert "n_batch" not in call_kwargs
 
-    def test_resolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
+    def testresolve_model_path_direct(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
             abs_model = tmp_path / "standalone.gguf"
             abs_model.write_bytes(b"standalone-model")
-            path = _resolve_model_path(str(abs_model))
+            path = resolve_model_path(str(abs_model))
             assert path == abs_model
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_via_registry(self, models_dir: Path) -> None:
+    def testresolve_model_path_via_registry(self, models_dir: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
-            path = _resolve_model_path("test-model")
+            path = resolve_model_path("test-model")
             assert path.exists()
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_registry_with_tag(self, models_dir: Path) -> None:
+    def testresolve_model_path_registry_with_tag(self, models_dir: Path) -> None:
         self._resolve_patcher.stop()
         try:
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
-            path = _resolve_model_path("test-model:latest")
+            path = resolve_model_path("test-model:latest")
             assert path.exists()
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_not_found(self, models_dir: Path) -> None:
+    def testresolve_model_path_not_found(self, models_dir: Path) -> None:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
             with pytest.raises(ProviderError, match="not found"):
-                _resolve_model_path("missing-model")
+                resolve_model_path("missing-model")
         finally:
             self._resolve_patcher.start()
 
-    def test_resolve_model_path_direct_not_exists(self, models_dir: Path, tmp_path: Path) -> None:
+    def testresolve_model_path_direct_not_exists(self, models_dir: Path, tmp_path: Path) -> None:
         self._resolve_patcher.stop()
         try:
             from lilbee.providers.base import ProviderError
-            from lilbee.providers.llama_cpp_provider import _resolve_model_path
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
 
             cfg.models_dir = models_dir
             # Use a real absolute path that doesn't exist (works on all platforms)
             fake_path = str(tmp_path / "nonexistent" / "model.gguf")
             with pytest.raises(ProviderError, match="Model file not found"):
-                _resolve_model_path(fake_path)
+                resolve_model_path(fake_path)
         finally:
             self._resolve_patcher.start()
 
@@ -676,7 +676,7 @@ class TestLitellmAvailable:
 
 
 class TestDispatchBatch:
-    def test_embed_one_at_a_time(self, mock_llama_cpp: mock.MagicMock) -> None:
+    def testembed_one_at_a_time(self, mock_llama_cpp: mock.MagicMock) -> None:
         """_dispatch_batch embeds one text at a time and resolves the future."""
         from concurrent.futures import Future
 
@@ -872,7 +872,7 @@ class TestReadMmprojProjectorType:
     def test_reads_projector_type(self, tmp_path: Path) -> None:
         import struct
 
-        from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
         # Build a minimal GGUF file with clip.projector_type = "ldp"
         buf = bytearray()
@@ -890,12 +890,12 @@ class TestReadMmprojProjectorType:
 
         gguf_file = tmp_path / "test_mmproj.gguf"
         gguf_file.write_bytes(bytes(buf))
-        assert _read_mmproj_projector_type(gguf_file) == "ldp"
+        assert read_mmproj_projector_type(gguf_file) == "ldp"
 
     def test_exception_returns_none(self) -> None:
-        from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
-        assert _read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
+        assert read_mmproj_projector_type(Path("/nonexistent/file.gguf")) is None
 
 
 class TestResolveVisionHandler:
@@ -907,7 +907,7 @@ class TestResolveVisionHandler:
         mock_llama_cpp.llama_chat_format.MiniCPMv26ChatHandler = mock.MagicMock()
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
             return_value="minicpmv",
         ):
             result = _resolve_vision_handler(Path("test.gguf"))
@@ -922,7 +922,7 @@ class TestResolveVisionHandler:
         sys.modules["llama_cpp.llama_chat_format"] = mock_llama_cpp.llama_chat_format
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
             return_value="totally_unknown_projector",
         ):
             result = _resolve_vision_handler(Path("test.gguf"))
@@ -940,7 +940,7 @@ class TestResolveVisionHandler:
         sys.modules["llama_cpp.llama_chat_format"] = fake_chat_format
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
             return_value="minicpmv",
         ):
             result = _resolve_vision_handler(Path("test.gguf"))
@@ -955,7 +955,7 @@ class TestResolveVisionHandler:
         sys.modules["llama_cpp.llama_chat_format"] = mock_llama_cpp.llama_chat_format
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_mmproj_projector_type",
+            "lilbee.providers.llama_cpp_provider.read_mmproj_projector_type",
             return_value=None,
         ):
             result = _resolve_vision_handler(Path("test.gguf"))
@@ -965,7 +965,7 @@ class TestResolveVisionHandler:
 
 class TestLoadVisionLlama:
     def test_with_mmproj_and_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+        from lilbee.providers.llama_cpp_provider import load_vision_llama
 
         handler_cls = mock.MagicMock()
         mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
@@ -975,12 +975,12 @@ class TestLoadVisionLlama:
             "lilbee.providers.llama_cpp_provider._resolve_vision_handler",
             return_value=handler_cls,
         ):
-            _load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 4096
 
     def test_without_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+        from lilbee.providers.llama_cpp_provider import load_vision_llama
 
         handler_cls = mock.MagicMock()
         mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
@@ -990,12 +990,12 @@ class TestLoadVisionLlama:
             "lilbee.providers.llama_cpp_provider._resolve_vision_handler",
             return_value=handler_cls,
         ):
-            _load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
+            load_vision_llama(Path("model.gguf"), mmproj_path=Path("mmproj.gguf"))
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 0
 
     def test_without_mmproj_calls_find(self, mock_llama_cpp: mock.MagicMock) -> None:
-        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+        from lilbee.providers.llama_cpp_provider import load_vision_llama
 
         handler_cls = mock.MagicMock()
         mock_llama_cpp.llama_chat_format.Llava15ChatHandler = handler_cls
@@ -1003,7 +1003,7 @@ class TestLoadVisionLlama:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._find_mmproj_for_model",
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
                 return_value=Path("found_mmproj.gguf"),
             ),
             mock.patch(
@@ -1011,7 +1011,7 @@ class TestLoadVisionLlama:
                 return_value=handler_cls,
             ),
         ):
-            _load_vision_llama(Path("model.gguf"))
+            load_vision_llama(Path("model.gguf"))
         assert mock_llama_cpp.Llama.called
 
 
@@ -1192,7 +1192,7 @@ class TestLlamaCppProviderMethods:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=Path("/models/test.gguf"),
             ),
             mock.patch(
@@ -1233,7 +1233,7 @@ class TestLlamaCppProviderMethods:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=Path("/models/override.gguf"),
             ),
             mock.patch(
@@ -1254,11 +1254,11 @@ class TestLlamaCppProviderMethods:
         mock_vis = mock.MagicMock()
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=Path("/models/vis.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._load_vision_llama",
+                "lilbee.providers.llama_cpp_provider.load_vision_llama",
                 return_value=mock_vis,
             ),
         ):
@@ -1278,7 +1278,7 @@ class TestLlamaCppProviderMethods:
         provider._vision_llm = existing_vis
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=vis_path,
         ):
             result = provider._get_vision_llm("vis-model")
@@ -1291,7 +1291,7 @@ class TestLlamaCppProviderMethods:
         cfg.embedding_model = "embed-model"
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=Path("/models/embed.gguf"),
         ):
             provider._get_embed_llm()
@@ -1374,16 +1374,16 @@ class TestLlamaCppProviderMethods:
             provider.pull_model("some-model")
 
     def test_show_model_returns_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """show_model returns metadata from _read_gguf_metadata."""
+        """show_model returns metadata from read_gguf_metadata."""
         provider = _make_provider_no_thread()
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=Path("/models/test.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+                "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
                 return_value={"architecture": "llama"},
             ),
         ):
@@ -1398,7 +1398,7 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             side_effect=ProviderError("not found"),
         ):
             result = provider.show_model("missing-model")
@@ -1554,7 +1554,7 @@ class TestEmbedWorker:
         provider._cache.load_model.return_value = mock_llm
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._resolve_model_path",
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value=Path("/test.gguf"),
         ):
             cfg.embedding_model = "test"
@@ -1576,11 +1576,11 @@ class TestEmbedWorker:
 
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
                 return_value=Path("/test.gguf"),
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._embed_one",
+                "lilbee.providers.llama_cpp_provider.embed_one",
                 side_effect=RuntimeError("embed broken"),
             ),
         ):
@@ -1649,8 +1649,8 @@ class TestLockedStreamIteratorException:
 
 class TestReadGgufMetadata:
     def test_reads_all_fields(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_read_gguf_metadata returns parsed fields."""
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+        """read_gguf_metadata returns parsed fields."""
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {
@@ -1663,7 +1663,7 @@ class TestReadGgufMetadata:
         }
         mock_llama_cpp.Llama.return_value = mock_llm
 
-        result = _read_gguf_metadata(Path("/test.gguf"))
+        result = read_gguf_metadata(Path("/test.gguf"))
 
         assert result == {
             "architecture": "llama",
@@ -1676,40 +1676,40 @@ class TestReadGgufMetadata:
         mock_llm.close.assert_called_once()
 
     def test_returns_none_for_empty_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_read_gguf_metadata returns None when no fields found."""
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+        """read_gguf_metadata returns None when no fields found."""
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = {}
         mock_llama_cpp.Llama.return_value = mock_llm
 
-        result = _read_gguf_metadata(Path("/test.gguf"))
+        result = read_gguf_metadata(Path("/test.gguf"))
         assert result is None
 
     def test_handles_none_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_read_gguf_metadata handles None metadata."""
-        from lilbee.providers.llama_cpp_provider import _read_gguf_metadata
+        """read_gguf_metadata handles None metadata."""
+        from lilbee.providers.llama_cpp_provider import read_gguf_metadata
 
         mock_llm = mock.MagicMock()
         mock_llm.metadata = None
         mock_llama_cpp.Llama.return_value = mock_llm
 
-        result = _read_gguf_metadata(Path("/test.gguf"))
+        result = read_gguf_metadata(Path("/test.gguf"))
         assert result is None
 
 
 class TestLoadLlama:
     def test_embedding_with_ctx0_reads_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_load_llama for embeddings reads context_length from GGUF metadata."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """load_llama for embeddings reads context_length from GGUF metadata."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = None
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value={"context_length": "2048"},
         ):
-            _load_llama(Path("/test.gguf"), embedding=True)
+            load_llama(Path("/test.gguf"), embedding=True)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_batch"] == 2048
@@ -1718,39 +1718,39 @@ class TestLoadLlama:
         assert call_kwargs["embedding"] is True
 
     def test_embedding_no_metadata(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_load_llama defaults to 2048 when no metadata."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """load_llama defaults to 2048 when no metadata."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = None
 
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._read_gguf_metadata",
+            "lilbee.providers.llama_cpp_provider.read_gguf_metadata",
             return_value=None,
         ):
-            _load_llama(Path("/test.gguf"), embedding=True)
+            load_llama(Path("/test.gguf"), embedding=True)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_batch"] == 2048
 
     def test_embedding_with_explicit_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_load_llama with explicit num_ctx uses it for n_batch."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """load_llama with explicit num_ctx uses it for n_batch."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = 4096
 
-        _load_llama(Path("/test.gguf"), embedding=True)
+        load_llama(Path("/test.gguf"), embedding=True)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["n_ctx"] == 4096
         assert call_kwargs["n_batch"] == 4096
 
     def test_chat_mode(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """_load_llama for chat does not set n_batch."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """load_llama for chat does not set n_batch."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = None
 
-        _load_llama(Path("/test.gguf"), embedding=False)
+        load_llama(Path("/test.gguf"), embedding=False)
 
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
@@ -1795,20 +1795,20 @@ class TestIsVisionModel:
 
 class TestFindMmprojForModel:
     def test_catalog_lookup(self) -> None:
-        """_find_mmproj_for_model uses catalog lookup first."""
-        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+        """find_mmproj_for_model uses catalog lookup first."""
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 
         with mock.patch(
             "lilbee.catalog.find_mmproj_file",
             return_value=Path("/found.gguf"),
         ):
-            result = _find_mmproj_for_model(Path("/models/model.gguf"))
+            result = find_mmproj_for_model(Path("/models/model.gguf"))
 
         assert result == Path("/found.gguf")
 
     def test_directory_fallback(self, tmp_path: Path) -> None:
-        """_find_mmproj_for_model falls back to directory scan."""
-        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+        """find_mmproj_for_model falls back to directory scan."""
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -1819,14 +1819,14 @@ class TestFindMmprojForModel:
             "lilbee.catalog.find_mmproj_file",
             return_value=None,
         ):
-            result = _find_mmproj_for_model(model_path)
+            result = find_mmproj_for_model(model_path)
 
         assert result == mmproj
 
     def test_raises_when_not_found(self, tmp_path: Path) -> None:
-        """_find_mmproj_for_model raises ProviderError when no mmproj found."""
+        """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 
         model_path = tmp_path / "model.gguf"
         model_path.touch()
@@ -1838,15 +1838,15 @@ class TestFindMmprojForModel:
             ),
             pytest.raises(ProviderError, match="No mmproj"),
         ):
-            _find_mmproj_for_model(model_path)
+            find_mmproj_for_model(model_path)
 
 
 class TestReadMmprojProjectorTypePartial:
     def test_returns_projector_type(self, tmp_path: Path) -> None:
-        """_read_mmproj_projector_type reads clip.projector_type from GGUF."""
+        """read_mmproj_projector_type reads clip.projector_type from GGUF."""
         import struct
 
-        from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
         # Build a minimal GGUF with one KV pair: clip.projector_type = "ldp"
         f = tmp_path / "test.gguf"
@@ -1863,14 +1863,14 @@ class TestReadMmprojProjectorTypePartial:
             fp.write(struct.pack("<Q", len(value)))
             fp.write(value)
 
-        result = _read_mmproj_projector_type(f)
+        result = read_mmproj_projector_type(f)
         assert result == "ldp"
 
     def test_skips_non_matching_keys(self, tmp_path: Path) -> None:
-        """_read_mmproj_projector_type skips unrelated keys."""
+        """read_mmproj_projector_type skips unrelated keys."""
         import struct
 
-        from lilbee.providers.llama_cpp_provider import _read_mmproj_projector_type
+        from lilbee.providers.llama_cpp_provider import read_mmproj_projector_type
 
         f = tmp_path / "test.gguf"
         with open(f, "wb") as fp:
@@ -1895,5 +1895,5 @@ class TestReadMmprojProjectorTypePartial:
             fp.write(struct.pack("<Q", len(val2)))
             fp.write(val2)
 
-        result = _read_mmproj_projector_type(f)
+        result = read_mmproj_projector_type(f)
         assert result == "resampler"

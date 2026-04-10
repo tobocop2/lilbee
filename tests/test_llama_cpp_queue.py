@@ -35,7 +35,7 @@ def models_dir(tmp_path: Path) -> Path:
     cfg.chat_model = "test-model"
     cfg.subprocess_embed = False
     patcher = mock.patch(
-        "lilbee.providers.llama_cpp_provider._resolve_model_path",
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
         side_effect=lambda m: models / f"{m}.gguf",
     )
     patcher.start()
@@ -374,11 +374,11 @@ class TestLockedStreamIteratorExceptionRelease:
 
 
 class TestVisionModel:
-    def test_load_vision_llama_creates_handler(
+    def testload_vision_llama_creates_handler(
         self, models_dir: Path, mock_llama_cpp: mock.MagicMock
     ) -> None:
-        """_load_vision_llama creates a Llama instance with a chat handler."""
-        from lilbee.providers.llama_cpp_provider import _load_vision_llama
+        """load_vision_llama creates a Llama instance with a chat handler."""
+        from lilbee.providers.llama_cpp_provider import load_vision_llama
 
         # Create mmproj file
         mmproj_path = models_dir / "test-mmproj-f16.gguf"
@@ -394,7 +394,7 @@ class TestVisionModel:
         sys.modules["llama_cpp.llama_chat_format"] = mock_chat_format
 
         try:
-            _load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
+            load_vision_llama(models_dir / "test-model.gguf", mmproj_path)
 
             mock_handler_cls.assert_called_once_with(clip_model_path=str(mmproj_path))
             # Llama called with chat_handler
@@ -404,20 +404,20 @@ class TestVisionModel:
             sys.modules.pop("llama_cpp.llama_chat_format", None)
 
     def test_find_mmproj_raises_when_missing(self, models_dir: Path) -> None:
-        """_find_mmproj_for_model raises ProviderError when no mmproj found."""
+        """find_mmproj_for_model raises ProviderError when no mmproj found."""
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 
         with pytest.raises(ProviderError, match="mmproj"):
-            _find_mmproj_for_model(models_dir / "test-model.gguf")
+            find_mmproj_for_model(models_dir / "test-model.gguf")
 
     def test_find_mmproj_finds_by_name(self, models_dir: Path) -> None:
-        """_find_mmproj_for_model finds mmproj files in the models directory."""
-        from lilbee.providers.llama_cpp_provider import _find_mmproj_for_model
+        """find_mmproj_for_model finds mmproj files in the models directory."""
+        from lilbee.providers.llama_cpp_provider import find_mmproj_for_model
 
         mmproj = models_dir / "model-mmproj-f16.gguf"
         mmproj.write_bytes(b"fake")
-        result = _find_mmproj_for_model(models_dir / "test-model.gguf")
+        result = find_mmproj_for_model(models_dir / "test-model.gguf")
         assert result == mmproj
 
     def test_is_vision_model_matches_config(self, models_dir: Path) -> None:
@@ -461,15 +461,15 @@ class TestVisionModel:
 
 class TestLoadLlamaNCtx:
     def test_default_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is None, _load_llama passes n_ctx=0 and n_batch from metadata."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """When num_ctx is None, load_llama passes n_ctx=0 and n_batch from metadata."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = None
         mock_llama_cpp.Llama.return_value.metadata = {
             "general.architecture": "nomic-bert",
             "nomic-bert.context_length": "2048",
         }
-        _load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", embedding=True)
 
         # Called twice: once for metadata (vocab_only), once for model
         assert mock_llama_cpp.Llama.call_count == 2
@@ -478,11 +478,11 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["n_batch"] == 2048
 
     def test_custom_n_ctx(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """When num_ctx is set, _load_llama uses it for n_ctx and n_batch."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """When num_ctx is set, load_llama uses it for n_ctx and n_batch."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         cfg.num_ctx = 8192
-        _load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", embedding=True)
 
         # No metadata read needed when n_ctx is explicit
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
@@ -490,16 +490,16 @@ class TestLoadLlamaNCtx:
         assert call_kwargs["n_batch"] == 8192
 
     def test_embedding_flag_passed(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
-        """_load_llama passes embedding flag correctly."""
-        from lilbee.providers.llama_cpp_provider import _load_llama
+        """load_llama passes embedding flag correctly."""
+        from lilbee.providers.llama_cpp_provider import load_llama
 
         mock_llama_cpp.Llama.return_value.metadata = {}
-        _load_llama(models_dir / "test-model.gguf", embedding=True)
+        load_llama(models_dir / "test-model.gguf", embedding=True)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is True
 
         mock_llama_cpp.Llama.reset_mock()
-        _load_llama(models_dir / "test-model.gguf", embedding=False)
+        load_llama(models_dir / "test-model.gguf", embedding=False)
         call_kwargs = mock_llama_cpp.Llama.call_args[1]
         assert call_kwargs["embedding"] is False
 

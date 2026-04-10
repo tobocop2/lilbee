@@ -7,6 +7,8 @@ implementation.
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from lilbee.chunk import chunk_text
 
 
@@ -85,7 +87,10 @@ class TestMarkdownChunking:
         assert chunk_text("", mime_type="text/markdown", heading_context=True) == []
 
 
+@pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:
+    """Tree-sitter code chunker tests — grouped to avoid fork-unsafe C parser collisions."""
+
     def test_python_function_extraction(self):
         from lilbee.code_chunker import chunk_code
 

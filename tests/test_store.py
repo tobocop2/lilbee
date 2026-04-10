@@ -422,16 +422,16 @@ class TestBm25Probe:
 
 
 class TestClearTable:
-    def test_clear_table_deletes_matching_rows(self, store):
+    def testclear_table_deletes_matching_rows(self, store):
         records = _make_records(n=1)
         store.add_chunks(records)
-        store._clear_table("chunks", "source = 'doc0.md'")
+        store.clear_table("chunks", "source = 'doc0.md'")
         table = store.open_table("chunks")
         remaining = table.to_arrow()
         assert len(remaining) == 0
 
-    def test_clear_table_nonexistent_table_is_noop(self, store):
-        store._clear_table("nonexistent", "source = 'doc0.md'")
+    def testclear_table_nonexistent_table_is_noop(self, store):
+        store.clear_table("nonexistent", "source = 'doc0.md'")
 
 
 class TestEscapeSqlString:
@@ -463,6 +463,32 @@ class TestChunkTypeField:
         store.add_chunks(records)
         results = store.get_chunks_by_source("doc0.md")
         assert results[0].chunk_type == "raw"
+
+    def test_get_chunks_by_source_fallback(self, store):
+        """Fallback path when table.search() raises (e.g. incompatible FTS builder)."""
+        from unittest.mock import patch
+
+        records = _make_records(n=2)
+        store.add_chunks(records)
+
+        # Make table.search() raise to trigger the Arrow fallback
+        original_open = store.open_table
+
+        def _broken_open(name):
+            table = original_open(name)
+            if table is None:
+                return None
+
+            def _raise_search(*args, **kwargs):
+                raise AttributeError("LanceFtsQueryBuilder has no attribute 'metric'")
+
+            table.search = _raise_search
+            return table
+
+        with patch.object(store, "open_table", side_effect=_broken_open):
+            results = store.get_chunks_by_source("doc0.md")
+        assert len(results) == 1
+        assert results[0].source == "doc0.md"
 
     def test_search_chunk_default_is_raw(self):
         chunk = SearchChunk(

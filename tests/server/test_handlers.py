@@ -1,7 +1,6 @@
 """Tests for the /api/add endpoint and SSE progress streaming."""
 
 import asyncio
-import json
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -13,11 +12,12 @@ from lilbee.config import cfg
 from lilbee.server import auth as _auth_mod
 from lilbee.server.handlers import MAX_ADD_FILES
 from lilbee.services import set_services
+from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 
 def _auth_headers() -> dict[str, str]:
     """Return Authorization header using the current session token."""
-    return {"Authorization": f"Bearer {_auth_mod._session_token}"}
+    return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
 
 
 @pytest.fixture(autouse=True)
@@ -62,23 +62,6 @@ def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks:
     result.chunks = chunks
     result.content = text
     return result
-
-
-def _parse_sse_events(body: bytes) -> list[tuple[str, dict]]:
-    """Parse raw SSE bytes into a list of (event_type, data_dict) tuples."""
-    events = []
-    current_event = ""
-    current_data = ""
-    for line in body.decode().split("\n"):
-        if line.startswith("event: "):
-            current_event = line[7:]
-        elif line.startswith("data: "):
-            current_data = line[6:]
-        elif line == "" and current_event:
-            events.append((current_event, json.loads(current_data)))
-            current_event = ""
-            current_data = ""
-    return events
 
 
 @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock, return_value=_make_kreuzberg_result())

@@ -7,8 +7,6 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
-# -- Slash command notifications -----------------------------------------------
-
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
 CMD_ADD_SUCCESS = "Added {count} file(s), syncing..."
@@ -52,24 +50,18 @@ SYNC_ALREADY_ACTIVE = "Sync in progress, please wait"
 EMBEDDING_SET = "Embedding model: {name}"
 CMD_CRAWL_UNAVAILABLE = "Install crawl4ai: pip install 'lilbee[crawler]'"
 EMBEDDING_MISSING = (
-    "No embedding model \u2014 search disabled. "
+    "No embedding model — search disabled. "
     "Run /models to install one, or: lilbee models install nomic-embed-text"
 )
-
-# -- Shared / cross-screen ----------------------------------------------------
-
 THEME_SET = "Theme: {name}"
 HEADING_OUR_PICKS = "Our picks"
 HEADING_INSTALLED = "Installed"
-
-# -- Catalog screen ------------------------------------------------------------
-
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_NO_TASK_BAR = "Cannot download: task bar not found"
 CATALOG_QUEUED_DOWNLOAD = "Queued download: {name}"
 CATALOG_INSTALLED_OK = "{name} installed"
-CATALOG_GATED_REPO = "{name} requires login \u2014 run /login or lilbee login"
+CATALOG_GATED_REPO = "{name} requires login — run /login or lilbee login"
 CATALOG_DOWNLOAD_FAILED = "{name}: download failed"
 CATALOG_SELECT_TO_DELETE = "Select a model to delete"
 CATALOG_NOT_INSTALLED = "{name} is not installed"
@@ -78,27 +70,18 @@ CATALOG_DELETED = "Deleted {name}"
 CATALOG_DELETE_FAILED = "Delete failed: {error}"
 CATALOG_NO_MATCH = "No models match your filters."
 CATALOG_FILTER_PLACEHOLDER = "Filter models... ( Esc to close)"
-CATALOG_VIEW_TOGGLE_GRID = "Press v for full list view \u00b7 / to search"
+CATALOG_VIEW_TOGGLE_GRID = "Press v for full list view · / to search"
 CATALOG_VIEW_TOGGLE_TABLE = "Press v for card view"
-CATALOG_BROWSE_MORE = "Browse more models \u2192"
-
-# -- Chat screen ---------------------------------------------------------------
-
+CATALOG_BROWSE_MORE = "Browse more models →"
 CHAT_INPUT_PLACEHOLDER = "Ask a question or type / for commands"
-CHAT_ONLY_BANNER = "Chat only \u2014 no document search. Press F5 to set up embedding model."
+CHAT_ONLY_BANNER = "Chat only — no document search. Press F5 to set up embedding model."
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
 CHAT_LOGIN_FAILED = "Login failed: {error}"
 CHAT_VERSION = "lilbee {version}"
 CHAT_RENDERING = "Rendering: {label}"
-
-# -- Settings screen -----------------------------------------------------------
-
 SETTINGS_READ_ONLY = "read-only"
 SETTINGS_INVALID_VALUE = "Invalid value: {error}"
-
-# -- Wiki screen ---------------------------------------------------------------
-
 WIKI_EMPTY_STATE = "No wiki pages found"
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
@@ -106,13 +89,7 @@ WIKI_TYPE_HEADINGS: dict[str, str] = {
     "summary": "Summaries",
     "concept": "Concepts",
 }
-
-# -- App -----------------------------------------------------------------------
-
 APP_CANCELLED = "Cancelled"
-
-# -- Setup wizard --------------------------------------------------------------
-
 SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
 SETUP_HEADING_CHAT = "Chat Models"
@@ -127,13 +104,10 @@ SETUP_SKIP_BUTTON = "Skip setup"
 SETUP_CONTINUE_NO_SEARCH = "Continue without search"
 SETUP_DOWNLOADING_N = "Downloading {name} ({current}/{total})..."
 SETUP_ALL_DONE = "All set!"
-SETUP_PARTIAL_FAIL = "Chat model installed. Embedding failed \u2014 install later from catalog."
+SETUP_PARTIAL_FAIL = "Chat model installed. Embedding failed — install later from catalog."
 SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
-
-# -- Status bar ----------------------------------------------------------------
-
 DEFAULT_VIEW = "Chat"
-_BASE_NAV_VIEWS: list[str] = [DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks"]
+_BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 
 
 def get_nav_views() -> list[str]:

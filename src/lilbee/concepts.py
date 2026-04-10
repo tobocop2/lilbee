@@ -68,15 +68,9 @@ def _ensure_spacy_model() -> Any:
         return spacy.load(model_name)
 
 
-_nlp: Any = None
-
-
 def _get_nlp() -> Any:
-    """Lazy-load and cache the spaCy model."""
-    global _nlp
-    if _nlp is None:
-        _nlp = _ensure_spacy_model()
-    return _nlp
+    """Lazy-load and cache the spaCy model (used only by ConceptGraph)."""
+    return _ensure_spacy_model()
 
 
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
@@ -177,6 +171,13 @@ class ConceptGraph:
     def __init__(self, config: Config, store: Store) -> None:
         self._config = config
         self._store = store
+        self._nlp: Any = None
+
+    def _ensure_nlp(self) -> Any:
+        """Lazy-load and cache the spaCy model."""
+        if self._nlp is None:
+            self._nlp = _get_nlp()
+        return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
         """Extract noun-phrase concepts from text via spaCy."""
@@ -184,8 +185,7 @@ class ConceptGraph:
             max_concepts = self._config.concept_max_per_chunk
         if not text.strip():
             return []
-        nlp = _get_nlp()
-        doc = nlp(text)
+        doc = self._ensure_nlp()(text)
         return _filter_noun_chunks(doc, max_concepts)
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
@@ -193,7 +193,7 @@ class ConceptGraph:
         if not texts:
             return []
         max_concepts = self._config.concept_max_per_chunk
-        nlp = _get_nlp()
+        nlp = self._ensure_nlp()
         return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
 
     def build_from_chunks(
@@ -233,15 +233,17 @@ class ConceptGraph:
 
         with write_lock():
             db = self._store.get_db()
+            # Always create tables so get_graph() returns True even when
+            # concept extraction yields no results for the current corpus.
+            nodes_tbl = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
+            edges_tbl = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
+            cc_tbl = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
             if node_records:
-                table = ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
-                table.add(node_records)
+                nodes_tbl.add(node_records)
             if edge_records:
-                table = ensure_table(db, CONCEPT_EDGES_TABLE, _concept_edges_schema())
-                table.add(edge_records)
+                edges_tbl.add(edge_records)
             if chunk_concept_records:
-                table = ensure_table(db, CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-                table.add(chunk_concept_records)
+                cc_tbl.add(chunk_concept_records)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
         """Boost search results whose chunks overlap with query concepts."""
@@ -358,7 +360,7 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        self._store._clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
+        self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
         if node_records:
             with write_lock():
                 db = self._store.get_db()
@@ -412,5 +414,4 @@ class ConceptGraph:
 
     def reset_nlp_cache(self) -> None:
         """Clear the spaCy model cache. For testing only."""
-        global _nlp
-        _nlp = None
+        self._nlp = None

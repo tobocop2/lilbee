@@ -29,10 +29,10 @@ def client():
     import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
-    auth_mod._session_token = None  # disable auth for route-level tests
+    auth_mod.session_manager.token = None  # disable auth for route-level tests
     app = create_app()
     yield TestClient(app)
-    auth_mod._session_token = None
+    auth_mod.session_manager.token = None
 
 
 async def mock_async_gen(*events):
@@ -563,21 +563,21 @@ class TestAuthMiddleware:
     async def test_options_method_passes_through(self, middleware):
         import lilbee.server.auth as auth_mod
 
-        old = auth_mod._session_token
-        auth_mod._session_token = "secret"
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "secret"
         try:
             scope = {"type": "http", "method": "OPTIONS", "headers": []}
             await middleware(scope, AsyncMock(), AsyncMock())
             middleware.app.assert_awaited_once()
         finally:
-            auth_mod._session_token = old
+            auth_mod.session_manager.token = old
 
     @pytest.mark.asyncio
     async def test_read_only_handler_passes_through(self, middleware):
         import lilbee.server.auth as auth_mod
 
-        old = auth_mod._session_token
-        auth_mod._session_token = "secret"
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "secret"
         try:
             handler = mock.MagicMock()
             handler.fn._lilbee_read_only = True
@@ -585,14 +585,14 @@ class TestAuthMiddleware:
             await middleware(scope, AsyncMock(), AsyncMock())
             middleware.app.assert_awaited_once()
         finally:
-            auth_mod._session_token = old
+            auth_mod.session_manager.token = old
 
     @pytest.mark.asyncio
     async def test_invalid_token_raises(self, middleware):
         import lilbee.server.auth as auth_mod
 
-        old = auth_mod._session_token
-        auth_mod._session_token = "valid_token"
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = "valid_token"
         try:
             scope = {
                 "type": "http",
@@ -602,15 +602,15 @@ class TestAuthMiddleware:
             with pytest.raises(NotAuthorizedException):
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
-            auth_mod._session_token = old
+            auth_mod.session_manager.token = old
 
     @pytest.mark.asyncio
     async def test_empty_token_raises(self, middleware):
-        """When _session_token is empty string, requests are denied."""
+        """When session token is empty string, requests are denied."""
         import lilbee.server.auth as auth_mod
 
-        old = auth_mod._session_token
-        auth_mod._session_token = ""
+        old = auth_mod.session_manager.token
+        auth_mod.session_manager.token = ""
         try:
             scope = {
                 "type": "http",
@@ -620,7 +620,7 @@ class TestAuthMiddleware:
             with pytest.raises(NotAuthorizedException, match="not initialized"):
                 await middleware(scope, AsyncMock(), AsyncMock())
         finally:
-            auth_mod._session_token = old
+            auth_mod.session_manager.token = old
 
 
 class TestAuthRequiredRoutes:
@@ -631,10 +631,10 @@ class TestAuthRequiredRoutes:
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
-        auth_mod._session_token = "test-secret"
+        auth_mod.session_manager.token = "test-secret"
         app = create_app()
         yield TestClient(app)
-        auth_mod._session_token = None
+        auth_mod.session_manager.token = None
 
     def test_patch_config_requires_auth(self, auth_client):
         resp = auth_client.patch("/api/config", json={"temperature": 0.5})

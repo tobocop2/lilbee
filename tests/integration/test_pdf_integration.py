@@ -165,9 +165,9 @@ def _vision_model_available() -> bool:
     if not cfg.vision_model:
         return False
     try:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        _resolve_model_path(cfg.vision_model)
+        resolve_model_path(cfg.vision_model)
         return True
     except Exception:
         return False

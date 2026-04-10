@@ -70,10 +70,10 @@ class TestChatFlow:
 
             for _ in range(600):
                 await pilot.pause()
-                if not app.screen._streaming:
+                if not app.screen.streaming:
                     break
 
-            assert not app.screen._streaming, "Streaming did not complete in time"
+            assert not app.screen.streaming, "Streaming did not complete in time"
 
             # Wait for all workers to finish before app teardown
             # (llama-cpp segfaults if model is freed while worker thread reads from it)
@@ -260,3 +260,96 @@ class TestCrawlAndSync:
         finally:
             server.clear()
             server.stop()
+
+
+class _WikiApp(App[None]):
+    """Minimal app that pushes WikiScreen for integration tests."""
+
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
+        self.push_screen(WikiScreen())
+
+
+class TestWikiScreen:
+    """WikiScreen integration tests — verify page listing and content display."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_wiki(self, tmp_path):
+        """Create wiki pages on disk for the screen to discover."""
+        wiki_root = tmp_path / "wiki"
+        summaries = wiki_root / "summaries"
+        summaries.mkdir(parents=True)
+
+        (summaries / "test-doc.md").write_text(
+            "---\n"
+            "generated_by: test-model\n"
+            "generated_at: 2026-01-01T00:00:00\n"
+            'sources: ["doc.md"]\n'
+            "faithfulness_score: 0.85\n"
+            "---\n\n"
+            "# Test Document Summary\n\n"
+            "This is a test wiki page with real content.\n",
+            encoding="utf-8",
+        )
+        (summaries / "second-doc.md").write_text(
+            "---\n"
+            "generated_by: test-model\n"
+            "generated_at: 2026-01-02T00:00:00\n"
+            'sources: ["other.md"]\n'
+            "faithfulness_score: 0.92\n"
+            "---\n\n"
+            "# Second Document\n\n"
+            "Another wiki page for testing.\n",
+            encoding="utf-8",
+        )
+
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.data_dir = tmp_path
+        cfg.data_root = tmp_path
+        yield
+
+    async def test_wiki_screen_shows_generated_pages(self):
+        """WikiScreen sidebar lists generated pages."""
+        from textual.widgets import OptionList
+
+        app = _WikiApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            option_list = app.screen.query_one("#wiki-page-list", OptionList)
+            # Should have at least the two pages plus heading(s)
+            assert option_list.option_count >= 2
+            # Check that page titles appear (options include headings and pages)
+            labels = [str(o.prompt) for o in option_list._options]
+            assert any("Test Doc" in label for label in labels), (
+                f"Test doc not in sidebar: {labels}"
+            )
+            assert any("Second Doc" in label for label in labels), (
+                f"Second doc not in sidebar: {labels}"
+            )
+
+    async def test_wiki_screen_displays_content(self):
+        """Selecting a page renders its markdown content."""
+        from textual.widgets import Markdown, OptionList
+
+        app = _WikiApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            option_list = app.screen.query_one("#wiki-page-list", OptionList)
+            # Find the first non-disabled option (skip heading)
+            for i, opt in enumerate(option_list._options):
+                if not opt.disabled:
+                    option_list.highlighted = i
+                    await pilot.press("enter")
+                    break
+            await pilot.pause()
+            content = app.screen.query_one("#wiki-content", Markdown)
+            # The markdown widget should have rendered the page content
+            rendered = str(content._markdown)
+            assert len(rendered) > 0, "Wiki content area is empty after selecting a page"
