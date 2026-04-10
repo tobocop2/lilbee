@@ -91,6 +91,37 @@ async def test_bracket_keys_cycle_all_screens():
             )
 
 
+async def test_bracket_keys_work_with_chat_input_focused():
+    """Pressing ] with the chat input focused (insert mode) should switch
+    screens instead of being typed as a literal character into the input.
+
+    Regression: Textual's default Input.check_consume_key returns True for all
+    printable chars, so without a NavAwareInput subclass the focused chat input
+    swallows [ and ] as text instead of letting them bubble to the app-level
+    nav bindings.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+
+        chat_input = app.screen.query_one("#chat-input", Input)
+        assert chat_input.has_focus, "Chat input should auto-focus on mount"
+        assert chat_input.value == ""
+
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CatalogScreen), (
+            f"Expected CatalogScreen after ], got {type(app.screen).__name__}"
+        )
+        # The original chat_input reference must still be unchanged — the ]
+        # keypress must not have been typed into it before the screen switched.
+        assert chat_input.value == "", (
+            f"] was typed into chat input instead of navigating (value={chat_input.value!r})"
+        )
+
+
 async def test_bracket_keys_cycle_backward():
     """Press [ to go backward through views."""
     app = LilbeeApp()

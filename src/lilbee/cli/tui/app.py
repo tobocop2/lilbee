@@ -98,8 +98,29 @@ class LilbeeApp(App[None]):
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
-        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        # priority=True is required here even though NavAwareInput's
+        # check_consume_key already lets [ and ] bubble past the consume
+        # check. Textual's focused Input still handles printable keys in
+        # its own _on_key path before a non-priority ancestor binding can
+        # fire; marking these bindings priority makes them dispatch before
+        # the Input event handler runs. Removing either NavAwareInput OR
+        # priority=True re-breaks the screen nav (verified via test).
+        Binding(
+            "left_square_bracket",
+            "nav_prev",
+            "Prev",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
+        Binding(
+            "right_square_bracket",
+            "nav_next",
+            "Next",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 

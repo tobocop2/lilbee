@@ -19,6 +19,7 @@ from textual.widgets import Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ class WikiScreen(Screen[None]):
 
         yield Horizontal(
             Vertical(
-                Input(
+                NavAwareInput(
                     placeholder=msg.WIKI_SEARCH_PLACEHOLDER,
                     id="wiki-search",
                 ),
