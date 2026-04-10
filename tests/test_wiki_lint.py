@@ -185,7 +185,7 @@ class TestLintAll:
         )
         write_wiki_page(
             tmp_path,
-            "concepts",
+            "synthesis",
             "b",
             "Another unmarked claim.\n",
         )

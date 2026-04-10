@@ -41,6 +41,7 @@ from lilbee.progress import (
     shared_progress,
 )
 from lilbee.security import validate_path_within
+from lilbee.services import get_services
 from lilbee.vision import extract_pdf_vision
 
 log = logging.getLogger(__name__)
@@ -223,7 +224,6 @@ def ocr_extraction_config() -> ExtractionConfig:
 @contextlib.contextmanager
 def suppress_fd_stderr() -> Generator[None, None, None]:
     """Suppress stderr at the file-descriptor level.
-
     Catches subprocess output (e.g. Tesseract's "Detected N diacritics")
     that ``contextlib.redirect_stderr`` cannot intercept.
     """
@@ -264,7 +264,6 @@ async def _vision_fallback(
     quiet: bool = False,
 ) -> list[ChunkRecord]:
     """OCR a scanned PDF via vision model, chunk, and embed."""
-
     page_texts = await asyncio.to_thread(
         extract_pdf_vision,
         path,
@@ -281,7 +280,6 @@ async def _vision_fallback(
         return []
 
     texts = [c for _, c in all_chunks]
-    from lilbee.services import get_services
 
     vectors = await asyncio.to_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
@@ -313,7 +311,6 @@ async def _handle_scanned_pdf_fallback(
     on_progress: DetailedProgressCallback,
 ) -> list[ChunkRecord] | ExtractionResult:
     """Handle scanned PDF fallback chain: Tesseract OCR then vision model.
-
     Returns chunk records if a fallback produced final results, or an
     updated ExtractionResult when Tesseract OCR succeeded (so the
     caller can proceed with normal chunking/embedding).
@@ -351,7 +348,6 @@ async def ingest_document(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document, embed, return records.
-
     When *force_vision* is True (CLI ``--vision``) or a vision model is
     configured, Tesseract OCR is skipped and we go straight to the vision
     model for scanned PDFs.
@@ -380,8 +376,6 @@ async def ingest_document(
 
     if not result.chunks:
         return []
-
-    from lilbee.services import get_services
 
     texts = [chunk.content for chunk in result.chunks]
     vectors = await asyncio.to_thread(
@@ -414,8 +408,6 @@ def ingest_code_sync(
     if not code_chunks:
         return []
 
-    from lilbee.services import get_services
-
     texts = [cc.chunk for cc in code_chunks]
     embedder = get_services().embedder
     vectors = embedder.embed_batch(texts, source=source_name, on_progress=on_progress)
@@ -442,7 +434,6 @@ async def ingest_markdown(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Chunk a markdown file with heading context prepended to each chunk.
-
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
     prepended for better retrieval context.
     """
@@ -453,7 +444,6 @@ async def ingest_markdown(
     texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
-    from lilbee.services import get_services
 
     vectors = await asyncio.to_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
@@ -483,8 +473,6 @@ async def _rebuild_concept_clusters() -> None:
     if not concepts_available():
         return
     try:
-        from lilbee.services import get_services
-
         cg = get_services().concepts
         if not cg.get_graph():
             return
@@ -502,8 +490,6 @@ async def _index_concepts(records: list[ChunkRecord], source_name: str) -> None:
     if not concepts_available():
         return
     try:
-        from lilbee.services import get_services
-
         cg = get_services().concepts
         texts = [r["chunk"] for r in records]
         concept_lists = await asyncio.to_thread(cg.extract_concepts_batch, texts)
@@ -537,7 +523,6 @@ async def _ingest_file(
             quiet=quiet,
             on_progress=on_progress,
         )
-    from lilbee.services import get_services
 
     store = get_services().store
     chunk_count = await asyncio.to_thread(store.add_chunks, cast(list[dict], records))
@@ -554,13 +539,10 @@ async def sync(
     cancel: threading.Event | None = None,
 ) -> SyncResult:
     """Sync documents/ with the vector store.
-
     Returns summary dict with keys: added, updated, removed, unchanged, failed.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
     When *cancel* is set, processing stops between files without data loss.
     """
-    from lilbee.services import get_services
-
     _store = get_services().store
 
     if force_rebuild:
@@ -654,6 +636,16 @@ async def sync(
 # Limit concurrent ingestion to avoid overwhelming I/O
 _MAX_CONCURRENT = os.cpu_count() or 4
 
+# Concurrent.futures raises this exact RuntimeError message when submitting to
+# a shutdown executor (Python 3.11+). There is no dedicated exception class to
+# catch, so callers have to string-match the message.
+_EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
+
+
+def _is_executor_shutdown(exc: BaseException) -> bool:
+    """True if ``exc`` is the concurrent.futures shutdown-race RuntimeError."""
+    return isinstance(exc, RuntimeError) and _EXECUTOR_SHUTDOWN_MSG in str(exc)
+
 
 async def ingest_batch(
     files_to_process: list[FileToProcess],
@@ -667,7 +659,6 @@ async def ingest_batch(
     cancel: threading.Event | None = None,
 ) -> None:
     """Ingest a batch of files, optionally showing a Rich progress bar.
-
     When *needs_cleanup* is True, old chunks are deleted immediately before
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.
@@ -693,8 +684,6 @@ async def ingest_batch(
             )
             try:
                 if needs_cleanup:
-                    from lilbee.services import get_services
-
                     get_services().store.delete_by_source(name)
                 chunk_count = await _ingest_file(
                     path,
@@ -712,9 +701,12 @@ async def ingest_batch(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if isinstance(
-                    exc, RuntimeError
-                ) and "cannot schedule new futures after shutdown" in str(exc):
+                # During shutdown, worker pools raise RuntimeError from
+                # submit(). Prefer to treat these as cancellation rather than
+                # as ingest failures. Detect via the cancel flag (source of
+                # truth) or the executor's well-known shutdown message as a
+                # fallback when cancel was set after the submit race.
+                if (cancel and cancel.is_set()) or _is_executor_shutdown(exc):
                     raise asyncio.CancelledError from exc
                 on_progress(
                     EventType.FILE_DONE,
@@ -812,7 +804,6 @@ def _apply_result(
         _discard_from_list(added, result.name)
         _discard_from_list(updated, result.name)
         return
-    from lilbee.services import get_services
 
     fhash = result.file_hash or file_hash(result.path)
     get_services().store.upsert_source(result.name, fhash, result.chunk_count)

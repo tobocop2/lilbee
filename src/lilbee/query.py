@@ -19,9 +19,95 @@ from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
-from lilbee.text import tokenize_unique as _tokenize_query
 
 log = logging.getLogger(__name__)
+
+# English stop words used ONLY for query-side token overlap checks. If we
+# let "the" and "and" count toward the overlap between a user's question
+# and a candidate chunk, every chunk looks similar to every query. This is
+# a deliberate, scoped heuristic; it is not used anywhere else in the code
+# base because nothing else does bag-of-words overlap.
+_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "about",
+        "between",
+        "through",
+        "after",
+        "before",
+        "above",
+        "below",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "that",
+        "this",
+        "it",
+        "its",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+    }
+)
+
+
+def _tokenize_query(text: str) -> set[str]:
+    """Lowercase whitespace tokens, drop stopwords and single characters."""
+    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
 
 
 class ChatMessage(TypedDict):
@@ -52,7 +138,6 @@ def _format_citation(citation: CitationRecord) -> str:
 
 def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
     """Format a search result as a source citation line.
-
     For wiki chunks, shows the wiki page path followed by indented transitive citations.
     """
     if result.chunk_type == "wiki" and citations:
@@ -76,7 +161,6 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
 
 def _source_slug(source_name: str) -> str:
     """Derive the wiki filename stem from a raw source name.
-
     Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
     """
     return source_name.replace("/", "--").rsplit(".", 1)[0]
@@ -84,7 +168,6 @@ def _source_slug(source_name: str) -> str:
 
 def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
     """Build a set of raw source names that have wiki coverage.
-
     Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
     chunks have sources like "subdir/doc.md". Match by comparing the wiki
     file stem against the slug derived from the raw source name.
@@ -149,7 +232,6 @@ def diversify_sources(
     results: list[SearchChunk], max_per_source: int | None = None
 ) -> list[SearchChunk]:
     """Cap results per source document to ensure diversity.
-
     Source diversity filtering: Zhai 2008, "Statistical Language Models for
     Information Retrieval" -- caps per-source representation to prevent
     any single document from dominating results.
@@ -197,7 +279,6 @@ class AskResult(BaseModel):
 
 class Searcher:
     """RAG search pipeline -- embed, search, expand, rerank, generate.
-
     All search and answer operations go through this class.
     Constructed with injected dependencies via the Services container.
     """
@@ -320,7 +401,6 @@ class Searcher:
 
     def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
         """Hypothetical Document Embedding search.
-
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
         embeds it, and uses the embedding to search for real documents.
@@ -336,6 +416,7 @@ class Searcher:
             hyde_vec = self._embedder.embed(response.strip())
             return self._store.search(hyde_vec, top_k=top_k, query_text=None)
         except Exception:
+            log.debug("HyDE search failed", exc_info=True)
             return []
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
@@ -361,7 +442,6 @@ class Searcher:
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
     ) -> list[SearchChunk]:
         """Select context chunks covering distinct query terms.
-
         Greedy set-cover: pick chunks that add the most uncovered query
         terms until the budget is exhausted or all terms are covered.
         """
@@ -383,7 +463,10 @@ class Searcher:
             best_gain = -1
             for pos, idx in enumerate(remaining_indices):
                 gain = len((chunk_tokens[idx] & query_terms) - covered)
-                if gain > best_gain or (gain == best_gain and pos < best_pos):
+                # First-best-wins on ties: ``pos`` increases monotonically so a
+                # tie-break on smaller ``pos`` never fires, and the earliest
+                # candidate with the current best gain is always kept.
+                if gain > best_gain:
                     best_gain = gain
                     best_pos = pos
             if best_gain <= 0 and selected:
@@ -395,7 +478,6 @@ class Searcher:
 
     def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
-
         Returns up to top_k*2 candidates for downstream filtering.
         """
         if top_k == 0:

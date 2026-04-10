@@ -44,7 +44,6 @@ DEFAULT_TAG = "latest"
 
 def _validate_ref_segment(segment: str, label: str) -> str:
     """Validate that a model ref segment contains only safe characters.
-
     Allows alphanumeric, hyphens, dots, underscores, slashes (namespaced models),
     and spaces (display names). Rejects path traversal sequences.
     """
@@ -113,7 +112,6 @@ def _sha256_file(path: Path) -> str:
 
 class ModelRegistry:
     """Content-addressable model storage with manifest resolution.
-
     Now references HF cache directly instead of copying files.
     """
 
@@ -123,7 +121,6 @@ class ModelRegistry:
 
     def resolve(self, ref: str | ModelRef) -> Path:
         """Resolve model name to file path in HF cache.
-
         Raises ``KeyError`` if the model is not installed.
         """
         r = _coerce_ref(ref)
@@ -158,7 +155,6 @@ class ModelRegistry:
 
     def install(self, ref: ModelRef, source_path: Path, manifest: ModelManifest) -> Path:
         """Write manifest and ensure blob exists in cache.
-
         If the source file is already at the expected cache location, just writes
         the manifest.  Otherwise copies the source into the HF-style cache tree
         so that ``resolve()`` can find it afterward.
@@ -192,7 +188,6 @@ class ModelRegistry:
 
     def write_latest_alias(self, ref: ModelRef) -> None:
         """Write a :latest manifest that mirrors the given ref.
-
         Call after install() so the blob hash is already recorded.
         """
         manifest = self._read_manifest(ref)
@@ -245,7 +240,6 @@ class ModelRegistry:
 
     def migrate_legacy(self) -> int:
         """Scan for .gguf files in root dir and register them.
-
         On first run, finds existing .gguf files, moves them to HF cache
         structure, and creates manifests. Returns the number of models migrated.
         """
@@ -339,7 +333,6 @@ class CatalogMatch(NamedTuple):
 
 def _match_catalog_entry(filename: str) -> CatalogMatch:
     """Match a .gguf filename to a catalog entry.
-
     Falls back to deriving a name from the filename itself.
     """
     from lilbee.catalog import FEATURED_ALL

@@ -675,30 +675,17 @@ class TestGenerateSynthesisPage:
 class _FakeClusterer:
     """Test double implementing the SourceClusterer protocol."""
 
-    def __init__(
-        self,
-        clusters: list,
-        is_available: bool = True,
-    ) -> None:
+    def __init__(self, clusters: list) -> None:
         self._clusters = clusters
-        self._available = is_available
 
     def available(self) -> bool:
-        return self._available
+        return True
 
     def get_clusters(self, min_sources: int = 3):
         return list(self._clusters)
 
 
 class TestGenerateSynthesisPages:
-    def test_unavailable_clusterer_returns_empty(self, tmp_path: Path):
-        store = _mock_store()
-        provider = MagicMock()
-        clusterer = _FakeClusterer([], is_available=False)
-        result = generate_synthesis_pages(provider, store, clusterer)
-        assert result == []
-        provider.chat.assert_not_called()
-
     def test_no_clusters_returns_empty(self, tmp_path: Path):
         store = _mock_store()
         provider = MagicMock()

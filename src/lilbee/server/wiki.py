@@ -54,7 +54,6 @@ def _find_page(slug: str) -> Path | None:
 @read_only
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
-
     If wiki/index.md exists, regenerate it first to ensure freshness,
     then build the page list from disk.
     """
@@ -142,7 +141,6 @@ async def wiki_lint_route() -> WikiLintResult:
 @post("/api/wiki/generate/{source:path}")
 async def wiki_generate_route(source: str) -> Stream:
     """Trigger wiki generation for a source document (SSE stream).
-
     Emits ``progress`` events for each pipeline stage and a final ``done``
     event with the generation result.
     """

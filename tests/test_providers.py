@@ -96,7 +96,6 @@ class TestLlamaCppProvider:
     @pytest.fixture(autouse=True)
     def _shutdown_provider(self, models_dir: Path) -> None:
         """Ensure any LlamaCppProvider created in a test is shut down.
-
         Also patches resolve_model_path so the daemon embed thread
         doesn't block on registry lookups for test .gguf files.
         """
@@ -714,7 +713,6 @@ class TestDispatchBatch:
 class TestEmbedSubprocessFallback:
     def test_oserror_disables_subprocess(self, mock_llama_cpp: mock.MagicMock) -> None:
         """OSError from subprocess worker falls back to in-process embedding."""
-
         from lilbee.providers.llama_cpp_provider import LlamaCppProvider, _EmbedRequest
 
         provider = LlamaCppProvider()
@@ -1021,8 +1019,8 @@ class TestLoadVisionLlama:
 
 
 class TestWorkerProcessNoneResponses:
-    def test_send_and_receive_embed_none_retries(self) -> None:
-        from lilbee.providers.worker_process import EmbedRequest, EmbedResponse, WorkerProcess
+    def test_embed_round_trip_none_retries(self) -> None:
+        from lilbee.providers.worker_process import EmbedResponse, WorkerProcess
 
         wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
@@ -1031,21 +1029,20 @@ class TestWorkerProcessNoneResponses:
         wp._started = True
         wp._next_id = 0
 
-        req = EmbedRequest(texts=["hello"], model="test", request_id=1)
-        # First call returns None (worker died), retry returns valid response
+        # First put_and_get returns None (worker died), retry returns valid response.
         with (
             mock.patch.object(
                 wp,
-                "_get_response",
+                "_put_and_get",
                 side_effect=[None, EmbedResponse(vectors=[[0.1]], request_id=1)],
             ),
             mock.patch.object(wp, "restart"),
         ):
-            result = wp._send_and_receive_embed(req)
+            result = wp.embed(["hello"], model="test")
         assert result == [[0.1]]
 
-    def test_retry_embed_none_raises(self) -> None:
-        from lilbee.providers.worker_process import EmbedRequest, WorkerProcess
+    def test_embed_round_trip_retry_still_none_raises(self) -> None:
+        from lilbee.providers.worker_process import WorkerProcess
 
         wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
@@ -1053,16 +1050,15 @@ class TestWorkerProcessNoneResponses:
         wp._process = mock.MagicMock()
         wp._started = True
 
-        req = EmbedRequest(texts=["hello"], model="test", request_id=1)
         with (
-            mock.patch.object(wp, "_get_response", return_value=None),
+            mock.patch.object(wp, "_put_and_get", return_value=None),
             mock.patch.object(wp, "restart"),
             pytest.raises(RuntimeError, match="crashed again"),
         ):
-            wp._retry_embed(req)
+            wp.embed(["hello"], model="test")
 
-    def test_send_and_receive_vision_none_retries(self) -> None:
-        from lilbee.providers.worker_process import VisionRequest, VisionResponse, WorkerProcess
+    def test_vision_round_trip_none_retries(self) -> None:
+        from lilbee.providers.worker_process import VisionResponse, WorkerProcess
 
         wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
@@ -1071,20 +1067,19 @@ class TestWorkerProcessNoneResponses:
         wp._started = True
         wp._next_id = 0
 
-        req = VisionRequest(png_bytes=b"\x89PNG", model="vis", prompt="", request_id=1)
         with (
             mock.patch.object(
                 wp,
-                "_get_response",
+                "_put_and_get",
                 side_effect=[None, VisionResponse(text="ocr result", request_id=1)],
             ),
             mock.patch.object(wp, "restart"),
         ):
-            result = wp._send_and_receive_vision(req)
+            result = wp.vision_ocr(b"\x89PNG", model="vis")
         assert result == "ocr result"
 
-    def test_retry_vision_none_raises(self) -> None:
-        from lilbee.providers.worker_process import VisionRequest, WorkerProcess
+    def test_vision_round_trip_retry_still_none_raises(self) -> None:
+        from lilbee.providers.worker_process import WorkerProcess
 
         wp = WorkerProcess()
         wp._request_queue = mock.MagicMock()
@@ -1092,13 +1087,12 @@ class TestWorkerProcessNoneResponses:
         wp._process = mock.MagicMock()
         wp._started = True
 
-        req = VisionRequest(png_bytes=b"\x89PNG", model="vis", prompt="", request_id=1)
         with (
-            mock.patch.object(wp, "_get_response", return_value=None),
+            mock.patch.object(wp, "_put_and_get", return_value=None),
             mock.patch.object(wp, "restart"),
             pytest.raises(RuntimeError, match="crashed again"),
         ):
-            wp._retry_vision(req)
+            wp.vision_ocr(b"\x89PNG", model="vis")
 
     def test_get_response_dead_worker_returns_none(self) -> None:
         from lilbee.providers.worker_process import WorkerProcess
@@ -1274,8 +1268,8 @@ class TestLlamaCppProviderMethods:
         provider = _make_provider_no_thread()
         vis_path = tmp_path / "models" / "vis.gguf"
         existing_vis = mock.MagicMock()
-        existing_vis._model_path = str(vis_path)
         provider._vision_llm = existing_vis
+        provider._vision_model_path = str(vis_path)
 
         with mock.patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -1421,7 +1415,9 @@ class TestLlamaCppProviderMethods:
         mock_services = mock.MagicMock()
         mock_services.registry = mock_registry
 
-        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.get_services", return_value=mock_services
+        ):
             result = provider.list_models()
 
         assert result == ["alpha:latest", "beta:latest"]

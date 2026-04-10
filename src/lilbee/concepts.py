@@ -127,7 +127,6 @@ def _compute_pmi(
     total_chunks: int,
 ) -> dict[tuple[str, str], float]:
     """Compute PPMI (Positive PMI) weights for concept co-occurrence pairs.
-
     PPMI = max(0, log2(P(a,b) / (P(a) * P(b)))).
     Based on Church & Hanks 1990, "Word Association Norms, Mutual Information,
     and Lexicography." Negative values are clamped to zero to discard
@@ -148,7 +147,6 @@ def _leiden_partition(
     edge_rows: list[dict[str, Any]],
 ) -> tuple[dict[str, int], dict[str, int]]:
     """Run Leiden clustering on edge rows. Returns (partition, degree_map).
-
     Uses graspologic-native's Rust implementation (Traag et al. 2019,
     "From Louvain to Leiden: guaranteeing well-connected communities").
     """
@@ -313,6 +311,7 @@ class ConceptGraph:
                         .to_list()
                     )
                 except Exception:
+                    log.debug("concept expand failed for %s", node, exc_info=True)
                     continue
                 for row in rows:
                     neighbor = row["target"] if row["source"] == node else row["source"]
@@ -370,7 +369,6 @@ class ConceptGraph:
 
     def get_cluster_sources(self, min_sources: int = 3) -> dict[int, set[str]]:
         """Return clusters that span at least *min_sources* distinct sources.
-
         Joins concept_nodes (concept -> cluster_id) with chunk_concepts
         (concept -> chunk_source) to find which document sources each
         cluster touches.

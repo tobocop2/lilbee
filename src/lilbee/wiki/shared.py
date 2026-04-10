@@ -11,27 +11,16 @@ import yaml
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
-# Filesystem subdirectory names inside ``wiki/``. ``SYNTHESIS_SUBDIR`` is the
-# canonical name for cross-source pages; ``LEGACY_SYNTHESIS_SUBDIR`` is read
-# for back-compat when older deployments stored pages under ``concepts/``.
 SUMMARIES_SUBDIR = "summaries"
 SYNTHESIS_SUBDIR = "synthesis"
-LEGACY_SYNTHESIS_SUBDIR = "concepts"
 DRAFTS_SUBDIR = "drafts"
 ARCHIVE_SUBDIR = "archive"
 
-# Subdirs scanned when listing or linting wiki content. Both synthesis
-# directories are included so existing ``concepts/`` data keeps working.
-WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
-    LEGACY_SYNTHESIS_SUBDIR,
-)
+WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR)
 
 SUBDIR_TO_TYPE: dict[str, str] = {
     SUMMARIES_SUBDIR: "summary",
     SYNTHESIS_SUBDIR: "synthesis",
-    LEGACY_SYNTHESIS_SUBDIR: "synthesis",
     DRAFTS_SUBDIR: "draft",
     ARCHIVE_SUBDIR: "archive",
 }
@@ -53,7 +42,6 @@ class PageTarget:
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
     """Extract YAML frontmatter fields from a wiki page string.
-
     Uses line-by-line scanning so ``---`` inside YAML content is not
     mistaken for the closing delimiter.
     """
@@ -76,7 +64,6 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
 
 def make_slug(label: str) -> str:
     """Turn a concept label into a filesystem-safe slug.
-
     Lowercases, replaces spaces with hyphens, slashes with double-hyphens,
     and strips non-alphanumeric characters (except hyphens).
     """

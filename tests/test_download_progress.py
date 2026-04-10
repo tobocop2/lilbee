@@ -137,7 +137,6 @@ class TestCallbackProgressBarIncrementalUpdates:
 
 class TestCallbackProgressBarLockSafety:
     """Verify _CallbackProgressBar survives environments where stderr lacks a real fd.
-
     Vanilla ``tqdm.auto.tqdm`` acquires ``self._lock`` inside the ``disable=True``
     branch (std.py:988). That lock is lazily constructed as a multiprocessing
     lock, whose init raises ``ValueError`` when ``sys.stderr.fileno() == -1``
@@ -160,7 +159,6 @@ class TestCallbackProgressBarLockSafety:
 
     def test_init_survives_bad_stderr_fileno(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Constructing the bar under a fake stderr with fileno=-1 does not raise.
-
         Simulates the Textual/Jupyter environment where tqdm's default
         multiprocessing lock init would otherwise crash with ValueError.
         """
@@ -189,7 +187,6 @@ class TestCallbackProgressBarLockSafety:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Progress callbacks continue to fire in a broken-stderr environment.
-
         Regression: before the lock override, the ``_CallbackProgressBar``
         init crashed under a bad stderr, HF swapped in a plain ``_SafeTqdm``
         (no callback wiring), and the progress bar stayed stuck at 0%.

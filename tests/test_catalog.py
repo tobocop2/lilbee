@@ -1119,16 +1119,17 @@ class TestVisionMmprojFiles:
         result = download_model(entry)
         assert result.exists()
 
-    def test_download_mmproj_already_exists(
+    def test_download_mmproj_uses_cache_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When mmproj already exists in models_dir, skip re-download."""
+        """mmproj downloads go through the HF cache tree, not a flat local_dir.
+        Regression guard: previously _download_mmproj used ``local_dir=`` while
+        the main download used ``cache_dir=``, producing two incompatible
+        storage layouts under ``cfg.models_dir``.
+        """
         monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
         entry = FEATURED_VISION[0]
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
-
-        mmproj_file = tmp_path / "model-mmproj-f16.gguf"
-        mmproj_file.write_bytes(b"existing mmproj")
 
         download_calls: list[dict] = []
 
@@ -1142,33 +1143,12 @@ class TestVisionMmprojFiles:
         )
 
         download_model(entry)
-        first_mmproj_calls = sum(1 for c in download_calls if "mmproj" in c.get("filename", ""))
 
-        download_model(entry)
-        second_mmproj_calls = sum(
-            1 for c in download_calls[first_mmproj_calls:] if "mmproj" in c.get("filename", "")
-        )
-
-        assert second_mmproj_calls == 0
-
-    def test_download_mmproj_already_exists_invokes_progress(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When mmproj is already on disk, on_progress receives the cached size."""
-        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
-        entry = FEATURED_VISION[0]
-        monkeypatch.setattr(
-            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
-        )
-        mmproj_file = tmp_path / "model-mmproj-f16.gguf"
-        payload = b"existing mmproj bytes"
-        mmproj_file.write_bytes(payload)
-
-        events: list[tuple[int, int]] = []
-
-        result = catalog._download_mmproj(entry, on_progress=lambda d, t: events.append((d, t)))
-        assert result == mmproj_file
-        assert events == [(len(payload), len(payload))]
+        mmproj_calls = [c for c in download_calls if "mmproj" in c.get("filename", "")]
+        assert len(mmproj_calls) == 1
+        assert "cache_dir" in mmproj_calls[0]
+        assert "local_dir" not in mmproj_calls[0]
+        assert mmproj_calls[0]["cache_dir"] == str(tmp_path)
 
 
 class TestVisionMmprojFallback:
@@ -1209,6 +1189,40 @@ class TestVisionMmprojFallback:
         filenames = [c["filename"] for c in download_calls]
         assert "custom-Q4_K_M.gguf" in filenames
         assert "custom-mmproj-f16.gguf" in filenames
+
+    def test_mmproj_cache_hit_fires_progress_callback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When HF returns a cached mmproj (no tqdm invocation) the callback still fires.
+        Regression guard for the ``not tracker.was_used`` cache-hit branch in
+        ``_download_mmproj``: without it, callers see 0% progress for the
+        mmproj leg even though the file is fully present on disk.
+        """
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(catalog, "resolve_filename", lambda e: "model-Q4_K_M.gguf")
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+        )
+
+        # Pre-stage a cached blob so hf_hub_download resolves to it without
+        # invoking the tqdm callback (simulating HF's cache-hit path).
+        cached_blob = tmp_path / "cached-blob.bin"
+        cached_blob.write_bytes(b"mmproj-payload-42")
+
+        def fake_download(**kwargs: Any) -> str:
+            if "mmproj" in kwargs.get("filename", ""):
+                return str(cached_blob)
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+
+        calls: list[tuple[int, int]] = []
+        download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+
+        # The mmproj leg should have fired at least one callback at 100%.
+        cached_size = cached_blob.stat().st_size
+        assert (cached_size, cached_size) in calls
 
 
 class TestFindMmprojFile:

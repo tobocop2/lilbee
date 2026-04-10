@@ -16,7 +16,6 @@ from lilbee.config import (
 
 def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     """Return os.environ with all LILBEE_* and OLLAMA_HOST vars removed.
-
     If tmp_path is given, sets LILBEE_DATA to it so no existing config.toml
     is accidentally picked up by pydantic-settings.
     """

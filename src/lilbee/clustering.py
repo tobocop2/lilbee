@@ -1,12 +1,10 @@
 """Source clustering abstraction for wiki synthesis pages.
 
-The wiki synthesis layer groups related documents into clusters and generates
-one cross-source page per cluster. Multiple clustering strategies are possible
-(embedding-space, concept graph, LLM topic extraction, etc). This module
-defines the :class:`SourceClusterer` protocol and the :class:`Clusterer`
-facade: the facade is the single class the services container constructs,
-and it picks the right backend from ``config.wiki_clusterer`` so callers
-never need to know which implementation they got.
+Defines the :class:`SourceClusterer` protocol, the :class:`ClustererBackend`
+enum of known backend identifiers, and the :class:`Clusterer` facade. The
+facade is the single class the services container constructs and it picks
+the right backend from ``config.wiki_clusterer`` so callers never need to
+know which implementation they got.
 """
 
 from __future__ import annotations
@@ -15,14 +13,13 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from lilbee.config import ClustererBackend
+
 if TYPE_CHECKING:
     from lilbee.config import Config
     from lilbee.store import Store
 
 log = logging.getLogger(__name__)
-
-CLUSTERER_EMBEDDING = "embedding"
-CLUSTERER_CONCEPTS = "concepts"
 
 
 @dataclass(frozen=True)
@@ -55,15 +52,15 @@ class SourceClusterer(Protocol):
 def _select_backend(config: Config, store: Store) -> SourceClusterer:
     """Pick a backend based on ``config.wiki_clusterer`` with safe fallback.
 
-    Requesting the concept-graph backend without the ``[graph]`` extra or
-    without a built graph logs a warning and falls back to the embedding
-    clusterer so wiki synthesis keeps working.
+    Concrete backends are imported inside the function to break a hard
+    circular dependency: ``clustering_embedding`` re-exports
+    :class:`SourceCluster` from this module, so importing it at module
+    level here would fail during package initialization.
     """
     from lilbee.clustering_embedding import EmbeddingClusterer
+    from lilbee.concepts import ConceptGraphClusterer
 
-    if config.wiki_clusterer == CLUSTERER_CONCEPTS:
-        from lilbee.concepts import ConceptGraphClusterer
-
+    if config.wiki_clusterer == ClustererBackend.CONCEPTS:
         graph_clusterer = ConceptGraphClusterer(config, store)
         if graph_clusterer.available():
             return graph_clusterer
@@ -76,14 +73,7 @@ def _select_backend(config: Config, store: Store) -> SourceClusterer:
 
 
 class Clusterer:
-    """Wiki synthesis clusterer facade.
-
-    Instantiate once per :class:`Services` container. The constructor
-    selects a :class:`SourceClusterer` backend from ``config.wiki_clusterer``
-    and delegates ``available`` and ``get_clusters`` to it, so the rest of
-    the codebase treats clustering as a single uniform service rather than
-    a backend-aware abstraction.
-    """
+    """Wiki synthesis clusterer facade with backend selection."""
 
     def __init__(self, config: Config, store: Store) -> None:
         self._backend: SourceClusterer = _select_backend(config, store)
@@ -94,9 +84,7 @@ class Clusterer:
         return self._backend
 
     def available(self) -> bool:
-        """Delegate to the selected backend."""
         return self._backend.available()
 
     def get_clusters(self, min_sources: int = 3) -> list[SourceCluster]:
-        """Delegate to the selected backend."""
         return self._backend.get_clusters(min_sources=min_sources)

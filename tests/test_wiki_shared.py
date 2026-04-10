@@ -7,19 +7,11 @@ from lilbee.wiki.shared import SUBDIR_TO_TYPE, make_slug, parse_frontmatter
 
 class TestSubdirToType:
     def test_all_expected_keys(self):
-        assert set(SUBDIR_TO_TYPE) == {
-            "summaries",
-            "synthesis",
-            "concepts",
-            "drafts",
-            "archive",
-        }
+        assert set(SUBDIR_TO_TYPE) == {"summaries", "synthesis", "drafts", "archive"}
 
     def test_values(self):
         assert SUBDIR_TO_TYPE["summaries"] == "summary"
         assert SUBDIR_TO_TYPE["synthesis"] == "synthesis"
-        # concepts/ is the legacy directory name and maps to the same type
-        assert SUBDIR_TO_TYPE["concepts"] == "synthesis"
         assert SUBDIR_TO_TYPE["drafts"] == "draft"
         assert SUBDIR_TO_TYPE["archive"] == "archive"
 

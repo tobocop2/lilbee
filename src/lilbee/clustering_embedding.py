@@ -42,7 +42,6 @@ import numpy as np
 from lilbee.clustering import SourceCluster
 from lilbee.config import CHUNKS_TABLE, Config
 from lilbee.store import Store
-from lilbee.text import tokenize
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +74,29 @@ _SHORT_CHUNK_TOKEN_CAP = 20
 # kNN auto-scaling bounds. Formula: clamp(round(log2(N)+2), _MIN_K, _MAX_K).
 _MIN_K = 5
 _MAX_K = 20
+
+# Minimum token length for TF-IDF labeling. Shorter tokens are mostly
+# articles, prepositions, and single letters — noise that inflates term
+# counts without adding topic signal. Three characters keeps useful
+# acronyms (api, xml, sql).
+_MIN_TF_TOKEN_LEN = 3
+
+
+def _tokenize_for_tf(text: str) -> list[str]:
+    """Lowercase alphanumeric tokens for TF-IDF scoring.
+
+    Deliberately has NO stopword list: common words like "the" or "and"
+    get an IDF near zero (they appear in almost every chunk) so TF-IDF
+    filters them automatically. A hand-curated English stoplist would
+    add maintenance burden and break on non-English corpora for no
+    additional quality.
+    """
+    result: list[str] = []
+    for raw in text.lower().split():
+        word = "".join(ch for ch in raw if ch.isalnum())
+        if len(word) >= _MIN_TF_TOKEN_LEN:
+            result.append(word)
+    return result
 
 
 @dataclass
@@ -113,7 +135,7 @@ def _parse_chunk_row(
         source=source,
         chunk_index=chunk_index,
         text=chunk_text,
-        tokens=tokenize(chunk_text),
+        tokens=_tokenize_for_tf(chunk_text),
     )
     return record, vector
 

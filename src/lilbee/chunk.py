@@ -15,7 +15,6 @@ def chunk_text(
     heading_context: bool = False,
 ) -> list[str]:
     """Split text into chunks.
-
     Args:
         text: The text to chunk.
         mime_type: MIME type hint for chunker selection.

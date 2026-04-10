@@ -13,7 +13,6 @@ from lilbee.models import FEATURED_STAR
 @dataclass
 class TableRow:
     """A row in the catalog DataTable with source metadata.
-
     ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
     ``ref`` is the canonical name:tag identifier used for config persistence
     (e.g. "qwen3:0.6b").  When ``ref`` is empty, fall back to ``name``.
@@ -68,7 +67,7 @@ def format_size_gb(size_gb: float) -> str:
     return f"{size_gb:.1f} GB"
 
 
-def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
+def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
     """Convert a ModelVariant + family to a TableRow."""
     prefix = "* " if v.recommended else ""
     return TableRow(
@@ -107,7 +106,7 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
     )
 
 
-def _remote_to_row(rm: RemoteModel) -> TableRow:
+def remote_to_row(rm: RemoteModel) -> TableRow:
     """Convert a RemoteModel to a TableRow."""
     return TableRow(
         name=rm.name,
@@ -131,7 +130,7 @@ def _extract_quant_from_filename(filename: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def _row_display_name(row: TableRow) -> str:
+def row_display_name(row: TableRow) -> str:
     """Build the display name with featured/installed markers."""
     parts: list[str] = []
     if row.featured:

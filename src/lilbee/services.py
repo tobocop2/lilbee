@@ -41,7 +41,15 @@ _svc: Services | None = None
 
 
 def get_services() -> Services:
-    """Return the cached Services singleton, creating on first call."""
+    """Return the cached Services singleton, creating on first call.
+
+    Service modules are imported inside the function to keep CLI
+    startup fast: ``services`` is on every CLI import path, and the
+    concrete service modules transitively pull in heavy libraries
+    (llama-cpp, lancedb, sentence-transformers). Deferring the loads
+    until first ``get_services()`` call makes ``lilbee --help`` and
+    TUI splash render in milliseconds instead of seconds.
+    """
     global _svc
     if _svc is not None:
         return _svc

@@ -31,7 +31,6 @@ class ViewTabs(Widget):
         width: auto;
     }
     """
-
     active_view: reactive[str] = reactive(msg.DEFAULT_VIEW)
     mode_text: reactive[str] = reactive("")
 

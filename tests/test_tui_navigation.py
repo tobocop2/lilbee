@@ -44,11 +44,16 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_services():
+    from lilbee.services import set_services
+
     mock_svc = mock.MagicMock()
     mock_svc.provider.list_models.return_value = []
     mock_svc.searcher._embedder.embedding_available.return_value = True
-    with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+    set_services(mock_svc)
+    try:
         yield mock_svc
+    finally:
+        set_services(None)
 
 
 @pytest.fixture(autouse=True)

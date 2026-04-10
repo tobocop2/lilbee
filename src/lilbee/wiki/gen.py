@@ -66,7 +66,6 @@ def _parse_faithfulness_score(response: str) -> float:
 
 def _extract_excerpt(source_ref: str) -> str:
     """Extract the quoted excerpt from a citation source_ref string.
-
     e.g. 'doc.md, excerpt: "Python supports typing."' → 'Python supports typing.'
     """
     marker = 'excerpt: "'
@@ -127,7 +126,6 @@ def _resolve_citations(
     chunks: list[SearchChunk],
 ) -> list[CitationRecord]:
     """Resolve parsed citation refs to CitationRecord objects.
-
     Searches for each citation's excerpt in the source chunks to find
     the best matching location (page/line numbers).
     """
@@ -411,7 +409,6 @@ def generate_summary_page(
     on_progress: WikiProgressCallback | None = None,
 ) -> Path | None:
     """Generate a wiki summary page for a source document.
-
     Returns the path to the generated page, or None on failure.
     The page goes to wiki/summaries/ if it passes the quality gate,
     or wiki/drafts/ if it fails.
@@ -456,7 +453,6 @@ def _resolve_multi_source_citations(
     chunks_by_source: dict[str, list[SearchChunk]],
 ) -> list[CitationRecord]:
     """Resolve citations from a synthesis page that cites multiple sources.
-
     Each citation's source_ref is matched against the source list to
     determine which source document it references.
     """
@@ -525,7 +521,6 @@ def _generate_synthesis_page(
     config: Config,
 ) -> Path | None:
     """Generate a single synthesis page for a concept cluster.
-
     Returns the path to the generated page, or None on failure.
     """
     all_chunks = [c for cs in chunks_by_source.values() for c in cs]
@@ -592,23 +587,9 @@ def generate_synthesis_pages(
     clusterer: SourceClusterer,
     config: Config | None = None,
 ) -> list[Path]:
-    """Generate synthesis pages for source clusters spanning 3+ documents.
-
-    Uses the injected :class:`SourceClusterer` to find qualifying clusters,
-    gathers chunks from all cluster sources, and generates a synthesis
-    page for each. Returns paths to all generated pages (synthesis/ or
-    drafts/). When the clusterer is unavailable, logs a notice and
-    returns an empty list.
-    """
+    """Generate synthesis pages for source clusters spanning 3+ documents."""
     if config is None:
         config = cfg
-
-    if not clusterer.available():
-        log.info(
-            "Wiki synthesis skipped: no clusterer available. "
-            "For concept-based clustering install lilbee[graph]."
-        )
-        return []
 
     clusters = clusterer.get_clusters(min_sources=MIN_CLUSTER_SOURCES)
     if not clusters:

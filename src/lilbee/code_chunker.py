@@ -120,7 +120,6 @@ def _extract_symbols(result: Any, source_text: str) -> list[SymbolInfo]:
 
 def chunk_code(file_path: Path) -> list[CodeChunk]:
     """Chunk a source file using tree-sitter-language-pack's process() API.
-
     Extracts structural symbols (functions, classes) and builds enriched
     chunks with metadata headers. Falls back to token-based chunking
     if the language isn't supported or parsing fails.

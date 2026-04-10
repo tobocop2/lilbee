@@ -17,6 +17,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.events import ModelChanged
 from lilbee.config import cfg
+from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
 
@@ -139,7 +140,6 @@ class LilbeeApp(App[None]):
 
     async def action_quit(self) -> None:
         """Context-aware Ctrl+C: cancel active task > cancel stream > quit.
-
         On second Ctrl+C (within 2s), force-exits via os._exit to handle
         cases where the GIL is held by native code.
         """
@@ -168,8 +168,6 @@ class LilbeeApp(App[None]):
     def _force_quit(self) -> None:
         """Force-exit when normal quit is blocked (e.g. GIL held by native code)."""
         import os
-
-        from lilbee.services import reset_services
 
         with contextlib.suppress(Exception):
             reset_services()

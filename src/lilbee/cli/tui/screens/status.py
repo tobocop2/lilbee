@@ -16,6 +16,7 @@ from textual.widgets import Collapsible, DataTable, Static
 from lilbee.cli.tui.pill import pill
 from lilbee.config import cfg
 from lilbee.model_info import ModelArchInfo, get_model_architecture
+from lilbee.services import get_services
 from lilbee.store import SourceRecord
 
 log = logging.getLogger(__name__)
@@ -124,8 +125,6 @@ class StatusScreen(Screen[None]):
     def _fetch_sources(self) -> list[SourceRecord]:
         """Fetch sources once from the store."""
         try:
-            from lilbee.services import get_services
-
             return get_services().store.get_sources()
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)

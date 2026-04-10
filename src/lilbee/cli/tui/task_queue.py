@@ -50,7 +50,6 @@ class Task:
 
 class TaskQueue:
     """Per-type concurrent task queue.
-
     Thread-safe. Each task type (download, sync, crawl, etc.) has its own
     independent FIFO queue. One task per type can be active simultaneously,
     so a download does not block a sync.
@@ -188,7 +187,6 @@ class TaskQueue:
 
     def advance(self, task_type: str | None = None) -> Task | None:
         """Pop the next queued task and mark it active.
-
         If *task_type* is given, only advance that type's queue.
         If omitted, advance any type that has no active task.
         Returns None if nothing can advance.

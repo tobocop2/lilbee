@@ -25,7 +25,6 @@ def _preserve_models_dir():
 @pytest.fixture(scope="session")
 def rag_pipeline(tmp_path_factory):
     """Set up a real RAG pipeline with downloaded models and test documents.
-
     Session-scoped: downloads models once, creates documents, runs sync,
     yields pipeline data, then restores config.
     """
@@ -86,7 +85,6 @@ def rag_pipeline(tmp_path_factory):
 @pytest.fixture(scope="session")
 def wiki_pipeline(tmp_path_factory):
     """Set up a real pipeline with wiki enabled.
-
     Session-scoped: downloads models once, creates documents + wiki dir,
     runs sync, yields pipeline data, then restores config.
     """

@@ -48,11 +48,7 @@ def parse_source_count(text: str) -> int:
 
 
 def update_wiki_index(config: Config | None = None) -> Path:
-    """Scan summaries/ and synthesis/ directories and write wiki/index.md.
-
-    Older ``concepts/`` directories are still read for back-compat so any
-    legacy pages remain listed in the index.
-    """
+    """Scan summaries/ and synthesis/ directories and write wiki/index.md."""
     if config is None:
         config = cfg
     root = _wiki_root(config)
@@ -85,7 +81,6 @@ def append_wiki_log(
     config: Config | None = None,
 ) -> Path:
     """Append an entry to wiki/log.md.
-
     Format: ## [YYYY-MM-DD] action | details
 
     Returns the path to the log file.

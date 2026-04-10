@@ -19,6 +19,7 @@ from lilbee.progress import (
     noop_callback,
     shared_progress,
 )
+from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +93,6 @@ def _png_to_data_url(png_bytes: bytes) -> str:
 
 def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
     """Build OpenAI-compatible messages with image content for vision models.
-
     Uses the multipart content format expected by llama-cpp-python's
     vision chat handlers (Llava15ChatHandler, etc.).
     """
@@ -109,15 +109,12 @@ def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
     """Send a page image to a vision model and return extracted text.
-
     If the provider exposes a ``vision_ocr`` method (subprocess-isolated),
     that path is preferred. Otherwise falls back to ``provider.chat``.
     The *timeout* parameter (seconds) caps wall-clock time for the provider
     call using ``concurrent.futures``.  ``None`` or ``0`` means no limit.
     """
     try:
-        from lilbee.services import get_services
-
         provider = get_services().provider
 
         # vision_ocr is optional — only llama-cpp provider implements it
@@ -181,7 +178,6 @@ def extract_pdf_vision(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[PageText]:
     """Extract text from a PDF using vision model OCR.
-
     Returns a list of (1-based page number, text) tuples for pages that
     produced non-empty text. Fires ``extract`` progress events per page.
     """

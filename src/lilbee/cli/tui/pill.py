@@ -11,7 +11,6 @@ PILL_RIGHT = "▐"  # right half block
 
 def pill(text: Content | str, background: str, foreground: str) -> Content:
     """Format text as a pill badge with rounded half-block ends.
-
     Args:
         text: Pill contents.
         background: Background color (Textual color string, e.g. "$primary").

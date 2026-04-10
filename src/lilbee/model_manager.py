@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.security import validate_path_within
 
@@ -100,7 +101,6 @@ class ModelManager:
         on_progress: Callable[[dict], None] | None = None,
     ) -> Path | None:
         """Pull/download model to specified source.
-
         Returns the Path for native downloads, None for litellm-backed pulls.
         """
         if source is ModelSource.NATIVE:
@@ -237,7 +237,6 @@ def _classify_remote_task(name: str, family: str) -> str:
 
 def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
     """Discover and classify all models from the litellm backend by task.
-
     Uses /api/tags family metadata for embedding detection and
     name patterns for vision detection.
     """
@@ -278,8 +277,6 @@ class _ManagerHolder:
 
     def get(self) -> ModelManager:
         if self._instance is None:
-            from lilbee.config import cfg
-
             self._instance = ModelManager(cfg.models_dir, cfg.litellm_base_url)
         return self._instance
 

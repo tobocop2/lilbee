@@ -32,7 +32,6 @@ SCANNED_PDF = FIXTURES_DIR / "scanned_maintenance.pdf"
 @pytest.fixture(scope="module")
 def pdf_pipeline(tmp_path_factory):
     """Set up a pipeline with the scanned PDF fixture.
-
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
     Uses llama-cpp with real models so the full RAG pipeline works.
     """

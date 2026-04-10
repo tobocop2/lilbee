@@ -1,12 +1,4 @@
-"""Tests for the source clustering protocol and the embedding clusterer.
-
-Private helpers in ``clustering_embedding`` (the ``_load_chunk_records`` /
-``_filter_sources`` / ``_label_community`` / ``_corpus_document_frequency``
-/ ``_build_clusters`` / ``_warn_if_undersegmented`` family) are exercised
-through ``EmbeddingClusterer.get_clusters`` on synthetic corpora rather
-than imported directly, so the test file only depends on the module's
-public surface.
-"""
+"""Tests for the source clustering protocol and the embedding clusterer."""
 
 from __future__ import annotations
 
@@ -17,8 +9,6 @@ import numpy as np
 import pytest
 
 from lilbee.clustering import (
-    CLUSTERER_CONCEPTS,
-    CLUSTERER_EMBEDDING,
     Clusterer,
     SourceCluster,
     SourceClusterer,
@@ -26,14 +16,14 @@ from lilbee.clustering import (
 from lilbee.clustering_embedding import (
     ChunkRecord,
     EmbeddingClusterer,
+    _tokenize_for_tf,
     auto_k,
     communities_by_label,
     label_propagation,
     mutual_knn,
     normalize_rows,
 )
-from lilbee.config import cfg
-from lilbee.text import tokenize
+from lilbee.config import ClustererBackend, cfg
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +40,7 @@ def _record(source: str, chunk_index: int = 0, text: str = "") -> ChunkRecord:
         source=source,
         chunk_index=chunk_index,
         text=text,
-        tokens=tokenize(text),
+        tokens=_tokenize_for_tf(text),
     )
 
 
@@ -83,11 +73,6 @@ def _store_with_rows(rows: list[dict[str, object]]) -> MagicMock:
     return store
 
 
-# ---------------------------------------------------------------------------
-# Protocol + data types
-# ---------------------------------------------------------------------------
-
-
 class TestSourceCluster:
     def test_immutable_dataclass(self):
         cluster = SourceCluster(cluster_id="x", label="topic", sources=frozenset({"a"}))
@@ -103,11 +88,6 @@ class TestSourceCluster:
                 return []
 
         assert isinstance(Dummy(), SourceClusterer)
-
-
-# ---------------------------------------------------------------------------
-# Public algorithmic primitives
-# ---------------------------------------------------------------------------
 
 
 class TestAutoK:
@@ -246,17 +226,6 @@ class TestChunkRecord:
         assert record.source == "doc.md"
         assert record.chunk_index == 0
         assert record.tokens == ["python", "typing"]
-
-
-# ---------------------------------------------------------------------------
-# EmbeddingClusterer integration tests
-#
-# These tests exercise the private orchestration helpers
-# (_load_chunk_records, _parse_chunk_row, _build_clusters, _filter_sources,
-# _label_community, _corpus_document_frequency, _source_totals,
-# _warn_if_undersegmented) through the public ``get_clusters`` entry point
-# on synthetic corpora.
-# ---------------------------------------------------------------------------
 
 
 class TestEmbeddingClustererAvailable:
@@ -522,19 +491,9 @@ class TestEmbeddingClustererGetClusters:
         assert any("covers" in rec.message for rec in caplog.records)
 
 
-# ---------------------------------------------------------------------------
-# Clusterer facade
-# ---------------------------------------------------------------------------
-
-
 class TestClustererFacade:
     def test_default_backend_is_embedding(self):
-        cfg.wiki_clusterer = CLUSTERER_EMBEDDING
-        clusterer = Clusterer(cfg, MagicMock())
-        assert isinstance(clusterer.backend, EmbeddingClusterer)
-
-    def test_unknown_choice_falls_back_to_embedding(self):
-        cfg.wiki_clusterer = "no-such-backend"
+        cfg.wiki_clusterer = ClustererBackend.EMBEDDING
         clusterer = Clusterer(cfg, MagicMock())
         assert isinstance(clusterer.backend, EmbeddingClusterer)
 
@@ -543,7 +502,7 @@ class TestClustererFacade:
     ):
         from lilbee.concepts import ConceptGraphClusterer
 
-        cfg.wiki_clusterer = CLUSTERER_CONCEPTS
+        cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: True)
         clusterer = Clusterer(cfg, MagicMock())
         assert isinstance(clusterer.backend, ConceptGraphClusterer)
@@ -555,7 +514,7 @@ class TestClustererFacade:
     ):
         from lilbee.concepts import ConceptGraphClusterer
 
-        cfg.wiki_clusterer = CLUSTERER_CONCEPTS
+        cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
         with caplog.at_level(logging.WARNING, logger="lilbee.clustering"):
             clusterer = Clusterer(cfg, MagicMock())
@@ -576,11 +535,6 @@ class TestClustererFacade:
         assert clusterer.get_clusters(min_sources=3)[0].cluster_id == "x"
         fake_backend.get_clusters.assert_called_once_with(min_sources=3)
         assert clusterer.backend is fake_backend
-
-
-# ---------------------------------------------------------------------------
-# Concept graph adapter smoke tests
-# ---------------------------------------------------------------------------
 
 
 class TestConceptGraphClusterer:

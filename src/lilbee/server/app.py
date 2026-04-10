@@ -56,6 +56,7 @@ from lilbee.server.wiki import (
     wiki_prune_route,
     wiki_read_route,
 )
+from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,6 @@ log = logging.getLogger(__name__)
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
     session_manager.generate()
-    from lilbee.services import get_services
 
     try:
         get_services()  # pre-load all services (provider, embedder, etc.)
