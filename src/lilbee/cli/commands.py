@@ -43,6 +43,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
+from lilbee.services import get_services
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
@@ -187,7 +188,6 @@ def search(
 ) -> None:
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.services import get_services
 
     results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
     cleaned = [clean_result(r) for r in results]
@@ -431,8 +431,6 @@ def chunks(
     """Show chunks a document was split into (useful for debugging retrieval)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.services import get_services
-
     store = get_services().store
     known = {s["filename"] for s in store.get_sources()}
     if source not in known:
@@ -483,8 +481,6 @@ def remove(
     """Remove documents from the knowledge base by source name."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    from lilbee.services import get_services
-
     result = get_services().store.remove_documents(
         names, delete_files=delete_file, documents_dir=cfg.documents_dir
     )
@@ -531,7 +527,6 @@ def ask(
     )
 
     from lilbee.models import ensure_chat_model
-    from lilbee.services import get_services
 
     ensure_chat_model()
     get_services().embedder.validate_model()
@@ -758,8 +753,6 @@ def topics(
         )
         raise SystemExit(1)
 
-    from lilbee.services import get_services
-
     if not get_services().concepts.get_graph():
         if cfg.json_mode:
             json_output({"error": "Concept graph not available"})
@@ -775,8 +768,6 @@ def topics(
 
 def _topics_for_query(query: str) -> None:
     """Show concepts related to a query."""
-    from lilbee.services import get_services
-
     cg = get_services().concepts
     concepts = cg.extract_concepts(query)
     related = cg.expand_query(query)
@@ -796,8 +787,6 @@ def _topics_for_query(query: str) -> None:
 def _topics_overview(top_k: int) -> None:
     """Show top concept communities."""
     from dataclasses import asdict
-
-    from lilbee.services import get_services
 
     communities = get_services().concepts.top_communities(k=top_k)
     if cfg.json_mode:
@@ -864,7 +853,6 @@ def wiki_lint(
 ) -> None:
     """Lint wiki pages for stale citations, missing sources, and unmarked claims."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.services import get_services
     from lilbee.wiki.lint import lint_all as _lint_all
     from lilbee.wiki.lint import lint_wiki_page
 
@@ -908,7 +896,6 @@ def wiki_citations(
 ) -> None:
     """Show citations for a wiki page."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.services import get_services
 
     records = get_services().store.get_citations_for_wiki(wiki_source)
 
@@ -954,10 +941,11 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    summaries = _count_md_files(wiki_root / "summaries")
-    drafts = _count_md_files(wiki_root / "drafts")
+    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
 
-    from lilbee.services import get_services
+    summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
+    drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
+
     from lilbee.wiki.lint import lint_all as _lint_all
 
     report = _lint_all(get_services().store)
@@ -966,8 +954,8 @@ def wiki_status(
         json_output(
             {
                 "wiki_enabled": cfg.wiki,
-                "summaries": summaries,
-                "drafts": drafts,
+                SUMMARIES_SUBDIR: summaries,
+                DRAFTS_SUBDIR: drafts,
                 "pages": summaries + drafts,
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,
@@ -996,7 +984,6 @@ def wiki_prune(
 ) -> None:
     """Prune stale and orphaned wiki pages."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    from lilbee.services import get_services
     from lilbee.wiki.prune import prune_wiki
 
     report = prune_wiki(get_services().store)

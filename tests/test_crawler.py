@@ -782,7 +782,6 @@ class TestPeriodicSync:
 class TestCrawlerStateReset:
     def test_reset_clears_all_state(self, isolated_env):
         """CrawlerState.reset() restores all fields to initial values."""
-
         import lilbee.crawler as crawler_mod
 
         state = crawler_mod._state

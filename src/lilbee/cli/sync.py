@@ -55,7 +55,6 @@ def _get_executor() -> ThreadPoolExecutor:
 
 def shutdown_executor() -> None:
     """Shut down the background executor without blocking.
-
     Uses wait=False + cancel_futures to avoid blocking the main thread.
     """
     global _bg_executor
@@ -83,7 +82,6 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
 
 class SyncStatus:
     """Thread-safe holder for background sync status text.
-
     The background sync callback writes here; prompt_toolkit's
     ``bottom_toolbar`` reads it on every render cycle — no cursor
     manipulation, no flickering.
@@ -99,12 +97,10 @@ class SyncStatus:
 
 def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     """Return a progress callback for chat-mode background sync.
-
     FILE_START updates *status.text* (rendered by prompt_toolkit's bottom
     toolbar).  On DONE the status is cleared and the summary is printed via
     ``print()`` (goes through StdoutProxy → appears above the prompt).
     """
-
     status.clear()
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
@@ -140,7 +136,6 @@ def run_sync_background(
     sync_status: SyncStatus | None = None,
 ) -> Future[object]:
     """Submit sync to a background thread. Returns the Future."""
-
     status = sync_status or SyncStatus()
 
     callback = _chat_sync_callback(status) if chat_mode else _sync_progress_printer(con)

@@ -58,6 +58,12 @@ def make_mock_services(**overrides):
         concepts = MagicMock()
         concepts.get_graph.return_value = False
 
+    clusterer = overrides.pop("clusterer", None)
+    if clusterer is None:
+        clusterer = MagicMock()
+        clusterer.available.return_value = False
+        clusterer.get_clusters.return_value = []
+
     searcher = overrides.pop("searcher", None)
     if searcher is None:
         searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
@@ -72,6 +78,7 @@ def make_mock_services(**overrides):
         embedder=embedder,
         reranker=reranker,
         concepts=concepts,
+        clusterer=clusterer,
         searcher=searcher,
         registry=registry,
     )

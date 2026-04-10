@@ -97,7 +97,6 @@ def _pin_original_top(
 
 class Reranker:
     """Cross-encoder reranker with position-aware blending.
-
     Core technique: Nogueira & Cho 2019, "Passage Re-ranking with BERT"
     (https://arxiv.org/abs/1901.04085).
     """

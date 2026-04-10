@@ -133,7 +133,7 @@ class TestWikiEnabled:
     async def test_list_multiple_subdirs(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "doc-a")
-        _make_wiki_page(wiki_root, "concepts", "typing")
+        _make_wiki_page(wiki_root, "synthesis", "typing")
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki", headers=_h())
         assert resp.status_code == 200
@@ -141,7 +141,7 @@ class TestWikiEnabled:
         assert len(pages) == 2
         slugs = {p["slug"] for p in pages}
         assert "summaries/doc-a" in slugs
-        assert "concepts/typing" in slugs
+        assert "synthesis/typing" in slugs
 
     async def test_list_regenerates_index(self, isolated_env: Path):
         """When wiki/index.md exists, listing regenerates it."""
@@ -189,11 +189,10 @@ class TestWikiEnabled:
 
     async def test_page_citations(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_wiki.return_value = []
-        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "cited")
         async with AsyncTestClient(_create_app()) as client:
@@ -205,20 +204,18 @@ class TestWikiEnabled:
 
     async def test_page_citations_missing_page(self, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/summaries/nope/citations", headers=_h())
         assert resp.status_code == 404
 
     async def test_citations_reverse_empty(self, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_source.return_value = []
-        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get(
                 "/api/wiki/citations", params={"source": "test.txt"}, headers=_h()
@@ -250,10 +247,9 @@ class TestWikiEnabled:
 
     async def test_lint_returns_report(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(
             lint_mod,
             "lint_all",
@@ -276,10 +272,9 @@ class TestWikiEnabled:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.wiki import gen as gen_mod
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.post("/api/wiki/generate/test.txt", headers=_h())
@@ -294,10 +289,9 @@ class TestWikiEnabled:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.wiki import gen as gen_mod
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         page_path = isolated_env / "wiki" / "summaries" / "test.md"
         monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
         async with AsyncTestClient(_create_app()) as client:
@@ -358,10 +352,10 @@ class TestHelpers:
 
         assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
 
-    def test_page_type_from_concepts(self, tmp_path: Path):
+    def test_page_type_from_synthesis(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path
 
-        assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "concept"
+        assert _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path) == "synthesis"
 
     def test_page_type_unknown(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path
@@ -478,12 +472,11 @@ class TestWikiGenerateStream:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
         page_path = isolated_env / "wiki" / "summaries" / "test.md"
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: page_path)
         cfg.wiki = True
         events = []
@@ -499,11 +492,10 @@ class TestWikiGenerateStream:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", lambda *a, **kw: None)
         cfg.wiki = True
         events = []
@@ -519,12 +511,11 @@ class TestWikiGenerateStream:
         self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
 
         mock_svc = make_mock_services()
         mock_svc.store.get_chunks_by_source.return_value = []
-        monkeypatch.setattr(svc_mod, "get_services", lambda: mock_svc)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", lambda: mock_svc)
         cfg.wiki = True
         events = []
         async for chunk in wiki_generate_stream("empty.txt"):
@@ -540,7 +531,6 @@ class TestWikiGenerateStream:
     ):
         """Progress callback fires and emits SSE progress events."""
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
@@ -551,7 +541,7 @@ class TestWikiGenerateStream:
                 cb("generating", {"source": "test.txt"})
             return Path(isolated_env / "wiki" / "summaries" / "test.md")
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", _fake_generate)
         cfg.wiki = True
         events = []
@@ -570,14 +560,13 @@ class TestWikiGenerateStream:
     ):
         """Exception in generate_summary_page emits error event."""
         from conftest import make_mock_services
-        from lilbee import services as svc_mod
         from lilbee.server.handlers import wiki_generate_stream
         from lilbee.wiki import gen as gen_mod
 
         def _boom(*args, **kwargs):
             raise RuntimeError("LLM exploded")
 
-        monkeypatch.setattr(svc_mod, "get_services", make_mock_services)
+        monkeypatch.setattr("lilbee.server.handlers.get_services", make_mock_services)
         monkeypatch.setattr(gen_mod, "generate_summary_page", _boom)
         cfg.wiki = True
         events = []

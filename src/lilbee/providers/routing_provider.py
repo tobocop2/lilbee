@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
 
 log = logging.getLogger(__name__)
@@ -13,7 +14,6 @@ log = logging.getLogger(__name__)
 
 class RoutingProvider(LLMProvider):
     """Routes all calls to litellm if available, otherwise llama-cpp.
-
     When litellm is installed and the backend is reachable, all operations
     go through litellm. Otherwise, falls back to llama-cpp for local GGUF files.
     """
@@ -32,7 +32,6 @@ class RoutingProvider(LLMProvider):
 
     def _get_litellm(self) -> LLMProvider:  # pragma: no cover
         if self._litellm is None:
-            from lilbee.config import cfg
             from lilbee.providers.litellm_provider import LiteLLMProvider
 
             self._litellm = LiteLLMProvider(base_url=cfg.litellm_base_url)

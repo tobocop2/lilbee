@@ -28,6 +28,7 @@ from lilbee.providers.factory import create_provider
 from lilbee.query import Searcher
 from lilbee.reranker import Reranker
 from lilbee.security import validate_path_within
+from lilbee.services import reset_services
 from lilbee.store import Store
 
 if TYPE_CHECKING:
@@ -39,11 +40,8 @@ if TYPE_CHECKING:
 @contextmanager
 def _swap_config(target: Config) -> Iterator[None]:
     """Temporarily replace the global cfg fields with *target*'s values.
-
     Not thread-safe -- sequential use only.
     """
-    from lilbee.services import reset_services
-
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     for name in type(target).model_fields:
         setattr(cfg, name, getattr(target, name))
@@ -58,7 +56,6 @@ def _swap_config(target: Config) -> Iterator[None]:
 
 class Lilbee:
     """Programmatic access to lilbee's retrieval pipeline.
-
     Composes Store, Embedder, Searcher, Reranker, and ConceptGraph. Each holds a reference
     to config and its dependencies -- no god class, no global mutation in the
     public API.
@@ -80,7 +77,6 @@ class Lilbee:
         provider: LLMProvider | None = None,
     ) -> None:
         """Create a lilbee instance.
-
         Args:
             documents_dir: Path to documents folder. Creates a default Config
                 with derived data and lancedb directories.
@@ -159,7 +155,6 @@ class Lilbee:
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
-
         Copies each path into the documents directory, then syncs.
         """
         from lilbee.cli.helpers import copy_files

@@ -7,7 +7,6 @@ from pathlib import Path
 
 def default_data_dir() -> Path:
     """Return platform-appropriate data directory.
-
     - macOS:   ~/Library/Application Support/lilbee
     - Windows: %LOCALAPPDATA%/lilbee
     - Linux:   ~/.local/share/lilbee  (XDG_DATA_HOME)
@@ -36,7 +35,6 @@ def find_local_root(start: Path | None = None) -> Path | None:
 
 def canonical_models_dir() -> Path:
     """Return the shared models directory (always in the platform default, never per-project).
-
     Multiple lilbee instances share this directory so models are downloaded once.
     """
     return default_data_dir() / "models"

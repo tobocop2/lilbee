@@ -71,7 +71,6 @@ clear_cache = _defaults_cache.clear
 
 def parse_kv_parameters(text: str) -> ModelDefaults:
     """Parse multiline ``key value`` parameter format.
-
     Example input::
 
         temperature 0.7
@@ -101,7 +100,6 @@ def parse_kv_parameters(text: str) -> ModelDefaults:
 
 def read_gguf_defaults(metadata: dict[str, str]) -> ModelDefaults:
     """Extract generation defaults from a GGUF metadata dict.
-
     Looks for keys like ``general.temperature``, ``context_length`` (via the
     architecture-prefixed key already resolved by the caller into
     ``context_length``).

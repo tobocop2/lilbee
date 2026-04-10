@@ -83,8 +83,8 @@ class TestPageTypeFromPath:
     def test_summaries(self, tmp_path: Path):
         assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
 
-    def test_concepts(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "concept"
+    def test_synthesis(self, tmp_path: Path):
+        assert _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path) == "synthesis"
 
     def test_drafts(self, tmp_path: Path):
         assert _page_type_from_path(tmp_path / "drafts" / "x.md", tmp_path) == "draft"
@@ -128,10 +128,10 @@ class TestBuildPageInfo:
 
     def test_date_object_in_frontmatter(self, tmp_path: Path):
         content = "---\ntitle: Dated\ngenerated_at: 2026-01-15\n---\nBody\n"
-        path = _write_page(tmp_path, "concepts", "dated", content)
+        path = _write_page(tmp_path, "synthesis", "dated", content)
         info = build_page_info(path, tmp_path)
         assert info.created_at == "2026-01-15"
-        assert info.page_type == "concept"
+        assert info.page_type == "synthesis"
 
 
 class TestListPages:
@@ -144,20 +144,20 @@ class TestListPages:
         assert len(pages) == 1
         assert pages[0].slug == "summaries/alpha"
 
-    def test_concepts_only(self, tmp_path: Path):
-        _write_page(tmp_path, "concepts", "typing", _NO_FM_PAGE)
+    def test_synthesis_only(self, tmp_path: Path):
+        _write_page(tmp_path, "synthesis", "typing", _NO_FM_PAGE)
         pages = list_pages(tmp_path)
         assert len(pages) == 1
-        assert pages[0].slug == "concepts/typing"
-        assert pages[0].page_type == "concept"
+        assert pages[0].slug == "synthesis/typing"
+        assert pages[0].page_type == "synthesis"
 
     def test_both_subdirs(self, tmp_path: Path):
         _write_page(tmp_path, "summaries", "doc-a", _FM_PAGE)
-        _write_page(tmp_path, "concepts", "typing", _NO_FM_PAGE)
+        _write_page(tmp_path, "synthesis", "typing", _NO_FM_PAGE)
         pages = list_pages(tmp_path)
         assert len(pages) == 2
         slugs = {p.slug for p in pages}
-        assert slugs == {"summaries/doc-a", "concepts/typing"}
+        assert slugs == {"summaries/doc-a", "synthesis/typing"}
 
     def test_ignores_other_subdirs(self, tmp_path: Path):
         _write_page(tmp_path, "drafts", "bad", _NO_FM_PAGE)
@@ -212,8 +212,8 @@ class TestReadPage:
         assert read_page(tmp_path, "../../etc/passwd") is None
 
     def test_no_frontmatter(self, tmp_path: Path):
-        _write_page(tmp_path, "concepts", "plain", _NO_FM_PAGE)
-        result = read_page(tmp_path, "concepts/plain")
+        _write_page(tmp_path, "synthesis", "plain", _NO_FM_PAGE)
+        result = read_page(tmp_path, "synthesis/plain")
         assert result is not None
         assert result.title == "Plain"
         assert result.frontmatter == {}

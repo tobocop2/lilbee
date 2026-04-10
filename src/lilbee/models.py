@@ -15,6 +15,7 @@ from rich.table import Table
 
 from lilbee import settings
 from lilbee.config import cfg
+from lilbee.services import get_services
 
 
 class ModelTask(StrEnum):
@@ -314,7 +315,6 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
 
 def ensure_chat_model() -> None:
     """If no chat models are installed, pick and pull one.
-
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
@@ -350,11 +350,8 @@ def ensure_chat_model() -> None:
 
 def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
     """Return installed model names, excluding embedding models.
-
     When *exclude_vision* is True, also filters out known vision catalog models.
     """
-    from lilbee.services import get_services
-
     try:
         provider = get_services().provider
         embed_base = cfg.embedding_model.split(":")[0]

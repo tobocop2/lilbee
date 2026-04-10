@@ -47,7 +47,6 @@ class Embedder:
 
     def embedding_available(self) -> bool:
         """Return True if the embedding model can be resolved.
-
         Checks the provider model list and the native registry path
         resolution.  Returns True if either finds the model.
         """
@@ -84,7 +83,6 @@ class Embedder:
         on_progress: DetailedProgressCallback = noop_callback,
     ) -> list[list[float]]:
         """Embed multiple texts with adaptive batching, return list of vectors.
-
         Fires ``embed`` progress events per batch when *on_progress* is provided.
         """
         if not texts:

@@ -515,7 +515,7 @@ class TestCreateAppReexport:
 
 
 class TestLifespan:
-    @mock.patch("lilbee.services.get_services")
+    @mock.patch("lilbee.server.app.get_services")
     async def test_calls_get_services(self, mock_get_svc):
         mock_svc = mock.MagicMock()
         mock_get_svc.return_value = mock_svc
@@ -526,14 +526,14 @@ class TestLifespan:
         mock_get_svc.assert_called()
         mock_svc.embedder.validate_model.assert_called_once()
 
-    @mock.patch("lilbee.services.get_services", side_effect=RuntimeError("no provider"))
+    @mock.patch("lilbee.server.app.get_services", side_effect=RuntimeError("no provider"))
     async def test_provider_failure_does_not_block(self, mock_get_svc):
         from lilbee.server.app import _lifespan
 
         async with _lifespan(mock.MagicMock()):
             pass
 
-    @mock.patch("lilbee.services.get_services")
+    @mock.patch("lilbee.server.app.get_services")
     async def test_validate_model_failure_does_not_block(self, mock_get_svc):
         mock_svc = mock.MagicMock()
         mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")

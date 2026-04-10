@@ -16,6 +16,7 @@ from textual.widgets.option_list import Option
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import command_names
+from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 
@@ -76,8 +77,6 @@ def _setting_options() -> list[str]:
 
 def _document_options() -> list[str]:
     try:
-        from lilbee.services import get_services
-
         return [s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()]
     except Exception:
         log.debug("Failed to list documents for autocomplete", exc_info=True)
@@ -90,7 +89,6 @@ def _theme_options() -> list[str]:
 
 def _path_options(partial: str = "") -> list[str]:
     """Return filesystem completions for a partial path.
-
     Handles relative paths, absolute paths, and ~ expansion.
     Directories get a trailing / so the user knows to keep typing.
     """

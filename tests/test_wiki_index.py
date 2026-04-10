@@ -87,21 +87,21 @@ class TestUpdateWikiIndex:
         assert "summary" in content
         assert "1 sources" in content
 
-    def test_concept_pages_listed(self, isolated_env: Path):
-        write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
+    def test_synthesis_pages_listed(self, isolated_env: Path):
+        write_wiki_page(isolated_env, "synthesis", "type-safety", _CONCEPT_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
-        assert "[Type Safety](concepts/type-safety.md)" in content
-        assert "concept" in content
+        assert "[Type Safety](synthesis/type-safety.md)" in content
+        assert "synthesis" in content
         assert "3 sources" in content
 
     def test_both_subdirs(self, isolated_env: Path):
         write_wiki_page(isolated_env, "summaries", "doc-a", _SUMMARY_PAGE)
-        write_wiki_page(isolated_env, "concepts", "type-safety", _CONCEPT_PAGE)
+        write_wiki_page(isolated_env, "synthesis", "type-safety", _CONCEPT_PAGE)
         path = update_wiki_index()
         content = path.read_text(encoding="utf-8")
         assert "summaries/doc-a.md" in content
-        assert "concepts/type-safety.md" in content
+        assert "synthesis/type-safety.md" in content
 
     def test_sorted_within_subdir(self, isolated_env: Path):
         write_wiki_page(isolated_env, "summaries", "z-doc", _SUMMARY_PAGE)

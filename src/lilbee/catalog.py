@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -50,7 +51,6 @@ def make_download_callback(
     throttle_interval: float = 0.1,
 ) -> ProgressCallback:
     """Build a download progress callback that converts bytes to human-readable state.
-
     *on_update(progress: DownloadProgress)* is called with throttled, deduplicated
     progress snapshots. Both the catalog and setup screens use this to avoid
     duplicating byte→MB conversion and cache-hit detection.
@@ -94,13 +94,23 @@ def make_download_callback(
 
 class _CallbackProgressBar(_base_tqdm):
     """tqdm subclass that forwards progress to a plain callback.
-
     Fully suppresses terminal output by disabling tqdm rendering and redirecting
     its file handle to a devnull sink — prevents ANSI escape sequences from leaking
     into Textual's managed terminal.
+
+    Overrides ``get_lock`` to return a threading lock instead of tqdm's default
+    multiprocessing lock. Vanilla tqdm acquires ``self._lock`` even on the
+    ``disable=True`` path (std.py:988), and the multiprocessing lock's lazy init
+    raises ``ValueError`` when ``sys.stderr.fileno() == -1`` (Textual, Jupyter,
+    pytest capture). A thread lock sidesteps that fd handling entirely.
     """
 
+    _lock = threading.RLock()
     _callback: Any = None
+
+    @classmethod
+    def get_lock(cls) -> threading.RLock:
+        return cls._lock
 
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs["disable"] = True
@@ -153,7 +163,6 @@ _DEFAULT_TIMEOUT = 30.0
 @dataclass(frozen=True)
 class CatalogModel:
     """A model entry in the catalog.
-
     Identity follows Ollama conventions: name is a lowercase slug (model family),
     tag is the variant (param count, version, etc.). The canonical reference is
     ``name:tag`` (e.g. ``qwen3:0.6b``).  ``display_name`` is the human label.
@@ -265,7 +274,6 @@ PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 
 def _extract_family_name(model_name: str) -> str:
     """Extract the family name by stripping the trailing parameter count.
-
     Applies clean_display_name first to strip -GGUF, -Instruct, etc.
 
     "Qwen3 8B" -> "Qwen3", "Qwen3-Coder 30B A3B" -> "Qwen3-Coder",
@@ -278,7 +286,6 @@ def _extract_family_name(model_name: str) -> str:
 
 def _extract_quant(filename: str) -> str:
     """Extract quantization label from a GGUF filename pattern.
-
     "*Q4_K_M.gguf" -> "Q4_K_M", "nomic-embed-text-v1.5.Q4_K_M.gguf" -> "Q4_K_M".
     """
     m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
@@ -328,7 +335,6 @@ def _build_families(models: tuple[CatalogModel, ...], task: str) -> list[ModelFa
 
 def get_families() -> list[ModelFamily]:
     """Get all featured models grouped into families.
-
     Returns families ordered: chat families, then embedding, then vision.
     Within each family, variants are ordered smallest to largest, with
     the largest marked as recommended (for multi-variant families).
@@ -368,9 +374,13 @@ def _hf_headers() -> dict[str, str]:
     return {}
 
 
-# TTL cache for HuggingFace API results (5 minutes)
+# TTL cache for HuggingFace API results (5 minutes). The lock guards the
+# evict-then-insert path so concurrent TUI workers can't race and hit
+# ``RuntimeError: dictionary changed size during iteration``.
 _HF_CACHE_TTL = 300
+_HF_CACHE_MAX_ENTRIES = 50
 _hf_cache: dict[str, tuple[float, list["CatalogModel"]]] = {}
+_hf_cache_lock = threading.Lock()
 
 
 def _fetch_hf_models(
@@ -383,14 +393,15 @@ def _fetch_hf_models(
     """Fetch GGUF models from HuggingFace API with 5-minute cache. Returns empty list on error."""
     cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
     now = time.monotonic()
-    # Evict expired entries
-    expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
-    for k in expired:
-        del _hf_cache[k]
+    with _hf_cache_lock:
+        # Evict expired entries
+        expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
+        for k in expired:
+            del _hf_cache[k]
 
-    cached = _hf_cache.get(cache_key)
-    if cached and now - cached[0] < _HF_CACHE_TTL:
-        return cached[1]
+        cached = _hf_cache.get(cache_key)
+        if cached and now - cached[0] < _HF_CACHE_TTL:
+            return cached[1]
 
     params: dict[str, str | int] = {
         "pipeline_tag": pipeline_tag,
@@ -439,12 +450,12 @@ def _fetch_hf_models(
                 task=task,
             )
         )
-    _hf_cache[cache_key] = (now, models)
-    # Cap cache size at 50 entries, evicting oldest on overflow
-    _HF_CACHE_MAX_ENTRIES = 50
-    if len(_hf_cache) > _HF_CACHE_MAX_ENTRIES:
-        oldest_key = min(_hf_cache, key=lambda k: _hf_cache[k][0])
-        del _hf_cache[oldest_key]
+    with _hf_cache_lock:
+        _hf_cache[cache_key] = (now, models)
+        # Cap cache size, evicting the oldest entry on overflow.
+        if len(_hf_cache) > _HF_CACHE_MAX_ENTRIES:
+            oldest_key = min(_hf_cache, key=lambda k: _hf_cache[k][0])
+            del _hf_cache[oldest_key]
     return models
 
 
@@ -607,7 +618,6 @@ def _build_catalog_index() -> tuple[
 
 def find_catalog_entry(query: str) -> CatalogModel | None:
     """Find a featured model by ref, name, or display name (case-insensitive).
-
     Resolution order: exact ``name:tag`` → bare ``name`` (recommended variant)
     → ``display_name``.
     """
@@ -618,7 +628,6 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
 
 def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
-
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     For vision models, also downloads the mmproj (CLIP projection) file.
@@ -639,7 +648,7 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
         if on_progress is not None:
             size = dest.stat().st_size
             on_progress(size, size)  # Report 100% immediately
-        return _finalize_download(entry, dest)
+        return _finalize_download(entry, dest, on_progress=on_progress)
 
     log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
     token = _hf_token()
@@ -654,9 +663,9 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
     )
 
     try:
-        os.environ.setdefault(
-            "HF_HUB_DISABLE_XET", "1"
-        )  # pragma: no cover  # TODO: remove once huggingface_hub#4065 merges
+        # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time.
+        # Setting it here is too late — huggingface_hub.constants already
+        # captured the value when this module first imported it.
         cached = Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except GatedRepoError:
         raise PermissionError(
@@ -680,14 +689,19 @@ def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None 
             log.info("Model found in HuggingFace cache: %s", cached)
         on_progress(actual_size, actual_size)
     dest = cached
-    return _finalize_download(entry, dest)
+    return _finalize_download(entry, dest, on_progress=on_progress)
 
 
-def _finalize_download(entry: CatalogModel, dest: Path) -> Path:
+def _finalize_download(
+    entry: CatalogModel,
+    dest: Path,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
     """Register the model in the manifest and download mmproj for vision models."""
     _register_model(entry, dest)
     if entry.task == ModelTask.VISION:
-        _download_mmproj(entry)
+        _download_mmproj(entry, on_progress=on_progress)
     return dest
 
 
@@ -714,10 +728,15 @@ def _register_model(entry: CatalogModel, file_path: Path) -> None:
         log.warning("Failed to register manifest for %s", entry.name, exc_info=True)
 
 
-def _download_mmproj(entry: CatalogModel) -> Path | None:
+def _download_mmproj(
+    entry: CatalogModel,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path | None:
     """Download the mmproj (CLIP projection) file for a vision model.
-
     Returns the path to the downloaded file, or None if no mmproj is configured.
+    The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
+    counts and is wired through the same tqdm hook used by the main download.
     """
     mmproj_pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, _DEFAULT_MMPROJ_PATTERN)
 
@@ -726,21 +745,24 @@ def _download_mmproj(entry: CatalogModel) -> Path | None:
         log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
         return None
 
-    dest = cfg.models_dir / mmproj_filename
-    if dest.exists():
-        log.info("mmproj already downloaded: %s", dest)
-        return dest
-
     from huggingface_hub import hf_hub_download
 
+    tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, cfg.models_dir)
-    path = hf_hub_download(
-        repo_id=entry.hf_repo,
-        filename=mmproj_filename,
-        local_dir=cfg.models_dir,
-        token=_hf_token(),
+    path = Path(
+        hf_hub_download(
+            repo_id=entry.hf_repo,
+            filename=mmproj_filename,
+            cache_dir=str(cfg.models_dir),
+            token=_hf_token(),
+            tqdm_class=tracker.make_tqdm_class() if tracker else None,
+        )
     )
-    return Path(path)
+    if on_progress is not None and (not tracker or not tracker.was_used):
+        # Cache hit — HF returned the cached path without invoking tqdm.
+        size = path.stat().st_size
+        on_progress(size, size)
+    return path
 
 
 def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
@@ -778,9 +800,10 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
 
 def find_mmproj_file(model_name: str) -> Path | None:
     """Find the mmproj file for a vision model in the models directory.
-
-    Searches cfg.models_dir for files matching common mmproj naming patterns.
-    Returns the path if found, None otherwise.
+    Searches ``cfg.models_dir`` recursively (both legacy flat layouts and the
+    HF cache tree under ``models--ORG--NAME/snapshots/<rev>/``) for files
+    matching common mmproj naming patterns. Returns the path if found, None
+    otherwise.
     """
     models_dir = cfg.models_dir
     if not models_dir.exists():
@@ -793,12 +816,12 @@ def find_mmproj_file(model_name: str) -> Path | None:
             if pattern:
                 import fnmatch
 
-                for p in models_dir.glob("*.gguf"):
+                for p in models_dir.rglob("*.gguf"):
                     if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
                         return p
 
-    # Generic fallback: look for any mmproj .gguf in models_dir
-    mmproj_files = sorted(p for p in models_dir.glob("*mmproj*.gguf"))
+    # Generic fallback: look for any mmproj .gguf anywhere under models_dir
+    mmproj_files = sorted(models_dir.rglob("*mmproj*.gguf"))
     return mmproj_files[0] if mmproj_files else None
 
 
@@ -807,7 +830,6 @@ _QUANT_PREFERENCE = ("Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q8_0", "Q6_K", "Q3
 
 def resolve_filename(entry: CatalogModel) -> str:
     """Resolve a GGUF filename pattern to the best concrete filename.
-
     For exact filenames, return as-is. For wildcards, query the HF API
     and pick the best quantization (prefer Q4_K_M for balance of size/quality).
     """
@@ -852,7 +874,6 @@ def _pick_best_gguf(filenames: list[str]) -> str:
 
 def fetch_model_file_size(hf_repo: str) -> float:
     """Fetch the best GGUF file size from HuggingFace tree API.
-
     Returns size in GB, or 0.0 if unavailable.
     """
     try:
@@ -886,7 +907,6 @@ _DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
 
 def clean_display_name(repo_id: str) -> str:
     """Derive a human-friendly display name from a HuggingFace repo ID.
-
     Strips org prefix, -GGUF/-Instruct/-Chat suffixes, date suffixes (-2507),
     and Meta- prefix. Replaces hyphens with spaces.
 

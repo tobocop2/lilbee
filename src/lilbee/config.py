@@ -6,11 +6,19 @@ Uses pydantic-settings for automatic env var loading with TOML config file suppo
 
 import logging
 import os
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ClustererBackend(StrEnum):
+    """Known wiki clusterer backends."""
+
+    EMBEDDING = "embedding"
+    CONCEPTS = "concepts"
 
 
 def ConfigField(
@@ -224,8 +232,9 @@ class Config(BaseSettings):
     _model_defaults: Any = None
 
     # Wiki layer — LLM-maintained synthesis pages with citation provenance.
-    # Requires optional ``wiki`` extra: ``pip install lilbee[wiki]``.
-    wiki: bool = False
+    # On by default; no extras required. Set to False to hide the Wiki view
+    # and disable wiki generation/sync.
+    wiki: bool = True
     wiki_dir: str = "wiki"
     wiki_prune_raw: bool = False
     wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -293,6 +302,20 @@ class Config(BaseSettings):
         "Chunks:\n{chunks_text}\n\n"
         "Write the synthesis page now. Start with a heading."
     )
+
+    # Wiki synthesis clusterer backend. EMBEDDING (default, no extra deps)
+    # runs chunk-level mutual kNN + label propagation over chunk embeddings.
+    # CONCEPTS uses the concept graph adapter and requires the [graph] extra;
+    # when [graph] is missing the services factory logs a warning and falls
+    # back to EMBEDDING.
+    wiki_clusterer: ClustererBackend = ConfigField(
+        default=ClustererBackend.EMBEDDING, writable=True
+    )
+
+    # Neighborhood size for the embedding clusterer's mutual-kNN graph.
+    # 0 means "auto-scale from corpus size" via clamp(log2(N)+2, 5, 20).
+    # Raise to get larger, looser clusters; lower for tighter, smaller ones.
+    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
 
     # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
     # from chunks, builds a co-occurrence graph, and uses it to boost search
@@ -416,7 +439,6 @@ class Config(BaseSettings):
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
         """Build LLM generation options with 3-layer merge.
-
         Layer 1 (base): model defaults from ``_model_defaults``
         Layer 2 (override): user config fields — only if explicitly set (not None)
         Layer 3 (override): per-call ``overrides`` parameter
@@ -445,7 +467,6 @@ class Config(BaseSettings):
 
 def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     """Convert a ModelDefaults instance to a dict with provider key names.
-
     Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
     Filters out None values.
     """
@@ -462,7 +483,6 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
 
 class _PlainEnvSource:
     """Env source that reads LILBEE_* env vars as plain strings.
-
     Avoids pydantic-settings' default JSON parsing of complex types (list, frozenset)
     so that comma-separated values like ``LILBEE_CORS_ORIGINS=a,b`` pass through to
     field validators instead of failing JSON decode.

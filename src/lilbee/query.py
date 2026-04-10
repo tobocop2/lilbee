@@ -22,169 +22,12 @@ from lilbee.store import CitationRecord, SearchChunk, Store
 
 log = logging.getLogger(__name__)
 
-
-class ChatMessage(TypedDict):
-    """A single chat message with role and content."""
-
-    role: str
-    content: str
-
-
-CONTEXT_TEMPLATE = """Context:
-{context}
-
-Question: {question}"""
-
-
-def _format_citation(citation: CitationRecord) -> str:
-    """Format a single citation record as an indented attribution line."""
-    if citation["page_start"] or citation["page_end"]:
-        ps, pe = citation["page_start"], citation["page_end"]
-        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"    → {citation['source_filename']}, {pages}"
-    if citation["line_start"] or citation["line_end"]:
-        ls, le = citation["line_start"], citation["line_end"]
-        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"    → {citation['source_filename']}, {lines}"
-    return f"    → {citation['source_filename']}"
-
-
-def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
-    """Format a search result as a source citation line.
-
-    For wiki chunks, shows the wiki page path followed by indented transitive citations.
-    """
-    if result.chunk_type == "wiki" and citations:
-        parts = [f"  → {result.source}"]
-        for cit in citations:
-            parts.append(_format_citation(cit))
-        return "\n".join(parts)
-
-    if result.content_type == "pdf":
-        ps, pe = result.page_start, result.page_end
-        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"  → {result.source}, {pages}"
-
-    if result.content_type == "code":
-        ls, le = result.line_start, result.line_end
-        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"  → {result.source}, {lines}"
-
-    return f"  → {result.source}"
-
-
-def _source_slug(source_name: str) -> str:
-    """Derive the wiki filename stem from a raw source name.
-
-    Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
-    """
-    return source_name.replace("/", "--").rsplit(".", 1)[0]
-
-
-def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
-    """Build a set of raw source names that have wiki coverage.
-
-    Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
-    chunks have sources like "subdir/doc.md". Match by comparing the wiki
-    file stem against the slug derived from the raw source name.
-    """
-    wiki_stems: set[str] = set()
-    for r in results:
-        if r.chunk_type == "wiki":
-            # "wiki/summaries/subdir--doc.md" -> "subdir--doc"
-            filename = r.source.rsplit("/", 1)[-1]
-            wiki_stems.add(filename.rsplit(".", 1)[0])
-    if not wiki_stems:
-        return set()
-    raw_covered: set[str] = set()
-    for r in results:
-        if r.chunk_type != "wiki" and _source_slug(r.source) in wiki_stems:
-            raw_covered.add(r.source)
-    return raw_covered
-
-
-def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
-    """When both wiki and raw chunks exist for the same source, prefer wiki."""
-    covered = _wiki_covered_raw_sources(results)
-    if not covered:
-        return results
-    return [r for r in results if r.chunk_type == "wiki" or r.source not in covered]
-
-
-def deduplicate_sources(
-    results: list[SearchChunk],
-    max_citations: int = 5,
-    citations_map: dict[str, list[CitationRecord]] | None = None,
-) -> list[str]:
-    """Merge results from same source into deduplicated citation lines."""
-    seen: set[str] = set()
-    citation_lines: list[str] = []
-    for r in results:
-        cits = (citations_map or {}).get(r.source)
-        line = format_source(r, citations=cits)
-        if line not in seen:
-            seen.add(line)
-            citation_lines.append(line)
-            if len(citation_lines) >= max_citations:
-                break
-    return citation_lines
-
-
-def _sort_key(r: SearchChunk) -> float:
-    """Sort key: lower = more relevant."""
-    if r.relevance_score is not None:
-        return -r.relevance_score
-    if r.distance is not None:
-        return r.distance
-    return float("inf")
-
-
-def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort search results by relevance (works for both hybrid and vector results)."""
-    return sorted(results, key=_sort_key)
-
-
-def diversify_sources(
-    results: list[SearchChunk], max_per_source: int | None = None
-) -> list[SearchChunk]:
-    """Cap results per source document to ensure diversity.
-
-    Source diversity filtering: Zhai 2008, "Statistical Language Models for
-    Information Retrieval" -- caps per-source representation to prevent
-    any single document from dominating results.
-    """
-    if max_per_source is None:
-        max_per_source = cfg.diversity_max_per_source
-    counts: dict[str, int] = {}
-    diverse: list[SearchChunk] = []
-    for r in results:
-        count = counts.get(r.source, 0)
-        if count < max_per_source:
-            diverse.append(r)
-            counts[r.source] = count + 1
-    return diverse
-
-
-def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
-    """Sort by relevance and apply source diversity cap."""
-    return diversify_sources(sort_by_relevance(results))
-
-
-def build_context(results: list[SearchChunk]) -> str:
-    """Build context block from search results."""
-    return "\n\n".join(f"[{i}] {r.chunk}" for i, r in enumerate(results, 1))
-
-
-_EXPANSION_PROMPT = (
-    "Generate {count} alternative search queries for the following question. "
-    "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
-    "Question: {question}"
-)
-
-_EXPANSION_MAX_TOKENS = 200
-
-
-_STOP_WORDS = frozenset(
+# English stop words used ONLY for query-side token overlap checks. If we
+# let "the" and "and" count toward the overlap between a user's question
+# and a candidate chunk, every chunk looks similar to every query. This is
+# a deliberate, scoped heuristic; it is not used anywhere else in the code
+# base because nothing else does bag-of-words overlap.
+_STOP_WORDS: frozenset[str] = frozenset(
     {
         "a",
         "an",
@@ -261,12 +104,170 @@ _STOP_WORDS = frozenset(
     }
 )
 
-_MIN_OVERLAP_RATIO = 0.3
-
 
 def _tokenize_query(text: str) -> set[str]:
-    """Tokenize into lowercase words, removing stop words."""
+    """Lowercase whitespace tokens, drop stopwords and single characters."""
     return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
+
+
+class ChatMessage(TypedDict):
+    """A single chat message with role and content."""
+
+    role: str
+    content: str
+
+
+CONTEXT_TEMPLATE = """Context:
+{context}
+
+Question: {question}"""
+
+
+def _format_citation(citation: CitationRecord) -> str:
+    """Format a single citation record as an indented attribution line."""
+    if citation["page_start"] or citation["page_end"]:
+        ps, pe = citation["page_start"], citation["page_end"]
+        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
+        return f"    → {citation['source_filename']}, {pages}"
+    if citation["line_start"] or citation["line_end"]:
+        ls, le = citation["line_start"], citation["line_end"]
+        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
+        return f"    → {citation['source_filename']}, {lines}"
+    return f"    → {citation['source_filename']}"
+
+
+def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
+    """Format a search result as a source citation line.
+    For wiki chunks, shows the wiki page path followed by indented transitive citations.
+    """
+    if result.chunk_type == "wiki" and citations:
+        parts = [f"  → {result.source}"]
+        for cit in citations:
+            parts.append(_format_citation(cit))
+        return "\n".join(parts)
+
+    if result.content_type == "pdf":
+        ps, pe = result.page_start, result.page_end
+        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
+        return f"  → {result.source}, {pages}"
+
+    if result.content_type == "code":
+        ls, le = result.line_start, result.line_end
+        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
+        return f"  → {result.source}, {lines}"
+
+    return f"  → {result.source}"
+
+
+def _source_slug(source_name: str) -> str:
+    """Derive the wiki filename stem from a raw source name.
+    Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
+    """
+    return source_name.replace("/", "--").rsplit(".", 1)[0]
+
+
+def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
+    """Build a set of raw source names that have wiki coverage.
+    Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
+    chunks have sources like "subdir/doc.md". Match by comparing the wiki
+    file stem against the slug derived from the raw source name.
+    """
+    wiki_stems: set[str] = set()
+    for r in results:
+        if r.chunk_type == "wiki":
+            # "wiki/summaries/subdir--doc.md" -> "subdir--doc"
+            filename = r.source.rsplit("/", 1)[-1]
+            wiki_stems.add(filename.rsplit(".", 1)[0])
+    if not wiki_stems:
+        return set()
+    raw_covered: set[str] = set()
+    for r in results:
+        if r.chunk_type != "wiki" and _source_slug(r.source) in wiki_stems:
+            raw_covered.add(r.source)
+    return raw_covered
+
+
+def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
+    """When both wiki and raw chunks exist for the same source, prefer wiki."""
+    covered = _wiki_covered_raw_sources(results)
+    if not covered:
+        return results
+    return [r for r in results if r.chunk_type == "wiki" or r.source not in covered]
+
+
+def deduplicate_sources(
+    results: list[SearchChunk],
+    max_citations: int = 5,
+    citations_map: dict[str, list[CitationRecord]] | None = None,
+) -> list[str]:
+    """Merge results from same source into deduplicated citation lines."""
+    seen: set[str] = set()
+    citation_lines: list[str] = []
+    for r in results:
+        cits = (citations_map or {}).get(r.source)
+        line = format_source(r, citations=cits)
+        if line not in seen:
+            seen.add(line)
+            citation_lines.append(line)
+            if len(citation_lines) >= max_citations:
+                break
+    return citation_lines
+
+
+def _sort_key(r: SearchChunk) -> float:
+    """Sort key: lower = more relevant."""
+    if r.relevance_score is not None:
+        return -r.relevance_score
+    if r.distance is not None:
+        return r.distance
+    return float("inf")
+
+
+def sort_by_relevance(results: list[SearchChunk]) -> list[SearchChunk]:
+    """Sort search results by relevance (works for both hybrid and vector results)."""
+    return sorted(results, key=_sort_key)
+
+
+def diversify_sources(
+    results: list[SearchChunk], max_per_source: int | None = None
+) -> list[SearchChunk]:
+    """Cap results per source document to ensure diversity.
+    Source diversity filtering: Zhai 2008, "Statistical Language Models for
+    Information Retrieval" -- caps per-source representation to prevent
+    any single document from dominating results.
+    """
+    if max_per_source is None:
+        max_per_source = cfg.diversity_max_per_source
+    counts: dict[str, int] = {}
+    diverse: list[SearchChunk] = []
+    for r in results:
+        count = counts.get(r.source, 0)
+        if count < max_per_source:
+            diverse.append(r)
+            counts[r.source] = count + 1
+    return diverse
+
+
+def prepare_results(results: list[SearchChunk]) -> list[SearchChunk]:
+    """Sort by relevance and apply source diversity cap."""
+    return diversify_sources(sort_by_relevance(results))
+
+
+def build_context(results: list[SearchChunk]) -> str:
+    """Build context block from search results."""
+    return "\n\n".join(f"[{i}] {r.chunk}" for i, r in enumerate(results, 1))
+
+
+_EXPANSION_PROMPT = (
+    "Generate {count} alternative search queries for the following question. "
+    "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
+    "Question: {question}"
+)
+
+_EXPANSION_MAX_TOKENS = 200
+
+
+_MIN_OVERLAP_RATIO = 0.3
 
 
 class AskResult(BaseModel):
@@ -278,7 +279,6 @@ class AskResult(BaseModel):
 
 class Searcher:
     """RAG search pipeline -- embed, search, expand, rerank, generate.
-
     All search and answer operations go through this class.
     Constructed with injected dependencies via the Services container.
     """
@@ -401,7 +401,6 @@ class Searcher:
 
     def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
         """Hypothetical Document Embedding search.
-
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
         embeds it, and uses the embedding to search for real documents.
@@ -417,6 +416,7 @@ class Searcher:
             hyde_vec = self._embedder.embed(response.strip())
             return self._store.search(hyde_vec, top_k=top_k, query_text=None)
         except Exception:
+            log.debug("HyDE search failed", exc_info=True)
             return []
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
@@ -442,7 +442,6 @@ class Searcher:
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
     ) -> list[SearchChunk]:
         """Select context chunks covering distinct query terms.
-
         Greedy set-cover: pick chunks that add the most uncovered query
         terms until the budget is exhausted or all terms are covered.
         """
@@ -464,7 +463,10 @@ class Searcher:
             best_gain = -1
             for pos, idx in enumerate(remaining_indices):
                 gain = len((chunk_tokens[idx] & query_terms) - covered)
-                if gain > best_gain or (gain == best_gain and pos < best_pos):
+                # First-best-wins on ties: ``pos`` increases monotonically so a
+                # tie-break on smaller ``pos`` never fires, and the earliest
+                # candidate with the current best gain is always kept.
+                if gain > best_gain:
                     best_gain = gain
                     best_pos = pos
             if best_gain <= 0 and selected:
@@ -476,7 +478,6 @@ class Searcher:
 
     def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
-
         Returns up to top_k*2 candidates for downstream filtering.
         """
         if top_k == 0:

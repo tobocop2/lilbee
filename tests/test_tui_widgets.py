@@ -17,7 +17,6 @@ from lilbee.config import cfg
 
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
-
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
@@ -718,7 +717,9 @@ class TestSlashSuggester:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         s = SlashSuggester(use_cache=False)
-        with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
+        with mock.patch(
+            "lilbee.cli.tui.widgets.suggester.get_services", side_effect=Exception("err")
+        ):
             assert s._get_document_names() == []
 
 
@@ -835,13 +836,15 @@ class TestDocumentOptions:
 
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = [{"filename": "a.txt", "source": "a.txt"}]
-        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert _document_options() == ["a.txt"]
 
     def test_returns_empty_on_error(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
 
-        with mock.patch("lilbee.services.get_services", side_effect=Exception("err")):
+        with mock.patch(
+            "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
+        ):
             assert _document_options() == []
 
     def test_falls_back_to_source_key(self) -> None:
@@ -849,7 +852,7 @@ class TestDocumentOptions:
 
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = [{"source": "b.pdf"}]
-        with mock.patch("lilbee.services.get_services", return_value=mock_svc):
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert _document_options() == ["b.pdf"]
 
 
@@ -2140,7 +2143,7 @@ class TestModelBarAdditional:
             embed_sel.set_options([ModelOption("new-embed", "new-embed")])
             with (
                 mock.patch("lilbee.settings.set_value"),
-                mock.patch("lilbee.services.reset_services"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 embed_sel.value = "new-embed"
                 await pilot.pause()
@@ -2714,7 +2717,6 @@ class TestModelBarPopulateBranches:
 
     async def test_populate_blank_value_uses_config_default(self) -> None:
         """When Select has no value, falls back to configured default from cfg.
-
         We force the Select to return empty by intercepting set_options to
         simulate a widget that lost its value during refresh.
         """
@@ -2795,7 +2797,7 @@ class TestModelBarPopulateBranches:
                 mock.patch.object(
                     type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
                 ),
-                mock.patch("lilbee.services.reset_services") as mock_reset,
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
             ):
                 bar._after_model_change()
                 mock_screen.action_cancel_stream.assert_called_once()
@@ -2815,7 +2817,7 @@ class TestModelBarPopulateBranches:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
-            with mock.patch("lilbee.services.reset_services") as mock_reset:
+            with mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset:
                 bar._after_model_change()
             mock_reset.assert_called_once()
 
@@ -2837,7 +2839,7 @@ class TestModelBarPopulateBranches:
                 mock.patch.object(
                     type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
                 ),
-                mock.patch("lilbee.services.reset_services") as mock_reset,
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
             ):
                 bar._deferred_reset()
                 mock_reset.assert_not_called()

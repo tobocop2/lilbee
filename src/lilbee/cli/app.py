@@ -78,7 +78,6 @@ def apply_overrides(
     seed: int | None = None,
 ) -> None:
     """Apply CLI overrides to config before any work begins.
-
     Precedence (highest first):
     --data-dir / LILBEE_DATA  >  .lilbee/ (local walk-up)  >  global platform default
     """
@@ -148,6 +147,12 @@ def _default(
     )
     # basicConfig is a no-op when handlers already exist, so always set level explicitly
     logging.getLogger().setLevel(level)
+
+    # Swallow lancedb's shutdown-time thread noise — opt-in side effect, not
+    # imposed on library consumers of lilbee.
+    from lilbee.store import install_lancedb_thread_error_suppressor
+
+    install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
     if ctx.invoked_subcommand is None:

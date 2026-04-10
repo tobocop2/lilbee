@@ -3,7 +3,6 @@
 
 def fibonacci(n: int) -> int:
     """Calculate the nth Fibonacci number iteratively.
-
     Args:
         n: The position in the Fibonacci sequence (0-indexed).
 

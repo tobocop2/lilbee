@@ -7,7 +7,6 @@ from pathlib import Path
 
 def validate_path_within(path: str | Path, root: Path) -> Path:
     """Resolve *path* and verify it stays within *root*.
-
     Raises ``ValueError`` if the resolved path escapes the root directory.
     Returns the resolved path on success.
     """

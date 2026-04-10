@@ -33,6 +33,7 @@ from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
 from lilbee.query import ChatMessage
+from lilbee.services import get_services, reset_services
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -415,8 +416,6 @@ class ChatScreen(Screen[None]):
         self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
-        from lilbee.services import get_services
-
         try:
             sources = get_services().store.get_sources()
         except Exception:
@@ -554,8 +553,6 @@ class ChatScreen(Screen[None]):
             persisted = str(parsed) if parsed is not None else ""
             settings.set_value(cfg.data_root, key, persisted)
             if key == "llm_provider":  # pragma: no cover
-                from lilbee.services import reset_services
-
                 reset_services()
             self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
         except (ValueError, TypeError) as exc:
@@ -624,8 +621,6 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
-        from lilbee.services import get_services
-
         response_parts: list[str] = []
         sources: list[str] = []
         last_scroll = 0.0
@@ -727,7 +722,6 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_sync_worker(self, task_id: str) -> None:
         """Run background document sync in a Textual worker thread.
-
         Architecture: @work(thread=True) runs this method in a daemon thread,
         keeping the Textual event loop free for UI updates. Progress is reported
         back to the main thread via app.call_from_thread(). The asyncio.run()

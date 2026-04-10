@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from textual.command import Hit, Hits, Provider
 
+from lilbee import settings
+from lilbee.config import cfg
+from lilbee.services import get_services
+
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -103,8 +107,6 @@ class LilbeeCommandProvider(Provider):
         """Generate commands for indexed documents."""
         commands: list[tuple[str, str, Any]] = []
         try:
-            from lilbee.services import get_services
-
             for src in get_services().store.get_sources():
                 name = src.get("filename", src.get("source", ""))
                 if name:
@@ -120,9 +122,6 @@ class LilbeeCommandProvider(Provider):
         return commands
 
     def _set_model(self, attr: str, value: str) -> None:
-        from lilbee import settings
-        from lilbee.config import cfg
-
         setattr(cfg, attr, value)
         settings.set_value(cfg.data_root, attr, value)
         display = value or "off"
@@ -131,8 +130,6 @@ class LilbeeCommandProvider(Provider):
             self.screen.app.title = f"lilbee — {value}"
 
     def _delete_doc(self, name: str) -> None:
-        from lilbee.services import get_services
-
         store = get_services().store
         store.delete_by_source(name)
         store.delete_source(name)

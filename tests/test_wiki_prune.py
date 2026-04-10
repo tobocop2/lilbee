@@ -92,7 +92,7 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="gone1.md", citation_key="src2"),
             make_citation(source_filename="gone2.md", citation_key="src3"),
         ]
-        assert _check_cluster_below_threshold("wiki/concepts/topic.md", store, cfg.documents_dir)
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg.documents_dir)
 
     def test_concepts_page_above_threshold(self, tmp_path: Path):
         write_source(tmp_path, "a.md", "content a")
@@ -105,21 +105,31 @@ class TestCheckClusterBelowThreshold:
             make_citation(source_filename="c.md", citation_key="src3"),
         ]
         assert not _check_cluster_below_threshold(
-            "wiki/concepts/topic.md", store, cfg.documents_dir
+            "wiki/synthesis/topic.md", store, cfg.documents_dir
         )
 
-    def test_non_concepts_page_skipped(self, tmp_path: Path):
+    def test_non_synthesis_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
             make_citation(source_filename="gone.md"),
         ]
         assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store, cfg.documents_dir)
 
+    def test_synthesis_page_below_threshold(self, tmp_path: Path):
+        write_source(tmp_path, "a.md", "content a")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="gone1.md", citation_key="src2"),
+            make_citation(source_filename="gone2.md", citation_key="src3"),
+        ]
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg.documents_dir)
+
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = []
         assert not _check_cluster_below_threshold(
-            "wiki/concepts/topic.md", store, cfg.documents_dir
+            "wiki/synthesis/topic.md", store, cfg.documents_dir
         )
 
 
@@ -233,22 +243,22 @@ class TestPruneWiki:
         assert not (tmp_path / "wiki" / "summaries" / "doc.md").exists()
         assert (tmp_path / "wiki" / "archive" / "doc.md").exists()
 
-    def test_archives_concept_page_below_threshold(self, tmp_path: Path):
-        write_wiki_page(tmp_path, "concepts", "topic", "# Topic\n")
+    def test_archives_synthesis_page_below_threshold(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "synthesis", "topic", "# Topic\n")
         write_source(tmp_path, "a.md", "content")
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="a.md",
             ),
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="gone1.md",
                 citation_key="src2",
             ),
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="gone2.md",
                 citation_key="src3",
             ),
@@ -307,13 +317,13 @@ class TestPruneWiki:
         assert report.records == []
         assert (tmp_path / "wiki" / "summaries" / "doc.md").exists()
 
-    def test_concept_page_with_enough_sources_not_pruned(self, tmp_path: Path):
+    def test_synthesis_page_with_enough_sources_not_pruned(self, tmp_path: Path):
         source_a = write_source(tmp_path, "a.md", "a")
         source_b = write_source(tmp_path, "b.md", "b")
         source_c = write_source(tmp_path, "c.md", "c")
         write_wiki_page(
             tmp_path,
-            "concepts",
+            "synthesis",
             "topic",
             "> Content.[^src1]\n"
             "---\n"
@@ -323,20 +333,20 @@ class TestPruneWiki:
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="a.md",
                 source_hash=source_hash(source_a),
                 excerpt="a",
             ),
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="b.md",
                 source_hash=source_hash(source_b),
                 excerpt="b",
                 citation_key="src2",
             ),
             make_citation(
-                wiki_source="wiki/concepts/topic.md",
+                wiki_source="wiki/synthesis/topic.md",
                 source_filename="c.md",
                 source_hash=source_hash(source_c),
                 excerpt="c",

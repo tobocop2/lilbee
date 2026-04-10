@@ -92,7 +92,6 @@ _MAX_REASONING_CHARS = 16_000  # ~4K tokens — safety limit for runaway reasoni
 
 def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamToken]:
     """Filter ``<think>...</think>`` tags from a token stream.
-
     When *show* is True, yields thinking content as ``StreamToken(is_reasoning=True)``.
     When *show* is False, strips thinking content entirely.
     Tokens outside thinking blocks are always yielded as ``is_reasoning=False``.

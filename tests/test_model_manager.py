@@ -64,7 +64,6 @@ def _install_registry_model(
 
 class TestModelManagerListInstalled:
     def test_native_lists_registered_models(self, tmp_path: Path) -> None:
-
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         _install_registry_model(models_dir, tmp_path, "llama3-8b", b"llama3-data")
@@ -124,7 +123,6 @@ class TestModelManagerListInstalled:
         assert result == []
 
     def test_none_source_lists_both(self, tmp_path: Path) -> None:
-
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         _install_registry_model(models_dir, tmp_path, "native-model", b"native-data")
@@ -141,7 +139,6 @@ class TestModelManagerListInstalled:
 
     def test_none_source_deduplicates(self, tmp_path: Path) -> None:
         """If same model appears in both sources, it should appear once."""
-
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         _install_registry_model(models_dir, tmp_path, "llama3", b"llama3-dedup-data")
@@ -514,28 +511,33 @@ class TestSingleton:
         reset_model_manager()
 
     def test_creates_singleton(self, tmp_path: Path) -> None:
-        with mock.patch("lilbee.config.cfg") as mock_cfg:
-            mock_cfg.models_dir = tmp_path / "models"
-            mock_cfg.litellm_base_url = "http://localhost:11434"
-            mgr = get_model_manager()
-            assert isinstance(mgr, ModelManager)
+        from lilbee.config import cfg
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.litellm_base_url = "http://localhost:11434"
+        mgr = get_model_manager()
+        assert isinstance(mgr, ModelManager)
+        assert mgr._models_dir == tmp_path / "models"
+        assert mgr._litellm_base_url == "http://localhost:11434"
 
     def test_returns_same_instance(self, tmp_path: Path) -> None:
-        with mock.patch("lilbee.config.cfg") as mock_cfg:
-            mock_cfg.models_dir = tmp_path / "models"
-            mock_cfg.litellm_base_url = "http://localhost:11434"
-            mgr1 = get_model_manager()
-            mgr2 = get_model_manager()
-            assert mgr1 is mgr2
+        from lilbee.config import cfg
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.litellm_base_url = "http://localhost:11434"
+        mgr1 = get_model_manager()
+        mgr2 = get_model_manager()
+        assert mgr1 is mgr2
 
     def test_reset_creates_new_instance(self, tmp_path: Path) -> None:
-        with mock.patch("lilbee.config.cfg") as mock_cfg:
-            mock_cfg.models_dir = tmp_path / "models"
-            mock_cfg.litellm_base_url = "http://localhost:11434"
-            mgr1 = get_model_manager()
-            reset_model_manager()
-            mgr2 = get_model_manager()
-            assert mgr1 is not mgr2
+        from lilbee.config import cfg
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.litellm_base_url = "http://localhost:11434"
+        mgr1 = get_model_manager()
+        reset_model_manager()
+        mgr2 = get_model_manager()
+        assert mgr1 is not mgr2
 
 
 class TestLitellmEdgeCases:

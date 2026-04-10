@@ -44,7 +44,6 @@ def _should_skip() -> bool:
 
 def start() -> SplashHandle | None:
     """Launch the splash animation subprocess.
-
     Returns a handle for ``stop()``, or None if the splash was skipped.
     The caller must eventually call ``stop(handle)`` to clean up.
     """
@@ -100,7 +99,6 @@ def stop(handle: SplashHandle | None) -> None:
 
 def dismiss() -> None:
     """Signal the splash to stop from the TUI side.
-
     Called by the chat screen's ``on_show()`` to dismiss the splash once
     the TUI is ready to paint. Reads the pipe fd from the environment
     variable and closes it — the subprocess sees EOF and exits.

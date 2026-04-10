@@ -15,13 +15,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from lilbee.clustering import SourceClusterer
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
-from lilbee.wiki.shared import MIN_CLUSTER_SOURCES, PageTarget, make_slug
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    MIN_CLUSTER_SOURCES,
+    SUMMARIES_SUBDIR,
+    SYNTHESIS_SUBDIR,
+    PageTarget,
+    make_slug,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +68,6 @@ def _parse_faithfulness_score(response: str) -> float:
 
 def _extract_excerpt(source_ref: str) -> str:
     """Extract the quoted excerpt from a citation source_ref string.
-
     e.g. 'doc.md, excerpt: "Python supports typing."' → 'Python supports typing.'
     """
     marker = 'excerpt: "'
@@ -121,7 +128,6 @@ def _resolve_citations(
     chunks: list[SearchChunk],
 ) -> list[CitationRecord]:
     """Resolve parsed citation refs to CitationRecord objects.
-
     Searches for each citation's excerpt in the source chunks to find
     the best matching location (page/line numbers).
     """
@@ -274,7 +280,7 @@ def _write_page(
         old_content = page_path.read_text(encoding="utf-8")
         ratio = _content_change_ratio(old_content, full_content)
         if ratio > drift_threshold:
-            drafts_dir = wiki_root / "drafts"
+            drafts_dir = wiki_root / DRAFTS_SUBDIR
             diff_text = _diff_summary(old_content, full_content)
             return _divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
 
@@ -367,8 +373,8 @@ def _generate_page(
     _emit("faithfulness_check")
     score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
     threshold = config.wiki_faithfulness_threshold
-    subdir = page_type if score >= threshold else "drafts"
-    if subdir == "drafts":
+    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
+    if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     frontmatter = _build_frontmatter(config, source_names, score)
@@ -405,7 +411,6 @@ def generate_summary_page(
     on_progress: WikiProgressCallback | None = None,
 ) -> Path | None:
     """Generate a wiki summary page for a source document.
-
     Returns the path to the generated page, or None on failure.
     The page goes to wiki/summaries/ if it passes the quality gate,
     or wiki/drafts/ if it fails.
@@ -433,7 +438,7 @@ def generate_summary_page(
         chunks=chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type="summaries",
+        page_type=SUMMARIES_SUBDIR,
         slug=slug,
         source_names=[source_name],
         provider=provider,
@@ -450,7 +455,6 @@ def _resolve_multi_source_citations(
     chunks_by_source: dict[str, list[SearchChunk]],
 ) -> list[CitationRecord]:
     """Resolve citations from a synthesis page that cites multiple sources.
-
     Each citation's source_ref is matched against the source list to
     determine which source document it references.
     """
@@ -519,7 +523,6 @@ def _generate_synthesis_page(
     config: Config,
 ) -> Path | None:
     """Generate a single synthesis page for a concept cluster.
-
     Returns the path to the generated page, or None on failure.
     """
     all_chunks = [c for cs in chunks_by_source.values() for c in cs]
@@ -550,7 +553,7 @@ def _generate_synthesis_page(
         chunks=all_chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type="concepts",
+        page_type=SYNTHESIS_SUBDIR,
         slug=slug,
         source_names=source_names,
         provider=provider,
@@ -560,9 +563,8 @@ def _generate_synthesis_page(
 
 
 def _generate_for_cluster(
-    cluster_id: int,
     label: str,
-    sources: set[str],
+    sources: frozenset[str],
     provider: LLMProvider,
     store: Store,
     config: Config,
@@ -584,29 +586,21 @@ def _generate_for_cluster(
 def generate_synthesis_pages(
     provider: LLMProvider,
     store: Store,
+    clusterer: SourceClusterer,
     config: Config | None = None,
 ) -> list[Path]:
-    """Generate synthesis pages for concept clusters spanning 3+ sources.
-
-    Reads the concept graph to find qualifying clusters, gathers chunks
-    from all cluster sources, and generates a synthesis page for each.
-    Returns paths to all generated pages (concepts/ or drafts/).
-    """
-    from lilbee.concepts import ConceptGraph
-
+    """Generate synthesis pages for source clusters spanning 3+ documents."""
     if config is None:
         config = cfg
 
-    graph = ConceptGraph(config, store)
-    cluster_sources = graph.get_cluster_sources(min_sources=MIN_CLUSTER_SOURCES)
-    if not cluster_sources:
-        log.info("No concept clusters span 3+ sources, skipping synthesis")
+    clusters = clusterer.get_clusters(min_sources=MIN_CLUSTER_SOURCES)
+    if not clusters:
+        log.info("No source clusters span %d+ sources, skipping synthesis", MIN_CLUSTER_SOURCES)
         return []
 
     pages: list[Path] = []
-    for cluster_id, sources in cluster_sources.items():
-        topic = graph.get_cluster_label(cluster_id)
-        page = _generate_for_cluster(cluster_id, topic, sources, provider, store, config)
+    for cluster in clusters:
+        page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config)
         if page is not None:
             pages.append(page)
 

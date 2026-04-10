@@ -12,12 +12,17 @@ import contextlib
 import logging
 import multiprocessing
 import multiprocessing.queues
+import queue
 import time
 from dataclasses import dataclass, field
 from multiprocessing import get_context
-from typing import Any
+from typing import Any, TypeVar
+
+from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
+
+_ResponseT = TypeVar("_ResponseT", "EmbedResponse", "VisionResponse")
 
 _EMBED_TIMEOUT_S = 30.0
 _VISION_TIMEOUT_S = 120.0
@@ -93,8 +98,6 @@ _WorkerResponse = EmbedResponse | VisionResponse
 
 def config_snapshot_from_cfg() -> ConfigSnapshot:
     """Build a ConfigSnapshot from the current cfg singleton."""
-    from lilbee.config import cfg
-
     return ConfigSnapshot(
         models_dir=str(cfg.models_dir),
         embedding_model=cfg.embedding_model,
@@ -107,7 +110,6 @@ def config_snapshot_from_cfg() -> ConfigSnapshot:
 
 class WorkerProcess:
     """Manages a child process for embedding and vision inference.
-
     The child loads llama-cpp models independently, avoiding GIL
     contention and stdout corruption in the parent process.
     """
@@ -180,83 +182,55 @@ class WorkerProcess:
 
     def embed(self, texts: list[str], model: str = "") -> list[list[float]]:
         """Send an embed request and wait for the response.
-
         Auto-starts the worker if not running. Retries once on crash.
         """
         self._ensure_started()
-        rid = self._next_request_id()
-        req = EmbedRequest(texts=texts, model=model, request_id=rid)
-        return self._send_and_receive_embed(req)
-
-    def _send_and_receive_embed(self, req: EmbedRequest) -> list[list[float]]:
-        """Put request, get response, handle crash with one retry."""
-        if self._request_queue is None:
-            raise RuntimeError("Worker not started")
-        self._request_queue.put(req)
-        resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
-        if resp is None:
-            return self._retry_embed(req)
-        if not isinstance(resp, EmbedResponse):
-            raise RuntimeError(f"Unexpected response type: {type(resp).__name__}")
-        if resp.error:
-            raise RuntimeError(resp.error)
-        return resp.vectors
-
-    def _retry_embed(self, req: EmbedRequest) -> list[list[float]]:
-        """Restart worker and retry a failed embed request once."""
-        log.warning("Worker crashed during embed, restarting and retrying")
-        self.restart()
-        if self._request_queue is None:
-            raise RuntimeError("Worker not started")
-        self._request_queue.put(req)
-        resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
-        if resp is None:
-            raise RuntimeError("Worker crashed again after restart")
-        if not isinstance(resp, EmbedResponse):
-            raise RuntimeError(f"Unexpected response type: {type(resp).__name__}")
-        if resp.error:
-            raise RuntimeError(resp.error)
+        req = EmbedRequest(texts=texts, model=model, request_id=self._next_request_id())
+        resp = self._round_trip(req, EmbedResponse, _EMBED_TIMEOUT_S, label="embed")
         return resp.vectors
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
         """Send a vision OCR request and wait for the response.
-
         Auto-starts the worker if not running. Retries once on crash.
         """
         self._ensure_started()
-        rid = self._next_request_id()
-        req = VisionRequest(png_bytes=png_bytes, model=model, prompt=prompt, request_id=rid)
-        return self._send_and_receive_vision(req)
+        req = VisionRequest(
+            png_bytes=png_bytes,
+            model=model,
+            prompt=prompt,
+            request_id=self._next_request_id(),
+        )
+        resp = self._round_trip(req, VisionResponse, _VISION_TIMEOUT_S, label="vision OCR")
+        return resp.text
 
-    def _send_and_receive_vision(self, req: VisionRequest) -> str:
-        """Put request, get response, handle crash with one retry."""
-        if self._request_queue is None:
-            raise RuntimeError("Worker not started")
-        self._request_queue.put(req)
-        resp = self._get_response(timeout=_VISION_TIMEOUT_S)
+    def _round_trip(
+        self,
+        req: _WorkerRequest,
+        response_type: type[_ResponseT],
+        timeout: float,
+        *,
+        label: str,
+    ) -> _ResponseT:
+        """Send a request, wait for the typed response, restart once on crash."""
+        resp = self._put_and_get(req, timeout)
         if resp is None:
-            return self._retry_vision(req)
-        if not isinstance(resp, VisionResponse):
+            log.warning("Worker crashed during %s, restarting and retrying", label)
+            self.restart()
+            resp = self._put_and_get(req, timeout)
+            if resp is None:
+                raise RuntimeError("Worker crashed again after restart")
+        if not isinstance(resp, response_type):
             raise RuntimeError(f"Unexpected response type: {type(resp).__name__}")
         if resp.error:
             raise RuntimeError(resp.error)
-        return resp.text
+        return resp
 
-    def _retry_vision(self, req: VisionRequest) -> str:
-        """Restart worker and retry a failed vision request once."""
-        log.warning("Worker crashed during vision OCR, restarting and retrying")
-        self.restart()
+    def _put_and_get(self, req: _WorkerRequest, timeout: float) -> _WorkerResponse | None:
+        """Enqueue a request and block for the next response. None if worker died."""
         if self._request_queue is None:
             raise RuntimeError("Worker not started")
         self._request_queue.put(req)
-        resp = self._get_response(timeout=_VISION_TIMEOUT_S)
-        if resp is None:
-            raise RuntimeError("Worker crashed again after restart")
-        if not isinstance(resp, VisionResponse):
-            raise RuntimeError(f"Unexpected response type: {type(resp).__name__}")
-        if resp.error:
-            raise RuntimeError(resp.error)
-        return resp.text
+        return self._get_response(timeout=timeout)
 
     def _get_response(self, timeout: float) -> _WorkerResponse | None:
         """Read from response queue. Return None if worker died."""
@@ -268,7 +242,7 @@ class WorkerProcess:
                 return None
             try:
                 return self._response_queue.get(timeout=min(1.0, timeout))
-            except Exception:
+            except queue.Empty:
                 continue
         raise TimeoutError(f"Worker did not respond within {timeout}s")
 
@@ -282,7 +256,6 @@ class WorkerProcess:
 
 def _redirect_stdio() -> None:
     """Redirect stdout/stderr to /dev/null for the worker subprocess.
-
     Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
     Queues use pipes, not stdout.
     """
@@ -304,6 +277,7 @@ def _worker_main(
 ) -> None:
     """Child process entry point. Loads models lazily, processes requests."""
     _redirect_stdio()
+    _apply_config_snapshot(config)
 
     embed_llm: Any = None
     vision_llm: Any = None
@@ -336,7 +310,7 @@ def _worker_main(
             model_name = request.model or config.embedding_model
             if embed_llm is None or model_name != current_embed_model:
                 _close_model(embed_llm)
-                embed_llm = _load_embed_model(config, model_name)
+                embed_llm = _load_embed_model(model_name)
                 current_embed_model = model_name
             embed_resp = _handle_embed(embed_llm, request)
             resp_q.put(embed_resp)
@@ -346,7 +320,7 @@ def _worker_main(
             model_name = request.model or config.vision_model
             if vision_llm is None or model_name != current_vision_model:
                 _close_model(vision_llm)
-                vision_llm = _load_vision_model(config, model_name)
+                vision_llm = _load_vision_model(model_name)
                 current_vision_model = model_name
             vision_resp = _handle_vision(vision_llm, request)
             resp_q.put(vision_resp)
@@ -360,34 +334,33 @@ def _close_model(model: Any) -> None:
             model.close()
 
 
-def _load_embed_model(config: ConfigSnapshot, model_name: str) -> Any:
-    """Load an embedding model in the child process."""
+def _apply_config_snapshot(config: ConfigSnapshot) -> None:
+    """Apply parent-process config to the child's cfg singleton.
+    Called exactly once at child startup so later load paths can use
+    ``cfg.models_dir`` etc. without per-request mutation. Per-request
+    mutation would violate the "no mutable module-level globals in
+    request paths" rule in CLAUDE.md.
+    """
     from pathlib import Path
-
-    from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
 
     cfg.models_dir = Path(config.models_dir)
     cfg.embedding_model = config.embedding_model
-    cfg.num_ctx = config.num_ctx
-
-    model_path = resolve_model_path(model_name)
-    return load_llama(model_path, embedding=True)
-
-
-def _load_vision_model(config: ConfigSnapshot, model_name: str) -> Any:
-    """Load a vision model in the child process."""
-    from pathlib import Path
-
-    from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
-
-    cfg.models_dir = Path(config.models_dir)
     cfg.vision_model = config.vision_model
     cfg.num_ctx = config.num_ctx
 
-    model_path = resolve_model_path(model_name)
-    return load_vision_llama(model_path)
+
+def _load_embed_model(model_name: str) -> Any:
+    """Load an embedding model in the child process."""
+    from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
+
+    return load_llama(resolve_model_path(model_name), embedding=True)
+
+
+def _load_vision_model(model_name: str) -> Any:
+    """Load a vision model in the child process."""
+    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
+
+    return load_vision_llama(resolve_model_path(model_name))
 
 
 def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:

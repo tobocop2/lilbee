@@ -1249,8 +1249,8 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "1.10.0.dev0"
-source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety#8411df922aea9f8a62625c8d35bb737d4331b56e" }
+version = "1.11.0.dev0"
+source = { git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety#cb1cb66d2421d0b6b2ca4787e7aba71e02e65a8d" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
@@ -1601,6 +1601,7 @@ dependencies = [
     { name = "litestar" },
     { name = "llama-cpp-python" },
     { name = "mcp" },
+    { name = "numpy" },
     { name = "pillow" },
     { name = "psutil" },
     { name = "pydantic-settings" },
@@ -1653,6 +1654,7 @@ requires-dist = [
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
     { name = "mcp", specifier = ">=1.26.0" },
+    { name = "numpy" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic-settings", specifier = ">=2.13.1" },

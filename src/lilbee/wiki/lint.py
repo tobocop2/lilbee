@@ -21,7 +21,7 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     verify_citation,
 )
-from lilbee.wiki.shared import parse_frontmatter
+from lilbee.wiki.shared import WIKI_CONTENT_SUBDIRS, parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,6 @@ def _lint_citation(
     documents_dir: Path,
 ) -> LintIssue | None:
     """Check a single citation record against the filesystem.
-
     Returns a LintIssue if the citation is stale or broken, None if valid.
     """
     source_path = documents_dir / rec["source_filename"]
@@ -196,7 +195,6 @@ def lint_changed_sources(
     config: Config | None = None,
 ) -> LintReport:
     """Lightweight lint: check only wiki pages citing changed/removed sources.
-
     Intended to run automatically after sync.
     """
     # TODO: wire into sync pipeline
@@ -236,7 +234,7 @@ def lint_all(
     if not wiki_root.exists():
         return report
 
-    for subdir in ("summaries", "concepts"):
+    for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
             continue

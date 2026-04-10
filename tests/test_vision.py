@@ -20,7 +20,6 @@ def _clean_vision_module() -> None:
 @pytest.fixture()
 def mock_provider():
     """Create a mock provider and inject it via Services.
-
     Uses spec_set to exclude vision_ocr — tests that need the subprocess
     path should set it explicitly on the mock.
     """
@@ -39,6 +38,7 @@ def mock_provider():
         embedder=embedder,
         reranker=reranker,
         concepts=concepts,
+        clusterer=mock.MagicMock(),
         searcher=searcher,
         registry=registry,
     )
@@ -171,6 +171,7 @@ class TestExtractPageTextSubprocess:
             embedder=mock.MagicMock(),
             reranker=mock.MagicMock(),
             concepts=mock.MagicMock(),
+            clusterer=mock.MagicMock(),
             searcher=mock.MagicMock(),
             registry=mock.MagicMock(),
         )
@@ -192,6 +193,7 @@ class TestExtractPageTextSubprocess:
             embedder=mock.MagicMock(),
             reranker=mock.MagicMock(),
             concepts=mock.MagicMock(),
+            clusterer=mock.MagicMock(),
             searcher=mock.MagicMock(),
             registry=mock.MagicMock(),
         )

@@ -7,13 +7,13 @@ from textual.suggester import Suggester
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui.app import DARK_THEMES
 from lilbee.cli.tui.command_registry import command_names
+from lilbee.services import get_services
 
 _SLASH_COMMANDS = command_names()
 
 
 class SlashSuggester(Suggester):
     """Context-aware suggestions for the chat input.
-
     Suggests slash command names when input starts with '/'.
     Suggests argument values for commands that take them.
     """
@@ -81,8 +81,6 @@ class SlashSuggester(Suggester):
 
     def _get_document_names(self) -> list[str]:
         try:
-            from lilbee.services import get_services
-
             sources = get_services().store.get_sources()
             return [s.get("filename", s.get("source", "")) for s in sources]  # pragma: no cover
         except Exception:

@@ -18,7 +18,6 @@ from lilbee.model_defaults import (
 @pytest.fixture(autouse=True)
 def _isolated_defaults(tmp_path):
     """Snapshot config and clear model defaults cache for each test.
-
     Resets all generation-option fields to None so tests aren't affected
     by the user's local config.toml (e.g. temperature=0.6).
     """
