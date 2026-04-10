@@ -108,12 +108,22 @@ class TestCheckClusterBelowThreshold:
             "wiki/concepts/topic.md", store, cfg.documents_dir
         )
 
-    def test_non_concepts_page_skipped(self, tmp_path: Path):
+    def test_non_synthesis_page_skipped(self, tmp_path: Path):
         store = MagicMock(spec=Store)
         store.get_citations_for_wiki.return_value = [
             make_citation(source_filename="gone.md"),
         ]
         assert not _check_cluster_below_threshold("wiki/summaries/doc.md", store, cfg.documents_dir)
+
+    def test_synthesis_page_below_threshold(self, tmp_path: Path):
+        write_source(tmp_path, "a.md", "content a")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = [
+            make_citation(source_filename="a.md"),
+            make_citation(source_filename="gone1.md", citation_key="src2"),
+            make_citation(source_filename="gone2.md", citation_key="src3"),
+        ]
+        assert _check_cluster_below_threshold("wiki/synthesis/topic.md", store, cfg.documents_dir)
 
     def test_no_citations(self, tmp_path: Path):
         store = MagicMock(spec=Store)

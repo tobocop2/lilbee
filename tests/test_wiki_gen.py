@@ -513,7 +513,7 @@ def _synthesis_wiki_text(sources: list[str]) -> str:
 
 
 class TestGenerateSynthesisPage:
-    def test_generates_concepts_page(self, tmp_path: Path):
+    def test_generates_synthesis_page(self, tmp_path: Path):
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
             (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
@@ -535,7 +535,7 @@ class TestGenerateSynthesisPage:
         )
         assert result is not None
         assert result.exists()
-        assert "concepts" in str(result)
+        assert "synthesis" in str(result)
         assert result.name == "gradual-typing.md"
         content = result.read_text()
         assert "generated_by: test-model" in content
@@ -672,61 +672,67 @@ class TestGenerateSynthesisPage:
         store.add_citations.assert_called_once()
 
 
-class TestGenerateSynthesisPages:
-    def test_no_clusters_returns_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        from lilbee.concepts import ConceptGraph
+class _FakeClusterer:
+    """Test double implementing the SourceClusterer protocol."""
 
-        monkeypatch.setattr(ConceptGraph, "get_cluster_sources", lambda self, **kw: {})
+    def __init__(
+        self,
+        clusters: list,
+        is_available: bool = True,
+    ) -> None:
+        self._clusters = clusters
+        self._available = is_available
+
+    def available(self) -> bool:
+        return self._available
+
+    def get_clusters(self, min_sources: int = 3):
+        return list(self._clusters)
+
+
+class TestGenerateSynthesisPages:
+    def test_unavailable_clusterer_returns_empty(self, tmp_path: Path):
         store = _mock_store()
         provider = MagicMock()
-        result = generate_synthesis_pages(provider, store)
+        clusterer = _FakeClusterer([], is_available=False)
+        result = generate_synthesis_pages(provider, store, clusterer)
+        assert result == []
+        provider.chat.assert_not_called()
+
+    def test_no_clusters_returns_empty(self, tmp_path: Path):
+        store = _mock_store()
+        provider = MagicMock()
+        clusterer = _FakeClusterer([])
+        result = generate_synthesis_pages(provider, store, clusterer)
         assert result == []
 
-    def test_skips_clusters_with_insufficient_chunks(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        from lilbee.concepts import ConceptGraph
+    def test_skips_clusters_with_insufficient_chunks(self, tmp_path: Path):
+        from lilbee.clustering import SourceCluster
 
-        monkeypatch.setattr(
-            ConceptGraph,
-            "get_cluster_sources",
-            lambda self, **kw: {0: {"a.md", "b.md", "c.md"}},
-        )
-        monkeypatch.setattr(ConceptGraph, "get_cluster_label", lambda self, cid: "topic")
         store = _mock_store()
         # Only 2 sources have chunks (need 3)
         store.get_chunks_by_source.side_effect = lambda name: (
             [_make_chunk("text", source=name)] if name != "c.md" else []
         )
         provider = MagicMock()
+        clusterer = _FakeClusterer(
+            [
+                SourceCluster(
+                    cluster_id="x", label="topic", sources=frozenset({"a.md", "b.md", "c.md"})
+                )
+            ]
+        )
 
-        result = generate_synthesis_pages(provider, store)
+        result = generate_synthesis_pages(provider, store, clusterer)
         assert result == []
         provider.chat.assert_not_called()
 
-    def test_generates_page_for_qualifying_cluster(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        from lilbee.concepts import ConceptGraph
+    def test_generates_page_for_qualifying_cluster(self, tmp_path: Path):
+        from lilbee.clustering import SourceCluster
 
         sources = ["a.md", "b.md", "c.md"]
         for name in sources:
             (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
-
-        monkeypatch.setattr(
-            ConceptGraph,
-            "get_cluster_sources",
-            lambda self, **kw: {0: set(sources)},
-        )
-        monkeypatch.setattr(
-            ConceptGraph,
-            "get_cluster_label",
-            lambda self, cid: "gradual typing",
-        )
 
         store = _mock_store()
         store.get_chunks_by_source.side_effect = lambda name: [
@@ -735,11 +741,40 @@ class TestGenerateSynthesisPages:
 
         wiki_text = _synthesis_wiki_text(sources)
         provider = _mock_provider(wiki_text)
+        clusterer = _FakeClusterer(
+            [
+                SourceCluster(
+                    cluster_id="x",
+                    label="gradual typing",
+                    sources=frozenset(sources),
+                )
+            ]
+        )
 
-        result = generate_synthesis_pages(provider, store)
+        result = generate_synthesis_pages(provider, store, clusterer)
         assert len(result) == 1
         assert result[0].exists()
-        assert "concepts" in str(result[0]) or "drafts" in str(result[0])
+        assert "synthesis" in str(result[0]) or "drafts" in str(result[0])
+
+    def test_failed_page_generation_omitted(self, tmp_path: Path):
+        from lilbee.clustering import SourceCluster
+
+        store = _mock_store()
+        # Returning empty chunks for every source means no cluster qualifies.
+        store.get_chunks_by_source.side_effect = lambda name: []
+        provider = _mock_provider("")
+        clusterer = _FakeClusterer(
+            [
+                SourceCluster(
+                    cluster_id="x",
+                    label="topic",
+                    sources=frozenset({"a.md", "b.md", "c.md"}),
+                )
+            ]
+        )
+
+        result = generate_synthesis_pages(provider, store, clusterer)
+        assert result == []
 
 
 class TestContentChangeRatio:
@@ -865,10 +900,10 @@ class TestSynthesisDriftDetection:
         for name in sources:
             (tmp_path / "documents" / name).write_text(f"Fact from {name}.")
 
-        # Write an existing concepts page with very different content
-        concepts_dir = tmp_path / "wiki" / "concepts"
-        concepts_dir.mkdir(parents=True)
-        existing = concepts_dir / "gradual-typing.md"
+        # Write an existing synthesis page with very different content
+        synthesis_dir = tmp_path / "wiki" / "synthesis"
+        synthesis_dir.mkdir(parents=True)
+        existing = synthesis_dir / "gradual-typing.md"
         existing.write_text("---\ngenerated_by: old\n---\n\nTotally different synthesis.\n")
 
         chunks_by_source = {

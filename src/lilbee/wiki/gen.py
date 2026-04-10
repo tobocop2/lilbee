@@ -15,13 +15,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from lilbee.clustering import SourceClusterer
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
-from lilbee.wiki.shared import MIN_CLUSTER_SOURCES, PageTarget, make_slug
+from lilbee.wiki.shared import (
+    MIN_CLUSTER_SOURCES,
+    SYNTHESIS_SUBDIR,
+    PageTarget,
+    make_slug,
+)
 
 log = logging.getLogger(__name__)
 
@@ -550,7 +556,7 @@ def _generate_synthesis_page(
         chunks=all_chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type="concepts",
+        page_type=SYNTHESIS_SUBDIR,
         slug=slug,
         source_names=source_names,
         provider=provider,
@@ -560,9 +566,8 @@ def _generate_synthesis_page(
 
 
 def _generate_for_cluster(
-    cluster_id: int,
     label: str,
-    sources: set[str],
+    sources: frozenset[str],
     provider: LLMProvider,
     store: Store,
     config: Config,
@@ -584,29 +589,35 @@ def _generate_for_cluster(
 def generate_synthesis_pages(
     provider: LLMProvider,
     store: Store,
+    clusterer: SourceClusterer,
     config: Config | None = None,
 ) -> list[Path]:
-    """Generate synthesis pages for concept clusters spanning 3+ sources.
+    """Generate synthesis pages for source clusters spanning 3+ documents.
 
-    Reads the concept graph to find qualifying clusters, gathers chunks
-    from all cluster sources, and generates a synthesis page for each.
-    Returns paths to all generated pages (concepts/ or drafts/).
+    Uses the injected :class:`SourceClusterer` to find qualifying clusters,
+    gathers chunks from all cluster sources, and generates a synthesis
+    page for each. Returns paths to all generated pages (synthesis/ or
+    drafts/). When the clusterer is unavailable, logs a notice and
+    returns an empty list.
     """
-    from lilbee.concepts import ConceptGraph
-
     if config is None:
         config = cfg
 
-    graph = ConceptGraph(config, store)
-    cluster_sources = graph.get_cluster_sources(min_sources=MIN_CLUSTER_SOURCES)
-    if not cluster_sources:
-        log.info("No concept clusters span 3+ sources, skipping synthesis")
+    if not clusterer.available():
+        log.info(
+            "Wiki synthesis skipped: no clusterer available. "
+            "For concept-based clustering install lilbee[graph]."
+        )
+        return []
+
+    clusters = clusterer.get_clusters(min_sources=MIN_CLUSTER_SOURCES)
+    if not clusters:
+        log.info("No source clusters span %d+ sources, skipping synthesis", MIN_CLUSTER_SOURCES)
         return []
 
     pages: list[Path] = []
-    for cluster_id, sources in cluster_sources.items():
-        topic = graph.get_cluster_label(cluster_id)
-        page = _generate_for_cluster(cluster_id, topic, sources, provider, store, config)
+    for cluster in clusters:
+        page = _generate_for_cluster(cluster.label, cluster.sources, provider, store, config)
         if page is not None:
             pages.append(page)
 

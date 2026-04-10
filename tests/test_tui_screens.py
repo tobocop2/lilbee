@@ -4376,14 +4376,14 @@ class TestWikiFormatPageHeader:
     def test_no_faithfulness(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "concept", 0, "", None)
+        result = _format_page_header("Title", "synthesis", 0, "", None)
         assert "Title" in result
         assert "%" not in result
 
     def test_no_sources(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "concept", 0, "2025-01-01", None)
+        result = _format_page_header("Title", "synthesis", 0, "2025-01-01", None)
         assert "sources" not in result
 
 
@@ -4394,12 +4394,12 @@ class TestWikiGroupPages:
 
         pages = [
             WikiPageInfo("s/a", "A", "summary", 1, ""),
-            WikiPageInfo("c/b", "B", "concept", 2, ""),
+            WikiPageInfo("c/b", "B", "synthesis", 2, ""),
             WikiPageInfo("s/c", "C", "summary", 1, ""),
         ]
         groups = _group_pages(pages)
         types = [g[0] for g in groups]
-        assert types == ["summary", "concept"]
+        assert types == ["summary", "synthesis"]
         assert len(groups[0][1]) == 2
         assert len(groups[1][1]) == 1
 

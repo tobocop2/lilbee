@@ -11,11 +11,29 @@ import yaml
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
+# Filesystem subdirectory names inside ``wiki/``. ``SYNTHESIS_SUBDIR`` is the
+# canonical name for cross-source pages; ``LEGACY_SYNTHESIS_SUBDIR`` is read
+# for back-compat when older deployments stored pages under ``concepts/``.
+SUMMARIES_SUBDIR = "summaries"
+SYNTHESIS_SUBDIR = "synthesis"
+LEGACY_SYNTHESIS_SUBDIR = "concepts"
+DRAFTS_SUBDIR = "drafts"
+ARCHIVE_SUBDIR = "archive"
+
+# Subdirs scanned when listing or linting wiki content. Both synthesis
+# directories are included so existing ``concepts/`` data keeps working.
+WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (
+    SUMMARIES_SUBDIR,
+    SYNTHESIS_SUBDIR,
+    LEGACY_SYNTHESIS_SUBDIR,
+)
+
 SUBDIR_TO_TYPE: dict[str, str] = {
-    "summaries": "summary",
-    "concepts": "concept",
-    "drafts": "draft",
-    "archive": "archive",
+    SUMMARIES_SUBDIR: "summary",
+    SYNTHESIS_SUBDIR: "synthesis",
+    LEGACY_SYNTHESIS_SUBDIR: "synthesis",
+    DRAFTS_SUBDIR: "draft",
+    ARCHIVE_SUBDIR: "archive",
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")

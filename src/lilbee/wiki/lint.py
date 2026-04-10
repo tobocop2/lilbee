@@ -21,7 +21,7 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     verify_citation,
 )
-from lilbee.wiki.shared import parse_frontmatter
+from lilbee.wiki.shared import WIKI_CONTENT_SUBDIRS, parse_frontmatter
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +236,7 @@ def lint_all(
     if not wiki_root.exists():
         return report
 
-    for subdir in ("summaries", "concepts"):
+    for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
         if not subdir_path.is_dir():
             continue

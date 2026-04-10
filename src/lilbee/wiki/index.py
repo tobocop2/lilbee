@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lilbee.config import Config, cfg
-from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
+from lilbee.wiki.shared import (
+    SUBDIR_TO_TYPE,
+    WIKI_CONTENT_SUBDIRS,
+    parse_frontmatter,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,9 +48,10 @@ def parse_source_count(text: str) -> int:
 
 
 def update_wiki_index(config: Config | None = None) -> Path:
-    """Scan summaries/ and concepts/ directories and write wiki/index.md.
+    """Scan summaries/ and synthesis/ directories and write wiki/index.md.
 
-    Returns the path to the generated index file.
+    Older ``concepts/`` directories are still read for back-compat so any
+    legacy pages remain listed in the index.
     """
     if config is None:
         config = cfg
@@ -55,7 +60,7 @@ def update_wiki_index(config: Config | None = None) -> Path:
 
     lines: list[str] = ["# Wiki Index", ""]
 
-    for subdir in ("summaries", "concepts"):
+    for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = root / subdir
         if not subdir_path.is_dir():
             continue

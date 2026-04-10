@@ -1151,6 +1151,25 @@ class TestVisionMmprojFiles:
 
         assert second_mmproj_calls == 0
 
+    def test_download_mmproj_already_exists_invokes_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When mmproj is already on disk, on_progress receives the cached size."""
+        monkeypatch.setattr(catalog.cfg, "models_dir", tmp_path)
+        entry = FEATURED_VISION[0]
+        monkeypatch.setattr(
+            catalog, "_resolve_mmproj_filename", lambda repo, pat: "model-mmproj-f16.gguf"
+        )
+        mmproj_file = tmp_path / "model-mmproj-f16.gguf"
+        payload = b"existing mmproj bytes"
+        mmproj_file.write_bytes(payload)
+
+        events: list[tuple[int, int]] = []
+
+        result = catalog._download_mmproj(entry, on_progress=lambda d, t: events.append((d, t)))
+        assert result == mmproj_file
+        assert events == [(len(payload), len(payload))]
+
 
 class TestVisionMmprojFallback:
     def test_unmapped_vision_model_uses_default_pattern(

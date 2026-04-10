@@ -20,7 +20,12 @@ from lilbee.config import Config, cfg
 from lilbee.store import Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
-from lilbee.wiki.shared import MIN_CLUSTER_SOURCES
+from lilbee.wiki.shared import (
+    LEGACY_SYNTHESIS_SUBDIR,
+    MIN_CLUSTER_SOURCES,
+    SYNTHESIS_SUBDIR,
+    WIKI_CONTENT_SUBDIRS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +115,10 @@ def _check_cluster_below_threshold(
     min_sources: int = MIN_CLUSTER_SOURCES,
 ) -> bool:
     """Return True if a synthesis page's live source count dropped below min_sources."""
-    if "/concepts/" not in wiki_source:
+    if (
+        f"/{SYNTHESIS_SUBDIR}/" not in wiki_source
+        and f"/{LEGACY_SYNTHESIS_SUBDIR}/" not in wiki_source
+    ):
         return False
     citations = store.get_citations_for_wiki(wiki_source)
     if not citations:
@@ -195,7 +203,7 @@ def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
     report = PruneReport()
     if not wiki_root.exists():
         return report
-    for subdir in ("summaries", "concepts"):
+    for subdir in WIKI_CONTENT_SUBDIRS:
         subdir_path = wiki_root / subdir
         if not subdir_path.exists():
             continue

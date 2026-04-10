@@ -358,10 +358,15 @@ class TestHelpers:
 
         assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
 
-    def test_page_type_from_concepts(self, tmp_path: Path):
+    def test_page_type_from_synthesis(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path
 
-        assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "concept"
+        assert _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path) == "synthesis"
+
+    def test_page_type_from_legacy_concepts(self, tmp_path: Path):
+        from lilbee.wiki.browse import _page_type_from_path
+
+        assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "synthesis"
 
     def test_page_type_unknown(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path

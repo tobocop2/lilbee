@@ -87,7 +87,7 @@ WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
 WIKI_TYPE_HEADINGS: dict[str, str] = {
     "summary": "Summaries",
-    "concept": "Concepts",
+    "synthesis": "Synthesis",
 }
 APP_CANCELLED = "Cancelled"
 SETUP_WELCOME = "Welcome to lilbee"

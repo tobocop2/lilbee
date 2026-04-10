@@ -238,9 +238,9 @@ class WikiScreen(Screen[None]):
 def _group_pages(
     pages: list[WikiPageInfo],
 ) -> list[tuple[str, list[WikiPageInfo]]]:
-    """Group pages by page_type, maintaining order: summaries first, then concepts."""
+    """Group pages by page_type, maintaining order: summaries first, then synthesis."""
     groups: dict[str, list[WikiPageInfo]] = {}
-    type_order = ["summary", "concept"]
+    type_order = ["summary", "synthesis"]
     for t in type_order:
         group = [p for p in pages if p.page_type == t]
         if group:
