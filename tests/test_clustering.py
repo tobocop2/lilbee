@@ -16,7 +16,6 @@ from lilbee.clustering import (
 from lilbee.clustering_embedding import (
     ChunkRecord,
     EmbeddingClusterer,
-    _tokenize_for_tf,
     auto_k,
     communities_by_label,
     label_propagation,
@@ -36,11 +35,15 @@ def isolated_cfg():
 
 
 def _record(source: str, chunk_index: int = 0, text: str = "") -> ChunkRecord:
+    # Tests use plain whitespace split so we don't reach into the module's
+    # private _tokenize_for_tf helper. Token filtering semantics are
+    # covered separately via EmbeddingClusterer.get_clusters integration.
+    tokens = [word for word in text.lower().split() if len(word) >= 3]
     return ChunkRecord(
         source=source,
         chunk_index=chunk_index,
         text=text,
-        tokens=_tokenize_for_tf(text),
+        tokens=tokens,
     )
 
 
@@ -516,9 +519,10 @@ class TestClustererFacade:
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
+        clusterer = Clusterer(cfg, MagicMock())
         with caplog.at_level(logging.WARNING, logger="lilbee.clustering"):
-            clusterer = Clusterer(cfg, MagicMock())
-        assert isinstance(clusterer.backend, EmbeddingClusterer)
+            backend = clusterer.backend
+        assert isinstance(backend, EmbeddingClusterer)
         assert any("falling back" in rec.message.lower() for rec in caplog.records)
 
     def test_facade_forwards_available_and_get_clusters(self, monkeypatch: pytest.MonkeyPatch):
@@ -535,6 +539,30 @@ class TestClustererFacade:
         assert clusterer.get_clusters(min_sources=3)[0].cluster_id == "x"
         fake_backend.get_clusters.assert_called_once_with(min_sources=3)
         assert clusterer.backend is fake_backend
+
+    def test_backend_cached_until_config_changes(self):
+        """Repeated calls with the same config should reuse the backend."""
+        cfg.wiki_clusterer = ClustererBackend.EMBEDDING
+        clusterer = Clusterer(cfg, MagicMock())
+        first = clusterer.backend
+        second = clusterer.backend
+        assert first is second
+
+    def test_backend_rebuilds_on_config_change(self, monkeypatch: pytest.MonkeyPatch):
+        """wiki_clusterer is writable at runtime, so the facade must
+        re-select the backend whenever the config flips."""
+        from lilbee.concepts import ConceptGraphClusterer
+
+        cfg.wiki_clusterer = ClustererBackend.EMBEDDING
+        clusterer = Clusterer(cfg, MagicMock())
+        first = clusterer.backend
+        assert isinstance(first, EmbeddingClusterer)
+
+        monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: True)
+        cfg.wiki_clusterer = ClustererBackend.CONCEPTS
+        second = clusterer.backend
+        assert isinstance(second, ConceptGraphClusterer)
+        assert second is not first
 
 
 class TestConceptGraphClusterer:

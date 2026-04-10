@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from lilbee.wiki.browse import WikiPageInfo
+    from lilbee.wiki.shared import WikiPageType
 
 from textual import on
 from textual.app import ComposeResult
@@ -31,7 +32,7 @@ def _wiki_root() -> Path:
 
 def _format_page_header(
     title: str,
-    page_type: str,
+    page_type: WikiPageType,
     source_count: int,
     created_at: str,
     faithfulness: float | None,
@@ -165,12 +166,13 @@ class WikiScreen(Screen[None]):
         faithfulness = page.frontmatter.get("faithfulness_score")
         faith_val = float(faithfulness) if faithfulness is not None else None
 
-        page_type = ""
+        from lilbee.wiki.shared import SUBDIR_TO_TYPE
+        from lilbee.wiki.shared import WikiPageType as _WikiPageType
+
+        page_type: WikiPageType = _WikiPageType.UNKNOWN
         parts = slug.split("/")
         if len(parts) >= 2:
-            from lilbee.wiki.shared import SUBDIR_TO_TYPE
-
-            page_type = SUBDIR_TO_TYPE.get(parts[0], "")
+            page_type = SUBDIR_TO_TYPE.get(parts[0], _WikiPageType.UNKNOWN)
 
         source_count = page.frontmatter.get("source_count", 0)
         created_at = page.frontmatter.get("generated_at", "")
@@ -237,12 +239,12 @@ class WikiScreen(Screen[None]):
 
 def _group_pages(
     pages: list[WikiPageInfo],
-) -> list[tuple[str, list[WikiPageInfo]]]:
+) -> list[tuple[WikiPageType, list[WikiPageInfo]]]:
     """Group pages by page_type, maintaining order: summaries first, then synthesis."""
-    from lilbee.wiki.shared import WikiPageType
+    from lilbee.wiki.shared import WikiPageType as _WikiPageType
 
-    groups: dict[str, list[WikiPageInfo]] = {}
-    type_order: tuple[str, ...] = (WikiPageType.SUMMARY, WikiPageType.SYNTHESIS)
+    groups: dict[WikiPageType, list[WikiPageInfo]] = {}
+    type_order: tuple[WikiPageType, ...] = (_WikiPageType.SUMMARY, _WikiPageType.SYNTHESIS)
     for t in type_order:
         group = [p for p in pages if p.page_type == t]
         if group:

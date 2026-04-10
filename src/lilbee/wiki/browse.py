@@ -13,6 +13,7 @@ from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     SUBDIR_TO_TYPE,
     WIKI_CONTENT_SUBDIRS,
+    WikiPageType,
     parse_frontmatter,
 )
 
@@ -23,7 +24,7 @@ class WikiPageInfo:
 
     slug: str
     title: str
-    page_type: str
+    page_type: WikiPageType
     source_count: int
     created_at: str
 
@@ -55,16 +56,16 @@ def list_md_files(directory: Path) -> list[Path]:
     return sorted(directory.glob("*.md"))
 
 
-def _page_type_from_path(path: Path, wiki_root: Path) -> str:
+def _page_type_from_path(path: Path, wiki_root: Path) -> WikiPageType:
     """Determine page type from its location relative to wiki root."""
     try:
         relative = path.relative_to(wiki_root)
     except ValueError:
-        return "unknown"
+        return WikiPageType.UNKNOWN
     parts = relative.parts
     if len(parts) >= 2:
-        return SUBDIR_TO_TYPE.get(parts[0], "unknown")
-    return "unknown"
+        return SUBDIR_TO_TYPE.get(parts[0], WikiPageType.UNKNOWN)
+    return WikiPageType.UNKNOWN
 
 
 def _slug_from_path(path: Path, wiki_root: Path) -> str:

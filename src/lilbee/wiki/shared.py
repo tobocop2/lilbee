@@ -25,6 +25,7 @@ class WikiPageType(StrEnum):
     SYNTHESIS = "synthesis"
     DRAFT = "draft"
     ARCHIVE = "archive"
+    UNKNOWN = "unknown"
 
 
 WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR)
@@ -34,6 +35,16 @@ SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
     SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,
     DRAFTS_SUBDIR: WikiPageType.DRAFT,
     ARCHIVE_SUBDIR: WikiPageType.ARCHIVE,
+}
+
+# Inverse lookup for the generator: given a ``WikiPageType`` pick the
+# directory where pages of that type live. Kept as a dict rather than a
+# method on the enum to keep the enum free of filesystem knowledge.
+TYPE_TO_SUBDIR: dict[WikiPageType, str] = {
+    WikiPageType.SUMMARY: SUMMARIES_SUBDIR,
+    WikiPageType.SYNTHESIS: SYNTHESIS_SUBDIR,
+    WikiPageType.DRAFT: DRAFTS_SUBDIR,
+    WikiPageType.ARCHIVE: ARCHIVE_SUBDIR,
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
@@ -47,7 +58,7 @@ class PageTarget:
     subdir: str
     slug: str
     wiki_source: str
-    page_type: str
+    page_type: WikiPageType
     label: str
 
 

@@ -575,13 +575,16 @@ class TestLilbeeWikiStatus:
         cfg.wiki = True
         (tmp_path / "wiki" / "summaries").mkdir(parents=True)
         (tmp_path / "wiki" / "summaries" / "a.md").write_text("content")
+        (tmp_path / "wiki" / "synthesis").mkdir(parents=True)
+        (tmp_path / "wiki" / "synthesis" / "topic.md").write_text("content")
         (tmp_path / "wiki" / "drafts").mkdir(parents=True)
         (tmp_path / "wiki" / "drafts" / "b.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = lilbee_wiki_status()
         assert result["summaries"] == 1
+        assert result["synthesis"] == 1
         assert result["drafts"] == 1
-        assert result["pages"] == 2
+        assert result["pages"] == 3
 
 
 class TestWikiPrune:

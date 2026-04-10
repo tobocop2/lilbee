@@ -941,9 +941,10 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
+    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR
 
     summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
+    synthesis = _count_md_files(wiki_root / SYNTHESIS_SUBDIR)
     drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
 
     from lilbee.wiki.lint import lint_all as _lint_all
@@ -955,8 +956,9 @@ def wiki_status(
             {
                 "wiki_enabled": cfg.wiki,
                 SUMMARIES_SUBDIR: summaries,
+                SYNTHESIS_SUBDIR: synthesis,
                 DRAFTS_SUBDIR: drafts,
-                "pages": summaries + drafts,
+                "pages": summaries + synthesis + drafts,
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,
             }
@@ -967,6 +969,7 @@ def wiki_status(
     label = "enabled" if cfg.wiki else "disabled"
     console.print(f"Wiki: [{color}]{label}[/{color}]")
     console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
+    console.print(f"  Synthesis: [{theme.LABEL}]{synthesis}[/{theme.LABEL}]")
     console.print(f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]")
     if report.error_count or report.warning_count:
         console.print(
@@ -1012,6 +1015,37 @@ def wiki_prune(
         action_text = f"[{action_style}]{rec.action.value}[/{action_style}]"
         table.add_row(rec.wiki_source, action_text, rec.reason)
     console.print(table)
+
+
+@wiki_app.command(name="synthesize")
+def wiki_synthesize(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Generate cross-source synthesis pages for clusters spanning 3+ documents."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    from lilbee.wiki.gen import generate_synthesis_pages
+
+    svc = get_services()
+    pages = generate_synthesis_pages(svc.provider, svc.store, svc.clusterer)
+
+    if cfg.json_mode:
+        json_output(
+            {
+                "command": "wiki_synthesize",
+                "pages": [str(p) for p in pages],
+                "total": len(pages),
+            }
+        )
+        return
+
+    if not pages:
+        console.print("No synthesis pages generated (no qualifying clusters).")
+        return
+
+    console.print(f"Generated {len(pages)} synthesis page(s):")
+    for page in pages:
+        console.print(f"  [{theme.ACCENT}]{page}[/{theme.ACCENT}]")
 
 
 def _count_md_files(directory: Path) -> int:

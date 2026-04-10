@@ -25,9 +25,9 @@ from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
     MIN_CLUSTER_SOURCES,
-    SUMMARIES_SUBDIR,
-    SYNTHESIS_SUBDIR,
+    TYPE_TO_SUBDIR,
     PageTarget,
+    WikiPageType,
     make_slug,
 )
 
@@ -336,7 +336,7 @@ def _generate_page(
     chunks: list[SearchChunk],
     chunks_text: str,
     citation_resolver: Callable[[list[ParsedCitation]], list[CitationRecord]],
-    page_type: str,
+    page_type: WikiPageType,
     slug: str,
     source_names: list[str],
     provider: LLMProvider,
@@ -373,7 +373,7 @@ def _generate_page(
     _emit("faithfulness_check")
     score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
     threshold = config.wiki_faithfulness_threshold
-    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
+    subdir = TYPE_TO_SUBDIR[page_type] if score >= threshold else DRAFTS_SUBDIR
     if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
@@ -438,7 +438,7 @@ def generate_summary_page(
         chunks=chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type=SUMMARIES_SUBDIR,
+        page_type=WikiPageType.SUMMARY,
         slug=slug,
         source_names=[source_name],
         provider=provider,
@@ -553,7 +553,7 @@ def _generate_synthesis_page(
         chunks=all_chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type=SYNTHESIS_SUBDIR,
+        page_type=WikiPageType.SYNTHESIS,
         slug=slug,
         source_names=source_names,
         provider=provider,

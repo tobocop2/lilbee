@@ -274,23 +274,27 @@ def lilbee_wiki_citations(wiki_source: str) -> dict[str, Any]:
 def lilbee_wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
-    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
+    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     if not wiki_root.exists():
         return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
 
-    summaries_dir = wiki_root / SUMMARIES_SUBDIR
-    drafts_dir = wiki_root / DRAFTS_SUBDIR
-    summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
-    drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
+    def _count(subdir: str) -> int:
+        path = wiki_root / subdir
+        return len(list(path.rglob("*.md"))) if path.exists() else 0
+
+    summaries = _count(SUMMARIES_SUBDIR)
+    synthesis = _count(SYNTHESIS_SUBDIR)
+    drafts = _count(DRAFTS_SUBDIR)
 
     report = lint_all(get_services().store)
     return {
         "wiki_enabled": cfg.wiki,
-        SUMMARIES_SUBDIR: len(summaries),
-        DRAFTS_SUBDIR: len(drafts),
-        "pages": len(summaries) + len(drafts),
+        SUMMARIES_SUBDIR: summaries,
+        SYNTHESIS_SUBDIR: synthesis,
+        DRAFTS_SUBDIR: drafts,
+        "pages": summaries + synthesis + drafts,
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,
     }

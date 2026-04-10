@@ -73,18 +73,36 @@ def _select_backend(config: Config, store: Store) -> SourceClusterer:
 
 
 class Clusterer:
-    """Wiki synthesis clusterer facade with backend selection."""
+    """Wiki synthesis clusterer facade with runtime backend selection.
+
+    ``wiki_clusterer`` is a runtime-writable config field (``PATCH
+    /api/config`` can flip it from ``embedding`` to ``concepts``), so the
+    facade resolves the backend on every call rather than caching it at
+    construction. Without this, changing the setting would silently
+    no-op until the process restarted.
+    """
 
     def __init__(self, config: Config, store: Store) -> None:
-        self._backend: SourceClusterer = _select_backend(config, store)
+        self._config = config
+        self._store = store
+        self._cached_backend: SourceClusterer | None = None
+        self._cached_choice: ClustererBackend | None = None
+
+    def _resolve_backend(self) -> SourceClusterer:
+        """Return the current backend, rebuilding it if the choice changed."""
+        choice = self._config.wiki_clusterer
+        if self._cached_backend is None or choice != self._cached_choice:
+            self._cached_backend = _select_backend(self._config, self._store)
+            self._cached_choice = choice
+        return self._cached_backend
 
     @property
     def backend(self) -> SourceClusterer:
         """Return the underlying backend (useful for tests and introspection)."""
-        return self._backend
+        return self._resolve_backend()
 
     def available(self) -> bool:
-        return self._backend.available()
+        return self._resolve_backend().available()
 
     def get_clusters(self, min_sources: int = 3) -> list[SourceCluster]:
-        return self._backend.get_clusters(min_sources=min_sources)
+        return self._resolve_backend().get_clusters(min_sources=min_sources)

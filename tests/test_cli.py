@@ -2136,12 +2136,16 @@ class TestWikiStatus:
         cfg.json_mode = True
         (isolated_env / "wiki" / "summaries").mkdir(parents=True)
         (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        (isolated_env / "wiki" / "synthesis").mkdir(parents=True)
+        (isolated_env / "wiki" / "synthesis" / "topic.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = runner.invoke(app, ["--json", "wiki", "status"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["summaries"] == 1
+        assert data["synthesis"] == 1
         assert data["drafts"] == 0
+        assert data["pages"] == 2
 
     def test_status_all_clean(self, mock_svc, isolated_env):
         cfg.wiki = True
@@ -2209,6 +2213,51 @@ class TestWikiPrune:
             result = runner.invoke(app, ["wiki", "prune"])
         assert result.exit_code == 0
         assert "old.md" in result.output
+
+
+class TestWikiSynthesize:
+    def test_synthesize_no_clusters(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.clusterer.available.return_value = True
+        mock_svc.clusterer.get_clusters.return_value = []
+        with mock.patch("lilbee.wiki.gen.generate_synthesis_pages", return_value=[]):
+            result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "No synthesis pages generated" in result.output
+
+    def test_synthesize_with_pages(self, mock_svc, isolated_env):
+        from pathlib import Path as _Path
+
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        fake_pages = [_Path("wiki/synthesis/topic-a.md"), _Path("wiki/synthesis/topic-b.md")]
+        with mock.patch(
+            "lilbee.wiki.gen.generate_synthesis_pages",
+            return_value=fake_pages,
+        ):
+            result = runner.invoke(app, ["wiki", "synthesize"])
+        assert result.exit_code == 0
+        assert "Generated 2 synthesis page(s)" in result.output
+        assert "topic-a.md" in result.output
+        assert "topic-b.md" in result.output
+
+    def test_synthesize_json_output(self, mock_svc, isolated_env):
+        from pathlib import Path as _Path
+
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        with mock.patch(
+            "lilbee.wiki.gen.generate_synthesis_pages",
+            return_value=[_Path("wiki/synthesis/topic.md")],
+        ):
+            result = runner.invoke(app, ["--json", "wiki", "synthesize"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_synthesize"
+        assert data["total"] == 1
+        assert data["pages"] == ["wiki/synthesis/topic.md"]
 
 
 class TestCrawlProgressCallback:

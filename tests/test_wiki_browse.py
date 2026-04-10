@@ -15,6 +15,7 @@ from lilbee.wiki.browse import (
     list_pages,
     read_page,
 )
+from lilbee.wiki.shared import WikiPageType
 
 
 def _write_page(wiki_root: Path, subdir: str, name: str, content: str) -> Path:
@@ -43,7 +44,7 @@ class TestWikiPageInfoToDict:
         info = WikiPageInfo(
             slug="summaries/doc",
             title="My Doc",
-            page_type="summary",
+            page_type=WikiPageType.SUMMARY,
             source_count=3,
             created_at="2026-01-01",
         )
@@ -51,7 +52,7 @@ class TestWikiPageInfoToDict:
         assert d == {
             "slug": "summaries/doc",
             "title": "My Doc",
-            "page_type": "summary",
+            "page_type": WikiPageType.SUMMARY,
             "source_count": 3,
             "created_at": "2026-01-01",
         }
@@ -81,23 +82,28 @@ class TestListMdFiles:
 
 class TestPageTypeFromPath:
     def test_summaries(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
+        assert (
+            _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == WikiPageType.SUMMARY
+        )
 
     def test_synthesis(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path) == "synthesis"
+        assert (
+            _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path)
+            == WikiPageType.SYNTHESIS
+        )
 
     def test_drafts(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "drafts" / "x.md", tmp_path) == "draft"
+        assert _page_type_from_path(tmp_path / "drafts" / "x.md", tmp_path) == WikiPageType.DRAFT
 
     def test_unknown_subdir(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "other" / "x.md", tmp_path) == "unknown"
+        assert _page_type_from_path(tmp_path / "other" / "x.md", tmp_path) == WikiPageType.UNKNOWN
 
     def test_root_level_file(self, tmp_path: Path):
-        assert _page_type_from_path(tmp_path / "x.md", tmp_path) == "unknown"
+        assert _page_type_from_path(tmp_path / "x.md", tmp_path) == WikiPageType.UNKNOWN
 
     def test_unrelated_path(self, tmp_path: Path):
         other = Path("/completely/different")
-        assert _page_type_from_path(other / "x.md", tmp_path) == "unknown"
+        assert _page_type_from_path(other / "x.md", tmp_path) == WikiPageType.UNKNOWN
 
 
 class TestSlugFromPath:
@@ -115,7 +121,7 @@ class TestBuildPageInfo:
         assert isinstance(info, WikiPageInfo)
         assert info.slug == "summaries/my-doc"
         assert info.title == "My Title"
-        assert info.page_type == "summary"
+        assert info.page_type == WikiPageType.SUMMARY
         assert info.source_count == 2
         assert info.created_at == "2026-03-15"
 
@@ -131,7 +137,7 @@ class TestBuildPageInfo:
         path = _write_page(tmp_path, "synthesis", "dated", content)
         info = build_page_info(path, tmp_path)
         assert info.created_at == "2026-01-15"
-        assert info.page_type == "synthesis"
+        assert info.page_type == WikiPageType.SYNTHESIS
 
 
 class TestListPages:
@@ -149,7 +155,7 @@ class TestListPages:
         pages = list_pages(tmp_path)
         assert len(pages) == 1
         assert pages[0].slug == "synthesis/typing"
-        assert pages[0].page_type == "synthesis"
+        assert pages[0].page_type == WikiPageType.SYNTHESIS
 
     def test_both_subdirs(self, tmp_path: Path):
         _write_page(tmp_path, "summaries", "doc-a", _FM_PAGE)

@@ -4365,8 +4365,9 @@ class TestWikiViewRegistration:
 class TestWikiFormatPageHeader:
     def test_basic_header(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
+        from lilbee.wiki.shared import WikiPageType
 
-        result = _format_page_header("Title", "summary", 3, "2025-01-01", 0.85)
+        result = _format_page_header("Title", WikiPageType.SUMMARY, 3, "2025-01-01", 0.85)
         assert "Title" in result
         assert "summary" in result
         assert "3 sources" in result
@@ -4374,15 +4375,17 @@ class TestWikiFormatPageHeader:
 
     def test_no_faithfulness(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
+        from lilbee.wiki.shared import WikiPageType
 
-        result = _format_page_header("Title", "synthesis", 0, "", None)
+        result = _format_page_header("Title", WikiPageType.SYNTHESIS, 0, "", None)
         assert "Title" in result
         assert "%" not in result
 
     def test_no_sources(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
+        from lilbee.wiki.shared import WikiPageType
 
-        result = _format_page_header("Title", "synthesis", 0, "2025-01-01", None)
+        result = _format_page_header("Title", WikiPageType.SYNTHESIS, 0, "2025-01-01", None)
         assert "sources" not in result
 
 
@@ -4390,15 +4393,16 @@ class TestWikiGroupPages:
     def test_groups_by_type(self):
         from lilbee.cli.tui.screens.wiki import _group_pages
         from lilbee.wiki.browse import WikiPageInfo
+        from lilbee.wiki.shared import WikiPageType
 
         pages = [
-            WikiPageInfo("s/a", "A", "summary", 1, ""),
-            WikiPageInfo("c/b", "B", "synthesis", 2, ""),
-            WikiPageInfo("s/c", "C", "summary", 1, ""),
+            WikiPageInfo("s/a", "A", WikiPageType.SUMMARY, 1, ""),
+            WikiPageInfo("c/b", "B", WikiPageType.SYNTHESIS, 2, ""),
+            WikiPageInfo("s/c", "C", WikiPageType.SUMMARY, 1, ""),
         ]
         groups = _group_pages(pages)
         types = [g[0] for g in groups]
-        assert types == ["summary", "synthesis"]
+        assert types == [WikiPageType.SUMMARY, WikiPageType.SYNTHESIS]
         assert len(groups[0][1]) == 2
         assert len(groups[1][1]) == 1
 
@@ -4584,18 +4588,19 @@ class TestWikiCoverageEdgeCases:
             assert ol.has_focus
 
     def test_group_pages_unknown_type(self):
-        """Pages with unknown type get their own group."""
+        """Pages with the unknown type get their own group."""
         from lilbee.cli.tui.screens.wiki import _group_pages
         from lilbee.wiki.browse import WikiPageInfo
+        from lilbee.wiki.shared import WikiPageType
 
         pages = [
-            WikiPageInfo("a", "Page A", "summary", 1, "2025-01-01"),
-            WikiPageInfo("b", "Page B", "custom", 2, "2025-01-02"),
+            WikiPageInfo("a", "Page A", WikiPageType.SUMMARY, 1, "2025-01-01"),
+            WikiPageInfo("b", "Page B", WikiPageType.UNKNOWN, 2, "2025-01-02"),
         ]
         result = _group_pages(pages)
         types = [t for t, _ in result]
-        assert "summary" in types
-        assert "custom" in types
+        assert WikiPageType.SUMMARY in types
+        assert WikiPageType.UNKNOWN in types
 
 
 def test_scan_installed_models_returns_sorted_lists():
