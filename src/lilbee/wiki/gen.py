@@ -23,7 +23,9 @@ from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
     MIN_CLUSTER_SOURCES,
+    SUMMARIES_SUBDIR,
     SYNTHESIS_SUBDIR,
     PageTarget,
     make_slug,
@@ -278,7 +280,7 @@ def _write_page(
         old_content = page_path.read_text(encoding="utf-8")
         ratio = _content_change_ratio(old_content, full_content)
         if ratio > drift_threshold:
-            drafts_dir = wiki_root / "drafts"
+            drafts_dir = wiki_root / DRAFTS_SUBDIR
             diff_text = _diff_summary(old_content, full_content)
             return _divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
 
@@ -371,8 +373,8 @@ def _generate_page(
     _emit("faithfulness_check")
     score = _check_faithfulness(chunks_text, wiki_text, provider, label, config)
     threshold = config.wiki_faithfulness_threshold
-    subdir = page_type if score >= threshold else "drafts"
-    if subdir == "drafts":
+    subdir = page_type if score >= threshold else DRAFTS_SUBDIR
+    if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
     frontmatter = _build_frontmatter(config, source_names, score)
@@ -436,7 +438,7 @@ def generate_summary_page(
         chunks=chunks,
         chunks_text=chunks_text,
         citation_resolver=resolver,
-        page_type="summaries",
+        page_type=SUMMARIES_SUBDIR,
         slug=slug,
         source_names=[source_name],
         provider=provider,

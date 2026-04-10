@@ -21,6 +21,7 @@ from lilbee.store import Store
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import (
+    ARCHIVE_SUBDIR,
     MIN_CLUSTER_SOURCES,
     SYNTHESIS_SUBDIR,
     WIKI_CONTENT_SUBDIRS,
@@ -80,7 +81,7 @@ def _archive_page(
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
-    archive_dir = wiki_root / "archive"
+    archive_dir = wiki_root / ARCHIVE_SUBDIR
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / source_path.name
 

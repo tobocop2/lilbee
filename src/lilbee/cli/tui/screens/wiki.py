@@ -239,8 +239,10 @@ def _group_pages(
     pages: list[WikiPageInfo],
 ) -> list[tuple[str, list[WikiPageInfo]]]:
     """Group pages by page_type, maintaining order: summaries first, then synthesis."""
+    from lilbee.wiki.shared import WikiPageType
+
     groups: dict[str, list[WikiPageInfo]] = {}
-    type_order = ["summary", "synthesis"]
+    type_order: tuple[str, ...] = (WikiPageType.SUMMARY, WikiPageType.SYNTHESIS)
     for t in type_order:
         group = [p for p in pages if p.page_type == t]
         if group:
