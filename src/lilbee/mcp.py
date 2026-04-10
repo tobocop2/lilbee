@@ -274,21 +274,22 @@ def lilbee_wiki_citations(wiki_source: str) -> dict[str, Any]:
 def lilbee_wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
+    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
 
     wiki_root = cfg.data_root / cfg.wiki_dir
     if not wiki_root.exists():
         return {"wiki_enabled": cfg.wiki, "pages": 0, "issues": 0}
 
-    summaries = (
-        list((wiki_root / "summaries").rglob("*.md")) if (wiki_root / "summaries").exists() else []
-    )
-    drafts = list((wiki_root / "drafts").rglob("*.md")) if (wiki_root / "drafts").exists() else []
+    summaries_dir = wiki_root / SUMMARIES_SUBDIR
+    drafts_dir = wiki_root / DRAFTS_SUBDIR
+    summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
+    drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
     report = lint_all(get_services().store)
     return {
         "wiki_enabled": cfg.wiki,
-        "summaries": len(summaries),
-        "drafts": len(drafts),
+        SUMMARIES_SUBDIR: len(summaries),
+        DRAFTS_SUBDIR: len(drafts),
         "pages": len(summaries) + len(drafts),
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,

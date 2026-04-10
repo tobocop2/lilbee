@@ -621,14 +621,14 @@ class TestLilbeeWikiList:
         (summaries / "doc-a.md").write_text(
             "---\ntitle: Doc A\nsources: [x.md]\n---\n# Doc A\n", encoding="utf-8"
         )
-        concepts = wiki_root / "concepts"
-        concepts.mkdir(parents=True)
-        (concepts / "typing.md").write_text("# Typing\n", encoding="utf-8")
+        synthesis = wiki_root / "synthesis"
+        synthesis.mkdir(parents=True)
+        (synthesis / "typing.md").write_text("# Typing\n", encoding="utf-8")
         result = lilbee_wiki_list()
         assert result["total"] == 2
         slugs = {p["slug"] for p in result["pages"]}
         assert "summaries/doc-a" in slugs
-        assert "concepts/typing" in slugs
+        assert "synthesis/typing" in slugs
 
 
 class TestLilbeeWikiRead:

@@ -8,6 +8,7 @@ and ensures consistent messaging.
 from __future__ import annotations
 
 from lilbee.config import cfg
+from lilbee.wiki.shared import WikiPageType
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
@@ -87,9 +88,11 @@ SETTINGS_INVALID_VALUE = "Invalid value: {error}"
 WIKI_EMPTY_STATE = "No wiki pages found"
 WIKI_SEARCH_PLACEHOLDER = "Filter pages..."
 WIKI_NO_CONTENT = "Select a page to view"
+# Keyed by the WikiPageType value (a ``str`` via StrEnum) so callers can
+# look up a heading from a raw ``page_type`` string without coercion.
 WIKI_TYPE_HEADINGS: dict[str, str] = {
-    "summary": "Summaries",
-    "concept": "Concepts",
+    WikiPageType.SUMMARY: "Summaries",
+    WikiPageType.SYNTHESIS: "Synthesis",
 }
 APP_CANCELLED = "Cancelled"
 SETUP_WELCOME = "Welcome to lilbee"

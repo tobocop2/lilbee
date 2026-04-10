@@ -260,7 +260,7 @@ class TestModeIndicator:
 class TestViewCycling:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_families")
-    async def test_cycles_all_five_views(self, _fam, _cat, _mock_resolve):
+    async def test_cycles_all_views(self, _fam, _cat, _mock_resolve):
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -268,7 +268,7 @@ class TestViewCycling:
             await pilot.pause()
             assert app.active_view == "Chat"
 
-            expected = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
+            expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
             for view in expected:
                 app.action_nav_next()
                 await pilot.pause()
@@ -510,14 +510,14 @@ class TestScreenTransitions:
                 assert app.active_view == "Settings"
 
     async def test_navigate_all_views_via_keybindings(self, _mock_resolve):
-        """Cycle through all 5 views with nav_next (l key)."""
+        """Cycle through all views with nav_next (l key)."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
                 for view in expected:
                     app.action_nav_next()
                     await pilot.pause()
@@ -557,7 +557,7 @@ class TestScreenTransitions:
                 assert app.active_view == "Tasks"
 
     async def test_forward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Models->Status->Settings->Tasks->Chat via nav_next."""
+        """Chat->Catalog->Status->Settings->Tasks->Wiki->Chat via nav_next."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -565,14 +565,14 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Chat"]
+                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
                 for view in full_cycle:
                     app.action_nav_next()
                     await pilot.pause()
                     assert app.active_view == view
 
     async def test_backward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Tasks->Settings->Status->Models->Chat via nav_prev."""
+        """Chat->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -580,7 +580,7 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                backward_cycle = ["Tasks", "Settings", "Status", "Catalog", "Chat"]
+                backward_cycle = ["Wiki", "Tasks", "Settings", "Status", "Catalog", "Chat"]
                 for view in backward_cycle:
                     app.action_nav_prev()
                     await pilot.pause()

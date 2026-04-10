@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +12,28 @@ import yaml
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
-SUBDIR_TO_TYPE: dict[str, str] = {
-    "summaries": "summary",
-    "concepts": "concept",
-    "drafts": "draft",
-    "archive": "archive",
+SUMMARIES_SUBDIR = "summaries"
+SYNTHESIS_SUBDIR = "synthesis"
+DRAFTS_SUBDIR = "drafts"
+ARCHIVE_SUBDIR = "archive"
+
+
+class WikiPageType(StrEnum):
+    """Kind of wiki page. Values are used as frontmatter/API labels."""
+
+    SUMMARY = "summary"
+    SYNTHESIS = "synthesis"
+    DRAFT = "draft"
+    ARCHIVE = "archive"
+
+
+WIKI_CONTENT_SUBDIRS: tuple[str, ...] = (SUMMARIES_SUBDIR, SYNTHESIS_SUBDIR)
+
+SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
+    SUMMARIES_SUBDIR: WikiPageType.SUMMARY,
+    SYNTHESIS_SUBDIR: WikiPageType.SYNTHESIS,
+    DRAFTS_SUBDIR: WikiPageType.DRAFT,
+    ARCHIVE_SUBDIR: WikiPageType.ARCHIVE,
 }
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")

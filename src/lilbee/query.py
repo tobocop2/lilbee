@@ -22,6 +22,93 @@ from lilbee.store import CitationRecord, SearchChunk, Store
 
 log = logging.getLogger(__name__)
 
+# English stop words used ONLY for query-side token overlap checks. If we
+# let "the" and "and" count toward the overlap between a user's question
+# and a candidate chunk, every chunk looks similar to every query. This is
+# a deliberate, scoped heuristic; it is not used anywhere else in the code
+# base because nothing else does bag-of-words overlap.
+_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "about",
+        "between",
+        "through",
+        "after",
+        "before",
+        "above",
+        "below",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "that",
+        "this",
+        "it",
+        "its",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+    }
+)
+
+
+def _tokenize_query(text: str) -> set[str]:
+    """Lowercase whitespace tokens, drop stopwords and single characters."""
+    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
+
 
 class ChatMessage(TypedDict):
     """A single chat message with role and content."""
@@ -180,89 +267,7 @@ _EXPANSION_PROMPT = (
 _EXPANSION_MAX_TOKENS = 200
 
 
-_STOP_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "will",
-        "would",
-        "could",
-        "should",
-        "may",
-        "might",
-        "shall",
-        "can",
-        "to",
-        "of",
-        "in",
-        "for",
-        "on",
-        "with",
-        "at",
-        "by",
-        "from",
-        "as",
-        "into",
-        "about",
-        "between",
-        "through",
-        "after",
-        "before",
-        "above",
-        "below",
-        "and",
-        "or",
-        "but",
-        "not",
-        "no",
-        "if",
-        "then",
-        "than",
-        "that",
-        "this",
-        "it",
-        "its",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "how",
-        "when",
-        "where",
-        "why",
-        "i",
-        "me",
-        "my",
-        "we",
-        "our",
-        "you",
-        "your",
-        "he",
-        "she",
-        "they",
-    }
-)
-
 _MIN_OVERLAP_RATIO = 0.3
-
-
-def _tokenize_query(text: str) -> set[str]:
-    """Tokenize into lowercase words, removing stop words."""
-    return {w for w in text.lower().split() if w not in _STOP_WORDS and len(w) > 1}
 
 
 class AskResult(BaseModel):

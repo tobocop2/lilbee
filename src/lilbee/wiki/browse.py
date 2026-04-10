@@ -9,7 +9,12 @@ from typing import Any
 
 from lilbee.security import validate_path_within
 from lilbee.wiki.index import parse_source_count
-from lilbee.wiki.shared import SUBDIR_TO_TYPE, parse_frontmatter
+from lilbee.wiki.shared import (
+    DRAFTS_SUBDIR,
+    SUBDIR_TO_TYPE,
+    WIKI_CONTENT_SUBDIRS,
+    parse_frontmatter,
+)
 
 
 @dataclass
@@ -102,9 +107,9 @@ def find_page(wiki_root: Path, slug: str) -> Path | None:
 
 
 def list_pages(wiki_root: Path) -> list[WikiPageInfo]:
-    """List all wiki pages from summaries/ and concepts/ subdirectories."""
+    """List all wiki pages from summaries/ and synthesis/ subdirectories."""
     pages: list[WikiPageInfo] = []
-    for subdir in ("summaries", "concepts"):
+    for subdir in WIKI_CONTENT_SUBDIRS:
         for path in list_md_files(wiki_root / subdir):
             pages.append(build_page_info(path, wiki_root))
     return pages
@@ -112,7 +117,7 @@ def list_pages(wiki_root: Path) -> list[WikiPageInfo]:
 
 def list_draft_pages(wiki_root: Path) -> list[WikiPageInfo]:
     """List draft pages that failed the quality gate."""
-    return [build_page_info(path, wiki_root) for path in list_md_files(wiki_root / "drafts")]
+    return [build_page_info(path, wiki_root) for path in list_md_files(wiki_root / DRAFTS_SUBDIR)]
 
 
 def read_page(wiki_root: Path, slug: str) -> WikiPageContent | None:

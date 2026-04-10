@@ -941,8 +941,10 @@ def wiki_status(
         console.print("Wiki directory does not exist yet. Run sync with wiki enabled.")
         return
 
-    summaries = _count_md_files(wiki_root / "summaries")
-    drafts = _count_md_files(wiki_root / "drafts")
+    from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
+
+    summaries = _count_md_files(wiki_root / SUMMARIES_SUBDIR)
+    drafts = _count_md_files(wiki_root / DRAFTS_SUBDIR)
 
     from lilbee.wiki.lint import lint_all as _lint_all
 
@@ -952,8 +954,8 @@ def wiki_status(
         json_output(
             {
                 "wiki_enabled": cfg.wiki,
-                "summaries": summaries,
-                "drafts": drafts,
+                SUMMARIES_SUBDIR: summaries,
+                DRAFTS_SUBDIR: drafts,
                 "pages": summaries + drafts,
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,

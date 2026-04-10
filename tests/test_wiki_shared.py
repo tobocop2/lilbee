@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
-from lilbee.wiki.shared import SUBDIR_TO_TYPE, make_slug, parse_frontmatter
+from lilbee.wiki.shared import (
+    ARCHIVE_SUBDIR,
+    DRAFTS_SUBDIR,
+    SUBDIR_TO_TYPE,
+    SUMMARIES_SUBDIR,
+    SYNTHESIS_SUBDIR,
+    WikiPageType,
+    make_slug,
+    parse_frontmatter,
+)
 
 
 class TestSubdirToType:
     def test_all_expected_keys(self):
-        assert set(SUBDIR_TO_TYPE) == {"summaries", "concepts", "drafts", "archive"}
+        assert set(SUBDIR_TO_TYPE) == {
+            SUMMARIES_SUBDIR,
+            SYNTHESIS_SUBDIR,
+            DRAFTS_SUBDIR,
+            ARCHIVE_SUBDIR,
+        }
 
     def test_values(self):
-        assert SUBDIR_TO_TYPE["summaries"] == "summary"
-        assert SUBDIR_TO_TYPE["concepts"] == "concept"
-        assert SUBDIR_TO_TYPE["drafts"] == "draft"
-        assert SUBDIR_TO_TYPE["archive"] == "archive"
+        assert SUBDIR_TO_TYPE[SUMMARIES_SUBDIR] is WikiPageType.SUMMARY
+        assert SUBDIR_TO_TYPE[SYNTHESIS_SUBDIR] is WikiPageType.SYNTHESIS
+        assert SUBDIR_TO_TYPE[DRAFTS_SUBDIR] is WikiPageType.DRAFT
+        assert SUBDIR_TO_TYPE[ARCHIVE_SUBDIR] is WikiPageType.ARCHIVE
 
 
 class TestParseFrontmatter:

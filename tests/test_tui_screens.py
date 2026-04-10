@@ -3438,11 +3438,11 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Tasks"
+        assert app.active_view == "Wiki"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Settings"
+        assert app.active_view == "Tasks"
 
 
 async def test_app_nav_next_cycles_views():
@@ -4199,7 +4199,7 @@ class TestWikiScreenWithPages:
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
         _create_wiki_page(wiki_root, "summaries", "test-doc", "Test Document")
-        _create_wiki_page(wiki_root, "concepts", "some-concept", "Some Concept")
+        _create_wiki_page(wiki_root, "synthesis", "some-synthesis", "Some Synthesis")
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as _pilot:
@@ -4375,14 +4375,14 @@ class TestWikiFormatPageHeader:
     def test_no_faithfulness(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "concept", 0, "", None)
+        result = _format_page_header("Title", "synthesis", 0, "", None)
         assert "Title" in result
         assert "%" not in result
 
     def test_no_sources(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "concept", 0, "2025-01-01", None)
+        result = _format_page_header("Title", "synthesis", 0, "2025-01-01", None)
         assert "sources" not in result
 
 
@@ -4393,12 +4393,12 @@ class TestWikiGroupPages:
 
         pages = [
             WikiPageInfo("s/a", "A", "summary", 1, ""),
-            WikiPageInfo("c/b", "B", "concept", 2, ""),
+            WikiPageInfo("c/b", "B", "synthesis", 2, ""),
             WikiPageInfo("s/c", "C", "summary", 1, ""),
         ]
         groups = _group_pages(pages)
         types = [g[0] for g in groups]
-        assert types == ["summary", "concept"]
+        assert types == ["summary", "synthesis"]
         assert len(groups[0][1]) == 2
         assert len(groups[1][1]) == 1
 

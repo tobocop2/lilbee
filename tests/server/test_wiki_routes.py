@@ -133,7 +133,7 @@ class TestWikiEnabled:
     async def test_list_multiple_subdirs(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "doc-a")
-        _make_wiki_page(wiki_root, "concepts", "typing")
+        _make_wiki_page(wiki_root, "synthesis", "typing")
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki", headers=_h())
         assert resp.status_code == 200
@@ -141,7 +141,7 @@ class TestWikiEnabled:
         assert len(pages) == 2
         slugs = {p["slug"] for p in pages}
         assert "summaries/doc-a" in slugs
-        assert "concepts/typing" in slugs
+        assert "synthesis/typing" in slugs
 
     async def test_list_regenerates_index(self, isolated_env: Path):
         """When wiki/index.md exists, listing regenerates it."""
@@ -352,10 +352,10 @@ class TestHelpers:
 
         assert _page_type_from_path(tmp_path / "summaries" / "x.md", tmp_path) == "summary"
 
-    def test_page_type_from_concepts(self, tmp_path: Path):
+    def test_page_type_from_synthesis(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path
 
-        assert _page_type_from_path(tmp_path / "concepts" / "x.md", tmp_path) == "concept"
+        assert _page_type_from_path(tmp_path / "synthesis" / "x.md", tmp_path) == "synthesis"
 
     def test_page_type_unknown(self, tmp_path: Path):
         from lilbee.wiki.browse import _page_type_from_path
