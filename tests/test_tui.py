@@ -7,9 +7,9 @@ from unittest import mock
 import pytest
 from textual.binding import Binding
 
-from lilbee.catalog import CatalogModel, CatalogResult
-from lilbee.cli.tui.screens.catalog import _catalog_to_row, _remote_to_row
-from lilbee.cli.tui.widgets.help_modal import HelpModal
+from conftest import make_test_catalog_model as _make_model
+from lilbee.catalog import CatalogResult
+from lilbee.cli.tui.screens.catalog_utils import _remote_to_row, catalog_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.config import cfg
 
@@ -17,6 +17,7 @@ from lilbee.config import cfg
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.chat_model = "test-model"
@@ -36,26 +37,6 @@ def _patch_chat_setup():
         ),
     ):
         yield
-
-
-def _make_model(
-    name: str = "TestModel",
-    task: str = "chat",
-    featured: bool = False,
-    size_gb: float = 2.0,
-    description: str = "A test model",
-) -> CatalogModel:
-    return CatalogModel(
-        name=name,
-        hf_repo=f"test/{name.lower().replace(' ', '-')}",
-        gguf_filename="*.gguf",
-        size_gb=size_gb,
-        min_ram_gb=4,
-        description=description,
-        featured=featured,
-        downloads=100,
-        task=task,
-    )
 
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=50, offset=0, models=[])
@@ -112,12 +93,6 @@ class TestTaskBarUnit:
         assert len(task_id) == 8
 
 
-class TestHelpModal:
-    def test_creates(self) -> None:
-        modal = HelpModal()
-        assert modal is not None
-
-
 class TestRemoteClassification:
     @mock.patch("httpx.get")
     def test_classifies_models(self, mock_get: mock.MagicMock) -> None:
@@ -150,17 +125,17 @@ class TestRemoteClassification:
 class TestCatalogToRow:
     def test_stores_catalog_model(self) -> None:
         m = _make_model("Qwen3 8B", featured=True)
-        row = _catalog_to_row(m, installed=False)
+        row = catalog_to_row(m, installed=False)
         assert row.catalog_model is m
 
     def test_featured_flag_set(self) -> None:
         m = _make_model("TestModel", task="chat", size_gb=5.0, featured=True)
-        row = _catalog_to_row(m, installed=False)
+        row = catalog_to_row(m, installed=False)
         assert row.featured is True
 
     def test_installed_flag_set(self) -> None:
         m = _make_model("TestModel", task="chat", size_gb=5.0)
-        row = _catalog_to_row(m, installed=True)
+        row = catalog_to_row(m, installed=True)
         assert row.installed is True
 
 
@@ -194,10 +169,13 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
-            await pilot.press("ctrl+q")
+            with mock.patch.object(app, "exit") as mock_exit:
+                await pilot.press("ctrl+q")
+                await pilot.pause()
+                mock_exit.assert_called()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_help_modal(self, mock_catalog: mock.MagicMock) -> None:
+    async def test_help_panel(self, mock_catalog: mock.MagicMock) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -206,7 +184,7 @@ class TestChatScreenAsync:
             await pilot.pause()
             app.action_push_help()
             await pilot.pause()
-            assert len(app.screen_stack) > 1
+            assert app.screen.query("HelpPanel")
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_push(self, mock_catalog: mock.MagicMock) -> None:
@@ -245,8 +223,11 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/badcommand"
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "notify") as mock_notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_notify.assert_called()
+                assert "Unknown command" in mock_notify.call_args[0][0]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_slash_model_changes_model(self, mock_catalog: mock.MagicMock) -> None:
@@ -286,8 +267,11 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/set nonexistent 42"
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "notify") as mock_notify:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_notify.assert_called()
+                assert "Unknown setting" in mock_notify.call_args[0][0]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_empty_input_ignored(self, mock_catalog: mock.MagicMock) -> None:
@@ -299,8 +283,10 @@ class TestChatScreenAsync:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = ""
-            await pilot.press("enter")
-            await pilot.pause()
+            with mock.patch.object(app.screen, "_send_message") as mock_send:
+                await pilot.press("enter")
+                await pilot.pause()
+                mock_send.assert_not_called()
 
 
 class TestCatalogScreenAsync:
@@ -583,10 +569,10 @@ class TestContextAwareQuit:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = app.screen
-            screen._streaming = True
+            screen.streaming = True
             await app.action_quit()
             await pilot.pause()
-            assert not screen._streaming
+            assert not screen.streaming
             assert app.is_running
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -657,20 +643,19 @@ class TestMinimalFooter:
 
         visible = self._visible_bindings(SettingsScreen.BINDINGS)
         assert any("Back" in d for d in visible)
-        assert len(visible) <= 3
+        assert any("Search" in d for d in visible)
+        assert len(visible) <= 4
 
 
 class TestNavBindings:
-    """Verify h/l nav bindings exist in app BINDINGS (number keys removed)."""
+    """Verify [/] nav bindings exist in app BINDINGS (number keys removed)."""
 
     def test_nav_bindings_exist(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
 
         keys = {b.key for b in LilbeeApp.BINDINGS if isinstance(b, Binding)}
-        assert "h" in keys
-        assert "l" in keys
-        assert "left" in keys
-        assert "right" in keys
+        assert "left_square_bracket" in keys
+        assert "right_square_bracket" in keys
 
     def test_number_keys_removed(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp

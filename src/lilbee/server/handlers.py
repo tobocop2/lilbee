@@ -7,6 +7,7 @@ Return types are dicts (JSON responses), lists, or async generators of SSE strin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -150,7 +151,7 @@ class SseStream:
     def __init__(self) -> None:
         self.queue: asyncio.Queue[str | None] = asyncio.Queue()
         self.cancel = threading.Event()
-        self._loop = asyncio.get_running_loop()
+        self.loop = asyncio.get_running_loop()
         self.callback: DetailedProgressCallback = self._build_callback()
 
     def _build_callback(self) -> DetailedProgressCallback:
@@ -158,7 +159,7 @@ class SseStream:
 
         Safe to call from both the event-loop thread and worker threads.
         """
-        loop = self._loop
+        loop = self.loop
         queue = self.queue
 
         def _callback(event_type: EventType, data: ProgressEvent) -> None:
@@ -283,7 +284,7 @@ async def _stream_rag_response(
     sse = SseStream()
     error_holder: list[str] = []
 
-    executor_fut = sse._loop.run_in_executor(
+    executor_fut = sse.loop.run_in_executor(
         None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder
     )
     task = asyncio.ensure_future(executor_fut)
@@ -413,11 +414,13 @@ def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
 
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
-    """Validate, copy files, sync, and yield SSE progress events.
+    """Copy files, sync, and yield SSE progress events.
 
-    Raises ValueError on validation failure (before streaming starts).
+    Validation is handled by the route layer before this is called.
     """
-    paths, force, vision_model = validate_add_paths(data)
+    paths = data.get("paths", [])
+    force = bool(data.get("force", False))
+    vision_model = str(data.get("vision_model", "") or "")
     sse = SseStream()
     task = asyncio.create_task(_run_add(paths, force, vision_model, sse))
     async for event in sse.drain(task, "Add files stream"):
@@ -435,18 +438,18 @@ async def list_models() -> ModelsResponse:
 
     installed = set(list_installed_models())
     chat_installed = set(list_installed_models(exclude_vision=True))
-    vision_names = {v.name for v in VISION_CATALOG}
+    vision_refs = {v.ref for v in VISION_CATALOG}
 
     response = ModelsResponse(
         chat=ModelCatalogSection(
             active=cfg.chat_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.display_name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=m.ref in installed,
                 )
                 for m in MODEL_CATALOG
             ],
@@ -456,15 +459,15 @@ async def list_models() -> ModelsResponse:
             active=cfg.vision_model,
             catalog=[
                 ModelCatalogEntry(
-                    name=m.name,
+                    name=m.display_name,
                     size_gb=m.size_gb,
                     min_ram_gb=m.min_ram_gb,
                     description=m.description,
-                    installed=m.name in installed,
+                    installed=m.ref in installed,
                 )
                 for m in VISION_CATALOG
             ],
-            installed=sorted(m for m in installed if m in vision_names),
+            installed=sorted(m for m in installed if m in vision_refs),
         ),
     )
     return response
@@ -702,21 +705,21 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             if sse.cancel.is_set():
                 return
             payload = sse_event(SseEvent.PROGRESS, data)
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
         try:
             manager.pull(model, src, on_progress=_on_progress)
         except Exception as exc:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
-            sse._loop.call_soon_threadsafe(sse.queue.put_nowait, None)
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
     async for event in sse.drain(task, "Model pull stream"):
         yield event
 
 
-async def models_delete(model: str, *, source: str = "litellm") -> ModelsDeleteResponse:
+async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:
     """Delete a model. Returns deletion status, model name, and freed space."""
     manager = get_model_manager()
     src = _parse_source(source)
@@ -731,10 +734,6 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     with the list of files written. On error emits crawl_error.
     Sets a cancel event on client disconnect so the crawl stops between pages.
     """
-    from lilbee.crawler import require_valid_crawl_url
-
-    require_valid_crawl_url(url)
-
     sse = SseStream()
 
     async def _run_crawl() -> list[Path]:
@@ -756,26 +755,97 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
         yield sse_done({"files_written": [str(p) for p in paths]})
 
 
+async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
+    """Yield SSE progress events while generating a wiki page for *source*.
+
+    Emits ``progress`` events for each pipeline stage (preparing, generating,
+    faithfulness_check) and a final ``done`` event with the result.
+    """
+    from lilbee.services import get_services
+    from lilbee.wiki.gen import generate_summary_page
+
+    yield ""  # force generator
+
+    svc = get_services()
+    chunks = svc.store.get_chunks_by_source(source)
+    if not chunks:
+        yield sse_error(f"No indexed chunks for source: {source}")
+        return
+
+    sse = SseStream()
+    result_holder: list[Path | None] = []
+    error_holder: list[str] = []
+
+    def _on_progress(stage: str, data: dict[str, object]) -> None:
+        payload = sse_event(SseEvent.PROGRESS, {"stage": stage, **data})
+        sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+
+    def _run_blocking() -> None:
+        try:
+            result = generate_summary_page(
+                source, chunks, svc.provider, svc.store, on_progress=_on_progress
+            )
+            result_holder.append(result)
+        except Exception as exc:
+            error_holder.append(str(exc))
+        finally:
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
+
+    task = asyncio.ensure_future(asyncio.to_thread(_run_blocking))
+    async for event in sse.drain(task, "Wiki generate stream"):
+        yield event
+
+    # Ensure the blocking task has fully resolved before reading results
+    with contextlib.suppress(Exception):
+        await task
+
+    if error_holder:
+        yield sse_error(error_holder[0])
+    elif not sse.cancel.is_set() and not task.cancelled():
+        path = str(result_holder[0]) if result_holder and result_holder[0] is not None else None
+        status = "generated" if path else "failed"
+        yield sse_done({"status": status, "source": source, "path": path or ""})
+
+
 _EXTERNAL_MODELS_TTL = 60
-_external_cache: tuple[float, str, ExternalModelsResponse | None] = (0.0, "", None)
+
+
+class _ExternalModelsCache:
+    """TTL cache for external model listings (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._time: float = 0.0
+        self._key: str = ""
+        self._result: ExternalModelsResponse | None = None
+
+    def get(self, key: str) -> ExternalModelsResponse | None:
+        now = time.monotonic()
+        if self._result and key == self._key and (now - self._time) < _EXTERNAL_MODELS_TTL:
+            return self._result
+        return None
+
+    def set(self, key: str, result: ExternalModelsResponse) -> None:
+        self._time = time.monotonic()
+        self._key = key
+        self._result = result
+
+
+_external_cache = _ExternalModelsCache()
 
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
-    global _external_cache
-
-    cache_time, cache_key, cache_result = _external_cache
     key = f"{cfg.litellm_base_url}:{cfg.llm_api_key or ''}"
-    now = time.monotonic()
-    if cache_result and key == cache_key and (now - cache_time) < _EXTERNAL_MODELS_TTL:
-        return cache_result
+    cached = _external_cache.get(key)
+    if cached:
+        return cached
 
     try:
         from lilbee.services import get_services
 
         models = await asyncio.to_thread(get_services().provider.list_models)
         result = ExternalModelsResponse(models=models)
-        _external_cache = (now, key, result)
+        _external_cache.set(key, result)
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)

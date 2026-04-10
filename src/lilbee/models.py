@@ -1,5 +1,6 @@
 """RAM detection, model selection, interactive picker, and auto-install for chat models."""
 
+import functools
 import logging
 import os
 import shutil
@@ -36,48 +37,52 @@ MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 def ensure_tag(name: str) -> str:
     """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``)."""
+    from lilbee.registry import DEFAULT_TAG
+
     if not name or ":" in name:
         return name
-    return f"{name}:latest"
+    return f"{name}:{DEFAULT_TAG}"
 
 
 @dataclass(frozen=True)
 class ModelInfo:
     """A curated chat model with metadata for the picker UI."""
 
-    name: str
+    ref: str  # canonical name:tag (e.g. "qwen3:0.6b")
+    display_name: str  # UI label (e.g. "Qwen3 0.6B")
     size_gb: float
     min_ram_gb: float
     description: str
 
+    @property
+    def name(self) -> str:
+        """Family slug for backwards compatibility."""
+        return self.ref.split(":")[0] if ":" in self.ref else self.ref
+
 
 def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
     """Build a ModelInfo tuple from catalog.py's CatalogModel entries."""
-    return tuple(ModelInfo(m.name, m.size_gb, m.min_ram_gb, m.description) for m in featured)
+    return tuple(
+        ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in featured
+    )
 
 
 # Lazy singletons — resolved on first access to break the circular import
 # between models.py (imports ModelTask) and catalog.py (imports from models).
-_model_catalog: tuple[ModelInfo, ...] | None = None
-_vision_catalog: tuple[ModelInfo, ...] | None = None
 
 
+@functools.cache
 def _get_model_catalog() -> tuple[ModelInfo, ...]:
-    global _model_catalog
-    if _model_catalog is None:
-        from lilbee.catalog import FEATURED_CHAT
+    from lilbee.catalog import FEATURED_CHAT
 
-        _model_catalog = _catalog_from_featured(FEATURED_CHAT)
-    return _model_catalog
+    return _catalog_from_featured(FEATURED_CHAT)
 
 
+@functools.cache
 def _get_vision_catalog() -> tuple[ModelInfo, ...]:
-    global _vision_catalog
-    if _vision_catalog is None:
-        from lilbee.catalog import FEATURED_VISION
+    from lilbee.catalog import FEATURED_VISION
 
-        _vision_catalog = _catalog_from_featured(FEATURED_VISION)
-    return _vision_catalog
+    return _catalog_from_featured(FEATURED_VISION)
 
 
 def __getattr__(name: str) -> tuple[ModelInfo, ...]:
@@ -139,8 +144,8 @@ def pick_default_model(ram_gb: float) -> ModelInfo:
 
 
 def _model_download_size_gb(model: str) -> float:
-    """Estimated download size for a model."""
-    catalog_sizes = {m.name: m.size_gb for m in _get_model_catalog()}
+    """Estimated download size for a model by ref (name:tag)."""
+    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
     fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
@@ -160,7 +165,7 @@ def display_model_picker(
 
     for idx, model in enumerate(_get_model_catalog(), 1):
         num_str = str(idx)
-        name = model.name
+        label = model.display_name
         size_str = f"{model.size_gb:.1f} GB"
         desc = model.description
 
@@ -168,14 +173,14 @@ def display_model_picker(
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
 
         if is_recommended:
-            name = f"[bold]{name} ★[/bold]"
+            label = f"[bold]{label} ★[/bold]"
             desc = f"[bold]{desc}[/bold]"
             num_str = f"[bold]{num_str}[/bold]"
 
         if disk_too_small:
             size_str = f"[red]{model.size_gb:.1f} GB[/red]"
 
-        table.add_row(num_str, name, size_str, desc)
+        table.add_row(num_str, label, size_str, desc)
 
     console.print()
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
@@ -207,7 +212,7 @@ def display_vision_picker(
 
     for idx, model in enumerate(_get_vision_catalog(), 1):
         num_str = str(idx)
-        name = model.name
+        name = model.display_name
         size_str = f"{model.size_gb:.1f} GB"
         desc = model.description
 
@@ -268,14 +273,14 @@ def validate_disk_and_pull(
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
-            f"Not enough disk space to download '{model_info.name}': "
+            f"Not enough disk space to download '{model_info.display_name}': "
             f"need {required_gb:.1f} GB, have {free_gb:.1f} GB free. "
             f"Free up space or choose a smaller model."
         )
 
-    pull_with_progress(model_info.name, console=console)
-    cfg.chat_model = model_info.name
-    settings.set_value(cfg.data_root, "chat_model", model_info.name)
+    pull_with_progress(model_info.ref, console=console)
+    cfg.chat_model = model_info.ref
+    settings.set_value(cfg.data_root, "chat_model", model_info.ref)
 
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
@@ -355,8 +360,9 @@ def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
         embed_base = cfg.embedding_model.split(":")[0]
         models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
         if exclude_vision:
-            vision_names = {m.name for m in _get_vision_catalog()}
-            models = [m for m in models if m not in vision_names]
+            vision_refs = {m.ref for m in _get_vision_catalog()}
+            models = [m for m in models if m not in vision_refs]
         return models
     except Exception:
+        log.debug("Failed to list installed models", exc_info=True)
         return []

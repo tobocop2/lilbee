@@ -130,3 +130,16 @@ class TestValidateModel:
     def test_embedding_available_false(self, embedder, mock_provider):
         mock_provider.list_models.return_value = []
         assert embedder.embedding_available() is False
+
+    def test_embedding_available_empty_string(self, mock_provider):
+        """embedding_available returns False when model is empty string."""
+        from lilbee.config import cfg
+
+        old = cfg.embedding_model
+        # Bypass pydantic validation to simulate edge case
+        object.__setattr__(cfg, "embedding_model", "")
+        try:
+            embedder = Embedder(cfg, mock_provider)
+            assert embedder.embedding_available() is False
+        finally:
+            cfg.embedding_model = old

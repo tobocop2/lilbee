@@ -190,6 +190,8 @@ class WorkerProcess:
 
     def _send_and_receive_embed(self, req: EmbedRequest) -> list[list[float]]:
         """Put request, get response, handle crash with one retry."""
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
         if resp is None:
@@ -204,6 +206,8 @@ class WorkerProcess:
         """Restart worker and retry a failed embed request once."""
         log.warning("Worker crashed during embed, restarting and retrying")
         self.restart()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_EMBED_TIMEOUT_S)
         if resp is None:
@@ -226,6 +230,8 @@ class WorkerProcess:
 
     def _send_and_receive_vision(self, req: VisionRequest) -> str:
         """Put request, get response, handle crash with one retry."""
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_VISION_TIMEOUT_S)
         if resp is None:
@@ -240,6 +246,8 @@ class WorkerProcess:
         """Restart worker and retry a failed vision request once."""
         log.warning("Worker crashed during vision OCR, restarting and retrying")
         self.restart()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(req)
         resp = self._get_response(timeout=_VISION_TIMEOUT_S)
         if resp is None:
@@ -252,6 +260,8 @@ class WorkerProcess:
 
     def _get_response(self, timeout: float) -> _WorkerResponse | None:
         """Read from response queue. Return None if worker died."""
+        if self._response_queue is None:
+            raise RuntimeError("Worker not started")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not self.is_alive():
@@ -265,17 +275,17 @@ class WorkerProcess:
     def load_model(self, model: str, model_type: str = "embed") -> None:
         """Tell the worker to (re)load a model."""
         self._ensure_started()
+        if self._request_queue is None:
+            raise RuntimeError("Worker not started")
         self._request_queue.put(LoadModelRequest(model=model, model_type=model_type))
 
 
-def _worker_main(
-    req_q: multiprocessing.Queue[_WorkerRequest],
-    resp_q: multiprocessing.Queue[_WorkerResponse],
-    config: ConfigSnapshot,
-) -> None:
-    """Child process entry point. Loads models lazily, processes requests."""
-    # Redirect stdout/stderr to devnull so llama-cpp's C-level prints
-    # don't corrupt the parent TUI. Queues use pipes, not stdout.
+def _redirect_stdio() -> None:
+    """Redirect stdout/stderr to /dev/null for the worker subprocess.
+
+    Suppresses llama-cpp's C-level prints that would corrupt the parent TUI.
+    Queues use pipes, not stdout.
+    """
     import os
     import sys
 
@@ -285,6 +295,15 @@ def _worker_main(
     os.close(devnull_fd)
     sys.stdout = open(os.devnull, "w")  # noqa: SIM115
     sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+
+
+def _worker_main(
+    req_q: multiprocessing.Queue[_WorkerRequest],
+    resp_q: multiprocessing.Queue[_WorkerResponse],
+    config: ConfigSnapshot,
+) -> None:
+    """Child process entry point. Loads models lazily, processes requests."""
+    _redirect_stdio()
 
     embed_llm: Any = None
     vision_llm: Any = None
@@ -336,7 +355,7 @@ def _worker_main(
 
 def _close_model(model: Any) -> None:
     """Safely close a llama-cpp model instance."""
-    if model is not None and hasattr(model, "close"):
+    if model is not None:
         with contextlib.suppress(Exception):
             model.close()
 
@@ -346,14 +365,14 @@ def _load_embed_model(config: ConfigSnapshot, model_name: str) -> Any:
     from pathlib import Path
 
     from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import _load_llama, _resolve_model_path
+    from lilbee.providers.llama_cpp_provider import load_llama, resolve_model_path
 
     cfg.models_dir = Path(config.models_dir)
     cfg.embedding_model = config.embedding_model
     cfg.num_ctx = config.num_ctx
 
-    model_path = _resolve_model_path(model_name)
-    return _load_llama(model_path, embedding=True)
+    model_path = resolve_model_path(model_name)
+    return load_llama(model_path, embedding=True)
 
 
 def _load_vision_model(config: ConfigSnapshot, model_name: str) -> Any:
@@ -361,22 +380,22 @@ def _load_vision_model(config: ConfigSnapshot, model_name: str) -> Any:
     from pathlib import Path
 
     from lilbee.config import cfg
-    from lilbee.providers.llama_cpp_provider import _load_vision_llama, _resolve_model_path
+    from lilbee.providers.llama_cpp_provider import load_vision_llama, resolve_model_path
 
     cfg.models_dir = Path(config.models_dir)
     cfg.vision_model = config.vision_model
     cfg.num_ctx = config.num_ctx
 
-    model_path = _resolve_model_path(model_name)
-    return _load_vision_llama(model_path)
+    model_path = resolve_model_path(model_name)
+    return load_vision_llama(model_path)
 
 
 def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
     """Process a single embed request, returning response with vectors or error."""
     try:
-        from lilbee.providers.llama_cpp_provider import _embed_one
+        from lilbee.providers.llama_cpp_provider import embed_one
 
-        vectors = [_embed_one(llm, text) for text in request.texts]
+        vectors = [embed_one(llm, text) for text in request.texts]
         return EmbedResponse(vectors=vectors, request_id=request.request_id)
     except Exception as exc:
         return EmbedResponse(error=str(exc), request_id=request.request_id)
@@ -385,10 +404,10 @@ def _handle_embed(llm: Any, request: EmbedRequest) -> EmbedResponse:
 def _handle_vision(llm: Any, request: VisionRequest) -> VisionResponse:
     """Process a single vision OCR request."""
     try:
-        from lilbee.vision import _OCR_PROMPT, _build_vision_messages
+        from lilbee.vision import OCR_PROMPT, build_vision_messages
 
-        prompt = request.prompt or _OCR_PROMPT
-        messages = _build_vision_messages(prompt, request.png_bytes)
+        prompt = request.prompt or OCR_PROMPT
+        messages = build_vision_messages(prompt, request.png_bytes)
         response = llm.create_chat_completion(messages=messages, stream=False)
         text: str = response["choices"][0]["message"]["content"] or ""
         return VisionResponse(text=text, request_id=request.request_id)

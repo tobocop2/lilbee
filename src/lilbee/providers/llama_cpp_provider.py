@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _BATCH_WINDOW_S = 0.01  # 10ms — collect concurrent requests before dispatching
+_EMBED_FUTURE_TIMEOUT_S = 300.0  # Safety net: max wait for embed result
 
 
 @dataclass
@@ -52,7 +53,7 @@ class LlamaCppProvider(LLMProvider):
         self._cache = MemoryAwareModelCache(
             max_memory_fraction=cfg.gpu_memory_fraction,
             keep_alive_seconds=cfg.model_keep_alive,
-            loader=_load_llama,
+            loader=load_llama,
         )
         self._vision_llm: Any | None = None
         self._embed_queue: queue.Queue[_EmbedRequest | None] = queue.Queue()
@@ -93,12 +94,18 @@ class LlamaCppProvider(LLMProvider):
         Embeds one text at a time because some model architectures (e.g.
         nomic-bert) fail with llama_decode -1 on multi-text batches.
         """
-        llm = self._get_embed_llm()
+        try:
+            llm = self._get_embed_llm()
+        except Exception as exc:
+            for req in batch:
+                if not req.future.done():
+                    req.future.set_exception(exc)
+            return
         for req in batch:
             try:
                 vectors: list[list[float]] = []
                 for text in req.texts:
-                    response = _embed_one(llm, text)
+                    response = embed_one(llm, text)
                     vectors.append(response)
                 req.future.set_result(vectors)
             except Exception as exc:
@@ -114,16 +121,16 @@ class LlamaCppProvider(LLMProvider):
         if _is_vision_model(resolved_model):
             return self._get_vision_llm(resolved_model)
 
-        model_path = _resolve_model_path(resolved_model)
+        model_path = resolve_model_path(resolved_model)
         return self._cache.load_model(model_path, embedding=False)
 
     def _get_vision_llm(self, model: str) -> Any:
         """Lazy-load a Llama instance with a vision chat handler."""
-        model_path = _resolve_model_path(model)
+        model_path = resolve_model_path(model)
 
         cached = getattr(self._vision_llm, "_model_path", None)
         if self._vision_llm is None or cached != str(model_path):
-            self._vision_llm = _load_vision_llama(model_path)
+            self._vision_llm = load_vision_llama(model_path)
             self._vision_llm._model_path = str(model_path)
         return self._vision_llm
 
@@ -131,7 +138,7 @@ class LlamaCppProvider(LLMProvider):
         """Load or return a cached Llama instance for embeddings."""
         from lilbee.config import cfg
 
-        model_path = _resolve_model_path(cfg.embedding_model)
+        model_path = resolve_model_path(cfg.embedding_model)
         return self._cache.load_model(model_path, embedding=True)
 
     def _get_subprocess_worker(self) -> WorkerProcess:
@@ -152,7 +159,7 @@ class LlamaCppProvider(LLMProvider):
                 self._subprocess_enabled = False
         fut: Future[list[list[float]]] = Future()
         self._embed_queue.put(_EmbedRequest(texts=texts, future=fut))
-        return fut.result()
+        return fut.result(timeout=_EMBED_FUTURE_TIMEOUT_S)
 
     def vision_ocr(self, png_bytes: bytes, model: str, prompt: str = "") -> str:
         """Run vision OCR via the subprocess worker."""
@@ -186,7 +193,7 @@ class LlamaCppProvider(LLMProvider):
                 self._chat_lock.release()
 
     def list_models(self) -> list[str]:
-        """List installed models from the registry."""
+        """List installed models from registry."""
         from lilbee.services import get_services
 
         registry = get_services().registry
@@ -202,10 +209,10 @@ class LlamaCppProvider(LLMProvider):
     def show_model(self, model: str) -> dict[str, str] | None:
         """Return model metadata from GGUF headers."""
         try:
-            path = _resolve_model_path(model)
+            path = resolve_model_path(model)
         except ProviderError:
             return None
-        return _read_gguf_metadata(path)
+        return read_gguf_metadata(path)
 
     def shutdown(self) -> None:
         """Stop workers and unload all cached models."""
@@ -288,14 +295,14 @@ def _suppress_stderr(fn: Any, *args: Any, **kwargs: Any) -> Any:
             os.close(old_stderr)
 
 
-def _embed_one(llm: Any, text: str) -> list[float]:
+def embed_one(llm: Any, text: str) -> list[float]:
     """Embed a single text with llama.cpp stderr noise suppressed."""
     response = _suppress_stderr(llm.create_embedding, input=[text])
     result: list[float] = response["data"][0]["embedding"]
     return result
 
 
-def _read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
+def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
     """Read metadata from a GGUF file's headers via llama-cpp-python.
 
     Returns a dict with keys like 'architecture', 'context_length',
@@ -329,12 +336,12 @@ def _read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
         llm.close()
 
 
-def _resolve_model_path(model: str) -> Path:
-    """Resolve a model name to a .gguf file path via the registry.
+def resolve_model_path(model: str) -> Path:
+    """Resolve a model name to a .gguf file path.
 
-    The registry is the single source of truth for installed models.
-    All models must be installed through the catalog/registry — no
-    loose .gguf file scanning.
+    Resolution order:
+    1. Registry (canonical source for installed models)
+    2. Absolute path (if it points to an existing file)
     """
     from lilbee.services import get_services
 
@@ -344,6 +351,13 @@ def _resolve_model_path(model: str) -> Path:
     except (KeyError, ValueError):
         pass
 
+    # Absolute path to a .gguf file
+    candidate = Path(model)
+    if candidate.is_absolute():
+        if candidate.exists():
+            return candidate
+        raise ProviderError(f"Model file not found: {model}", provider="llama-cpp")
+
     raise ProviderError(
         f"Model {model!r} not found in registry. "
         f"Install it via the catalog or 'lilbee models install'.",
@@ -351,7 +365,7 @@ def _resolve_model_path(model: str) -> Path:
     )
 
 
-def _load_llama(model_path: Path, *, embedding: bool) -> Any:
+def load_llama(model_path: Path, *, embedding: bool) -> Any:
     """Load a llama_cpp.Llama instance."""
     from llama_cpp import Llama
 
@@ -376,7 +390,7 @@ def _load_llama(model_path: Path, *, embedding: bool) -> Any:
         # truncating embeddings to 512 tokens. Set n_batch = n_ctx so each
         # text can use the model's full context window.
         if kwargs["n_ctx"] == 0:
-            meta = _read_gguf_metadata(model_path)
+            meta = read_gguf_metadata(model_path)
             ctx_len = int(meta.get("context_length", 2048)) if meta else 2048
         else:
             ctx_len = kwargs["n_ctx"]
@@ -402,7 +416,7 @@ def _is_vision_model(model: str) -> bool:
     )
 
 
-def _find_mmproj_for_model(model_path: Path) -> Path:
+def find_mmproj_for_model(model_path: Path) -> Path:
     """Find the mmproj (CLIP projection) file for a vision model.
 
     Searches the same directory as the model for mmproj .gguf files.
@@ -440,7 +454,7 @@ _PROJECTOR_HANDLER_MAP: dict[str, str] = {
 }
 
 
-def _read_mmproj_projector_type(mmproj_path: Path) -> str | None:
+def read_mmproj_projector_type(mmproj_path: Path) -> str | None:
     """Read clip.projector_type from a GGUF mmproj file without loading the model."""
     import struct
 
@@ -488,7 +502,7 @@ def _resolve_vision_handler(mmproj_path: Path) -> Any:
     """Determine the correct chat handler class for a vision model's mmproj file."""
     from llama_cpp import llama_chat_format
 
-    projector = _read_mmproj_projector_type(mmproj_path)
+    projector = read_mmproj_projector_type(mmproj_path)
     if projector:
         handler_name = _PROJECTOR_HANDLER_MAP.get(projector.lower())
         if handler_name:
@@ -505,7 +519,7 @@ def _resolve_vision_handler(mmproj_path: Path) -> Any:
     return Llava15ChatHandler
 
 
-def _load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
+def load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any:
     """Load a Llama instance with the correct vision chat handler.
 
     Reads the mmproj GGUF metadata to determine which chat handler to use,
@@ -516,7 +530,7 @@ def _load_vision_llama(model_path: Path, mmproj_path: Path | None = None) -> Any
     from lilbee.config import cfg
 
     if mmproj_path is None:
-        mmproj_path = _find_mmproj_for_model(model_path)
+        mmproj_path = find_mmproj_for_model(model_path)
 
     handler_cls = _resolve_vision_handler(mmproj_path)
     log.info("Loading vision model %s with mmproj %s", model_path.name, mmproj_path.name)

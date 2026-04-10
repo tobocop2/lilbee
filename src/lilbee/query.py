@@ -18,7 +18,7 @@ from typing_extensions import TypedDict
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
-from lilbee.store import SearchChunk, Store
+from lilbee.store import CitationRecord, SearchChunk, Store
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +36,30 @@ CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
-def format_source(result: SearchChunk) -> str:
-    """Format a search result as a source citation line."""
+def _format_citation(citation: CitationRecord) -> str:
+    """Format a single citation record as an indented attribution line."""
+    if citation["page_start"] or citation["page_end"]:
+        ps, pe = citation["page_start"], citation["page_end"]
+        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
+        return f"    → {citation['source_filename']}, {pages}"
+    if citation["line_start"] or citation["line_end"]:
+        ls, le = citation["line_start"], citation["line_end"]
+        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
+        return f"    → {citation['source_filename']}, {lines}"
+    return f"    → {citation['source_filename']}"
+
+
+def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
+    """Format a search result as a source citation line.
+
+    For wiki chunks, shows the wiki page path followed by indented transitive citations.
+    """
+    if result.chunk_type == "wiki" and citations:
+        parts = [f"  → {result.source}"]
+        for cit in citations:
+            parts.append(_format_citation(cit))
+        return "\n".join(parts)
+
     if result.content_type == "pdf":
         ps, pe = result.page_start, result.page_end
         pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
@@ -51,18 +73,61 @@ def format_source(result: SearchChunk) -> str:
     return f"  → {result.source}"
 
 
-def deduplicate_sources(results: list[SearchChunk], max_citations: int = 5) -> list[str]:
+def _source_slug(source_name: str) -> str:
+    """Derive the wiki filename stem from a raw source name.
+
+    Mirrors the slug logic in gen.py: "subdir/doc.md" -> "subdir--doc".
+    """
+    return source_name.replace("/", "--").rsplit(".", 1)[0]
+
+
+def _wiki_covered_raw_sources(results: list[SearchChunk]) -> set[str]:
+    """Build a set of raw source names that have wiki coverage.
+
+    Wiki chunks have sources like "wiki/summaries/subdir--doc.md" while raw
+    chunks have sources like "subdir/doc.md". Match by comparing the wiki
+    file stem against the slug derived from the raw source name.
+    """
+    wiki_stems: set[str] = set()
+    for r in results:
+        if r.chunk_type == "wiki":
+            # "wiki/summaries/subdir--doc.md" -> "subdir--doc"
+            filename = r.source.rsplit("/", 1)[-1]
+            wiki_stems.add(filename.rsplit(".", 1)[0])
+    if not wiki_stems:
+        return set()
+    raw_covered: set[str] = set()
+    for r in results:
+        if r.chunk_type != "wiki" and _source_slug(r.source) in wiki_stems:
+            raw_covered.add(r.source)
+    return raw_covered
+
+
+def prefer_wiki(results: list[SearchChunk]) -> list[SearchChunk]:
+    """When both wiki and raw chunks exist for the same source, prefer wiki."""
+    covered = _wiki_covered_raw_sources(results)
+    if not covered:
+        return results
+    return [r for r in results if r.chunk_type == "wiki" or r.source not in covered]
+
+
+def deduplicate_sources(
+    results: list[SearchChunk],
+    max_citations: int = 5,
+    citations_map: dict[str, list[CitationRecord]] | None = None,
+) -> list[str]:
     """Merge results from same source into deduplicated citation lines."""
     seen: set[str] = set()
-    citations: list[str] = []
+    citation_lines: list[str] = []
     for r in results:
-        line = format_source(r)
+        cits = (citations_map or {}).get(r.source)
+        line = format_source(r, citations=cits)
         if line not in seen:
             seen.add(line)
-            citations.append(line)
-            if len(citations) >= max_citations:
+            citation_lines.append(line)
+            if len(citation_lines) >= max_citations:
                 break
-    return citations
+    return citation_lines
 
 
 def _sort_key(r: SearchChunk) -> float:
@@ -355,7 +420,7 @@ class Searcher:
             return []
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
-        for prefix in ("term:", "vec:", "hyde:"):
+        for prefix in ("term:", "vec:", "hyde:", "wiki:", "raw:"):
             if question.strip().lower().startswith(prefix):
                 return prefix[:-1], question.strip()[len(prefix) :].strip()
         return None, question
@@ -368,6 +433,9 @@ class Searcher:
             return self._store.search(query_vec, top_k=top_k, query_text=None)
         if mode == "hyde":
             return self._hyde_search(query, top_k)
+        if mode in ("wiki", "raw"):
+            query_vec = self._embedder.embed(query)
+            return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=mode)
         return []
 
     def select_context(
@@ -451,6 +519,9 @@ class Searcher:
     ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
         """Build RAG context from search results."""
         results = self.search(question, top_k=top_k)
+        mode, _ = self._parse_structured_query(question)
+        if mode is None:
+            results = prefer_wiki(results)
         if not results:
             return None
         results = prepare_results(results)

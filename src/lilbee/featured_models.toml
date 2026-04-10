@@ -1,5 +1,8 @@
 [[chat]]
-name = "Qwen3 0.6B"
+name = "qwen3"
+tag = "0.6b"
+display_name = "Qwen3 0.6B"
+recommended = true
 hf_repo = "Qwen/Qwen3-0.6B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 0.5
@@ -7,7 +10,9 @@ min_ram_gb = 2.0
 description = "Tiny — runs on anything"
 
 [[chat]]
-name = "Qwen3 4B"
+name = "qwen3"
+tag = "4b"
+display_name = "Qwen3 4B"
 hf_repo = "Qwen/Qwen3-4B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 2.5
@@ -15,7 +20,9 @@ min_ram_gb = 8.0
 description = "Small — good balance for 8 GB RAM"
 
 [[chat]]
-name = "Qwen3 8B"
+name = "qwen3"
+tag = "8b"
+display_name = "Qwen3 8B"
 hf_repo = "Qwen/Qwen3-8B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 5.0
@@ -23,23 +30,42 @@ min_ram_gb = 8.0
 description = "Medium — strong general purpose"
 
 [[chat]]
-name = "Mistral 7B Instruct"
-hf_repo = "MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF"
+name = "mistral"
+tag = "7b-instruct"
+display_name = "Mistral 7B Instruct"
+recommended = true
+hf_repo = "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 4.4
 min_ram_gb = 8.0
 description = "Fast 7B, 32K context"
 
 [[chat]]
-name = "Qwen3-Coder 30B A3B"
+name = "qwen3-coder"
+tag = "30b-a3b"
+display_name = "Qwen3-Coder 30B A3B"
+recommended = true
 hf_repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 18.0
 min_ram_gb = 32.0
 description = "Extra large — best quality"
 
+[[chat]]
+name = "smollm2"
+tag = "135m"
+display_name = "SmolLM2 135M"
+hf_repo = "bartowski/SmolLM2-135M-Instruct-GGUF"
+gguf_filename = "SmolLM2-135M-Instruct-Q3_K_S.gguf"
+size_gb = 0.09
+min_ram_gb = 0.5
+description = "Ultra-tiny — Raspberry Pi, low-RAM devices"
+
 [[embedding]]
-name = "Nomic Embed Text v1.5"
+name = "nomic-embed-text"
+tag = "v1.5"
+display_name = "Nomic Embed Text v1.5"
+recommended = true
 hf_repo = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 gguf_filename = "nomic-embed-text-v1.5.Q4_K_M.gguf"
 size_gb = 0.3
@@ -47,7 +73,10 @@ min_ram_gb = 2.0
 description = "Fast, high quality — default for lilbee"
 
 [[vision]]
-name = "LightOnOCR-2"
+name = "lightonocr"
+tag = "2-1b"
+display_name = "LightOnOCR-2"
+recommended = true
 hf_repo = "noctrex/LightOnOCR-2-1B-GGUF"
 gguf_filename = "*Q4_K_M.gguf"
 size_gb = 1.5

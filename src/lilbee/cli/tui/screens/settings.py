@@ -117,10 +117,18 @@ class SettingsScreen(Screen[None]):
     """Interactive settings viewer with grouped, type-aware editors."""
 
     CSS_PATH = "settings.tcss"
+    AUTO_FOCUS = "#settings-scroll"
+    HELP = (
+        "Browse and edit configuration.\n\n"
+        "Use / to search, Enter to confirm, Escape to return to the list."
+    )
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
+        Binding("slash", "focus_search", "Search", show=True),
+        Binding("tab", "focus_next", "Next field", show=True),
+        Binding("shift+tab", "focus_previous", "Prev field", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -128,7 +136,9 @@ class SettingsScreen(Screen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Input(
             placeholder="Filter settings...",
@@ -136,7 +146,8 @@ class SettingsScreen(Screen[None]):
         )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def _compose_groups(self) -> ComposeResult:
         """Yield grouped setting sections."""
@@ -160,6 +171,11 @@ class SettingsScreen(Screen[None]):
             yield Static(_help_content(key, defn), classes="setting-help")
             if defn.writable:
                 yield _make_editor(key, defn)
+
+    @on(Input.Submitted, "#settings-search")
+    def _on_search_submitted(self) -> None:
+        """Blur the search input when Enter is pressed."""
+        self.query_one("#settings-scroll", VerticalScroll).focus()
 
     @on(Input.Changed, "#settings-search")
     def _filter_settings(self, event: Input.Changed) -> None:
@@ -246,10 +262,18 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh help for %s", key, exc_info=True)
 
+    def action_focus_search(self) -> None:
+        """Focus the search input -- bound to / key."""
+        self.query_one("#settings-search", Input).focus()
+
     def action_go_back(self) -> None:
+        search = self.query_one("#settings-search", Input)
+        if self.focused is search:  # Escape from filter → blur, don't leave
+            self.query_one("#settings-scroll", VerticalScroll).focus()
+            return
         from lilbee.cli.tui.app import LilbeeApp
 
-        if isinstance(self.app, LilbeeApp):
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.app.switch_view("Chat")
         else:
             self.app.pop_screen()

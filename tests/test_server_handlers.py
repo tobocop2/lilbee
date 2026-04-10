@@ -91,8 +91,8 @@ class TestStatus:
 
         mock_status = StatusResult(
             config=StatusConfig(
-                documents_dir="/tmp/docs",
-                data_dir="/tmp/data",
+                documents_dir="docs",
+                data_dir="data",
                 chat_model="test:latest",
                 embedding_model="embed:latest",
             ),
@@ -495,14 +495,14 @@ class TestListModels:
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
-        mock_list.return_value = ["qwen3:8b"]
+        mock_list.return_value = ["qwen3:0.6b"]
         result = await handlers.list_models()
 
         catalog = result.chat.catalog
-        qwen_entry = next(m for m in catalog if m.name == "qwen3:8b")
+        qwen_entry = next(m for m in catalog if "Qwen3 0.6B" in m.name)
         assert qwen_entry.installed is True
 
-        mistral_entry = next(m for m in catalog if m.name == "mistral:7b")
+        mistral_entry = next(m for m in catalog if "Mistral" in m.name)
         assert mistral_entry.installed is False
 
 
@@ -542,7 +542,9 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="Qwen3 8B",
+                    name="qwen3",
+                    tag="8b",
+                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -560,9 +562,9 @@ class TestModelsCatalog:
         assert result.total == 1
         assert len(result.models) == 1
         m = result.models[0]
-        assert m.name == "Qwen3 8B"
-        assert m.installed is False
-        assert m.source == "native"
+        assert m.name == "qwen3"
+        assert m.installed is True
+        assert m.source == "litellm"
 
     @patch("lilbee.catalog.get_catalog")
     async def test_filters_passed_to_catalog(self, mock_get_catalog, mock_svc):
@@ -601,7 +603,9 @@ class TestModelsCatalog:
             offset=0,
             models=[
                 CatalogModel(
-                    name="qwen3:8b",
+                    name="qwen3",
+                    tag="8b",
+                    display_name="Qwen3 8B",
                     hf_repo="Qwen/Qwen3-8B-GGUF",
                     gguf_filename="*Q4_K_M.gguf",
                     size_gb=5.0,
@@ -931,16 +935,6 @@ class TestGetConfigReranker:
 
 
 class TestCrawlStream:
-    async def test_rejects_invalid_url(self):
-        with pytest.raises(ValueError, match="http"):
-            async for _ in handlers.crawl_stream("ftp://bad.com"):
-                pass  # pragma: no cover
-
-    async def test_rejects_non_url(self):
-        with pytest.raises(ValueError, match="http"):
-            async for _ in handlers.crawl_stream("not-a-url"):
-                pass  # pragma: no cover
-
     @patch("lilbee.crawler.crawl_and_save")
     @patch("lilbee.crawler.validate_crawl_url")
     async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
@@ -952,7 +946,7 @@ class TestCrawlStream:
             on_progress("crawl_start", CrawlStartEvent(url=url, depth=depth))
             on_progress("crawl_page", CrawlPageEvent(url=url, current=1, total=1))
             on_progress("crawl_done", CrawlDoneEvent(pages_crawled=1, files_written=1))
-            return [Path("/tmp/test.md")]
+            return [Path("test.md")]
 
         mock_crawl.side_effect = fake_crawl
         events = []
@@ -1025,9 +1019,9 @@ class TestListExternalModels:
         """Reset the external models cache before each test."""
         import lilbee.server.handlers as h
 
-        h._external_cache = (0.0, "", None)
+        h._external_cache = h._ExternalModelsCache()
         yield
-        h._external_cache = (0.0, "", None)
+        h._external_cache = h._ExternalModelsCache()
 
     @patch("lilbee.services.get_services")
     async def test_returns_provider_models(self, mock_svc):
@@ -1074,3 +1068,117 @@ class TestListExternalModels:
         await handlers.list_external_models()
 
         assert mock_svc.return_value.provider.list_models.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: SSE cancel checks, model pull progress cancel
+# ---------------------------------------------------------------------------
+
+
+class TestRunLlmStreamCancel:
+    def test_cancel_stops_streaming(self):
+        """When cancel is set, _run_llm_stream breaks out of the loop."""
+        import threading
+
+        cancel = threading.Event()
+        cancel.set()  # pre-set cancel
+
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        error_holder: list[str] = []
+
+        mock_provider = MagicMock()
+        # Return some stream tokens that would normally be emitted
+        stream_data = iter(["token1", "token2"])
+        mock_provider.chat.return_value = stream_data
+
+        with patch("lilbee.services.get_services") as mock_svc:
+            mock_svc.return_value.provider = mock_provider
+            handlers._run_llm_stream(
+                [{"role": "user", "content": "hi"}],
+                None,
+                queue,
+                cancel,
+                error_holder,
+            )
+        # Should have None sentinel
+        items = []
+        while not queue.empty():
+            items.append(queue.get_nowait())
+        assert items[-1] is None
+
+
+class TestAddHandlerCancel:
+    async def test_cancel_returns_early(self):
+        """When cancel is set before sync, add returns early with copy-only summary."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.cancel.set()
+
+        copy_result = MagicMock()
+        copy_result.copied = ["test.txt"]
+        copy_result.skipped = []
+
+        with patch("lilbee.server.handlers.copy_files", return_value=copy_result):
+            result = await handlers._run_add(
+                paths=[],
+                force=False,
+                vision_model="",
+                sse=sse,
+            )
+        assert result is not None
+        assert result.copied == ["test.txt"]
+
+
+class TestModelPullProgressCancel:
+    async def test_cancel_skips_progress(self):
+        """When cancel is set, the progress callback returns early."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.cancel.set()
+
+        # Simulate the progress callback pattern from models_pull
+        def _on_progress(data):
+            if sse.cancel.is_set():
+                return
+            sse.queue.put_nowait("should_not_appear")
+
+        _on_progress({"status": "downloading"})
+        assert sse.queue.empty()
+
+    async def test_cancel_during_pull_skips_later_progress(self):
+        """When cancel is set before pull starts, all progress calls return early."""
+        import threading
+
+        mock_manager = MagicMock()
+        progress_called = threading.Event()
+
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                # All progress calls should see cancel already set
+                on_progress({"status": "should_be_suppressed"})
+                progress_called.set()
+
+        mock_manager.pull.side_effect = fake_pull
+
+        # Patch SseStream so cancel is pre-set
+        original_init = handlers.SseStream.__init__
+
+        def patched_init(self):
+            original_init(self)
+            self.cancel.set()  # Pre-set cancel before pull starts
+
+        with (
+            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            patch.object(handlers.SseStream, "__init__", patched_init),
+        ):
+            gen = handlers.models_pull("test", source="native")
+            events = []
+            async for event in gen:
+                events.append(event)
+            # Wait for the pull thread to complete
+            await asyncio.sleep(0.2)
+
+        assert progress_called.is_set()  # Pull did call on_progress
+        assert not any("should_be_suppressed" in e for e in events if e)

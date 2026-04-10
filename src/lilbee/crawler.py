@@ -46,7 +46,7 @@ class CrawlerState:
     """
 
     def __init__(self) -> None:
-        self.semaphore: threading.Semaphore | None = None
+        self.semaphore: asyncio.Semaphore | None = None
         self.semaphore_limit: int = 0
         self.last_sync_time: float = 0.0
         self.sync_running: threading.Lock = threading.Lock()
@@ -64,17 +64,13 @@ class CrawlerState:
 _state = CrawlerState()
 
 
-def _get_crawl_semaphore() -> threading.Semaphore | None:
-    """Return a threading semaphore for crawl concurrency, or None if unlimited (0).
-
-    Uses threading.Semaphore instead of asyncio.Semaphore to avoid event-loop binding issues
-    when crawl_and_save is called from different loops (e.g. CLI via asyncio.run).
-    """
+def _get_crawl_semaphore() -> asyncio.Semaphore | None:
+    """Return an asyncio semaphore for crawl concurrency, or None if unlimited (0)."""
     limit = cfg.crawl_max_concurrent
     if limit <= 0:
         return None
     if _state.semaphore is None or _state.semaphore_limit != limit:
-        _state.semaphore = threading.Semaphore(limit)
+        _state.semaphore = asyncio.Semaphore(limit)
         _state.semaphore_limit = limit
     return _state.semaphore
 
@@ -428,7 +424,7 @@ async def crawl_and_save(
 
     sem = _get_crawl_semaphore()
     if sem is not None:
-        sem.acquire()
+        await sem.acquire()
     try:
         if on_progress:
             on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=depth))

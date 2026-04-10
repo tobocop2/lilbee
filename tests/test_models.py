@@ -115,15 +115,16 @@ class TestPickDefaultModel:
         result = models.pick_default_model(32.0)
         assert result.min_ram_gb <= 32.0
 
-    def test_tiny_ram_picks_first(self):
+    def test_tiny_ram_picks_smallest(self):
         result = models.pick_default_model(2.0)
-        assert result == MODEL_CATALOG[0]
+        assert result.min_ram_gb <= 2.0
+        assert result.ref == "smollm2:135m"
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
         first = MODEL_CATALOG[0]
-        assert models._model_download_size_gb(first.name) == first.size_gb
+        assert models._model_download_size_gb(first.ref) == first.size_gb
 
     def test_unknown_model_returns_fallback(self):
         result = models._model_download_size_gb("unknown:latest")
@@ -136,7 +137,7 @@ class TestDisplayModelPicker:
         recommended = models.display_model_picker(16.0, 50.0)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert MODEL_CATALOG[0].name in captured.err
+        assert MODEL_CATALOG[0].display_name in captured.err
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
@@ -203,13 +204,25 @@ class TestValidateDiskAndPull:
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
-        info = ModelInfo("test:1b", 1.0, 4, "test")
+        info = ModelInfo(
+            ref="test:1b",
+            display_name="Test 1B",
+            size_gb=1.0,
+            min_ram_gb=4,
+            description="test",
+        )
         models.validate_disk_and_pull(info, 50.0)
         mock_pull.assert_called_once_with("test:1b", console=None)
         mock_save.assert_called_once_with(cfg.data_root, "chat_model", "test:1b")
 
     def test_insufficient_disk_raises(self):
-        info = ModelInfo("test:big", 20.0, 32, "big")
+        info = ModelInfo(
+            ref="test:big",
+            display_name="Test Big",
+            size_gb=20.0,
+            min_ram_gb=32,
+            description="big",
+        )
         with pytest.raises(RuntimeError, match="Not enough disk space"):
             models.validate_disk_and_pull(info, 5.0)
 
@@ -277,8 +290,8 @@ class TestEnsureChatModel:
             with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
                 models.ensure_chat_model()
             expected = models.pick_default_model(32.0)
-            mock_pull.assert_called_once_with(expected.name, console=None)
-            mock_save.assert_called_once_with(cfg.data_root, "chat_model", expected.name)
+            mock_pull.assert_called_once_with(expected.ref, console=None)
+            mock_save.assert_called_once_with(cfg.data_root, "chat_model", expected.ref)
         finally:
             cfg.embedding_model = old_embed
 
@@ -296,7 +309,7 @@ class TestEnsureChatModel:
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
         expected = models.pick_default_model(8.0)
-        mock_pull.assert_called_once_with(expected.name, console=None)
+        mock_pull.assert_called_once_with(expected.ref, console=None)
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
@@ -314,9 +327,9 @@ class TestEnsureChatModel:
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with(MODEL_CATALOG[0].name, console=None)
+        mock_pull.assert_called_once_with(MODEL_CATALOG[0].ref, console=None)
 
-    @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
+    @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
     @mock.patch("lilbee.model_manager.get_model_manager")
     def test_insufficient_disk_raises(
@@ -331,8 +344,9 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
+    @mock.patch("lilbee.settings.set_value")
     @mock.patch("lilbee.model_manager.get_model_manager")
-    def test_empty_model_list_triggers_pull(self, mock_get_manager):
+    def test_empty_model_list_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()
         mock_manager.list_installed.return_value = []
         mock_get_manager.return_value = mock_manager
@@ -344,8 +358,9 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
+    @mock.patch("lilbee.settings.set_value")
     @mock.patch("lilbee.model_manager.get_model_manager")
-    def test_only_embedding_model_triggers_pull(self, mock_get_manager):
+    def test_only_embedding_model_triggers_pull(self, mock_get_manager, _mock_save):
         mock_manager = mock.MagicMock()
         mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
         mock_get_manager.return_value = mock_manager

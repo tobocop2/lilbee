@@ -18,12 +18,10 @@ from pathlib import Path
 
 import pytest
 
-kreuzberg = pytest.importorskip("kreuzberg")
-
-from lilbee.config import cfg  # noqa: E402
-from lilbee.ingest import sync  # noqa: E402
-from lilbee.services import get_services  # noqa: E402
-from lilbee.services import reset_services as reset_provider  # noqa: E402
+from lilbee.config import cfg
+from lilbee.ingest import sync
+from lilbee.services import get_services
+from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
 
@@ -38,8 +36,6 @@ def pdf_pipeline(tmp_path_factory):
     Module-scoped: creates temp dirs, copies fixture, runs sync, yields data.
     Uses llama-cpp with real models so the full RAG pipeline works.
     """
-    llama_cpp = pytest.importorskip("llama_cpp")  # noqa: F841
-
     from lilbee.catalog import FEATURED_EMBEDDING, download_model
     from lilbee.model_manager import reset_model_manager
 
@@ -61,8 +57,6 @@ def pdf_pipeline(tmp_path_factory):
     cfg.data_dir = data_dir
     cfg.data_root = tmp
     cfg.lancedb_dir = lancedb_dir
-    cfg.models_dir = tmp / "models"
-    cfg.models_dir.mkdir(parents=True)
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
@@ -73,8 +67,8 @@ def pdf_pipeline(tmp_path_factory):
 
     # Download embedding model
     embed_entry = FEATURED_EMBEDDING[0]
-    embed_path = download_model(embed_entry)
-    cfg.embedding_model = embed_path.name
+    download_model(embed_entry)
+    cfg.embedding_model = embed_entry.ref
 
     # Run sync (will use Tesseract OCR if available, otherwise skip PDF)
     asyncio.run(sync(quiet=True))
@@ -171,9 +165,9 @@ def _vision_model_available() -> bool:
     if not cfg.vision_model:
         return False
     try:
-        from lilbee.providers.llama_cpp_provider import _resolve_model_path
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        _resolve_model_path(cfg.vision_model)
+        resolve_model_path(cfg.vision_model)
         return True
     except Exception:
         return False

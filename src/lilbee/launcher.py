@@ -1,24 +1,13 @@
 """Thin CLI entry point — shows splash animation while heavy deps load.
 
-This module imports only ``_splash`` (which uses only stdlib), forks the
-animation process, then performs the heavy ``from lilbee.cli import app``
-import while the bee animates on stderr.
+This module imports only ``splash`` (which uses only stdlib + subprocess),
+launches the animation process, then performs the heavy
+``from lilbee.cli import app`` import while the bee animates on stderr.
 """
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
-from contextlib import suppress
-
-_READY_FILE = "lilbee-splash-ready"
-
-
-def _cleanup_ready_file(path: str) -> None:
-    """Remove the ready file if it exists."""
-    with suppress(OSError):
-        os.remove(path)
 
 
 def main() -> None:
@@ -34,14 +23,12 @@ def main() -> None:
 
     from lilbee.splash import start, stop
 
-    ready_file = os.path.join(tempfile.gettempdir(), _READY_FILE)
-    pid = start(ready_file=ready_file)
+    handle = start()
 
     try:
         from lilbee.cli import app
     except BaseException:
-        stop(pid)
-        _cleanup_ready_file(ready_file)
+        stop(handle)
         raise
 
     try:
@@ -51,7 +38,4 @@ def main() -> None:
         sys.stderr.flush()
         raise SystemExit(130) from None
     finally:
-        stop(pid)
-        _cleanup_ready_file(ready_file)
-        sys.stderr.write("\033[2J\033[H\033[?25h")
-        sys.stderr.flush()
+        stop(handle)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -20,18 +19,28 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
     CatalogModel,
+    DownloadProgress,
     ModelFamily,
     ModelVariant,
-    clean_display_name,
     get_catalog,
     get_families,
+    make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.screens.catalog_utils import (
+    SORT_KEYS,
+    TableRow,
+    _remote_to_row,
+    _row_display_name,
+    _variant_to_row,
+    catalog_to_row,
+    matches_search,
+)
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
-from lilbee.models import FEATURED_STAR, ModelTask
+from lilbee.models import ModelTask
 
 log = logging.getLogger(__name__)
 
@@ -45,164 +54,39 @@ _WORKER_FETCH_REMOTE = "fetch_remote_models"
 COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
 
 
-def _parse_param_label(name: str) -> str:
-    """Extract parameter count label from model name (e.g. '8B', '0.6B')."""
-    match = re.search(r"(\d+\.?\d*)B", name, re.IGNORECASE)
-    return f"{match.group(1)}B" if match else "--"
-
-
-def _format_downloads(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
-    return str(n)
-
-
-def _format_size_mb(size_mb: int) -> str:
-    """Format size in MB to a human-readable string."""
-    if size_mb == 0:
-        return "--"
-    if size_mb >= 1024:
-        return f"{size_mb / 1024:.1f} GB"
-    return f"{size_mb} MB"
-
-
-def _format_size_gb(size_gb: float) -> str:
-    """Format size in GB to a human-readable string."""
-    if size_gb <= 0:
-        return "--"
-    return f"{size_gb:.1f} GB"
-
-
-@dataclass
-class TableRow:
-    """A row in the catalog DataTable with source metadata."""
-
-    name: str
-    task: str
-    params: str
-    size: str
-    quant: str
-    downloads: str
-    featured: bool
-    installed: bool
-    sort_downloads: int
-    sort_size: float
-    variant: ModelVariant | None = None
-    family: ModelFamily | None = None
-    catalog_model: CatalogModel | None = None
-    remote_model: RemoteModel | None = None
-
-
-def _variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
-    """Convert a ModelVariant + family to a TableRow."""
-    prefix = "* " if v.recommended else ""
-    return TableRow(
-        name=f"{prefix}{f.name} {v.param_count}",
-        task=f.task,
-        params=v.param_count,
-        size=_format_size_mb(v.size_mb),
-        quant=v.quant or "--",
-        downloads="--",
-        featured=True,
-        installed=installed,
-        sort_downloads=0,
-        sort_size=v.size_mb / 1024,
-        variant=v,
-        family=f,
-    )
-
-
-def _catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
-    """Convert a CatalogModel to a TableRow."""
-    display = clean_display_name(m.hf_repo)
-    quant = _extract_quant_from_filename(m.gguf_filename)
-    return TableRow(
-        name=display,
-        task=m.task,
-        params=_parse_param_label(m.name),
-        size=_format_size_gb(m.size_gb),
-        quant=quant or "--",
-        downloads=_format_downloads(m.downloads) if m.downloads > 0 else "--",
-        featured=m.featured,
-        installed=installed,
-        sort_downloads=m.downloads,
-        sort_size=m.size_gb,
-        catalog_model=m,
-    )
-
-
-def _remote_to_row(rm: RemoteModel) -> TableRow:
-    """Convert a RemoteModel to a TableRow."""
-    return TableRow(
-        name=rm.name,
-        task=rm.task,
-        params=rm.parameter_size or "--",
-        size="--",
-        quant="--",
-        downloads="--",
-        featured=False,
-        installed=True,
-        sort_downloads=0,
-        sort_size=0.0,
-        remote_model=rm,
-    )
-
-
-def _extract_quant_from_filename(filename: str) -> str:
-    """Extract quantization label from a GGUF filename pattern."""
-    m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
-
-
-def _row_display_name(row: TableRow) -> str:
-    """Build the display name with featured/installed markers."""
-    parts: list[str] = []
-    if row.featured:
-        parts.append(FEATURED_STAR)
-    parts.append(row.name)
-    if row.installed:
-        parts.append("[installed]")
-    return " ".join(parts)
-
-
-# Column sort key extractors
-_SORT_KEYS = {
-    "Name": lambda r: r.name.lower(),
-    "Task": lambda r: r.task,
-    "Params": lambda r: _param_sort_value(r.params),
-    "Size": lambda r: r.sort_size,
-    "Quant": lambda r: r.quant,
-    "Downloads": lambda r: r.sort_downloads,
-}
-
-
-def _param_sort_value(params: str) -> float:
-    """Convert param label to sortable float (e.g. '8B' -> 8.0)."""
-    match = re.search(r"(\d+\.?\d*)", params)
-    return float(match.group(1)) if match else 0.0
+_GRID_PAGE_ROWS = 3
+_TABLE_PAGE_ROWS = 10
 
 
 class CatalogScreen(Screen[None]):
     """Model catalog with grid (default) and list views."""
 
     CSS_PATH = "catalog.tcss"
+    AUTO_FOCUS = ""  # GridSelect is mounted dynamically; focused in on_mount
+
+    HELP = (
+        "# Catalog\n"
+        "Browse and install models.\n\n"
+        "Use arrows to navigate the grid, Enter to install."
+    )
+
+    _ACTION_GROUP = Binding.Group("Actions", compact=True)
+    _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
-        Binding("v", "toggle_view", "View", show=True),
-        Binding("slash", "focus_search", "Search", show=True),
-        Binding("d", "delete_model", "Delete", show=True),
+        Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("v", "toggle_view", "View", show=True, group=_ACTION_GROUP),
+        Binding("slash", "focus_search", "Search", show=True, group=_ACTION_GROUP),
+        Binding("d", "delete_model", "Delete", show=True, group=_ACTION_GROUP),
         Binding("x", "delete_model", "Delete", show=False),
-        Binding("j", "cursor_down", "Nav", show=False),
-        Binding("k", "cursor_up", "Nav", show=False),
-        Binding("g", "jump_top", "Top", show=False),
-        Binding("G", "jump_bottom", "End", show=False),
-        Binding("space", "page_down", "PgDn", show=False),
-        Binding("ctrl+d", "page_down", "PgDn", show=False),
-        Binding("ctrl+u", "page_up", "PgUp", show=False),
+        Binding("j", "cursor_down", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("k", "cursor_up", "Nav", show=False, group=_SCROLL_GROUP),
+        Binding("g", "jump_top", "Top", show=False, group=_SCROLL_GROUP),
+        Binding("G", "jump_bottom", "End", show=False, group=_SCROLL_GROUP),
+        Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -222,14 +106,17 @@ class CatalogScreen(Screen[None]):
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from textual.widgets import Footer
+
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
-        yield StatusBar()
+        yield ViewTabs()
+        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#catalog-search", Input).display = False
@@ -239,7 +126,15 @@ class CatalogScreen(Screen[None]):
         self._fetch_installed_names()
         self.add_class("-grid-view")
         self._refresh_grid()
+        self._focus_first_grid()
         self._fetch_remote_models()
+
+    def _focus_first_grid(self) -> None:
+        """Focus the first GridSelect widget if available."""
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self.query_one(GridSelect).focus()
 
     def _fetch_installed_names(self) -> None:
         """Populate installed source repos/filenames from registry manifests."""
@@ -271,6 +166,8 @@ class CatalogScreen(Screen[None]):
             self.remove_class("-list-view")
             self.add_class("-grid-view")
             self._refresh_grid()
+            with contextlib.suppress(Exception):
+                self.query_one(GridSelect).focus()
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -362,10 +259,10 @@ class CatalogScreen(Screen[None]):
         for fam in self._families:
             for v in fam.variants:
                 installed = self._is_installed(
-                    f"{fam.name}:{v.param_count}", repo=v.hf_repo, filename=v.filename
+                    f"{fam.slug}:{v.tag}", repo=v.hf_repo, filename=v.filename
                 )
                 row = _variant_to_row(v, fam, installed)
-                if _matches_search(row, search):
+                if matches_search(row, search):
                     rows.append(row)
         return rows
 
@@ -373,9 +270,9 @@ class CatalogScreen(Screen[None]):
         """Build rows from HuggingFace models."""
         rows: list[TableRow] = []
         for m in self._hf_models:
-            installed = self._is_installed(m.name, repo=m.hf_repo, filename=m.gguf_filename)
-            row = _catalog_to_row(m, installed)
-            if _matches_search(row, search):
+            installed = self._is_installed(m.ref, repo=m.hf_repo, filename=m.gguf_filename)
+            row = catalog_to_row(m, installed)
+            if matches_search(row, search):
                 rows.append(row)
         return rows
 
@@ -384,7 +281,7 @@ class CatalogScreen(Screen[None]):
         rows: list[TableRow] = []
         for rm in self._remote_models:
             row = _remote_to_row(rm)
-            if _matches_search(row, search):
+            if matches_search(row, search):
                 rows.append(row)
         return rows
 
@@ -398,7 +295,7 @@ class CatalogScreen(Screen[None]):
 
     def _sort_rows(self, rows: list[TableRow]) -> list[TableRow]:
         """Sort rows: featured first, then by current sort column."""
-        key_fn = _SORT_KEYS.get(self._sort_column, _SORT_KEYS["Name"])
+        key_fn = SORT_KEYS.get(self._sort_column, SORT_KEYS["Name"])
         # Stable sort: featured always first, then by column
         return sorted(
             rows,
@@ -452,7 +349,7 @@ class CatalogScreen(Screen[None]):
         """Filter visible cards by search text without recreating widgets."""
         search = self._get_search_text()
         for card in self.query(ModelCard):
-            card.display = _matches_search(card.row, search)
+            card.display = matches_search(card.row, search)
         container = self.query_one("#catalog-grid", VerticalScroll)
         children = list(container.children)
         for i, child in enumerate(children):
@@ -541,7 +438,9 @@ class CatalogScreen(Screen[None]):
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
         entry = CatalogModel(
-            name=f"{family.name} {variant.param_count}",
+            name=family.slug,
+            tag=variant.tag,
+            display_name=f"{family.name} {variant.param_count}",
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,
             size_gb=variant.size_mb / 1024,
@@ -550,6 +449,7 @@ class CatalogScreen(Screen[None]):
             featured=True,
             downloads=0,
             task=family.task,
+            recommended=variant.recommended,
         )
         self._install_model(entry)
 
@@ -560,7 +460,7 @@ class CatalogScreen(Screen[None]):
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
-                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.name))
+                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                 return
         except Exception:
             log.debug("Could not resolve filename", exc_info=True)
@@ -575,9 +475,9 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
         task_bar = self.app.task_bar
-        task_id = task_bar.add_task(f"Downloading {model.name}", "download")
+        task_id = task_bar.add_task(f"Downloading {model.display_name}", "download")
         task_bar.queue.advance("download")
-        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.name))
+        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
         self._run_download(model, task_id, task_bar)
 
     def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
@@ -586,16 +486,10 @@ class CatalogScreen(Screen[None]):
 
         tb: TaskBar = bar  # type: ignore[assignment]
 
-        def on_progress(downloaded: int, total: int) -> None:
-            mb_done = downloaded / (1024 * 1024)
-            if total > 0:
-                pct = min(int(downloaded * 100 / total), 100)
-                mb_total = total / (1024 * 1024)
-                self._safe_call(tb.update_task, task_id, pct, f"{mb_done:.0f}/{mb_total:.0f} MB")
-            else:
-                self._safe_call(tb.update_task, task_id, 0, f"{mb_done:.0f} MB")
+        def _on_update(p: DownloadProgress) -> None:
+            self._safe_call(tb.update_task, task_id, p.percent, p.detail)
 
-        return on_progress
+        return make_download_callback(_on_update)
 
     @work(thread=True)
     def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
@@ -608,15 +502,16 @@ class CatalogScreen(Screen[None]):
         try:
             download_model(model, on_progress=self._make_progress_callback(task_id, bar))
             self._safe_call(bar.complete_task, task_id)
-            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.name))
+            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
         except PermissionError:
-            detail = msg.CATALOG_GATED_REPO.format(name=model.name)
+            detail = msg.CATALOG_GATED_REPO.format(name=model.display_name)
             log.warning("Gated repo: %s", model.hf_repo)
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="warning")
-        except Exception:
-            log.warning("Download failed for %s", model.name, exc_info=True)
-            detail = msg.CATALOG_DOWNLOAD_FAILED.format(name=model.name)
+        except Exception as exc:
+            log.warning("Download failed for %s", model.ref, exc_info=True)
+            error_detail = str(exc) if str(exc) else type(exc).__name__
+            detail = f"{model.display_name}: {error_detail}"
             self._safe_call(bar.fail_task, task_id, detail)
             self._safe_call(self.notify, detail, severity="error")
 
@@ -661,24 +556,13 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _get_highlighted_model_name(self) -> str | None:
-        """Return the registry-compatible model name for the highlighted row.
-
-        For registry models, returns 'Name:latest' to match manifest format.
-        For remote models, returns the remote model name.
-        """
+        """Return the registry-compatible model ref for the highlighted row."""
         table = self.query_one("#catalog-table", DataTable)
         row_idx = table.cursor_row
         if row_idx < 0 or row_idx >= len(self._rows):
             return None
         row = self._rows[row_idx]
-        if row.variant and row.family:
-            # Registry name matches the catalog entry name used in _register_model
-            return f"{row.family.name} {row.variant.param_count}:latest"
-        if row.remote_model:
-            return row.remote_model.name
-        if row.catalog_model:
-            return f"{row.catalog_model.name}:latest"
-        return None
+        return row.ref or None
 
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
@@ -706,56 +590,68 @@ class CatalogScreen(Screen[None]):
         self._refresh_view()
         self._fetch_remote_models()
 
+    def _focused_grid(self) -> GridSelect | None:
+        """Return the focused GridSelect if in grid mode, else None."""
+        if self._grid_view and isinstance(self.focused, GridSelect):
+            return self.focused
+        return None
+
     def action_page_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(_GRID_PAGE_ROWS):
+                grid.action_cursor_down()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_down()
 
     def action_page_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            for _ in range(_GRID_PAGE_ROWS):
+                grid.action_cursor_up()
             return
         table = self.query_one("#catalog-table", DataTable)
-        for _ in range(10):
+        for _ in range(_TABLE_PAGE_ROWS):
             table.action_cursor_up()
 
     def action_cursor_down(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_down()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.action_cursor_up()
             return
         self.query_one("#catalog-table", DataTable).action_cursor_up()
 
     def action_jump_top(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_first()
             return
         table = self.query_one("#catalog-table", DataTable)
         table.move_cursor(row=0)
 
     def action_jump_bottom(self) -> None:
-        if isinstance(self.focused, Input) or self._grid_view:
+        if isinstance(self.focused, Input):
+            return
+        if (grid := self._focused_grid()) is not None:
+            grid.highlight_last()
             return
         table = self.query_one("#catalog-table", DataTable)
         if self._rows:
             table.move_cursor(row=len(self._rows) - 1)
-
-    def key_left(self) -> None:
-        """Navigate to previous view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_prev()
-
-    def key_right(self) -> None:
-        """Navigate to next view instead of switching tabs."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.app.action_nav_next()
 
 
 @dataclass
@@ -782,15 +678,3 @@ def _group_rows_for_grid(rows: list[TableRow]) -> list[GridSection]:
         GridSection(ModelTask.EMBEDDING.capitalize(), embedding),
         GridSection(ModelTask.VISION.capitalize(), vision),
     ]
-
-
-def _matches_search(row: TableRow, search: str) -> bool:
-    """Return True if the row matches the search text."""
-    if not search:
-        return True
-    return (
-        search in row.name.lower()
-        or search in row.task.lower()
-        or search in row.params.lower()
-        or search in row.quant.lower()
-    )

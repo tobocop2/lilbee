@@ -19,9 +19,9 @@ class TestHelpers:
             assert "Application Support" in str(result)
             assert str(result).endswith("lilbee")
 
-    def test_default_data_dir_linux(self):
+    def test_default_data_dir_linux(self, tmp_path):
         with (
-            mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/tmp/xdg"}, clear=False),
+            mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(tmp_path / "xdg")}, clear=False),
             mock.patch("sys.platform", "linux"),
         ):
             result = default_data_dir()

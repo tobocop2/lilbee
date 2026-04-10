@@ -199,9 +199,9 @@ class TestAdd:
         assert result.exit_code == 0
         assert "Copied 2" in result.output
 
-    def test_add_nonexistent_fails(self):
+    def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
-        result = runner.invoke(app, ["add", "/tmp/nonexistent_file_xyz.txt"])
+        result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
 
     def test_add_overwrites_existing_dir(self, isolated_env, tmp_path):
@@ -416,12 +416,12 @@ class TestApplyOverrides:
         apply_overrides(data_dir=explicit_dir)
         assert cfg.data_root == explicit_dir
 
-    def test_lilbee_data_env_ignored_when_global(self, monkeypatch):
+    def test_lilbee_data_env_ignored_when_global(self, monkeypatch, tmp_path):
         """--global takes precedence over LILBEE_DATA."""
         from lilbee.cli import apply_overrides
         from lilbee.platform import default_data_dir
 
-        monkeypatch.setenv("LILBEE_DATA", "/tmp/should-be-ignored")
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "should-be-ignored"))
         apply_overrides(use_global=True)
         assert cfg.data_root == default_data_dir()
 
@@ -609,11 +609,11 @@ class TestListInstalledModels:
     def test_exclude_vision_filters_vision_catalog(self, mock_svc):
         mock_svc.provider.list_models.return_value = [
             "llama3:latest",
-            "maternion/LightOnOCR-2:latest",
+            "lightonocr:2-1b",
         ]
         result = list_installed_models(exclude_vision=True)
         assert result == ["llama3:latest"]
-        assert "maternion/LightOnOCR-2:latest" not in result
+        assert "lightonocr:2-1b" not in result
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:
@@ -1490,23 +1490,29 @@ class TestPickVisionInteractive:
             _pick_vision_interactive(set())
             mock_save.assert_called_once()
 
-    def test_eof_cancels(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_eof_cancels(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", side_effect=EOFError):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
-    def test_invalid_input(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_invalid_input(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", return_value="abc"):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
-    def test_out_of_range(self) -> None:
+    @mock.patch("lilbee.cli.commands._pull_and_save_vision")
+    def test_out_of_range(self, mock_save: mock.MagicMock) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
 
         with mock.patch("builtins.input", return_value="999"):
             _pick_vision_interactive(set())
+        mock_save.assert_not_called()
 
     def test_valid_numeric_choice(self) -> None:
         from lilbee.cli.commands import _pick_vision_interactive
@@ -1669,7 +1675,7 @@ class TestIngestShutdownError:
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
-                    [("test.txt", __import__("pathlib").Path("test.txt"), "text", "abc123")],
+                    [("test.txt", __import__("pathlib").Path("test.txt"), "text", "abc123", False)],
                     added,
                     updated,
                     failed,
@@ -1727,7 +1733,7 @@ class TestAddWithUrls:
         """URL add in JSON mode returns structured output."""
         from pathlib import Path
 
-        mock_crawl.return_value = [Path("/tmp/a.md")]
+        mock_crawl.return_value = [Path("a.md")]
         result = runner.invoke(app, ["--json", "add", "https://example.com"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -1754,14 +1760,16 @@ class TestAddWithUrls:
             assert result.exit_code == 1
             assert "pip install" in result.output.lower()
 
-    def test_add_nonexistent_path_fails(self):
+    def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
-        result = runner.invoke(app, ["add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")])
         assert result.exit_code != 0
 
-    def test_add_nonexistent_path_json_fails(self):
+    def test_add_nonexistent_path_json_fails(self, tmp_path):
         """Adding a nonexistent file path in JSON mode returns error."""
-        result = runner.invoke(app, ["--json", "add", "/tmp/nonexistent_crawl_test_xyz.txt"])
+        result = runner.invoke(
+            app, ["--json", "add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")]
+        )
         assert result.exit_code != 0
 
 
@@ -1779,7 +1787,7 @@ class TestIsUrl:
     def test_not_url(self):
         from lilbee.crawler import is_url
 
-        assert not is_url("/tmp/file.txt")
+        assert not is_url("/some/file.txt")
 
     def test_ftp_not_url(self):
         from lilbee.crawler import is_url
@@ -1791,7 +1799,7 @@ class TestPartitionInputs:
     def test_separates_urls_and_paths(self):
         from lilbee.cli.commands import _partition_inputs
 
-        paths, urls = _partition_inputs(["/tmp/a.txt", "https://example.com", "/tmp/b.txt"])
+        paths, urls = _partition_inputs(["/some/a.txt", "https://example.com", "/some/b.txt"])
         assert len(paths) == 2
         assert urls == ["https://example.com"]
 
@@ -1824,7 +1832,7 @@ class TestCrawlUrlsBlocking:
             cb = kwargs.get("on_progress")
             if cb:
                 cb(EventType.CRAWL_PAGE, CrawlPageEvent(current=1, total=1, url=url))
-            return [Path("/tmp/page.md")]
+            return [Path("page.md")]
 
         mock_crawl.side_effect = _fake_crawl
         result = _crawl_urls_blocking(
@@ -1990,3 +1998,425 @@ class TestTopicsCommand:
         assert result.exit_code == 0
         assert "concept_0" in result.output
         assert "more)" in result.output
+
+
+class TestWikiLint:
+    def test_lint_all_no_issues(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+        assert "No issues found" in result.output
+
+    def test_lint_all_with_issues(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        wiki_dir = isolated_env / "wiki" / "summaries"
+        wiki_dir.mkdir(parents=True)
+        (wiki_dir / "doc.md").write_text("Unmarked claim.\n")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint"])
+        assert result.exit_code == 0
+        assert "Unmarked" in result.output
+
+    def test_lint_single_page(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        wiki_dir = isolated_env / "wiki" / "summaries"
+        wiki_dir.mkdir(parents=True)
+        (wiki_dir / "doc.md").write_text(
+            "> Cited.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "lint", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+
+    def test_lint_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "lint"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_lint"
+        assert "total" in data
+
+
+class TestWikiCitations:
+    def test_citations_empty(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        assert "No citations found" in result.output
+
+    def test_citations_with_records(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = [
+            {
+                "wiki_source": "wiki/summaries/doc.md",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "abc",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 1,
+                "line_end": 10,
+                "excerpt": "Python supports typing.",
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        assert "src1" in result.output
+        assert "doc.md" in result.output
+
+    def test_citations_long_excerpt_truncated(self, mock_svc):
+        long_excerpt = "A" * 80
+        mock_svc.store.get_citations_for_wiki.return_value = [
+            {
+                "wiki_source": "wiki/summaries/doc.md",
+                "wiki_chunk_index": 0,
+                "citation_key": "src1",
+                "claim_type": "fact",
+                "source_filename": "doc.md",
+                "source_hash": "abc",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 1,
+                "line_end": 10,
+                "excerpt": long_excerpt,
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        # Full 80-char excerpt should not appear — truncated by code or Rich
+        assert long_excerpt not in result.output
+
+    def test_citations_json_output(self, mock_svc):
+        cfg.json_mode = True
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "citations", "wiki/summaries/doc.md"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_citations"
+        assert data["total"] == 0
+
+
+class TestWikiStatus:
+    def test_status_no_wiki_dir(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "does not exist" in result.output
+
+    def test_status_with_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        (isolated_env / "wiki" / "drafts").mkdir(parents=True)
+        (isolated_env / "wiki" / "drafts" / "b.md").write_text("content")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "1" in result.output  # summaries count
+
+    def test_status_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "wiki_enabled" in data
+        assert data["pages"] == 0
+
+    def test_status_json_with_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["summaries"] == 1
+        assert data["drafts"] == 0
+
+    def test_status_all_clean(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "summaries").mkdir(parents=True)
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text(
+            "> Cited.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+        assert "all clean" in result.output
+
+    def test_status_wiki_disabled(self, mock_svc, isolated_env):
+        cfg.wiki = False
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "status"])
+        assert result.exit_code == 0
+
+
+class TestWikiPrune:
+    def test_prune_no_pages(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneReport
+
+            mock_prune.return_value = PruneReport()
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0
+        assert "No pages pruned" in result.output
+
+    def test_prune_json_output(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        cfg.json_mode = True
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneReport
+
+            mock_prune.return_value = PruneReport()
+            result = runner.invoke(app, ["--json", "wiki", "prune"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "wiki_prune"
+        assert data["archived"] == 0
+
+    def test_prune_with_records(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch("lilbee.wiki.prune.prune_wiki") as mock_prune:
+            from lilbee.wiki.prune import PruneAction, PruneRecord, PruneReport
+
+            report = PruneReport()
+            report.records = [
+                PruneRecord(
+                    wiki_source="wiki/summaries/old.md",
+                    action=PruneAction.ARCHIVED,
+                    reason="all sources deleted",
+                ),
+            ]
+            mock_prune.return_value = report
+            result = runner.invoke(app, ["wiki", "prune"])
+        assert result.exit_code == 0
+        assert "old.md" in result.output
+
+
+class TestCrawlProgressCallback:
+    def test_crawl_page_event(self):
+        """Crawl progress callback handles CrawlPageEvent."""
+        from lilbee.progress import CrawlPageEvent
+
+        event = CrawlPageEvent(url="https://example.com", current=3, total=10)
+        # The callback in commands.py checks isinstance(data, CrawlPageEvent)
+        assert event.current == 3
+        assert event.total == 10
+
+    def test_crawl_callback_wrong_type_raises(self):
+        """Crawl progress callback raises TypeError for non-CrawlPageEvent."""
+        # Simulate what _make_callback does
+        from unittest.mock import MagicMock
+
+        from lilbee.progress import EventType, FileStartEvent
+
+        MagicMock()
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_PAGE and not isinstance(data, CrawlPageEvent):
+                raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+
+        from lilbee.progress import CrawlPageEvent
+
+        bad_event = FileStartEvent(file="x", total_files=1, current_file=1)
+        with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
+            on_progress(EventType.CRAWL_PAGE, bad_event)
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_crawl_callback_wrong_type_real_code(self, mock_crawl, isolated_env):
+        """Exercise the real _make_callback with a bad event type."""
+        from lilbee.cli.commands import _crawl_urls_blocking
+        from lilbee.progress import EventType, FileStartEvent
+
+        async def _fake_crawl(url, **kwargs):
+            cb = kwargs.get("on_progress")
+            if cb:
+                # Send wrong type for CRAWL_PAGE event
+                cb(EventType.CRAWL_PAGE, FileStartEvent(file="x", total_files=1, current_file=1))
+            return []
+
+        mock_crawl.side_effect = _fake_crawl
+        with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
+            _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
+
+
+class TestLoginCommand:
+    def test_login_already_logged_in_decline(self):
+        """Login when already logged in and user declines."""
+        with (
+            mock.patch("huggingface_hub.login"),
+            mock.patch("huggingface_hub.get_token", return_value="existing-token"),
+            mock.patch("webbrowser.open"),
+        ):
+            result = runner.invoke(app, ["login"], input="n\n")
+            assert result.exit_code == 0
+            assert "Already logged in" in result.output
+
+    def test_login_fresh(self):
+        """Login with fresh token."""
+        with (
+            mock.patch("huggingface_hub.login") as mock_hf_login,
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+        ):
+            result = runner.invoke(app, ["login"], input="hf_test_token_123\n")
+            assert result.exit_code == 0
+            assert "Logged in" in result.output
+            mock_hf_login.assert_called_once()
+
+    def test_login_empty_token(self):
+        """Login with empty token exits with error."""
+        with (
+            mock.patch("huggingface_hub.login"),
+            mock.patch("huggingface_hub.get_token", return_value=None),
+            mock.patch("webbrowser.open"),
+        ):
+            # typer.prompt with hide_input requires a non-empty value;
+            # supply a whitespace-only token to trigger the "No token" error path
+            result = runner.invoke(app, ["login"], input="   \n")
+            assert result.exit_code == 1
+            assert "No token" in result.output
+
+
+class TestSyncProgressPrinter:
+    def test_file_start_event(self):
+        """_sync_progress_printer handles FILE_START event."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, FileStartEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.FILE_START, FileStartEvent(file="doc.md", total_files=5, current_file=2))
+        con.print.assert_called_once()
+        assert "doc.md" in str(con.print.call_args)
+
+    def test_done_event(self):
+        """_sync_progress_printer handles DONE event with summary."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(EventType.DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, unchanged=0))
+        con.print.assert_called_once()
+        assert "Synced" in str(con.print.call_args)
+
+    def test_file_start_wrong_type_raises(self):
+        """_sync_progress_printer raises TypeError for wrong event type."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        bad = SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0)
+        with pytest.raises(TypeError, match="Expected FileStartEvent"):
+            cb(EventType.FILE_START, bad)
+
+    def test_done_wrong_type_raises(self):
+        """_sync_progress_printer raises TypeError for wrong data type on DONE."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.progress import EventType, FileStartEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
+            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+
+
+class TestChatSyncCallback:
+    def test_file_start_updates_status(self):
+        """Background sync callback updates status on FILE_START."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        cb(EventType.FILE_START, FileStartEvent(file="test.md", total_files=3, current_file=1))
+        assert "test.md" in status.text
+
+    def test_extract_updates_status(self):
+        """Background sync callback updates status on EXTRACT."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, ExtractEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        cb(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
+        assert "Vision OCR" in status.text
+        assert "scan.pdf" in status.text
+
+    def test_done_clears_status(self):
+        """Background sync callback clears status on DONE."""
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        status = SyncStatus()
+        status.text = "something"
+        cb = _chat_sync_callback(status)
+        with mock.patch("builtins.print"):
+            cb(EventType.DONE, SyncDoneEvent(added=2, updated=0, removed=0, failed=0, unchanged=0))
+        assert status.text == ""
+
+    def test_file_start_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, SyncDoneEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        bad = SyncDoneEvent(added=0, updated=0, removed=0, failed=0, unchanged=0)
+        with pytest.raises(TypeError, match="Expected FileStartEvent"):
+            cb(EventType.FILE_START, bad)
+
+    def test_extract_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        with pytest.raises(TypeError, match="Expected ExtractEvent"):
+            cb(EventType.EXTRACT, FileStartEvent(file="x", total_files=1, current_file=1))
+
+    def test_done_wrong_type_raises(self):
+        from lilbee.cli.sync import SyncStatus, _chat_sync_callback
+        from lilbee.progress import EventType, FileStartEvent
+
+        status = SyncStatus()
+        cb = _chat_sync_callback(status)
+        with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
+            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+
+
+class TestSyncResultToJson:
+    def test_non_sync_result_raises(self):
+        """sync_result_to_json raises TypeError for non-SyncResult input."""
+        from lilbee.cli.helpers import sync_result_to_json
+
+        with pytest.raises(TypeError, match="Expected SyncResult"):
+            sync_result_to_json("not a SyncResult")

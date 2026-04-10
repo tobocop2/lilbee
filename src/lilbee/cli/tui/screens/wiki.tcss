@@ -1,0 +1,37 @@
+#wiki-layout {
+    height: 1fr;
+}
+
+#wiki-sidebar {
+    width: 30%;
+    min-width: 25;
+    border-right: solid $surface-lighten-2;
+}
+
+#wiki-search {
+    dock: top;
+    margin: 0 1;
+}
+
+#wiki-page-list {
+    height: 1fr;
+}
+
+#wiki-main {
+    width: 1fr;
+}
+
+#wiki-page-header {
+    height: auto;
+    padding: 1 2;
+    border-bottom: solid $surface-lighten-2;
+}
+
+#wiki-content-scroll {
+    height: 1fr;
+    padding: 0 2;
+}
+
+#wiki-content {
+    height: auto;
+}

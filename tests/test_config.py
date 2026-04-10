@@ -32,14 +32,14 @@ class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
             assert c.embedding_model == "nomic-embed-text"
             assert c.embedding_dim == 768
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
             assert c.max_embed_chars == 2000
             assert c.top_k == 10
-            assert c.max_distance == 0.7
+            assert c.max_distance == 0.9
             assert c.json_mode is False
 
     def test_constants_unchanged(self):
@@ -132,7 +132,7 @@ class TestTomlConfigFile:
     def test_no_toml_uses_defaults(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -141,7 +141,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "qwen3:8b"
+            assert c.chat_model == "qwen3"
 
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -442,14 +442,14 @@ class TestIgnoreDirs:
 
 
 class TestEmptyStringValidation:
-    def test_empty_chat_model_rejected(self):
+    def test_empty_chat_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
                 chat_model="",
                 embedding_model="nomic-embed-text",
                 embedding_dim=768,
@@ -462,15 +462,15 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_embedding_model_rejected(self):
+    def test_empty_embedding_model_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
-                chat_model="qwen3:8b",
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
+                chat_model="qwen3",
                 embedding_model="",
                 embedding_dim=768,
                 chunk_size=512,
@@ -482,15 +482,15 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_system_prompt_rejected(self):
+    def test_empty_system_prompt_rejected(self, tmp_path):
         with pytest.raises(Exception, match="at least 1 character"):
             Config(
-                data_root=Path("/tmp"),
-                documents_dir=Path("/tmp/docs"),
-                data_dir=Path("/tmp/data"),
-                lancedb_dir=Path("/tmp/data/lancedb"),
-                models_dir=Path("/tmp/models"),
-                chat_model="qwen3:8b",
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
+                chat_model="qwen3",
                 embedding_model="nomic-embed-text",
                 embedding_dim=768,
                 chunk_size=512,
@@ -502,15 +502,15 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_vision_model_allowed(self):
+    def test_empty_vision_model_allowed(self, tmp_path):
         """vision_model is nullable — empty string is valid."""
         c = Config(
-            data_root=Path("/tmp"),
-            documents_dir=Path("/tmp/docs"),
-            data_dir=Path("/tmp/data"),
-            lancedb_dir=Path("/tmp/data/lancedb"),
-            models_dir=Path("/tmp/models"),
-            chat_model="qwen3:8b",
+            data_root=tmp_path,
+            documents_dir=tmp_path / "docs",
+            data_dir=tmp_path / "data",
+            lancedb_dir=tmp_path / "data" / "lancedb",
+            models_dir=tmp_path / "models",
+            chat_model="qwen3",
             embedding_model="nomic-embed-text",
             embedding_dim=768,
             chunk_size=512,
@@ -564,4 +564,4 @@ class TestPlainEnvSourceSkipsEmpty:
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.chat_model == "qwen3:8b"  # default, not empty
+        assert c.chat_model == "qwen3"  # default, not empty

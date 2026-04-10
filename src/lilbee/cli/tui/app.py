@@ -20,8 +20,6 @@ from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
 
-_READY_FILE = "lilbee-splash-ready"
-
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
 DARK_THEMES = (
     "monokai",
@@ -62,12 +60,26 @@ def _make_tasks() -> Screen:
     return TaskCenter()
 
 
-VIEWS: dict[str, Callable[[], Screen]] = {
+def _make_wiki() -> Screen:
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    return WikiScreen()
+
+
+_BASE_VIEWS: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
 }
+
+
+def get_views() -> dict[str, Callable[[], Screen]]:
+    """Return the active view factories, including wiki when enabled."""
+    views = dict(_BASE_VIEWS)
+    if cfg.wiki:
+        views["Wiki"] = _make_wiki
+    return views
 
 
 class LilbeeApp(App[None]):
@@ -78,16 +90,16 @@ class LilbeeApp(App[None]):
     ENABLE_COMMAND_PALETTE = True
     COMMANDS = {LilbeeCommandProvider}  # noqa: RUF012
 
+    _NAV_GROUP = Binding.Group("Navigate")
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("question_mark", "push_help", "? help", show=True),
+        Binding("question_mark", "push_help", "Help", show=True),
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("h", "nav_prev", "Prev", show=False),
-        Binding("left", "nav_prev", "Prev", show=False),
-        Binding("l", "nav_next", "Next", show=False),
-        Binding("right", "nav_next", "Next", show=False),
-        Binding("ctrl+c", "quit", "^c cancel/quit", show=True, priority=True),
+        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
+        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
     def __init__(self, *, auto_sync: bool = False) -> None:
@@ -103,7 +115,7 @@ class LilbeeApp(App[None]):
         self.task_bar = TaskBar(id="app-task-bar")
 
     def compose(self) -> ComposeResult:
-        yield from ()  # screens compose their own StatusBar
+        yield from ()  # screens compose their own ViewTabs + Footer
 
     def on_mount(self) -> None:
         self.title = f"lilbee — {cfg.chat_model}"
@@ -148,7 +160,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
-        if isinstance(screen, ChatScreen) and screen._streaming:
+        if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
             return
         self.exit()
@@ -171,7 +183,7 @@ class LilbeeApp(App[None]):
             if not isinstance(self.screen, ChatScreen):
                 self.switch_screen(ChatScreen(auto_sync=False))
         else:
-            factory = VIEWS.get(view_name)
+            factory = get_views().get(view_name)
             if factory is None:
                 return
             self.switch_screen(factory())
@@ -179,18 +191,19 @@ class LilbeeApp(App[None]):
         self.active_view = view_name
 
     def action_push_help(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        self.push_screen(HelpModal())
+        if self.screen.query("HelpPanel"):
+            self.action_hide_help_panel()
+        else:
+            self.action_show_help_panel()
 
     def action_nav_prev(self) -> None:
-        """Navigate to previous view (h or left arrow)."""
-        view_names = msg.NAV_VIEWS
+        """Navigate to previous view ([ key)."""
+        view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx - 1) % len(view_names)])
 
     def action_nav_next(self) -> None:
-        """Navigate to next view (l or right arrow)."""
-        view_names = msg.NAV_VIEWS
+        """Navigate to next view (] key)."""
+        view_names = msg.get_nav_views()
         current_idx = view_names.index(self.active_view)
         self.switch_view(view_names[(current_idx + 1) % len(view_names)])

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from textual import containers, widgets
 from textual.app import ComposeResult
 from textual.content import Content
+from textual.reactive import reactive
 
 from lilbee.cli.tui.pill import pill
 from lilbee.models import ModelTask
@@ -26,6 +27,8 @@ _TASK_COLORS: dict[str, str] = {
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
+    selected: reactive[bool] = reactive(False)
+
     def __init__(self, row: TableRow) -> None:
         self._row = row
         super().__init__()
@@ -33,6 +36,9 @@ class ModelCard(containers.VerticalGroup):
     @property
     def row(self) -> TableRow:
         return self._row
+
+    def watch_selected(self, selected: bool) -> None:
+        self.set_class(selected, "-selected")
 
     def compose(self) -> ComposeResult:
         row = self._row

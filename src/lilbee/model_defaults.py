@@ -1,6 +1,6 @@
 """Per-model default generation settings.
 
-Parses and caches generation parameters from Ollama's /api/show response
+Parses and caches generation parameters from key-value parameter text
 or GGUF file metadata so that model-specific defaults (temperature, num_ctx,
 etc.) are applied automatically when switching models.
 """
@@ -14,8 +14,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Ollama parameter keys we recognise and their target types
-_OLLAMA_PARAM_TYPES: dict[str, type] = {
+# Parameter keys we recognise and their target types
+_KNOWN_PARAM_TYPES: dict[str, type] = {
     "temperature": float,
     "top_p": float,
     "top_k": int,
@@ -45,26 +45,32 @@ class ModelDefaults:
     max_tokens: int | None = None
 
 
-_cache: dict[str, ModelDefaults] = {}
+class _DefaultsCache:
+    """Encapsulates the per-model defaults cache (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, ModelDefaults] = {}
+
+    def get(self, model_name: str) -> ModelDefaults | None:
+        return self._data.get(model_name)
+
+    def set(self, model_name: str, defaults: ModelDefaults) -> None:
+        self._data[model_name] = defaults
+
+    def clear(self) -> None:
+        self._data.clear()
 
 
-def get_defaults(model_name: str) -> ModelDefaults | None:
-    """Return cached defaults for *model_name*, or None if not cached."""
-    return _cache.get(model_name)
+_defaults_cache = _DefaultsCache()
+
+# Public API — preserves existing call sites.
+get_defaults = _defaults_cache.get
+set_defaults = _defaults_cache.set
+clear_cache = _defaults_cache.clear
 
 
-def set_defaults(model_name: str, defaults: ModelDefaults) -> None:
-    """Store *defaults* in the in-memory cache keyed by *model_name*."""
-    _cache[model_name] = defaults
-
-
-def clear_cache() -> None:
-    """Remove all cached model defaults (for test isolation)."""
-    _cache.clear()
-
-
-def parse_ollama_parameters(text: str) -> ModelDefaults:
-    """Parse Ollama's multiline ``key value`` parameter format.
+def parse_kv_parameters(text: str) -> ModelDefaults:
+    """Parse multiline ``key value`` parameter format.
 
     Example input::
 
@@ -84,12 +90,12 @@ def parse_ollama_parameters(text: str) -> ModelDefaults:
         if len(parts) != 2:
             continue
         key, raw_value = parts
-        if key not in _OLLAMA_PARAM_TYPES:
+        if key not in _KNOWN_PARAM_TYPES:
             continue
         try:
-            values[key] = _OLLAMA_PARAM_TYPES[key](raw_value)
+            values[key] = _KNOWN_PARAM_TYPES[key](raw_value)
         except (ValueError, TypeError):
-            log.debug("Skipping unparseable Ollama param %s=%r", key, raw_value)
+            log.debug("Skipping unparseable param %s=%r", key, raw_value)
     return ModelDefaults(**values)
 
 

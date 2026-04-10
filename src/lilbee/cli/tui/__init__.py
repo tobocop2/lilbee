@@ -9,7 +9,6 @@ from lilbee.services import reset_services
 def run_tui(*, auto_sync: bool = False) -> None:
     """Launch the full-screen Textual TUI."""
     import os
-    import signal
 
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -24,4 +23,4 @@ def run_tui(*, auto_sync: bool = False) -> None:
             reset_services()
         except (KeyboardInterrupt, Exception):
             # Rapid Ctrl+C during shutdown — force exit immediately
-            os.kill(os.getpid(), signal.SIGKILL)
+            os._exit(1)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 from multiprocessing import get_context
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -27,10 +29,21 @@ from lilbee.providers.worker_process import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_stdio_redirect():
+    """Prevent _worker_main from redirecting stdout/stderr to /dev/null.
+
+    In a real child process the redirect suppresses llama-cpp C-level output.
+    In tests it leaks unclosed devnull files and fights with pytest capture.
+    """
+    with mock.patch("lilbee.providers.worker_process._redirect_stdio"):
+        yield
+
+
 @pytest.fixture()
-def config_snap() -> ConfigSnapshot:
+def config_snap(tmp_path: Path) -> ConfigSnapshot:
     return ConfigSnapshot(
-        models_dir="/tmp/models",
+        models_dir=str(tmp_path / "models"),
         embedding_model="test-embed",
         embedding_dim=768,
         num_ctx=None,
@@ -72,7 +85,7 @@ class TestDataclasses:
         assert isinstance(req, ShutdownRequest)
 
     def test_config_snapshot_fields(self, config_snap: ConfigSnapshot) -> None:
-        assert config_snap.models_dir == "/tmp/models"
+        assert config_snap.models_dir.endswith("models")
         assert config_snap.embedding_model == "test-embed"
         assert config_snap.embedding_dim == 768
 
@@ -106,7 +119,7 @@ class TestHandleEmbed:
     def test_success(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._embed_one",
+            "lilbee.providers.llama_cpp_provider.embed_one",
             side_effect=[[0.1, 0.2], [0.3, 0.4]],
         ):
             req = EmbedRequest(texts=["a", "b"], model="m", request_id=5)
@@ -118,7 +131,7 @@ class TestHandleEmbed:
     def test_error_returns_error_response(self) -> None:
         llm = mock.MagicMock()
         with mock.patch(
-            "lilbee.providers.llama_cpp_provider._embed_one",
+            "lilbee.providers.llama_cpp_provider.embed_one",
             side_effect=RuntimeError("GPU OOM"),
         ):
             req = EmbedRequest(texts=["a"], model="m", request_id=3)
@@ -134,7 +147,7 @@ class TestHandleVision:
             "choices": [{"message": {"content": "extracted text"}}]
         }
         req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=7)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]):
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
             resp = _handle_vision(llm, req)
         assert resp.text == "extracted text"
         assert resp.request_id == 7
@@ -143,7 +156,7 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.side_effect = RuntimeError("model failed")
         req = VisionRequest(png_bytes=b"png", model="v", request_id=8)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]):
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]):
             resp = _handle_vision(llm, req)
         assert resp.error == "model failed"
 
@@ -151,9 +164,9 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "text"}}]}
         req = VisionRequest(png_bytes=b"png", model="v", prompt="", request_id=1)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]) as mock_build:
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]) as mock_build:
             _handle_vision(llm, req)
-        # Should use _OCR_PROMPT when prompt is empty
+        # Should use OCR_PROMPT when prompt is empty
         call_args = mock_build.call_args[0]
         assert len(call_args[0]) > 0  # Non-empty prompt passed
 
@@ -161,7 +174,7 @@ class TestHandleVision:
         llm = mock.MagicMock()
         llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "text"}}]}
         req = VisionRequest(png_bytes=b"png", model="v", prompt="custom prompt", request_id=1)
-        with mock.patch("lilbee.vision._build_vision_messages", return_value=[]) as mock_build:
+        with mock.patch("lilbee.vision.build_vision_messages", return_value=[]) as mock_build:
             _handle_vision(llm, req)
         assert mock_build.call_args[0][0] == "custom prompt"
 
@@ -775,36 +788,127 @@ class TestEmbedRetryUnexpectedType:
 
 
 class TestLoadEmbedModel:
-    def test_loads_model(self, config_snap: ConfigSnapshot) -> None:
+    def test_loads_model(self, config_snap: ConfigSnapshot, tmp_path: Path) -> None:
         mock_llm = mock.MagicMock()
+        model_path = str(tmp_path / "model.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
-                return_value="/tmp/model.gguf",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=model_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._load_llama",
+                "lilbee.providers.llama_cpp_provider.load_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
             result = _load_embed_model(config_snap, "test-embed")
         assert result is mock_llm
-        mock_load.assert_called_once_with("/tmp/model.gguf", embedding=True)
+        mock_load.assert_called_once_with(model_path, embedding=True)
+
+
+class TestWorkerNotStartedGuards:
+    """Cover all 'Worker not started' RuntimeError guards when _request_queue is None."""
+
+    def test_send_and_receive_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_embed(req)
+
+    def test_retry_embed_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = EmbedRequest(texts=["hello"], model="m", request_id=1)
+        with (
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp._retry_embed(req)
+
+    def test_send_and_receive_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._send_and_receive_vision(req)
+
+    def test_retry_vision_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        req = VisionRequest(png_bytes=b"\x89PNG", model="m", prompt="", request_id=1)
+        with (
+            mock.patch.object(wp, "restart"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp._retry_vision(req)
+
+    def test_get_response_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._response_queue = None
+        with pytest.raises(RuntimeError, match="Worker not started"):
+            wp._get_response(timeout=1.0)
+
+    def test_load_model_not_started(self, config_snap: ConfigSnapshot) -> None:
+        wp = WorkerProcess(config_snap)
+        wp._started = True
+        wp._request_queue = None
+        with (
+            mock.patch.object(wp, "_ensure_started"),
+            pytest.raises(RuntimeError, match="Worker not started"),
+        ):
+            wp.load_model("test-model")
 
 
 class TestLoadVisionModel:
-    def test_loads_model(self, config_snap: ConfigSnapshot) -> None:
+    def test_loads_model(self, config_snap: ConfigSnapshot, tmp_path: Path) -> None:
         mock_llm = mock.MagicMock()
+        vision_path = str(tmp_path / "vision.gguf")
         with (
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._resolve_model_path",
-                return_value="/tmp/vision.gguf",
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=vision_path,
             ),
             mock.patch(
-                "lilbee.providers.llama_cpp_provider._load_vision_llama",
+                "lilbee.providers.llama_cpp_provider.load_vision_llama",
                 return_value=mock_llm,
             ) as mock_load,
         ):
             result = _load_vision_model(config_snap, "test-vision")
         assert result is mock_llm
-        mock_load.assert_called_once_with("/tmp/vision.gguf")
+        mock_load.assert_called_once_with(vision_path)
+
+
+class TestRedirectStdio:
+    """Test _redirect_stdio without the autouse mock (override the fixture)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_stdio_redirect(self):
+        """Override the module-level autouse fixture — let _redirect_stdio run."""
+        yield
+
+    def test_redirects_stdout_stderr_to_devnull(self) -> None:
+        """_redirect_stdio points sys.stdout/stderr to devnull."""
+        import os
+
+        from lilbee.providers.worker_process import _redirect_stdio
+
+        orig_out, orig_err = sys.stdout, sys.stderr
+        orig_fd1, orig_fd2 = os.dup(1), os.dup(2)
+        try:
+            _redirect_stdio()
+            assert sys.stdout.name == os.devnull
+            assert sys.stderr.name == os.devnull
+        finally:
+            sys.stdout.close()
+            sys.stderr.close()
+            sys.stdout = orig_out
+            sys.stderr = orig_err
+            os.dup2(orig_fd1, 1)
+            os.dup2(orig_fd2, 2)
+            os.close(orig_fd1)
+            os.close(orig_fd2)

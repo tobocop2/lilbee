@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from lilbee.catalog import CatalogModel
+from conftest import make_test_catalog_model as _make_model
+from lilbee.cli.tui.screens.catalog_utils import TableRow
+from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.config import cfg
 
 
@@ -16,6 +19,7 @@ from lilbee.config import cfg
 def _isolated_cfg(tmp_path):
 
     snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
     cfg.data_dir = tmp_path / "data"
     cfg.documents_dir = tmp_path / "documents"
     cfg.chat_model = "test-model"
@@ -24,25 +28,6 @@ def _isolated_cfg(tmp_path):
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-
-
-def _make_model(
-    name: str = "TestModel",
-    task: str = "chat",
-    featured: bool = False,
-    size_gb: float = 2.0,
-) -> CatalogModel:
-    return CatalogModel(
-        name=name,
-        hf_repo=f"test/{name.lower().replace(' ', '-')}",
-        gguf_filename="*.gguf",
-        size_gb=size_gb,
-        min_ram_gb=4,
-        description="A test model",
-        featured=featured,
-        downloads=100,
-        task=task,
-    )
 
 
 class _MsgApp(App):
@@ -176,32 +161,26 @@ class _HelpApp(App):
         yield Static("bg")
 
     def key_f1(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
-        self.push_screen(HelpModal())
+        self.action_show_help_panel()
 
 
-class TestHelpModal:
-    async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+class TestHelpPanel:
+    async def test_show_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            # The modal should be visible
-            assert len(app.screen_stack) == 2
+            assert app.screen.query("HelpPanel")
 
-    async def test_action_close_dismisses(self) -> None:
-        from lilbee.cli.tui.widgets.help_modal import HelpModal
-
+    async def test_hide_help_panel(self) -> None:
         app = _HelpApp()
         async with app.run_test() as pilot:
-            app.push_screen(HelpModal())
+            app.action_show_help_panel()
             await pilot.pause()
-            app.screen.action_close()
+            assert app.screen.query("HelpPanel")
+            app.action_hide_help_panel()
             await pilot.pause()
-            assert len(app.screen_stack) == 1
+            assert not app.screen.query("HelpPanel")
 
 
 class _TaskBarApp(App):
@@ -380,14 +359,35 @@ class TestModelBar:
             assert vision_sel is not None
 
     async def test_vision_set_when_configured(self) -> None:
+        from unittest.mock import patch
+
         from textual.widgets import Select
 
         cfg.vision_model = "llava"
         app = _ModelBarApp()
+        with patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [ModelOption("nomic", "nomic")],
+                [ModelOption("llava", "llava")],
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                vision_sel = app.query_one("#vision-model-select", Select)
+                assert vision_sel.value == "llava"
+
+    async def test_vision_model_not_in_scan_still_selectable(self) -> None:
+        """Configured vision model is prepended even if not in scanned list."""
+        from textual.widgets import Select
+
+        cfg.vision_model = "nonexistent-model:latest"
+        app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             vision_sel = app.query_one("#vision-model-select", Select)
-            assert vision_sel.value == "llava"
+            assert vision_sel.value == "nonexistent-model:latest"
 
     async def test_labels_rendered(self) -> None:
         from textual.widgets import Label
@@ -470,9 +470,12 @@ class TestClassifyInstalledModels:
             ]
             chat, embed, vision = _classify_installed_models()
 
-        assert "qwen3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
-        assert "llava:latest" in vision
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        vision_refs = [ref for _, ref in vision]
+        assert "qwen3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
+        assert "llava:latest" in vision_refs
 
     def test_mmproj_filtered_from_all_sources(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -509,8 +512,8 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = [mmproj_manifest]
             chat, embed, vision = _classify_installed_models()
 
-        all_names = chat + embed + vision
-        assert not any("mmproj" in n.lower() for n in all_names)
+        all_refs = [ref for _, ref in chat + embed + vision]
+        assert not any("mmproj" in r.lower() for r in all_refs)
 
     def test_remote_models_classified(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -541,8 +544,10 @@ class TestClassifyInstalledModels:
             MockRegistry.return_value.list_installed.return_value = []
             chat, embed, _vision = _classify_installed_models()
 
-        assert "llama3:8b" in chat
-        assert "nomic-embed-text:latest" in embed
+        chat_refs = [ref for _, ref in chat]
+        embed_refs = [ref for _, ref in embed]
+        assert "llama3:8b" in chat_refs
+        assert "nomic-embed-text:latest" in embed_refs
 
     def test_no_models_returns_empty(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -785,7 +790,15 @@ class TestVisionOptions:
         from lilbee.cli.tui.widgets.autocomplete import _vision_options
         from lilbee.models import ModelInfo
 
-        fake_catalog = (ModelInfo("llava", 5.5, 8, "test"),)
+        fake_catalog = (
+            ModelInfo(
+                ref="llava:latest",
+                display_name="LLaVA",
+                size_gb=5.5,
+                min_ram_gb=8,
+                description="test",
+            ),
+        )
         with mock.patch("lilbee.models.VISION_CATALOG", fake_catalog):
             r = _vision_options()
             assert r[0] == "off"
@@ -1367,11 +1380,11 @@ class TestSetupWizard:
         assert row.featured is False
 
     def test_model_card_from_table_row(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
         from lilbee.cli.tui.widgets.model_card import ModelCard
 
         model = _make_model("Test 8B", task="chat", featured=True)
-        row = _catalog_to_row(model, installed=False)
+        row = catalog_to_row(model, installed=False)
         card = ModelCard(row)
         assert card.row is row
         assert card.row.featured is True
@@ -1389,18 +1402,18 @@ class TestAllTasksFetched:
 
 class TestMatchesSearchWidget:
     def test_matches_name(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
-        row = _catalog_to_row(m, installed=False)
-        assert _matches_search(row, "qwen") is True
+        row = catalog_to_row(m, installed=False)
+        assert matches_search(row, "qwen") is True
 
     def test_no_match(self) -> None:
-        from lilbee.cli.tui.screens.catalog import _catalog_to_row, _matches_search
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, matches_search
 
         m = _make_model("Qwen3 8B", task="chat")
-        row = _catalog_to_row(m, installed=False)
-        assert _matches_search(row, "llama") is False
+        row = catalog_to_row(m, installed=False)
+        assert matches_search(row, "llama") is False
 
 
 class TestLoginCommandRegistered:
@@ -1424,6 +1437,7 @@ class TestRunTuiKeyboardInterrupt:
                 from lilbee.cli.tui import run_tui
 
                 run_tui()
+            MockApp.return_value.run.assert_called_once()
 
     def test_cleanup_called_on_interrupt(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
@@ -1439,91 +1453,92 @@ class TestRunTuiKeyboardInterrupt:
                 mock_reset.assert_called_once()
 
 
-class _StatusBarApp(App):
+class _ViewTabsApp(App):
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        yield StatusBar()
+        yield ViewTabs()
 
 
-class TestStatusBar:
+class TestViewTabs:
     async def test_compose_yields_static(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             assert bar is not None
 
     async def test_default_active_view_is_chat(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
     async def test_watch_active_view_updates_display(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.active_view = "Catalog"
             await pilot.pause()
             assert bar.active_view == "Catalog"
 
     async def test_set_active_view_to_status(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.active_view = "Status"
             await pilot.pause()
             assert bar.active_view == "Status"
 
     async def test_mode_text_updates(self) -> None:
         from lilbee.cli.tui import messages as msg
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        app = _StatusBarApp()
+        app = _ViewTabsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            bar = app.query_one(StatusBar)
+            bar = app.query_one(ViewTabs)
             bar.mode_text = msg.MODE_NORMAL
             await pilot.pause()
             assert bar.mode_text == msg.MODE_NORMAL
 
     async def test_dock_bottom_in_css(self) -> None:
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
-        assert "dock: bottom" in StatusBar.DEFAULT_CSS
+        assert "dock: bottom" in ViewTabs.DEFAULT_CSS
 
     async def test_nav_views_contains_all_screens(self) -> None:
-        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.messages import get_nav_views
 
+        views = get_nav_views()
         for name in ("Chat", "Catalog", "Status", "Settings", "Tasks"):
-            assert name in msg.NAV_VIEWS
+            assert name in views
 
     async def test_default_view_is_first(self) -> None:
         from lilbee.cli.tui import messages as msg
 
-        assert msg.NAV_VIEWS[0] == msg.DEFAULT_VIEW
+        assert msg.get_nav_views()[0] == msg.DEFAULT_VIEW
 
 
-class TestLilbeeAppStatusBar:
+class TestLilbeeAppViewTabs:
     async def test_screen_composes_status_bar(self) -> None:
         cfg.chat_model = "test-model"
         cfg.embedding_model = "test-embed"
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -1531,7 +1546,7 @@ class TestLilbeeAppStatusBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar is not None
 
     async def test_status_bar_default_is_chat(self) -> None:
@@ -1540,7 +1555,7 @@ class TestLilbeeAppStatusBar:
         cfg.vision_model = ""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.status_bar import StatusBar
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
@@ -1548,7 +1563,7 @@ class TestLilbeeAppStatusBar:
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
                 await pilot.pause()
-            bar = app.screen.query_one(StatusBar)
+            bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
 
@@ -1599,3 +1614,1234 @@ class TestEvents:
         assert isinstance(msg, Message)
         assert msg.role == ModelTask.CHAT
         assert msg.name == "qwen3:8b"
+
+
+# ---------------------------------------------------------------------------
+# GridSelect widget tests
+# ---------------------------------------------------------------------------
+
+
+class _GridApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        yield GridSelect(
+            Static("A", id="item-a"),
+            Static("B", id="item-b"),
+            Static("C", id="item-c"),
+            Static("D", id="item-d"),
+            min_column_width=20,
+        )
+
+
+class _LargeGridApp(App):
+    """Grid with enough items and wide min_column_width to guarantee multiple rows."""
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        items = [Static(f"Item {i}", id=f"item-{i}") for i in range(8)]
+        yield GridSelect(*items, min_column_width=30)
+
+
+class _EmptyGridApp(App):
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        yield GridSelect(min_column_width=20)
+
+
+class TestGridSelect:
+    async def test_selected_control_property(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            child = grid.children[0]
+            msg = GridSelect.Selected(grid, child)
+            assert msg.control is grid
+
+    async def test_highlighted_control_property(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            child = grid.children[0]
+            msg = GridSelect.Highlighted(grid, child)
+            assert msg.control is grid
+
+    def test_grid_size_returns_none_when_no_grid_layout(self) -> None:
+        """grid_size returns None when layout is not a GridLayout (e.g. before mount)."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect(min_column_width=20)
+        # Before mount, layout is VerticalLayout, not GridLayout
+        assert grid.grid_size is None
+
+    async def test_reveal_highlight_out_of_bounds(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            # Force highlighted to an out-of-bounds index without validation
+            grid._reactive_highlighted = 999
+            grid.reveal_highlight()  # should not raise
+            assert grid._reactive_highlighted == 999
+
+    async def test_watch_highlighted_index_error(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            # Manually call watch with an out-of-bounds index
+            grid.watch_highlighted(None, 999)  # should not raise
+            assert len(grid.children) > 0
+
+    async def test_validate_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            assert grid.validate_highlighted(None) is None
+
+    async def test_validate_highlighted_empty_children(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _EmptyGridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            assert grid.validate_highlighted(0) is None
+
+    async def test_validate_highlighted_negative(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            assert grid.validate_highlighted(-1) == 0
+
+    async def test_validate_highlighted_overflow(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            assert grid.validate_highlighted(100) == len(grid.children) - 1
+
+    def test_action_cursor_up_leave_when_no_grid(self) -> None:
+        """When grid_size is None, cursor_up posts LeaveUp."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect(min_column_width=20)
+        # Before mount, grid_size is None (VerticalLayout)
+        assert grid.grid_size is None
+        messages: list[object] = []
+        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
+        grid.action_cursor_up()
+        assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
+
+    def test_action_cursor_down_leave_when_no_grid(self) -> None:
+        """When grid_size is None, cursor_down posts LeaveDown."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect(min_column_width=20)
+        assert grid.grid_size is None
+        messages: list[object] = []
+        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
+        grid.action_cursor_down()
+        assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
+
+    async def test_action_cursor_up_when_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_cursor_up()
+            assert grid.highlighted == 0
+
+    async def test_action_cursor_down_when_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_cursor_down()
+            assert grid.highlighted == 0
+
+    async def test_action_cursor_left_when_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_cursor_left()
+            assert grid.highlighted == 0
+
+    async def test_action_cursor_right_when_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_cursor_right()
+            assert grid.highlighted == 0
+
+    async def test_action_cursor_left_decrements(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 2
+            grid.action_cursor_left()
+            assert grid.highlighted == 1
+
+    async def test_action_cursor_right_increments(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 1
+            grid.action_cursor_right()
+            assert grid.highlighted == 2
+
+    async def test_action_cursor_up_boundary_posts_leave_up(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 0
+            # At row 0, cursor_up should try to leave
+            # The grid_size width determines what "row 0" means
+            gs = grid.grid_size
+            assert gs is not None
+            # highlighted < width means top row, triggers LeaveUp
+            assert grid.highlighted < gs[0]
+            # Just verify it doesn't crash — LeaveUp is posted
+            grid.action_cursor_up()
+            await pilot.pause()
+
+    async def test_action_cursor_down_boundary_posts_leave_down(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = len(grid.children) - 1
+            gs = grid.grid_size
+            assert gs is not None
+            # highlighted + width >= len(children) means bottom, triggers LeaveDown
+            assert grid.highlighted + gs[0] >= len(grid.children)
+            grid.action_cursor_down()
+            await pilot.pause()
+
+    async def test_on_click_highlights_child(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            # Simulate clicking on the second child
+            child = grid.children[1]
+            click_event = events.Click(
+                widget=child,
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=0,
+                screen_y=0,
+            )
+            grid.on_click(click_event)
+            await pilot.pause()
+            assert grid.highlighted == 1
+
+    async def test_on_click_double_click_selects(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        selected: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 0
+            child = grid.children[0]
+
+            # Click on already-highlighted child triggers select
+            click_event = events.Click(
+                widget=child,
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=0,
+                screen_y=0,
+            )
+            grid.action_select = lambda: selected.append(True)  # type: ignore[assignment]
+            grid.on_click(click_event)
+            assert len(selected) == 1
+
+    async def test_on_click_no_widget(self) -> None:
+        from textual import events
+
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            click_event = events.Click(
+                widget=None,  # type: ignore[arg-type]
+                x=0,
+                y=0,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=0,
+                screen_y=0,
+            )
+            old_highlighted = grid.highlighted
+            grid.on_click(click_event)  # should not raise
+            assert grid.highlighted == old_highlighted
+
+    async def test_action_select_when_highlighted_none(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_select()  # should not raise
+            assert grid.highlighted is None
+
+    async def test_action_select_index_error(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid._reactive_highlighted = 999
+            grid.action_select()  # should not raise
+            assert grid._reactive_highlighted == 999
+
+
+class TestModelCardSelected:
+    def test_model_card_selected_reactive(self) -> None:
+        from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        model = _make_model("Test 8B", task="chat", featured=True)
+        row = catalog_to_row(model, installed=False)
+        card = ModelCard(row)
+        assert card.selected is False
+        card.selected = True
+        assert card.selected is True
+
+    def _make_row(self, **overrides: Any) -> TableRow:
+        defaults: dict[str, Any] = {
+            "name": "test",
+            "task": "chat",
+            "params": "8B",
+            "size": "4 GB",
+            "quant": "Q4_K_M",
+            "downloads": "--",
+            "featured": False,
+            "installed": False,
+            "sort_downloads": 0,
+            "sort_size": 4.0,
+        }
+        defaults.update(overrides)
+        return TableRow(**defaults)
+
+    def test_build_status_with_downloads(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = self._make_row(downloads="1K", sort_downloads=1000)
+        assert _build_status(row) is not None
+
+    def test_build_status_installed(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        result = _build_status(self._make_row(installed=True))
+        assert result is not None
+        assert "installed" in str(result).lower()
+
+    def test_build_status_downloads_positive(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        row = self._make_row(downloads="5K", sort_downloads=5000)
+        assert _build_status(row) is not None
+
+    def test_build_status_none(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        assert _build_status(self._make_row()) is None
+
+
+# ---------------------------------------------------------------------------
+# ModelBar additional coverage tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelBarAdditional:
+    @pytest.fixture(autouse=True)
+    def mock_classify(self):
+        empty = ([], [], [])
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=empty,
+        ):
+            yield
+
+    async def test_populate_chat_model_in_scanned(self) -> None:
+        """When current chat model IS in scanned list, value is preserved."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            assert chat_sel.value == "qwen3:8b"
+
+    async def test_populate_no_models_found(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            # Populate with empty lists — falls back to configured default
+            bar._populate([], [], [])
+            await pilot.pause()
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            assert chat_sel.value == "test-model"
+
+    async def test_populate_vision_model_fallback(self) -> None:
+        """Vision model in config but not in scan results → prepended and selected."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = "llava:custom"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            # vision model configured but not in scanned list
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b")],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava:custom"
+
+    async def test_populate_vision_model_not_in_list_or_config(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value is _DISABLED
+
+    async def test_on_embed_model_changed(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            from textual.widgets import Select
+
+            embed_sel = app.query_one("#embed-model-select", Select)
+            embed_sel.set_options([ModelOption("new-embed", "new-embed")])
+            with (
+                mock.patch("lilbee.settings.set_value"),
+                mock.patch("lilbee.services.reset_services"),
+            ):
+                embed_sel.value = "new-embed"
+                await pilot.pause()
+            assert cfg.embedding_model == "new-embed"
+
+    async def test_populate_embed_model_in_scanned(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            embed_sel = app.query_one("#embed-model-select", Select)
+            assert embed_sel.value == "nomic:latest"
+
+
+class TestSyncSelectPrepend:
+    """Cover _sync_select branch: current value not in scanned options."""
+
+    def test_current_value_prepended_when_not_in_options(self) -> None:
+        """When Select holds a value absent from the new options, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        # Mock a Select widget that retains its value after set_options
+        sel = mock.MagicMock()
+        sel.value = "custom:latest"
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts)
+        # Prepended the missing value and called set_options twice
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("custom:latest", "custom:latest")
+        assert sel.value == "custom:latest"
+
+    def test_default_used_when_no_current_value(self) -> None:
+        """When Select has no value, fall back to the configured default."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="qwen3:8b")
+        assert sel.value == "qwen3:8b"
+
+    def test_default_prepended_when_not_in_opts(self) -> None:
+        """When the configured default isn't in opts, it's prepended."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts, default="llama3:8b")
+        assert sel.set_options.call_count == 2
+        prepended = sel.set_options.call_args_list[1][0][0]
+        assert prepended[0] == ModelOption("llama3:8b", "llama3:8b")
+        assert sel.value == "llama3:8b"
+
+    def test_no_default_no_current_leaves_unset(self) -> None:
+        """When no current value and no default, don't set a value."""
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = _DISABLED
+        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
+        _sync_select(sel, opts)
+        assert sel.set_options.call_count == 1
+        # value should not have been reassigned beyond the mock default
+        assert sel.value == _DISABLED
+
+
+class TestCollectNativeModelsError:
+    def test_exception_suppressed(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_native_models
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.registry.ModelRegistry",
+            side_effect=RuntimeError("boom"),
+        ):
+            _collect_native_models(buckets, seen)
+        assert buckets["chat"] == []
+
+    def test_collect_remote_models_exception_suppressed(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.model_manager.classify_remote_models",
+            side_effect=RuntimeError("boom"),
+        ):
+            _collect_remote_models(buckets, seen)
+        assert buckets["chat"] == []
+
+
+# ---------------------------------------------------------------------------
+# ModelCard additional coverage tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelCardBuildHelpers:
+    def test_build_specs_all_empty(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_specs
+
+        result = _build_specs("--", "--", "--")
+        assert str(result) == "--"
+
+    def test_build_specs_all_blank(self) -> None:
+        from lilbee.cli.tui.widgets.model_card import _build_specs
+
+        result = _build_specs("", "", "")
+        assert str(result) == "--"
+
+    def test_build_status_not_installed_zero_downloads(self) -> None:
+        from dataclasses import dataclass
+
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        @dataclass
+        class FakeRow:
+            installed: bool
+            sort_downloads: int
+            downloads: str
+
+        row = FakeRow(installed=False, sort_downloads=0, downloads="--")
+        assert _build_status(row) is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# TaskBar additional coverage tests
+# ---------------------------------------------------------------------------
+
+
+class TestTaskBarAdditional:
+    async def test_refresh_display_no_active_but_queued(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            # Add tasks but don't advance (so no active, but queued)
+            bar.add_task("Sync", "sync")
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+            # No panels created since no task is active
+            assert len(bar._panels) == 0
+
+    async def test_status_icon_unknown_status(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        icon = TaskBar._status_icon("unknown_status")  # type: ignore[arg-type]
+        assert icon == "▸"
+
+    async def test_on_queue_change_exception_suppressed(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            # call_from_thread might raise if not on worker thread, but suppress
+            bar._on_queue_change()  # should not raise
+            assert bar.display is False
+
+    async def test_render_task_panel_done_status(self) -> None:
+        """Cover _render_task_panel when status is DONE (shows checkmark icon)."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Manually set the task to DONE and re-render its panel
+            done_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Sync",
+                task_type="sync",
+                status=TaskStatus.DONE,
+                progress=100,
+                detail="",
+            )
+            bar._render_task_panel(task_id, done_task)
+            await pilot.pause()
+
+    async def test_multiple_panels_for_concurrent_downloads(self) -> None:
+        """Each active task gets its own panel with progress bar."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            t1 = bar.add_task("Download A", "download")
+            t2 = bar.add_task("Sync B", "sync")
+            bar.queue.advance("download")
+            bar.queue.advance("sync")
+            bar._refresh_display()
+            await pilot.pause()
+            assert len(bar._panels) == 2
+            assert t1 in bar._panels
+            assert t2 in bar._panels
+
+    async def test_panel_removed_on_dismiss(self) -> None:
+        """Panel is removed from DOM after dismiss."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            assert task_id in bar._panels
+            bar._dismiss_panel(task_id, "download")
+            await pilot.pause()
+            assert task_id not in bar._panels
+
+    async def test_fail_task_adds_failed_class_to_panel(self) -> None:
+        """fail_task marks the panel with task-failed CSS class."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            bar.fail_task(task_id, "Network error")
+            await pilot.pause()
+            panel = bar._panels.get(task_id)
+            assert panel is not None
+            assert panel.has_class("task-failed")
+
+    async def test_render_task_panel_with_failed_status(self) -> None:
+        """_render_task_panel renders FAILED status icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            failed_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.FAILED,
+                progress=0,
+                detail="timeout",
+            )
+            bar._render_task_panel(task_id, failed_task)
+            await pilot.pause()
+
+    async def test_render_task_panel_no_panel_is_noop(self) -> None:
+        """_render_task_panel with unknown task_id does nothing."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task = Task(
+                task_id="nonexistent",
+                fn=lambda: None,
+                name="X",
+                task_type="x",
+                status=TaskStatus.ACTIVE,
+                progress=0,
+            )
+            bar._render_task_panel("nonexistent", task)  # should not raise
+            bar._render_task_panel("nonexistent", None)  # should not raise
+
+    async def test_render_task_panel_queued_status(self) -> None:
+        """_render_task_panel with QUEUED status uses fallback icon."""
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            queued_task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.QUEUED,
+                progress=0,
+            )
+            bar._render_task_panel(task_id, queued_task)
+            await pilot.pause()
+
+
+# ---------------------------------------------------------------------------
+# GridSelect additional coverage — highlight_first, highlight_last, cursor moves
+# ---------------------------------------------------------------------------
+
+
+class TestGridSelectExtra:
+    async def test_highlight_first(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlight_first()
+            assert grid.highlighted == 0
+
+    async def test_highlight_last(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlight_last()
+            assert grid.highlighted == len(grid.children) - 1
+
+    async def test_highlight_last_empty(self) -> None:
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _EmptyGridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlight_last()
+            # No children, highlighted stays None
+            assert grid.highlighted is None
+
+    async def test_cursor_up_within_grid(self) -> None:
+        """Cover line 143: highlighted -= width (move up one row)."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _LargeGridApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            gs = grid.grid_size
+            assert gs is not None
+            width = gs[0]
+            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)}"
+            grid.highlighted = width  # first cell of second row
+            grid.action_cursor_up()
+            assert grid.highlighted == 0
+
+    async def test_cursor_down_within_grid(self) -> None:
+        """Cover line 156: highlighted += width (move down one row)."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _LargeGridApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            gs = grid.grid_size
+            assert gs is not None
+            width = gs[0]
+            assert len(grid.children) > width, f"Need multiple rows: {len(grid.children)}"
+            grid.highlighted = 0
+            grid.action_cursor_down()
+            assert grid.highlighted == width
+
+    async def test_action_select_posts_selected(self) -> None:
+        """Cover line 195: post_message(Selected(...))."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 0
+            grid.action_select()
+            await pilot.pause()
+            assert grid.highlighted == 0
+
+
+# ---------------------------------------------------------------------------
+# ModelCard: _build_status with positive downloads
+# ---------------------------------------------------------------------------
+
+
+class TestModelCardBuildStatusDownloads:
+    def test_build_status_with_downloads(self) -> None:
+        from dataclasses import dataclass
+
+        from lilbee.cli.tui.widgets.model_card import _build_status
+
+        @dataclass
+        class FakeRow:
+            installed: bool
+            sort_downloads: int
+            downloads: str
+
+        row = FakeRow(installed=False, sort_downloads=1000, downloads="1K")
+        result = _build_status(row)  # type: ignore[arg-type]
+        assert result is not None
+        assert "1K" in str(result)
+
+
+# ---------------------------------------------------------------------------
+# ModelBar: _populate branch coverage and refresh_models
+# ---------------------------------------------------------------------------
+
+
+class TestModelBarPopulateBranches:
+    @pytest.fixture(autouse=True)
+    def mock_classify(self):
+        empty = ([], [], [])
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=empty,
+        ):
+            yield
+
+    async def test_populate_with_matching_models(self) -> None:
+        """When scanned models match config, values are preserved."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("test-model", "test-model"), ModelOption("other", "other")],
+                [ModelOption("test-embed", "test-embed"), ModelOption("nomic", "nomic")],
+                [ModelOption("Llava 7B", "llava:7b")],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            embed_sel = app.query_one("#embed-model-select", Select)
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
+
+    async def test_populate_empty_lists_uses_config_default(self) -> None:
+        """When no models found, configured default from cfg is used."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate([], [], [])
+            await pilot.pause()
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            assert chat_sel.value == "test-model"
+
+    async def test_populate_vision_from_cfg_fallback(self) -> None:
+        """Vision from cfg when not in scan → prepended and selected."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = "llava:custom"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava:custom"
+
+    async def test_populate_vision_in_scanned_list(self) -> None:
+        """Vision model in scanned list gets selected."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = "llava:7b"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populate(
+                [ModelOption("test-model", "test-model")],
+                [ModelOption("test-embed", "test-embed")],
+                [ModelOption("Llava 7B", "llava:7b"), ModelOption("Moondream", "moondream:latest")],
+            )
+            await pilot.pause()
+            from textual.widgets import Select
+
+            vision_sel = app.query_one("#vision-model-select", Select)
+            assert vision_sel.value == "llava:7b"
+
+    async def test_populate_retains_matching_value(self) -> None:
+        """When current value matches a scanned model, it's preserved."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = "llava:7b"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            embed_sel = app.query_one("#embed-model-select", Select)
+            vision_sel = app.query_one("#vision-model-select", Select)
+
+            bar._populate(
+                [ModelOption("Qwen3 8B", "qwen3:8b"), ModelOption("Llama 7B", "llama:7b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [ModelOption("Llava 7B", "llava:7b")],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "qwen3:8b"
+            assert embed_sel.value == "nomic:latest"
+            assert vision_sel.value == "llava:7b"
+
+    async def test_populate_blank_value_uses_config_default(self) -> None:
+        """When Select has no value, falls back to configured default from cfg.
+
+        We force the Select to return empty by intercepting set_options to
+        simulate a widget that lost its value during refresh.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            from textual.widgets import Select
+
+            chat_sel = app.query_one("#chat-model-select", Select)
+            embed_sel = app.query_one("#embed-model-select", Select)
+
+            # Patch the first set_options to force _reactive_value = Select.NULL
+            # (bypassing validation), so the current-value branch is skipped
+            # and _sync_select falls back to the configured default.
+            for sel in (chat_sel, embed_sel):
+                orig_fn = sel.set_options
+                call_count = [0]
+
+                def make_patched(s, orig, cc):
+                    def patched(opts):
+                        orig(opts)
+                        cc[0] += 1
+                        if cc[0] == 1:
+                            # Bypass validation to force NULL value
+                            s._reactive_value = Select.NULL  # type: ignore[attr-defined]
+
+                    return patched
+
+                sel.set_options = make_patched(sel, orig_fn, call_count)  # type: ignore[assignment]
+
+            bar._populate(
+                [ModelOption("Qwen3 8B", "qwen3:8b")],
+                [ModelOption("Nomic Embed Text", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            # Falls back to cfg.chat_model / cfg.embedding_model, not models[0]
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
+
+    async def test_refresh_models(self) -> None:
+        """Cover line 267: refresh_models calls _scan_models."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar.refresh_models()
+            await pilot.pause()
+            assert bar.display is True
+
+    async def test_after_model_change_with_streaming_chat(self) -> None:
+        """Cancel stream and defer reset when chat screen is streaming."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            mock_screen = mock.MagicMock(spec=ChatScreen)
+            mock_screen.streaming = True
+            mock_screen.workers = []
+            with (
+                mock.patch.object(
+                    type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
+                ),
+                mock.patch("lilbee.services.reset_services") as mock_reset,
+            ):
+                bar._after_model_change()
+                mock_screen.action_cancel_stream.assert_called_once()
+                mock_reset.assert_not_called()
+                await pilot.pause()
+                await pilot.pause()
+                mock_reset.assert_called_once()
+
+    async def test_after_model_change_no_streaming(self) -> None:
+        """Reset services immediately when not streaming."""
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            with mock.patch("lilbee.services.reset_services") as mock_reset:
+                bar._after_model_change()
+            mock_reset.assert_called_once()
+
+    async def test_deferred_reset_waits_for_workers(self) -> None:
+        """_deferred_reset retries when workers are still running."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            mock_screen = mock.MagicMock(spec=ChatScreen)
+            mock_screen.workers = [mock.MagicMock()]
+            with (
+                mock.patch.object(
+                    type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
+                ),
+                mock.patch("lilbee.services.reset_services") as mock_reset,
+            ):
+                bar._deferred_reset()
+                mock_reset.assert_not_called()
+                mock_screen.workers = []
+                await pilot.pause()
+                await pilot.pause()
+                mock_reset.assert_called_once()

@@ -1,15 +1,18 @@
 name: CI
 
 on:
-  push:
-    branches: [master, main]
   pull_request:
-    branches: [master, main]
   workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -17,6 +20,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
@@ -39,6 +43,7 @@ jobs:
         run: make imports-check
 
   test:
+    timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -53,6 +58,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -72,7 +78,12 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
-    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
 
@@ -80,29 +91,160 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
+      - name: Install Tesseract (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+
+      - name: Install Tesseract (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tesseract
+
+      - name: Install Tesseract (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install tesseract -y
+          echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Restore Ollama binary cache (Windows)
+        if: runner.os == 'Windows'
+        id: ollama-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\ollama
+          key: ollama-bin-${{ runner.os }}-v1
+
+      # Metal OFF: CI macOS runners are VMs without GPU passthrough.
+      # Native OFF: avoids i8mm compile errors on CI M1 runners.
+      # BLAS ON (macOS): uses built-in Accelerate framework for faster matrix ops.
+      # BLAS/CUDA OFF (Linux/Windows): no GPU or BLAS library available.
       - name: Install dependencies
         run: uv sync --all-extras
+        env:
+          CMAKE_ARGS: >-
+            -DGGML_METAL=OFF
+            -DGGML_NATIVE=OFF
+            -DGGML_CUDA=OFF
+            ${{ runner.os == 'macOS' && '-DGGML_BLAS=ON' || '-DGGML_BLAS=OFF' }}
+
+      - name: Install spacy model
+        run: uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+      - name: Restore Playwright cache
+        id: pw-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.playwright-browsers
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: playwright-${{ runner.os }}-
 
       - name: Install Playwright for crawl4ai
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: uv run crawl4ai-setup
         continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
-      - name: Cache GGUF models
+      - name: Save Playwright cache
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.playwright-browsers
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Cache GGUF models (Linux)
+        if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
-          path: ~/.lilbee/models
-          key: gguf-models-v1
-          restore-keys: gguf-models-
+          path: ~/.local/share/lilbee/models
+          key: gguf-models-Linux-v3
+
+      - name: Cache GGUF models (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/lilbee/models
+          key: gguf-models-macOS-v3
+
+      - name: Cache GGUF models (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\lilbee\models
+          key: gguf-models-Windows-v3
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-models-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: hf-models-${{ runner.os }}-
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-models-${{ runner.os }}-qwen3-nomic-v1
+          restore-keys: ollama-models-${{ runner.os }}-
+
+      - name: Install Ollama (Linux)
+        if: runner.os == 'Linux'
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Install Ollama (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL https://ollama.com/download/Ollama-darwin.zip -o /tmp/ollama.zip
+          unzip -q /tmp/ollama.zip -d /tmp/ollama
+          sudo mv /tmp/ollama/Ollama.app /Applications/
+          sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
+
+      - name: Install Ollama (Windows)
+        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://ollama.com/download/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
+          Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
+
+      - name: Save Ollama binary cache (Windows)
+        if: runner.os == 'Windows' && steps.ollama-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\ollama
+          key: ollama-bin-${{ runner.os }}-v1
+
+      - name: Start Ollama and pull models (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          nohup ollama serve > /dev/null 2>&1 &
+          sleep 3
+          ollama pull qwen3:0.6b
+          ollama pull nomic-embed-text
+
+      - name: Start Ollama and pull models (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          & C:\ollama\ollama.exe pull qwen3:0.6b
+          & C:\ollama\ollama.exe pull nomic-embed-text
 
       - name: Run integration tests
-        run: uv run pytest tests/integration/ -v -m slow
+        run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
+          OLLAMA_HOST: http://127.0.0.1:11434
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
   deploy-pages:
     needs: test
@@ -121,6 +263,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12

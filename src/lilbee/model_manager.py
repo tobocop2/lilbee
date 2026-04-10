@@ -21,7 +21,7 @@ class ModelSource(Enum):
     """Where a model is stored."""
 
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
-    LITELLM = "litellm"  # Models managed by an external tool (Ollama, etc.)
+    LITELLM = "litellm"  # Models managed by an external backend
 
 
 class ModelManager:
@@ -246,6 +246,7 @@ def classify_remote_models(base_url: str = "http://localhost:11434") -> list[Rem
         resp.raise_for_status()
         raw_models = resp.json().get("models", [])
     except Exception:
+        log.debug("Failed to classify remote models", exc_info=True)
         return []
 
     provider = detect_provider(base_url)
@@ -269,20 +270,31 @@ def detect_remote_embedding_models(base_url: str = "http://localhost:11434") -> 
     return [m.name for m in classify_remote_models(base_url) if m.task == ModelTask.EMBEDDING]
 
 
-_manager: ModelManager | None = None
+class _ManagerHolder:
+    """Encapsulates the ModelManager singleton (no module-level mutable global)."""
+
+    def __init__(self) -> None:
+        self._instance: ModelManager | None = None
+
+    def get(self) -> ModelManager:
+        if self._instance is None:
+            from lilbee.config import cfg
+
+            self._instance = ModelManager(cfg.models_dir, cfg.litellm_base_url)
+        return self._instance
+
+    def reset(self) -> None:
+        self._instance = None
+
+
+_holder = _ManagerHolder()
 
 
 def get_model_manager() -> ModelManager:
     """Get or create the singleton ModelManager."""
-    global _manager
-    if _manager is None:
-        from lilbee.config import cfg
-
-        _manager = ModelManager(cfg.models_dir, cfg.litellm_base_url)
-    return _manager
+    return _holder.get()
 
 
 def reset_model_manager() -> None:
     """Clear the singleton (for testing)."""
-    global _manager
-    _manager = None
+    _holder.reset()
