@@ -78,7 +78,7 @@ _MAX_K = 20
 
 
 @dataclass
-class _ChunkRecord:
+class ChunkRecord:
     """Lightweight view of one chunk row used by the clusterer."""
 
     source: str
@@ -87,7 +87,7 @@ class _ChunkRecord:
     tokens: list[str] = field(default_factory=list)
 
 
-def _auto_k(n: int) -> int:
+def auto_k(n: int) -> int:
     """Pick a neighborhood size from corpus size via ``clamp(log2(N)+2)``."""
     if n <= 1:
         return _MIN_K
@@ -97,7 +97,7 @@ def _auto_k(n: int) -> int:
 
 def _parse_chunk_row(
     row: dict[str, object],
-) -> tuple[_ChunkRecord, list[float] | tuple[float, ...]] | None:
+) -> tuple[ChunkRecord, list[float] | tuple[float, ...]] | None:
     """Extract a chunk record + vector from a raw Arrow row, or None on invalid."""
     vector = row.get("vector")
     if not isinstance(vector, (list, tuple)):
@@ -109,7 +109,7 @@ def _parse_chunk_row(
     chunk_text = raw_text if isinstance(raw_text, str) else ""
     raw_index = row.get("chunk_index")
     chunk_index = raw_index if isinstance(raw_index, int) else 0
-    record = _ChunkRecord(
+    record = ChunkRecord(
         source=source,
         chunk_index=chunk_index,
         text=chunk_text,
@@ -120,7 +120,7 @@ def _parse_chunk_row(
 
 def _load_chunk_records(
     store: Store,
-) -> tuple[list[_ChunkRecord], np.ndarray]:
+) -> tuple[list[ChunkRecord], np.ndarray]:
     """Scan the chunks table once and return records plus a float32 matrix.
 
     Rows with an unparseable vector are skipped. Records are sorted by
@@ -142,14 +142,14 @@ def _load_chunk_records(
     parsed.sort(key=lambda pair: (pair[0].source, pair[0].chunk_index))
     dim = len(parsed[0][1])
     matrix = np.empty((len(parsed), dim), dtype=np.float32)
-    records: list[_ChunkRecord] = []
+    records: list[ChunkRecord] = []
     for row_idx, (record, vector) in enumerate(parsed):
         records.append(record)
         matrix[row_idx] = vector
     return records, matrix
 
 
-def _normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return (normalized_matrix, keep_mask). Zero-norm rows are dropped."""
     if matrix.size == 0:
         return matrix, np.zeros(0, dtype=bool)
@@ -161,7 +161,7 @@ def _normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return matrix / norms[:, None], keep
 
 
-def _mutual_knn(matrix: np.ndarray, k: int) -> dict[int, set[int]]:
+def mutual_knn(matrix: np.ndarray, k: int) -> dict[int, set[int]]:
     """Build a mutual k-nearest-neighbors graph over L2-normalized rows.
 
     Computes similarity in row blocks so peak memory stays bounded.
@@ -203,7 +203,7 @@ def _mutual_knn(matrix: np.ndarray, k: int) -> dict[int, set[int]]:
     return mutual
 
 
-def _label_propagation(
+def label_propagation(
     adjacency: dict[int, set[int]],
     order: list[int],
 ) -> list[int]:
@@ -234,7 +234,7 @@ def _label_propagation(
     return labels
 
 
-def _communities_by_label(labels: list[int]) -> dict[int, list[int]]:
+def communities_by_label(labels: list[int]) -> dict[int, list[int]]:
     """Group node indices by their final community label."""
     communities: dict[int, list[int]] = {}
     for node, label in enumerate(labels):
@@ -242,7 +242,7 @@ def _communities_by_label(labels: list[int]) -> dict[int, list[int]]:
     return communities
 
 
-def _source_totals(records: list[_ChunkRecord]) -> dict[str, int]:
+def _source_totals(records: list[ChunkRecord]) -> dict[str, int]:
     """Return the total chunk count per source across the whole corpus."""
     totals: dict[str, int] = {}
     for record in records:
@@ -252,7 +252,7 @@ def _source_totals(records: list[_ChunkRecord]) -> dict[str, int]:
 
 def _filter_sources(
     member_indices: list[int],
-    records: list[_ChunkRecord],
+    records: list[ChunkRecord],
     source_totals: dict[str, int],
 ) -> frozenset[str]:
     """Apply the source-membership threshold to a community's members."""
@@ -270,7 +270,7 @@ def _filter_sources(
     return frozenset(kept)
 
 
-def _corpus_document_frequency(records: list[_ChunkRecord]) -> dict[str, int]:
+def _corpus_document_frequency(records: list[ChunkRecord]) -> dict[str, int]:
     """Compute document frequency (chunk count containing term) for every term."""
     df: dict[str, int] = {}
     for record in records:
@@ -281,7 +281,7 @@ def _corpus_document_frequency(records: list[_ChunkRecord]) -> dict[str, int]:
 
 def _label_community(
     member_indices: list[int],
-    records: list[_ChunkRecord],
+    records: list[ChunkRecord],
     df: dict[str, int],
     total_chunks: int,
     fallback: str,
@@ -316,7 +316,7 @@ def _label_community(
 
 def _build_clusters(
     communities: dict[int, list[int]],
-    records: list[_ChunkRecord],
+    records: list[ChunkRecord],
     source_totals: dict[str, int],
     df: dict[str, int],
     min_sources: int,
@@ -404,14 +404,14 @@ class EmbeddingClusterer:
         if not records:
             return []
 
-        matrix, keep_mask = _normalize_rows(matrix)
+        matrix, keep_mask = normalize_rows(matrix)
         records = [record for record, keep in zip(records, keep_mask, strict=True) if keep]
         if not records:
             return []
 
         configured_k = self._config.wiki_clusterer_k
-        k = configured_k if configured_k > 0 else _auto_k(len(records))
-        adjacency = _mutual_knn(matrix, k)
+        k = configured_k if configured_k > 0 else auto_k(len(records))
+        adjacency = mutual_knn(matrix, k)
         if not any(adjacency.values()):
             # WARNING (not INFO) so users see why synthesis produced zero
             # pages at the default log level — matches the other degenerate
@@ -422,8 +422,8 @@ class EmbeddingClusterer:
                 k,
             )
             return []
-        labels = _label_propagation(adjacency, order=list(range(len(records))))
-        communities = _communities_by_label(labels)
+        labels = label_propagation(adjacency, order=list(range(len(records))))
+        communities = communities_by_label(labels)
 
         totals = _source_totals(records)
         df = _corpus_document_frequency(records)
