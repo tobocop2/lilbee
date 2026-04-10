@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -237,11 +238,21 @@ class TestSourceTotals:
 class TestFilterSources:
     def test_rejects_stray_chunk(self):
         # Source "long.md" has 40 chunks corpus-wide; only chunk 0 is in
-        # this community. 40 * 0.2 = 8 threshold, so 1 chunk is rejected.
+        # this community. Cutoff = min(3, ceil(40 * 0.2)) = min(3, 8) = 3,
+        # so a single stray chunk is rejected.
         records = [_record("long.md"), _record("other.md")]
         totals = {"long.md": 40, "other.md": 5}
         kept = _filter_sources([0], records, totals)
         assert kept == frozenset()
+
+    def test_accepts_large_source_at_min_chunks(self):
+        # With total=100, cutoff = min(3, ceil(100*0.2)=20) = 3. A source
+        # contributing exactly 3 chunks should be accepted regardless of
+        # how big the source is overall.
+        records = [_record("huge.md", i) for i in range(3)]
+        totals = {"huge.md": 100}
+        kept = _filter_sources([0, 1, 2], records, totals)
+        assert kept == frozenset({"huge.md"})
 
     def test_accepts_when_min_sources_chunks_met(self):
         records = [
@@ -459,8 +470,6 @@ class TestEmbeddingClustererGetClusters:
         assert [(c.sources, c.label) for c in run_a] == [(c.sources, c.label) for c in run_b]
 
     def test_warns_when_one_cluster_dominates(self, caplog: pytest.LogCaptureFixture):
-        import logging as _logging
-
         # Five sources all collapsing to a single community.
         rows = [
             _row(
@@ -473,7 +482,7 @@ class TestEmbeddingClustererGetClusters:
         ]
         cfg.wiki_clusterer_k = 3
         store = self._store_with_rows(rows)
-        with caplog.at_level(_logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
             EmbeddingClusterer(cfg, store).get_clusters(min_sources=3)
         assert any("covers" in rec.message for rec in caplog.records)
 
@@ -506,9 +515,7 @@ class TestBuildClusters:
 
 class TestWarnIfUndersegmented:
     def test_empty_clusters_is_noop(self, caplog: pytest.LogCaptureFixture):
-        import logging as _logging
-
-        with caplog.at_level(_logging.WARNING, logger="lilbee.clustering_embedding"):
+        with caplog.at_level(logging.WARNING, logger="lilbee.clustering_embedding"):
             _warn_if_undersegmented([], {"a.md": 1})
             _warn_if_undersegmented(
                 [SourceCluster(cluster_id="x", label="t", sources=frozenset({"a"}))],

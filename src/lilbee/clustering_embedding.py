@@ -22,10 +22,8 @@ one-way neighborhoods but can reciprocate at most ``k`` of them, so
 hub-driven bridging across topics is broken at the graph-construction
 step without any post-hoc similarity rescaling.
 
-Uses numpy for the O(N²) similarity kernel. numpy is listed in
-``pyproject.toml`` as a direct dependency; it was already required
-transitively by lancedb but the clusterer imports it at module top
-level, so the dependency is made explicit.
+Uses numpy for the O(N²) similarity kernel. numpy is declared in
+``pyproject.toml`` as a direct dependency.
 
 The implementation is blocked in row chunks of ``_BLOCK_SIZE`` to keep
 peak memory bounded regardless of corpus size, so it scales comfortably
@@ -68,7 +66,11 @@ _MIN_SOURCE_FRACTION = 0.2
 
 # TF-IDF labeling knobs.
 _LABEL_TOP_TERMS = 3
-_LABEL_SHORT_CHUNK_CAP = 20  # chunks shorter than this are down-weighted
+# Chunks with fewer tokens than this are down-weighted when accumulating
+# term frequency so short boilerplate (headings, captions) cannot dominate
+# a cluster label. 20 tokens roughly matches the token count of a section
+# heading or a two-sentence summary.
+_SHORT_CHUNK_TOKEN_CAP = 20
 
 # kNN auto-scaling bounds. Formula: clamp(round(log2(N)+2), _MIN_K, _MAX_K).
 _MIN_K = 5
@@ -116,8 +118,10 @@ def _load_chunk_records(
         source = row.get("source")
         if not isinstance(source, str):
             continue
-        chunk_text = row.get("chunk") if isinstance(row.get("chunk"), str) else ""
-        chunk_index = int(row.get("chunk_index") or 0)
+        raw_text = row.get("chunk")
+        chunk_text = raw_text if isinstance(raw_text, str) else ""
+        raw_index = row.get("chunk_index")
+        chunk_index = raw_index if isinstance(raw_index, int) else 0
         record = _ChunkRecord(
             source=source,
             chunk_index=chunk_index,
@@ -274,7 +278,7 @@ def _label_community(
         tokens = records[idx].tokens
         if not tokens:
             continue
-        weight = min(1.0, len(tokens) / _LABEL_SHORT_CHUNK_CAP)
+        weight = min(1.0, len(tokens) / _SHORT_CHUNK_TOKEN_CAP)
         counts: Counter[str] = Counter(tokens)
         for term, count in counts.items():
             tf[term] = tf.get(term, 0.0) + weight * (1.0 + math.log(count))
@@ -353,14 +357,27 @@ class EmbeddingClusterer:
         self._store = store
 
     def available(self) -> bool:
-        """Clusterer is available when the chunks table has any rows."""
+        """Clusterer is available when the chunks table has any rows.
+
+        ``count_rows()`` is a LanceDB call that can raise on transient
+        backend issues (concurrent compaction, schema rewrites). When
+        it does, we optimistically report available=True and let
+        ``get_clusters`` surface the real error on the next scan — the
+        alternative would silently disable wiki synthesis without the
+        user seeing why. A WARNING is emitted so the failure is still
+        visible at the default log level.
+        """
         table = self._store.open_table(CHUNKS_TABLE)
         if table is None:
             return False
         try:
             return bool(table.count_rows())
         except Exception:
-            log.debug("count_rows() failed on chunks table", exc_info=True)
+            log.warning(
+                "count_rows() failed on chunks table; reporting available=True "
+                "optimistically and deferring the error to get_clusters",
+                exc_info=True,
+            )
             return True
 
     def get_clusters(self, min_sources: int = 3) -> list[SourceCluster]:
