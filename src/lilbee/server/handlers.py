@@ -796,9 +796,8 @@ async def wiki_generate_stream(source: str) -> AsyncGenerator[str, None]:
         yield event
 
     # Ensure the blocking task has fully resolved before reading results
-    if not task.done():
-        with contextlib.suppress(Exception):
-            await task
+    with contextlib.suppress(Exception):
+        await task
 
     if error_holder:
         yield sse_error(error_holder[0])
