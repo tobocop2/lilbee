@@ -27,6 +27,43 @@ _TASK_COLORS: dict[str, str] = {
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
+    DEFAULT_CSS = """
+    ModelCard {
+        height: auto;
+        border: tall $surface-lighten-2;
+        padding: 0 1;
+        pointer: pointer;
+    }
+    ModelCard:hover {
+        background: $panel;
+    }
+    ModelCard #card-header {
+        grid-size: 3 1;
+        grid-columns: 1fr auto auto;
+        height: auto;
+    }
+    ModelCard #card-name {
+        text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+    ModelCard #card-pick {
+        width: auto;
+        margin: 0 1 0 0;
+    }
+    ModelCard #card-task {
+        text-align: right;
+    }
+    ModelCard #card-info {
+        text-style: dim;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+    ModelCard #card-status {
+        text-style: dim;
+    }
+    """
+
     selected: reactive[bool] = reactive(False)
 
     def __init__(self, row: TableRow) -> None:

@@ -2290,6 +2290,33 @@ class TestSetupWizardGrid:
                 grids = app.screen.query(GridSelect)
                 assert len(grids) >= 1
 
+    async def test_setup_cards_are_compact(self, _mock_resolve):
+        """SetupWizard cards match the catalog's compact layout.
+
+        Regression guard: before the shared ModelCard stylesheet moved into
+        the widget itself, the wizard cards rendered at ~100+ rows tall
+        because setup.tcss did not reset ModelCard height, so a single row
+        of cards blew through the viewport.
+        """
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 67)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                cards = app.screen.query(ModelCard)
+                assert len(cards) > 0
+                max_height = max(c.outer_size.height for c in cards)
+                # The catalog cards render at ~5 rows; give a small slack
+                # but fail loudly if something reintroduces the blow-up.
+                assert max_height <= 8, f"wizard cards are {max_height} rows tall"
+
     async def test_setup_step1_shows_chat_picks(self, _mock_resolve):
         """Setup shows 'Chat Models' heading."""
         from lilbee.cli.tui.screens.setup import SetupWizard
