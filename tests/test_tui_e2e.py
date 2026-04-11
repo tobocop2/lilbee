@@ -1388,7 +1388,15 @@ class TestSettingsInteractions:
             assert cfg.system_prompt == "test system prompt"
 
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
-        """Toggling a boolean checkbox updates cfg."""
+        """Toggling a boolean checkbox updates cfg.
+
+        This dispatches ``Checkbox.Changed`` synchronously rather than flipping
+        the reactive and waiting for ``pilot.pause()`` to drain the message
+        queue. ``pilot.pause()`` uses ``wait_for_idle(0)`` which can return
+        before a message posted from a reactive watcher has propagated to the
+        ancestor screen's ``@on`` handler on slower runners (observed on
+        Windows Python 3.11 and 3.12), leading to flaky failures.
+        """
         from textual.widgets import Checkbox
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1401,9 +1409,13 @@ class TestSettingsInteractions:
 
             checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
             initial = checkbox.value
-            checkbox.toggle()
+            with checkbox.prevent(Checkbox.Changed):
+                checkbox.value = not initial
+            event = Checkbox.Changed(checkbox, checkbox.value)
+            app.screen._on_checkbox_save(event)
             await pilot.pause()
             assert cfg.show_reasoning != initial
+            assert cfg.show_reasoning == checkbox.value
 
     async def test_read_only_fields_have_no_editor(self, _mock_resolve):
         """Read-only settings do not have an editor widget."""
