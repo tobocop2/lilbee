@@ -254,7 +254,7 @@ class TestModeIndicator:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             bar = app.screen.query_one(ViewTabs)
             assert "NORMAL" in bar.mode_text
@@ -271,9 +271,13 @@ class TestViewCycling:
             await pilot.pause()
             assert app.active_view == "Chat"
 
+            # Blur the chat input so the app-level ] binding fires.
+            await pilot.press("escape")
+            await pilot.pause()
+
             expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
             for view in expected:
-                app.action_nav_next()
+                await pilot.press("right_square_bracket")
                 await pilot.pause()
                 assert app.active_view == view, f"Expected {view}, got {app.active_view}"
 
@@ -520,9 +524,12 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
+                # Blur the chat input so the app-level ] binding fires.
+                await pilot.press("escape")
+                await pilot.pause()
                 expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
                 for view in expected:
-                    app.action_nav_next()
+                    await pilot.press("right_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
@@ -568,9 +575,12 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
+                # Blur the chat input so the app-level ] binding fires.
+                await pilot.press("escape")
+                await pilot.pause()
                 full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
                 for view in full_cycle:
-                    app.action_nav_next()
+                    await pilot.press("right_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
@@ -583,9 +593,12 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
+                # Blur the chat input so the app-level [ binding fires.
+                await pilot.press("escape")
+                await pilot.pause()
                 backward_cycle = ["Wiki", "Tasks", "Settings", "Status", "Catalog", "Chat"]
                 for view in backward_cycle:
-                    app.action_nav_prev()
+                    await pilot.press("left_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
@@ -616,11 +629,13 @@ class TestScreenTransitions:
                     await pilot.pause()
                     assert app.active_view == view
 
-                    app.action_push_help()
+                    # Use f1 instead of ? because focused inputs still swallow
+                    # question_mark.
+                    await pilot.press("f1")
                     await pilot.pause()
                     assert app.screen.query("HelpPanel")
 
-                    app.action_push_help()
+                    await pilot.press("f1")
                     await pilot.pause()
                     assert not app.screen.query("HelpPanel")
 
@@ -655,9 +670,11 @@ class TestScreenTransitions:
                 assert isinstance(app.screen, ChatScreen)
 
     async def test_pop_from_settings_returns_to_chat(self, _mock_resolve):
-        """From Settings, action_go_back returns to Chat.
-        Note: 'q' keystroke is consumed by the search Input when focused,
-        so we test the action directly.
+        """From Settings, pressing escape returns to Chat.
+
+        Note: 'q' is consumed when the search Input has focus (tracked as
+        a separate binding bug). Escape is bound to go_back on SettingsScreen
+        and also removes Input focus, so it exercises the binding path.
         """
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -668,8 +685,12 @@ class TestScreenTransitions:
                 await pilot.pause()
                 app.switch_view("Settings")
                 await pilot.pause()
-                app.screen.action_go_back()
+                await pilot.press("escape")
                 await pilot.pause()
+                # If the search input was focused, the first escape just blurs it.
+                if not isinstance(app.screen, ChatScreen):
+                    await pilot.press("escape")
+                    await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
 
     async def test_q_from_tasks_returns_to_chat(self, _mock_resolve):
@@ -699,8 +720,12 @@ class TestScreenTransitions:
                 for view in ["Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
                     await pilot.pause()
-                    app.screen.action_go_back()
+                    await pilot.press("escape")
                     await pilot.pause()
+                    if not isinstance(app.screen, ChatScreen):
+                        # Settings search input consumes the first escape (blur).
+                        await pilot.press("escape")
+                        await pilot.pause()
                     assert isinstance(app.screen, ChatScreen)
 
     async def test_theme_cycling(self, _mock_resolve):
@@ -711,7 +736,7 @@ class TestScreenTransitions:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             initial_theme = app.theme
-            app.action_cycle_theme()
+            await pilot.press("ctrl+t")
             await pilot.pause()
             assert app.theme != initial_theme
             assert app.theme in DARK_THEMES
@@ -736,7 +761,7 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             assert app.screen._insert_mode is False
 
@@ -745,7 +770,7 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             assert app.screen._insert_mode is False
             app.screen._enter_insert_mode()
@@ -757,10 +782,10 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
 
-            app.screen.action_vim_scroll_down()
+            await pilot.press("j")
             await pilot.pause()
             new_focus = app.screen.focused.id if app.screen.focused else None
             assert new_focus is not None
@@ -772,9 +797,9 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
-            app.screen.action_vim_scroll_home()
+            await pilot.press("g")
             await pilot.pause()
             assert app.screen._insert_mode is False
 
@@ -783,9 +808,9 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
-            app.screen.action_vim_scroll_end()
+            await pilot.press("G")
             await pilot.pause()
             assert app.screen._insert_mode is False
 
@@ -794,9 +819,9 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_scroll_up()
+            await pilot.press("pageup")
             await pilot.pause()
-            app.screen.action_scroll_down()
+            await pilot.press("pagedown")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -805,9 +830,9 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_half_page_down()
+            await pilot.press("ctrl+d")
             await pilot.pause()
-            app.screen.action_half_page_up()
+            await pilot.press("ctrl+u")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -818,7 +843,12 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_focus_commands()
+            # Blur chat input (escape -> normal mode focuses chat-log) so the
+            # slash key reaches the screen-level binding instead of being
+            # consumed as a literal character by the input.
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("slash")
             await pilot.pause()
             inp = app.screen.query_one("#chat-input", Input)
             assert inp.has_focus
@@ -875,7 +905,7 @@ class TestChatInteractions:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.streaming = True
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             assert app.screen.streaming is False
 
@@ -904,7 +934,7 @@ class TestChatInteractions:
             await pilot.pause()
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "Hello test"
-            await inp.action_submit()
+            await pilot.press("enter")
             await pilot.pause()
             messages = app.screen.query(UserMessage)
             assert len(messages) >= 1
@@ -920,28 +950,28 @@ class TestChatInteractions:
 
             # Submit two messages
             inp.value = "first message"
-            await inp.action_submit()
+            await pilot.press("enter")
             await pilot.pause()
             inp.value = "second message"
-            await inp.action_submit()
+            await pilot.press("enter")
             await pilot.pause()
 
             # Navigate up through history
-            app.screen.action_history_prev()
+            await pilot.press("up")
             await pilot.pause()
             assert inp.value == "second message"
 
-            app.screen.action_history_prev()
+            await pilot.press("up")
             await pilot.pause()
             assert inp.value == "first message"
 
             # Navigate down
-            app.screen.action_history_next()
+            await pilot.press("down")
             await pilot.pause()
             assert inp.value == "second message"
 
             # Past end clears
-            app.screen.action_history_next()
+            await pilot.press("down")
             await pilot.pause()
             assert inp.value == ""
 
@@ -951,11 +981,11 @@ class TestChatInteractions:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             initial = cfg.markdown_rendering
-            await app.screen.action_toggle_markdown()
+            await pilot.press("ctrl+r")
             await pilot.pause()
             assert cfg.markdown_rendering != initial
             # Toggle back
-            await app.screen.action_toggle_markdown()
+            await pilot.press("ctrl+r")
             await pilot.pause()
             assert cfg.markdown_rendering == initial
 
@@ -964,7 +994,7 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             assert app.screen._insert_mode is False
             # Simulate enter key event in normal mode
@@ -976,13 +1006,19 @@ class TestChatInteractions:
             assert app.screen._insert_mode is True
 
     async def test_history_actions_skip_in_normal_mode(self, _mock_resolve):
-        """In normal mode, up/down raise SkipAction (no focus cycling)."""
+        """In normal mode, the history action guards raise SkipAction.
+
+        This is a unit assertion on the action methods' guard clauses -
+        the key bindings already delegate here, so pilot.press would
+        swallow the SkipAction via the binding dispatcher. Calling the
+        action directly is the correct way to assert the guard raises.
+        """
         from textual.actions import SkipAction
 
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             with pytest.raises(SkipAction):
                 app.screen.action_history_prev()
@@ -1292,13 +1328,15 @@ class TestCatalogInteractions:
                 await pilot.pause()
 
                 table = app.screen.query_one("#catalog-table", DataTable)
+                table.focus()
+                await pilot.pause()
                 if table.row_count > 1:
                     initial_row = table.cursor_row
-                    app.screen.action_cursor_down()
+                    await pilot.press("j")
                     await pilot.pause()
                     assert table.cursor_row >= initial_row
 
-                    app.screen.action_cursor_up()
+                    await pilot.press("k")
                     await pilot.pause()
 
     async def test_list_view_g_G_jump(self, _mock_resolve):
@@ -1334,6 +1372,8 @@ class TestCatalogInteractions:
 
     async def test_list_view_page_down_up(self, _mock_resolve):
         """In list view, space/ctrl-d pages down, ctrl-u pages up."""
+        from textual.widgets import DataTable
+
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -1346,9 +1386,12 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                app.screen.action_page_down()
+                table = app.screen.query_one("#catalog-table", DataTable)
+                table.focus()
                 await pilot.pause()
-                app.screen.action_page_up()
+                await pilot.press("space")
+                await pilot.pause()
+                await pilot.press("ctrl+u")
                 await pilot.pause()
                 assert app.screen.is_current
 
@@ -1432,7 +1475,12 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.press("v")
                 await pilot.pause()
-                app.screen.action_delete_model()
+                from textual.widgets import DataTable
+
+                table = app.screen.query_one("#catalog-table", DataTable)
+                table.focus()
+                await pilot.pause()
+                await pilot.press("d")
                 await pilot.pause()
                 assert app.screen.is_current
 
@@ -1461,13 +1509,13 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # These actions should be no-ops or safe in grid mode
-                app.screen.action_cursor_down()
-                app.screen.action_cursor_up()
-                app.screen.action_jump_top()
-                app.screen.action_jump_bottom()
-                app.screen.action_page_down()
-                app.screen.action_page_up()
+                # These key bindings should delegate to the grid safely.
+                await pilot.press("j")
+                await pilot.press("k")
+                await pilot.press("g")
+                await pilot.press("G")
+                await pilot.press("space")
+                await pilot.press("ctrl+u")
                 assert app.screen.is_current
                 await pilot.pause()
 
@@ -1611,9 +1659,12 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
-            app.screen.action_scroll_down()
+            # Move focus off the search input so screen bindings receive j/k.
+            app.screen.focus_next()
             await pilot.pause()
-            app.screen.action_scroll_up()
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("k")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -1626,14 +1677,17 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
-            app.screen.action_scroll_end()
+            # Move focus off the search input so screen bindings receive g/G.
+            app.screen.focus_next()
             await pilot.pause()
-            app.screen.action_scroll_home()
+            await pilot.press("G")
+            await pilot.pause()
+            await pilot.press("g")
             await pilot.pause()
             assert app.screen.is_current
 
     async def test_pop_screen_returns_to_chat(self, _mock_resolve):
-        """action_go_back returns to chat."""
+        """Pressing escape on settings returns to chat."""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -1642,8 +1696,12 @@ class TestSettingsInteractions:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
-            app.screen.action_go_back()
+            await pilot.press("escape")
             await pilot.pause()
+            if not isinstance(app.screen, ChatScreen):
+                # Settings search input consumes the first escape (blur).
+                await pilot.press("escape")
+                await pilot.pause()
             assert isinstance(app.screen, ChatScreen)
 
     async def test_settings_changed_signal_fires(self, _mock_resolve):
@@ -1727,9 +1785,9 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.switch_view("Status")
                 await pilot.pause()
-                app.screen.action_cursor_down()
+                await pilot.press("j")
                 await pilot.pause()
-                app.screen.action_cursor_up()
+                await pilot.press("k")
                 await pilot.pause()
                 assert app.screen.is_current
 
@@ -1743,9 +1801,9 @@ class TestStatusInteractions:
                 await pilot.pause()
                 app.switch_view("Status")
                 await pilot.pause()
-                app.screen.action_jump_bottom()
+                await pilot.press("G")
                 await pilot.pause()
-                app.screen.action_jump_top()
+                await pilot.press("g")
                 await pilot.pause()
                 assert app.screen.is_current
 
@@ -1870,9 +1928,9 @@ class TestTaskCenterInteractions:
 
             app.switch_view("Tasks")
             await pilot.pause()
-            app.screen.action_cursor_down()
+            await pilot.press("j")
             await pilot.pause()
-            app.screen.action_cursor_up()
+            await pilot.press("k")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -1917,7 +1975,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
 
             app.task_bar.add_task("Late Task", "download")
-            app.screen.action_refresh_tasks()
+            await pilot.press("r")
             await pilot.pause()
 
             table = app.screen.query_one("#task-table", DataTable)
@@ -1934,7 +1992,7 @@ class TestTaskCenterInteractions:
 
             app.switch_view("Tasks")
             await pilot.pause()
-            app.screen.action_cancel_task()
+            await pilot.press("c")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -1961,7 +2019,7 @@ class TestTaskCenterInteractions:
             await pilot.pause()
             app.switch_view("Tasks")
             await pilot.pause()
-            app.screen.action_cancel_task()
+            await pilot.press("c")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -1987,7 +2045,7 @@ class TestChatPromptBorder:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.screen.action_enter_normal_mode()
+            await pilot.press("escape")
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             area = app.screen.query_one("#chat-prompt-area")
@@ -2006,7 +2064,8 @@ class TestAppQuit:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             with mock.patch.object(app, "exit") as mock_exit:
-                await app.action_quit()
+                await pilot.press("ctrl+c")
+                await pilot.pause()
                 mock_exit.assert_called_once()
 
     async def test_quit_cancels_active_task_first(self, _mock_resolve):
@@ -2019,7 +2078,8 @@ class TestAppQuit:
             app.task_bar.add_task("Active Task", "download")
             app.task_bar.queue.advance("download")
             with mock.patch.object(app, "exit") as mock_exit:
-                await app.action_quit()
+                await pilot.press("ctrl+c")
+                await pilot.pause()
                 mock_exit.assert_not_called()
 
     async def test_quit_cancels_stream_if_on_chat(self, _mock_resolve):
@@ -2034,7 +2094,8 @@ class TestAppQuit:
                 mock.patch.object(app.screen, "action_cancel_stream") as mock_cancel,
                 mock.patch.object(app, "exit") as mock_exit,
             ):
-                await app.action_quit()
+                await pilot.press("ctrl+c")
+                await pilot.pause()
                 mock_cancel.assert_called_once()
                 mock_exit.assert_not_called()
 
@@ -2226,7 +2287,7 @@ class TestChatCompletions:
 
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "/"
-            app.screen.action_complete()
+            await pilot.press("tab")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -2239,7 +2300,7 @@ class TestChatCompletions:
 
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "/"
-            app.screen.action_complete_next()
+            await pilot.press("ctrl+n")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -2252,7 +2313,7 @@ class TestChatCompletions:
 
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "/"
-            app.screen.action_complete_prev()
+            await pilot.press("ctrl+p")
             await pilot.pause()
             assert app.screen.is_current
 
@@ -2267,7 +2328,7 @@ class TestChatCompletions:
 
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "/"
-            app.screen.action_complete()
+            await pilot.press("tab")
             await pilot.pause()
 
             overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
@@ -2299,11 +2360,11 @@ class TestGridSelectWidget:
             await pilot.pause()
             assert grid.highlighted == 0
 
-            grid.action_cursor_right()
+            await pilot.press("right")
             await pilot.pause()
             assert grid.highlighted == 1
 
-            grid.action_cursor_left()
+            await pilot.press("left")
             await pilot.pause()
             assert grid.highlighted == 0
 
@@ -2329,7 +2390,7 @@ class TestGridSelectWidget:
             grid = app.query_one("#test-grid", GridSelect)
             grid.focus()
             await pilot.pause()
-            grid.action_select()
+            await pilot.press("enter")
             await pilot.pause()
             assert len(selections) == 1
 

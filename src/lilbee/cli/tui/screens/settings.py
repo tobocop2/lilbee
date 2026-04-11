@@ -127,8 +127,8 @@ class SettingsScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "go_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("tab", "focus_next", "Next field", show=True),
-        Binding("shift+tab", "focus_previous", "Prev field", show=True),
+        Binding("tab", "app.focus_next", "Next field", show=True),
+        Binding("shift+tab", "app.focus_previous", "Prev field", show=True),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_home", "Top", show=False),
@@ -229,6 +229,9 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         value = str(event.value) if event.value != Select.BLANK else ""
+        current = str(getattr(cfg, name, ""))
+        if value == current:
+            return
         self._persist_value(name, defn, value)
 
     def _persist_value(self, key: str, defn: SettingDef, raw: str) -> None:

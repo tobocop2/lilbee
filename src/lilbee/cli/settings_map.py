@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from lilbee.config import ClustererBackend
+
 
 class RenderStyle(StrEnum):
     """How a setting is displayed in /settings."""
@@ -114,5 +116,54 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group="Display",
         help_text="Show model reasoning/thinking tokens in output",
+    ),
+    "wiki": SettingDef(
+        bool,
+        nullable=False,
+        group="Wiki",
+        help_text="Enable the wiki layer (synthesis pages with citations)",
+    ),
+    "wiki_dir": SettingDef(
+        str,
+        nullable=False,
+        group="Wiki",
+        help_text="Directory under data_root where wiki pages are stored",
+    ),
+    "wiki_prune_raw": SettingDef(
+        bool,
+        nullable=False,
+        group="Wiki",
+        help_text="Delete raw chunks after summarizing into the wiki",
+    ),
+    "wiki_faithfulness_threshold": SettingDef(
+        float,
+        nullable=False,
+        group="Wiki",
+        help_text="Minimum faithfulness score (0-1) to accept a generated page",
+    ),
+    "wiki_stale_citation_threshold": SettingDef(
+        float,
+        nullable=False,
+        group="Wiki",
+        help_text="Fraction of stale citations that triggers page regeneration",
+    ),
+    "wiki_drift_threshold": SettingDef(
+        float,
+        nullable=False,
+        group="Wiki",
+        help_text="Max fraction of changed lines before regeneration requires review",
+    ),
+    "wiki_clusterer": SettingDef(
+        str,
+        nullable=False,
+        group="Wiki",
+        help_text="Synthesis clusterer backend (embedding or concepts)",
+        choices=tuple(b.value for b in ClustererBackend),
+    ),
+    "wiki_clusterer_k": SettingDef(
+        int,
+        nullable=False,
+        group="Wiki",
+        help_text="Mutual-kNN neighborhood size for the clusterer (0 = auto)",
     ),
 }
