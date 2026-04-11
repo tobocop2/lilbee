@@ -24,17 +24,12 @@ from lilbee.store import CitationRecord, SearchChunk, Store, cosine_sim
 
 log = logging.getLogger(__name__)
 
-# Minimum token length — single characters carry no selection signal.
 _MIN_TOKEN_LEN = 2
-
-# Any run of non-alphanumeric characters (whitespace, punctuation,
-# hyphens) is treated as a word boundary so ``"state-of-the-art"``
-# becomes four tokens rather than collapsing into one.
 _TOKEN_SPLIT_RE = re.compile(r"\W+")
 
 
 def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens for IDF-weighted context selection."""
+    """Lowercase alphanumeric tokens, split on any non-alnum run."""
     return [word for word in _TOKEN_SPLIT_RE.split(text.lower()) if len(word) >= _MIN_TOKEN_LEN]
 
 
@@ -42,13 +37,12 @@ def _idf_weights(
     question_terms: set[str],
     chunk_tokens: list[set[str]],
 ) -> dict[str, float]:
-    """Return IDF weight per question term over the candidate corpus.
+    """Inverse Document Frequency weight per query term over the candidate chunks.
 
-    ``log(N / (1 + df))`` is clamped to zero for terms that appear in
-    (almost) every candidate chunk — the corpus-specific stopwords that
-    a hand-curated English list would otherwise approximate. The only
-    caller is ``select_context``, which short-circuits on empty
-    ``results``, so ``chunk_tokens`` is guaranteed non-empty here.
+    Classical IDF per Spärck Jones (1972), "A Statistical Interpretation
+    of Term Specificity and Its Application in Retrieval", Journal of
+    Documentation 28:11-21. Terms that appear in every chunk collapse to
+    zero weight, so corpus-specific stopwords are filtered automatically.
     """
     n = len(chunk_tokens)
     df: dict[str, int] = {}
@@ -64,13 +58,11 @@ def _greedy_cover(
     term_weights: dict[str, float],
     budget: int,
 ) -> list[int]:
-    """Greedy IDF-weighted set cover over candidate chunks.
+    """Greedy weighted set cover: pick chunks that add the most uncovered weight.
 
-    Picks chunks whose distinctive (high-IDF) query terms contribute
-    the most uncovered weight until either the budget is exhausted or
-    no chunk can add anything new. Any remaining budget is filled in
-    retrieval order so callers always receive ``budget`` chunks when
-    that many are available.
+    Standard (1 - 1/e) approximation for weighted set cover. Budget is
+    always filled, falling back to retrieval order once no chunk can
+    contribute any new weight.
     """
     selected: list[int] = []
     covered: set[str] = set()
@@ -314,12 +306,7 @@ class Searcher:
         variants: list[tuple[str, list[float]]],
         question_vec: list[float],
     ) -> list[tuple[str, list[float]]]:
-        """Drop expansion variants that drift too far from the question.
-
-        Compares sentence-level cosine similarity between the question
-        embedding and each variant embedding. Language-agnostic and uses
-        embeddings already computed by the caller.
-        """
+        """Drop expansion variants whose embedding drifts too far from the question."""
         if not self._config.expansion_guardrails:
             return variants
         threshold = self._config.expansion_similarity_threshold
@@ -353,15 +340,8 @@ class Searcher:
     ) -> list[tuple[str, list[float]]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
-        Expansion is disabled entirely when both ``query_expansion_count``
-        is zero and concept-graph expansion is off — matching the old
-        early-return so ``LILBEE_QUERY_EXPANSION_COUNT=0`` remains an
-        off-switch for users who have ``cfg.concept_graph`` enabled.
-
-        LLM expansions run through the similarity guardrail; concept-graph
-        expansions bypass it because they come from deterministic graph
-        traversal and are expected to be partial phrases with lower
-        similarity to the full question.
+        LLM variants run through ``_apply_guardrails``; concept-graph
+        variants bypass it since they come from deterministic traversal.
         """
         count = self._config.query_expansion_count
         if count <= 0 and not self._config.concept_graph:
@@ -447,15 +427,7 @@ class Searcher:
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
     ) -> list[SearchChunk]:
-        """Greedy IDF-weighted cover: pick chunks whose distinctive query
-        terms add the most information, then fill any remaining budget
-        in retrieval order.
-
-        IDF is computed over the candidate ``results`` list itself, so
-        terms that appear in every candidate (the corpus-specific
-        stopwords) contribute zero weight without needing a hand-curated
-        stoplist.
-        """
+        """Pick ``max_sources`` chunks by greedy IDF-weighted set cover."""
         if max_sources is None:
             max_sources = self._config.max_context_sources
         if len(results) <= max_sources:
