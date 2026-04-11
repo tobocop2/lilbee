@@ -1461,7 +1461,7 @@ async def test_chat_action_complete_cycle():
 
 
 async def test_chat_tab_completes_alias_prefix():
-    """Pressing Tab on '/cat' expands to the /catalog alias (bb-d2tz)."""
+    """Pressing Tab on '/cat' expands to the /catalog alias."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
