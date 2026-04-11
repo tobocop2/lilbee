@@ -1,10 +1,4 @@
-"""Unit tests for the NavAwareInput Input subclass.
-
-Pins the contract that `[` and `]` bubble up while every other printable
-character is still captured as text. Also includes a guard test that fails if
-any TUI screen reintroduces a bare `Input(` instantiation, which would silently
-revive the [/] screen-nav bug.
-"""
+"""Tests for NavAwareInput: [ and ] bubble up, other printables stay captured."""
 
 from __future__ import annotations
 
@@ -56,11 +50,7 @@ def _is_bare_input_call(node: ast.AST) -> bool:
 
 
 def test_tui_screens_do_not_reintroduce_bare_input():
-    """Guard against regressions: any TUI screen that needs a focusable
-    text input must use NavAwareInput, not the base Input class. A bare
-    ``Input(...)`` instantiation inside a screen silently re-breaks the
-    screen-nav bug for that widget.
-    """
+    """TUI screens must use NavAwareInput, not the base Input class."""
     screens_dir = Path(__file__).parent.parent / "src" / "lilbee" / "cli" / "tui" / "screens"
     offenders: list[str] = []
     for path in sorted(screens_dir.glob("*.py")):

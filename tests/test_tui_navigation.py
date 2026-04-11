@@ -92,14 +92,7 @@ async def test_bracket_keys_cycle_all_screens():
 
 
 async def test_bracket_keys_work_with_chat_input_focused():
-    """Pressing ] with the chat input focused (insert mode) should switch
-    screens instead of being typed as a literal character into the input.
-
-    Regression: Textual's default Input.check_consume_key returns True for all
-    printable chars, so without a NavAwareInput subclass the focused chat input
-    swallows [ and ] as text instead of letting them bubble to the app-level
-    nav bindings.
-    """
+    """Pressing ] with the chat input focused must switch screens, not insert text."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
