@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import containers, widgets
 from textual.app import ComposeResult
@@ -14,6 +15,8 @@ from lilbee.models import ModelTask
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
+
+_CSS_FILE = Path(__file__).parent / "model_card.tcss"
 
 MIDDLE_DOT = "·"
 
@@ -27,49 +30,11 @@ _TASK_COLORS: dict[str, str] = {
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
 
-    DEFAULT_CSS = """
-    ModelCard {
-        height: auto;
-        border: tall $surface-lighten-2;
-        padding: 0 1;
-        pointer: pointer;
-
-        &:hover {
-            background: $panel;
-        }
-
-        #card-header {
-            grid-size: 3 1;
-            grid-columns: 1fr auto auto;
-            height: auto;
-        }
-
-        #card-name {
-            text-style: bold;
-            text-wrap: nowrap;
-            text-overflow: ellipsis;
-        }
-
-        #card-pick {
-            width: auto;
-            margin: 0 1 0 0;
-        }
-
-        #card-task {
-            text-align: right;
-        }
-
-        #card-info {
-            text-style: dim;
-            text-wrap: nowrap;
-            text-overflow: ellipsis;
-        }
-
-        #card-status {
-            text-style: dim;
-        }
-    }
-    """
+    # Widget CSS lives in model_card.tcss so it gets syntax highlighting and
+    # matches the convention used for screens. Textual's Widget class only
+    # supports DEFAULT_CSS (there is no widget-level CSS_PATH), so we load the
+    # file once at import time.
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     selected: reactive[bool] = reactive(False)
 

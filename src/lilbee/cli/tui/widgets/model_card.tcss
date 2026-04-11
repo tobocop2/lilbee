@@ -1,0 +1,41 @@
+ModelCard {
+    height: auto;
+    border: tall $surface-lighten-2;
+    padding: 0 1;
+    pointer: pointer;
+
+    &:hover {
+        background: $panel;
+    }
+
+    #card-header {
+        grid-size: 3 1;
+        grid-columns: 1fr auto auto;
+        height: auto;
+    }
+
+    #card-name {
+        text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    #card-pick {
+        width: auto;
+        margin: 0 1 0 0;
+    }
+
+    #card-task {
+        text-align: right;
+    }
+
+    #card-info {
+        text-style: dim;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    #card-status {
+        text-style: dim;
+    }
+}
