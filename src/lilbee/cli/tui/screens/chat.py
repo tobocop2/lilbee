@@ -29,6 +29,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -114,15 +115,10 @@ class ChatScreen(Screen[None]):
 
     @property
     def _task_bar(self) -> TaskBarController:
-        """The app-level TaskBarController.
-        Always present: LilbeeApp creates one in `__init__`, and the screen's
-        own TaskBar widget lazy-creates one if a bare test harness omits it.
-        """
+        """The app-level TaskBarController (always set by LilbeeApp)."""
         return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
