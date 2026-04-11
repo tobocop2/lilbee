@@ -10,6 +10,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 *.pdf
 *.html
@@ -20,3 +21,19 @@ CLAUDE.md
 docs/plans/
 demo.cast
 docs/superpowers/
+.kreuzberg/
+.claude/
+.dolt/
+.doltcfg/
+.test_lancedb/
+beads/
+beads_bb/
+vault/
+plugins/
+node_modules/
+*.mov
+*.mp4
+PLAN.md
+.DS_Store
+scripts/
+.DS_Store

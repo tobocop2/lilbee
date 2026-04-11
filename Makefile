@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
 	uv run ruff check src/ tests/
@@ -19,12 +19,15 @@ test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v
 
 imports-check:
-	uv run python -c "import lilbee; from lilbee import cli, config, chunker, code_chunker, embedder, store, ingest, query"
+	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
+
+test-integration:
+	uv run pytest tests/integration/ -v
 
 check: lint format-check typecheck test  ## Run all checks (same as CI)
 
 install:
-	uv tool install . --force --reinstall
+	uv tool install . --force --reinstall --compile-bytecode
 
 demo:  ## Record all demo GIFs via VHS
 	vhs demos/chat.tape
@@ -40,7 +43,7 @@ publish: build  ## Build and upload to PyPI
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\
-	from lilbee.server.litestar_app import create_app; \
+	from lilbee.server.app import create_app; \
 	import json; \
 	app = create_app(); \
 	schema = app.openapi_schema.to_schema(); \

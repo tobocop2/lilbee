@@ -30,14 +30,14 @@ model_option = typer.Option(
     help="Override chat model (default: $LILBEE_CHAT_MODEL or 'qwen3:8b')",
 )
 
-_json_option = typer.Option(
+json_option = typer.Option(
     False,
     "--json",
     "-j",
     help="Emit structured JSON output (for agent/script consumption).",
 )
 
-_global_option = typer.Option(
+global_option = typer.Option(
     False,
     "--global",
     "-g",
@@ -78,7 +78,6 @@ def apply_overrides(
     seed: int | None = None,
 ) -> None:
     """Apply CLI overrides to config before any work begins.
-
     Precedence (highest first):
     --data-dir / LILBEE_DATA  >  .lilbee/ (local walk-up)  >  global platform default
     """
@@ -117,8 +116,8 @@ def _default(
     ctx: typer.Context,
     data_dir: Path | None = data_dir_option,
     model: str | None = model_option,
-    json_output: bool = _json_option,
-    use_global: bool = _global_option,
+    json_output: bool = json_option,
+    use_global: bool = global_option,
     log_level: str | None = _log_level_option,
     show_version: bool = typer.Option(
         False,
@@ -136,12 +135,24 @@ def _default(
     level_str = os.environ.get("LILBEE_LOG_LEVEL", "WARNING").upper()
     if log_level is not None:
         level_str = log_level.upper()
-    level = getattr(logging, level_str, logging.WARNING)
+    _log_levels = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+    }
+    level = _log_levels.get(level_str, logging.WARNING)
     logging.basicConfig(
         level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
     )
     # basicConfig is a no-op when handlers already exist, so always set level explicitly
     logging.getLogger().setLevel(level)
+
+    # Swallow lancedb's shutdown-time thread noise — opt-in side effect, not
+    # imposed on library consumers of lilbee.
+    from lilbee.store import install_lancedb_thread_error_suppressor
+
+    install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
     if ctx.invoked_subcommand is None:
@@ -149,6 +160,9 @@ def _default(
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
-        from lilbee.cli.chat import chat_loop
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            typer.echo("Error: Interactive chat requires a terminal.", err=True)
+            raise SystemExit(1)
+        from lilbee.cli.tui import run_tui
 
-        chat_loop(console, auto_sync_bg=True)
+        run_tui(auto_sync=True)

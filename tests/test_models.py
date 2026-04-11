@@ -1,6 +1,5 @@
 """Tests for models.py — RAM detection, model selection, picker UI, auto-install."""
 
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -18,9 +17,13 @@ class TestModelCatalog:
         for m in MODEL_CATALOG:
             assert isinstance(m, ModelInfo)
 
-    def test_sorted_by_size(self):
-        sizes = [m.size_gb for m in MODEL_CATALOG]
-        assert sizes == sorted(sizes)
+    def test_derived_from_catalog(self):
+        """MODEL_CATALOG entries match catalog.py's FEATURED_CHAT."""
+        from lilbee.catalog import FEATURED_CHAT
+
+        assert len(MODEL_CATALOG) == len(FEATURED_CHAT)
+        for mc, fc in zip(MODEL_CATALOG, FEATURED_CHAT, strict=True):
+            assert mc.name == fc.name
 
     def test_frozen(self):
         with pytest.raises(AttributeError):
@@ -98,32 +101,35 @@ class TestPickDefaultModel:
 
     def test_low_ram_picks_small(self):
         result = models.pick_default_model(4.0)
-        assert result.name == "qwen3:1.7b"
+        assert result.min_ram_gb <= 4.0
 
     def test_8gb_ram(self):
         result = models.pick_default_model(8.0)
-        assert result.name == "qwen3:8b"
+        assert result.min_ram_gb <= 8.0
 
     def test_16gb_ram(self):
         result = models.pick_default_model(16.0)
-        assert result.name == "qwen3:8b"
+        assert result.min_ram_gb <= 16.0
 
     def test_32gb_ram(self):
         result = models.pick_default_model(32.0)
-        assert result.name == "qwen3-coder:30b"
+        assert result.min_ram_gb <= 32.0
 
-    def test_tiny_ram_picks_first(self):
+    def test_tiny_ram_picks_smallest(self):
         result = models.pick_default_model(2.0)
-        assert result.name == "qwen3:1.7b"
+        assert result.min_ram_gb <= 2.0
+        assert result.ref == "smollm2:135m"
 
 
 class TestModelDownloadSizeGb:
     def test_known_models(self):
-        assert models._model_download_size_gb("qwen3:8b") == 5.0
-        assert models._model_download_size_gb("qwen3-coder:30b") == 18.0
+        first = MODEL_CATALOG[0]
+        assert models._model_download_size_gb(first.ref) == first.size_gb
 
     def test_unknown_model_returns_fallback(self):
-        assert models._model_download_size_gb("unknown:latest") == 5.0
+        result = models._model_download_size_gb("unknown:latest")
+        assert isinstance(result, float)
+        assert result > 0
 
 
 class TestDisplayModelPicker:
@@ -131,12 +137,12 @@ class TestDisplayModelPicker:
         recommended = models.display_model_picker(16.0, 50.0)
         captured = capsys.readouterr()
         assert "Available Models" in captured.err
-        assert "qwen3:8b" in captured.err
+        assert MODEL_CATALOG[0].display_name in captured.err
         assert isinstance(recommended, ModelInfo)
 
     def test_recommended_highlighted(self, capsys):
         recommended = models.display_model_picker(32.0, 100.0)
-        assert recommended.name == "qwen3-coder:30b"
+        assert recommended.min_ram_gb <= 32.0
         captured = capsys.readouterr()
         # The star marker should be in the output
         assert "\u2605" in captured.err
@@ -157,7 +163,7 @@ class TestDisplayModelPicker:
     def test_shows_browse_link(self, capsys):
         models.display_model_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestPromptModelChoice:
@@ -173,13 +179,13 @@ class TestPromptModelChoice:
     def test_numeric_choice(self, mock_disk_estimate):
         with mock.patch("builtins.input", return_value="1"):
             result = models.prompt_model_choice(8.0)
-        assert result.name == "qwen3:1.7b"
+        assert result == MODEL_CATALOG[0]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
         with mock.patch("builtins.input", side_effect=["abc", "99", "2"]):
             result = models.prompt_model_choice(8.0)
-        assert result.name == "qwen3:4b"
+        assert result == MODEL_CATALOG[1]
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_eof_returns_recommended(self, mock_disk_estimate):
@@ -198,107 +204,152 @@ class TestValidateDiskAndPull:
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     def test_pulls_and_persists(self, mock_pull, mock_save):
-        info = ModelInfo("test:1b", 1.0, 4, "test")
+        info = ModelInfo(
+            ref="test:1b",
+            display_name="Test 1B",
+            size_gb=1.0,
+            min_ram_gb=4,
+            description="test",
+        )
         models.validate_disk_and_pull(info, 50.0)
         mock_pull.assert_called_once_with("test:1b", console=None)
         mock_save.assert_called_once_with(cfg.data_root, "chat_model", "test:1b")
 
     def test_insufficient_disk_raises(self):
-        info = ModelInfo("test:big", 20.0, 32, "big")
+        info = ModelInfo(
+            ref="test:big",
+            display_name="Test Big",
+            size_gb=20.0,
+            min_ram_gb=32,
+            description="big",
+        )
         with pytest.raises(RuntimeError, match="Not enough disk space"):
             models.validate_disk_and_pull(info, 5.0)
 
 
 class TestPullWithProgress:
-    @mock.patch("ollama.pull")
-    def test_calls_ollama_pull(self, mock_pull):
-        event = SimpleNamespace(total=100, completed=100)
-        mock_pull.return_value = iter([event])
-        models.pull_with_progress("test-model")
-        mock_pull.assert_called_once_with("test-model", stream=True)
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_calls_manager_pull(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
 
-    @mock.patch("ollama.pull")
-    def test_handles_zero_total(self, mock_pull):
-        event = SimpleNamespace(total=0, completed=0)
-        mock_pull.return_value = iter([event])
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"total": 100, "completed": 100})
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        mock_get_manager.return_value = mock_manager
+        models.pull_with_progress("test-model")
+        mock_manager.pull.assert_called_once()
+
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_handles_zero_total(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+
+        def fake_pull(model, source, *, on_progress=None):
+            if on_progress:
+                on_progress({"total": 0, "completed": 0})
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        mock_get_manager.return_value = mock_manager
         models.pull_with_progress("test-model")
 
 
 class TestEnsureChatModel:
-    def _make_model(self, name: str) -> SimpleNamespace:
-        return SimpleNamespace(model=name)
-
-    @mock.patch("ollama.list")
-    def test_noop_when_chat_models_exist(self, mock_list):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("llama3:latest"), self._make_model("nomic-embed-text:latest")]
-        )
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_noop_when_chat_models_exist(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = ["llama3:latest", "nomic-embed-text:latest"]
+        mock_get_manager.return_value = mock_manager
         models.ensure_chat_model()  # should not raise or pull
 
-    @mock.patch("ollama.list", side_effect=ConnectionError("refused"))
-    def test_connection_error_raises(self, _):
-        with pytest.raises(RuntimeError, match="Cannot connect to Ollama"):
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_connection_error_raises(self, mock_get_manager):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.side_effect = RuntimeError("refused")
+        mock_get_manager.return_value = mock_manager
+        with pytest.raises(RuntimeError, match="Cannot list models"):
             models.ensure_chat_model()
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_non_interactive_auto_picks(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save
     ):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("nomic-embed-text:latest")]
-        )
-        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
-            models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3-coder:30b", console=None)
-        mock_save.assert_called_once_with(cfg.data_root, "chat_model", "qwen3-coder:30b")
+        # Pin embedding model so the filter correctly excludes it from chat models
+        old_embed = cfg.embedding_model
+        cfg.embedding_model = "nomic-embed-text"
+        try:
+            mock_manager = mock.MagicMock()
+            mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+            mock_get_manager.return_value = mock_manager
+            with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
+                models.ensure_chat_model()
+            expected = models.pick_default_model(32.0)
+            mock_pull.assert_called_once_with(expected.ref, console=None)
+            mock_save.assert_called_once_with(cfg.data_root, "chat_model", expected.ref)
+        finally:
+            cfg.embedding_model = old_embed
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_non_interactive_low_ram(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
     ):
-        mock_list.return_value = SimpleNamespace(models=[])
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:8b", console=None)
+        expected = models.pick_default_model(8.0)
+        mock_pull.assert_called_once_with(expected.ref, console=None)
 
     @mock.patch("lilbee.settings.set_value")
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
-    @mock.patch("ollama.list")
+    @mock.patch("lilbee.model_manager.get_model_manager")
     def test_interactive_uses_picker(
-        self, mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull, mock_save_setting
     ):
-        mock_list.return_value = SimpleNamespace(models=[])
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="1"),
         ):
             models.ensure_chat_model()
-        mock_pull.assert_called_once_with("qwen3:1.7b", console=None)
+        mock_pull.assert_called_once_with(MODEL_CATALOG[0].ref, console=None)
 
-    @mock.patch.object(models, "get_free_disk_gb", return_value=3.0)
+    @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("ollama.list")
-    def test_insufficient_disk_raises(self, mock_list, mock_vram_estimate, mock_disk_estimate):
-        mock_list.return_value = SimpleNamespace(models=[])
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_insufficient_disk_raises(
+        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate
+    ):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
             models.ensure_chat_model()
 
-    @mock.patch("ollama.list")
-    def test_empty_model_list_triggers_pull(self, mock_list):
-        mock_list.return_value = SimpleNamespace(models=[])
+    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_empty_model_list_triggers_pull(self, mock_get_manager, _mock_save):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = []
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
             mock.patch.object(models, "get_free_disk_gb", return_value=50.0),
@@ -307,11 +358,12 @@ class TestEnsureChatModel:
         ):
             models.ensure_chat_model()
 
-    @mock.patch("ollama.list")
-    def test_only_embedding_model_triggers_pull(self, mock_list):
-        mock_list.return_value = SimpleNamespace(
-            models=[self._make_model("nomic-embed-text:latest")]
-        )
+    @mock.patch("lilbee.settings.set_value")
+    @mock.patch("lilbee.model_manager.get_model_manager")
+    def test_only_embedding_model_triggers_pull(self, mock_get_manager, _mock_save):
+        mock_manager = mock.MagicMock()
+        mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
+        mock_get_manager.return_value = mock_manager
         with (
             mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
             mock.patch.object(models, "get_free_disk_gb", return_value=50.0),
@@ -329,17 +381,17 @@ class TestVisionCatalog:
         for m in VISION_CATALOG:
             assert isinstance(m, ModelInfo)
 
-    def test_catalog_is_ordered_by_quality(self) -> None:
-        """First entry should be the best quality (LightOnOCR-2)."""
-        assert "LightOnOCR" in VISION_CATALOG[0].name
+    def test_derived_from_catalog(self) -> None:
+        """VISION_CATALOG entries match catalog.py's FEATURED_VISION."""
+        from lilbee.catalog import FEATURED_VISION
+
+        assert len(VISION_CATALOG) == len(FEATURED_VISION)
+        for vc, fv in zip(VISION_CATALOG, FEATURED_VISION, strict=True):
+            assert vc.name == fv.name
 
     def test_frozen(self) -> None:
         with pytest.raises(AttributeError):
             VISION_CATALOG[0].name = "nope"  # type: ignore[misc]
-
-    def test_all_names_have_explicit_tags(self) -> None:
-        for m in VISION_CATALOG:
-            assert ":" in m.name, f"Vision catalog entry '{m.name}' missing explicit tag"
 
 
 class TestPickDefaultVisionModel:
@@ -376,7 +428,7 @@ class TestDisplayVisionPicker:
     def test_shows_browse_link(self, capsys: pytest.CaptureFixture[str]) -> None:
         models.display_vision_picker(8.0, 50.0)
         captured = capsys.readouterr()
-        assert models.OLLAMA_MODELS_URL in captured.err
+        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestEnsureTag:

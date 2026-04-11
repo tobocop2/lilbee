@@ -1,11 +1,12 @@
 """Tests for vision model OCR extraction."""
 
 import sys
-import types
 from pathlib import Path
 from unittest import mock
 
 import pytest
+
+from lilbee.services import Services, set_services
 
 
 @pytest.fixture(autouse=True)
@@ -16,494 +17,403 @@ def _clean_vision_module() -> None:
     sys.modules.pop("lilbee.vision", None)
 
 
-def _make_mock_pdfium(num_pages: int = 1) -> types.ModuleType:
-    """Build a fake pypdfium2 module with a mock PdfDocument."""
-    mod = types.ModuleType("pypdfium2")
+@pytest.fixture()
+def mock_provider():
+    """Create a mock provider and inject it via Services.
+    Uses spec_set to exclude vision_ocr — tests that need the subprocess
+    path should set it explicitly on the mock.
+    """
+    provider = mock.MagicMock(
+        spec=["chat", "embed", "list_models", "pull_model", "show_model", "shutdown"]
+    )
+    store = mock.MagicMock()
+    embedder = mock.MagicMock()
+    reranker = mock.MagicMock()
+    concepts = mock.MagicMock()
+    searcher = mock.MagicMock()
+    registry = mock.MagicMock()
+    services = Services(
+        provider=provider,
+        store=store,
+        embedder=embedder,
+        reranker=reranker,
+        concepts=concepts,
+        clusterer=mock.MagicMock(),
+        searcher=searcher,
+        registry=registry,
+    )
+    set_services(services)
+    yield provider
+    set_services(None)
 
-    mock_pil_image = mock.MagicMock()
-    mock_pil_image.save.side_effect = lambda buf, format: buf.write(b"fake-png-data")
 
-    mock_bitmap = mock.MagicMock()
-    mock_bitmap.to_pil.return_value = mock_pil_image
-
-    mock_page = mock.MagicMock()
-    mock_page.render.return_value = mock_bitmap
-
-    mock_pdf = mock.MagicMock()
-    mock_pdf.__len__ = mock.Mock(return_value=num_pages)
-    mock_pdf.__getitem__ = mock.Mock(return_value=mock_page)
-
-    mod.PdfDocument = mock.Mock(return_value=mock_pdf)  # type: ignore[attr-defined]
-    return mod
+def _mock_iterator(num_pages: int = 1) -> mock.MagicMock:
+    """Build a mock PdfPageIterator that yields (index, png_bytes) tuples."""
+    pages = [(i, b"\x89PNG" + bytes(f"page-{i}", "utf-8")) for i in range(num_pages)]
+    it = mock.MagicMock()
+    it.__len__ = mock.Mock(return_value=num_pages)
+    it.__iter__ = mock.Mock(return_value=iter(pages))
+    it.__enter__ = mock.Mock(return_value=it)
+    it.__exit__ = mock.Mock(return_value=False)
+    return it
 
 
 class TestPdfPageCount:
-    def test_returns_page_count(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=5)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_returns_page_count(self) -> None:
+        mock_iter = _mock_iterator(num_pages=5)
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import pdf_page_count
 
-            assert pdf_page_count(tmp_path / "test.pdf") == 5
+            assert pdf_page_count(Path("test.pdf")) == 5
 
-    def test_empty_pdf_returns_zero(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=0)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_empty_pdf_returns_zero(self) -> None:
+        mock_iter = _mock_iterator(num_pages=0)
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import pdf_page_count
 
-            assert pdf_page_count(tmp_path / "empty.pdf") == 0
+            assert pdf_page_count(Path("empty.pdf")) == 0
 
-    def test_closes_pdf(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=3)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
-            from lilbee.vision import pdf_page_count
+    def test_passes_dpi(self) -> None:
+        mock_iter = _mock_iterator(num_pages=1)
+        mock_cls = mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter)
+        with mock_cls as patched:
+            from lilbee.vision import _RASTER_DPI, pdf_page_count
 
-            pdf_page_count(tmp_path / "test.pdf")
-
-        mock_pdf = mock_mod.PdfDocument.return_value
-        mock_pdf.close.assert_called_once()
+            pdf_page_count(Path("test.pdf"))
+            patched.assert_called_once_with(mock.ANY, dpi=_RASTER_DPI)
 
 
 class TestRasterizePdf:
-    def test_yields_index_and_png_bytes(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=2)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_yields_index_and_png_bytes(self) -> None:
+        mock_iter = _mock_iterator(num_pages=2)
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import rasterize_pdf
 
-            pages = list(rasterize_pdf(tmp_path / "test.pdf"))
+            pages = list(rasterize_pdf(Path("test.pdf")))
 
         assert len(pages) == 2
         assert pages[0][0] == 0
         assert pages[1][0] == 1
-        assert all(b"fake-png-data" in data for _, data in pages)
+        assert all(data.startswith(b"\x89PNG") for _, data in pages)
 
-    def test_empty_pdf_yields_nothing(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=0)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_empty_pdf_yields_nothing(self) -> None:
+        mock_iter = _mock_iterator(num_pages=0)
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import rasterize_pdf
 
-            pages = list(rasterize_pdf(tmp_path / "empty.pdf"))
+            pages = list(rasterize_pdf(Path("empty.pdf")))
 
         assert pages == []
 
-    def test_closes_pdf_on_success(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=1)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_uses_context_manager(self) -> None:
+        mock_iter = _mock_iterator(num_pages=1)
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import rasterize_pdf
 
-            list(rasterize_pdf(tmp_path / "test.pdf"))
+            list(rasterize_pdf(Path("test.pdf")))
 
-        mock_pdf = mock_mod.PdfDocument.return_value
-        mock_pdf.close.assert_called_once()
+        mock_iter.__enter__.assert_called_once()
+        mock_iter.__exit__.assert_called_once()
 
-    def test_closes_pdf_on_error(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=1)
-        mock_pdf = mock_mod.PdfDocument.return_value
-        mock_pdf.__getitem__ = mock.Mock(side_effect=RuntimeError("boom"))
-
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
-            from lilbee.vision import rasterize_pdf
-
-            with pytest.raises(RuntimeError, match="boom"):
-                list(rasterize_pdf(tmp_path / "test.pdf"))
-
-        mock_pdf.close.assert_called_once()
-
-    def test_render_uses_correct_scale(self, tmp_path: Path) -> None:
-        mock_mod = _make_mock_pdfium(num_pages=1)
-        with mock.patch.dict(sys.modules, {"pypdfium2": mock_mod}):
+    def test_passes_dpi(self) -> None:
+        mock_iter = _mock_iterator(num_pages=1)
+        mock_cls = mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter)
+        with mock_cls as patched:
             from lilbee.vision import _RASTER_DPI, rasterize_pdf
 
-            list(rasterize_pdf(tmp_path / "test.pdf"))
-
-        mock_page = mock_mod.PdfDocument.return_value.__getitem__.return_value
-        expected_scale = _RASTER_DPI / 72
-        mock_page.render.assert_called_once_with(scale=expected_scale)
+            list(rasterize_pdf(Path("test.pdf")))
+            patched.assert_called_once_with(mock.ANY, dpi=_RASTER_DPI)
 
 
 class TestExtractPageText:
-    @mock.patch("ollama.chat")
-    def test_returns_extracted_text(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(
-            message=mock.MagicMock(content="Extracted text from page")
+    def test_returns_text_on_success(self, mock_provider) -> None:
+        from lilbee.vision import extract_page_text
+
+        mock_provider.chat.return_value = "extracted text"
+        result = extract_page_text(b"fake-png", "test-model")
+        assert result == "extracted text"
+
+    def test_returns_none_on_error(self, mock_provider) -> None:
+        from lilbee.vision import extract_page_text
+
+        mock_provider.chat.side_effect = RuntimeError("model error")
+        result = extract_page_text(b"fake-png", "test-model")
+        assert result is None
+
+    def test_sends_ocr_prompt_and_image(self, mock_provider) -> None:
+        from lilbee.vision import OCR_PROMPT, extract_page_text
+
+        mock_provider.chat.return_value = "text"
+        extract_page_text(b"png-bytes", "my-model")
+
+        mock_provider.chat.assert_called_once()
+        call_args = mock_provider.chat.call_args
+        messages = call_args[0][0]
+        # OpenAI-compatible multipart content format
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[1]["type"] == "text"
+        assert content[1]["text"] == OCR_PROMPT
+        assert call_args[1]["model"] == "my-model"
+
+
+class TestExtractPageTextSubprocess:
+    """Test extract_page_text when provider has vision_ocr method."""
+
+    def test_delegates_to_vision_ocr(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.return_value = "subprocess text"
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            clusterer=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
         )
+        set_services(services)
+
         from lilbee.vision import extract_page_text
 
-        result = extract_page_text(b"fake-png-data", "test-model")
-        assert result == "Extracted text from page"
-        mock_chat.assert_called_once()
+        result = extract_page_text(b"png", "vision-model")
+        assert result == "subprocess text"
+        provider.vision_ocr.assert_called_once()
+        provider.chat.assert_not_called()
 
-    @mock.patch("ollama.chat")
-    def test_uses_correct_model(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="text"))
+    def test_vision_ocr_error_returns_none(self) -> None:
+        provider = mock.MagicMock(spec=["chat", "embed", "vision_ocr", "shutdown"])
+        provider.vision_ocr.side_effect = RuntimeError("worker died")
+        services = Services(
+            provider=provider,
+            store=mock.MagicMock(),
+            embedder=mock.MagicMock(),
+            reranker=mock.MagicMock(),
+            concepts=mock.MagicMock(),
+            clusterer=mock.MagicMock(),
+            searcher=mock.MagicMock(),
+            registry=mock.MagicMock(),
+        )
+        set_services(services)
+
         from lilbee.vision import extract_page_text
 
-        extract_page_text(b"png", "maternion/LightOnOCR-2")
-        assert mock_chat.call_args.kwargs["model"] == "maternion/LightOnOCR-2"
-
-    @mock.patch("ollama.chat")
-    def test_sends_png_bytes_as_image(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="text"))
-        from lilbee.vision import extract_page_text
-
-        extract_page_text(b"my-png-bytes", "model")
-        messages = mock_chat.call_args.kwargs["messages"]
-        assert messages[0]["images"] == [b"my-png-bytes"]
-
-    @mock.patch("ollama.chat", side_effect=Exception("model failed"))
-    def test_error_returns_none(self, mock_chat: mock.MagicMock) -> None:
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "bad-model")
+        result = extract_page_text(b"png", "vision-model")
         assert result is None
-
-    @mock.patch("ollama.Client")
-    def test_timeout_uses_client(self, mock_client_cls: mock.MagicMock) -> None:
-        mock_client = mock.MagicMock()
-        mock_client.chat.return_value = mock.MagicMock(message=mock.MagicMock(content="timed text"))
-        mock_client_cls.return_value = mock_client
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=60.0)
-        assert result == "timed text"
-        mock_client_cls.assert_called_once_with(timeout=60.0)
-        mock_client.chat.assert_called_once()
-
-    @mock.patch("ollama.chat")
-    def test_no_timeout_uses_module_chat(self, mock_chat: mock.MagicMock) -> None:
-        mock_chat.return_value = mock.MagicMock(message=mock.MagicMock(content="ok"))
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=None)
-        assert result == "ok"
-        mock_chat.assert_called_once()
-
-    @mock.patch("ollama.Client")
-    def test_timeout_error_returns_none(self, mock_client_cls: mock.MagicMock) -> None:
-        mock_client = mock.MagicMock()
-        mock_client.chat.side_effect = TimeoutError("timed out")
-        mock_client_cls.return_value = mock_client
-        from lilbee.vision import extract_page_text
-
-        result = extract_page_text(b"png", "model", timeout=5.0)
-        assert result is None
-
-    @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
-    def test_warning_without_traceback(
-        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="lilbee.vision"):
-            from lilbee.vision import extract_page_text
-
-            extract_page_text(b"png", "model")
-
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warning_records) == 1
-        assert "RuntimeError" in warning_records[0].message
-        assert "connection reset" in warning_records[0].message
-        assert warning_records[0].exc_info is None or not warning_records[0].exc_info[0]
-
-    @mock.patch("ollama.chat", side_effect=RuntimeError("connection reset"))
-    def test_debug_includes_traceback(
-        self, mock_chat: mock.MagicMock, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.DEBUG, logger="lilbee.vision"):
-            from lilbee.vision import extract_page_text
-
-            extract_page_text(b"png", "model")
-
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert len(debug_records) == 1
-        assert debug_records[0].exc_info is not None
-        assert debug_records[0].exc_info[0] is RuntimeError
 
 
 class TestExtractPdfVision:
-    @mock.patch("lilbee.vision.extract_page_text", return_value="Page text here.")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1"), (1, b"png2")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
-    def test_returns_page_tagged_tuples(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
-    ) -> None:
-        from lilbee.vision import extract_pdf_vision
+    def test_returns_page_texts(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=2)
+        mock_provider.chat.return_value = "page text"
 
-        result = extract_pdf_vision(Path("test.pdf"), "test-model", quiet=True)
-        assert result == [(1, "Page text here."), (2, "Page text here.")]
-        assert _ext.call_count == 2
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
+            from lilbee.vision import extract_pdf_vision
 
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=0)
-    def test_empty_pdf_returns_empty(self, mock_page_count: mock.MagicMock) -> None:
-        from lilbee.vision import extract_pdf_vision
+            result = extract_pdf_vision(Path("test.pdf"), "model", quiet=True)
 
-        result = extract_pdf_vision(Path("test.pdf"), "test-model", quiet=True)
+        assert len(result) == 2
+        assert all(text == "page text" for _, text in result)
+        assert result[0][0] == 1  # 1-based page numbers
+        assert result[1][0] == 2
+
+    def test_empty_pdf_returns_empty(self) -> None:
+        mock_iter = _mock_iterator(num_pages=0)
+
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
+            from lilbee.vision import extract_pdf_vision
+
+            result = extract_pdf_vision(Path("empty.pdf"), "model", quiet=True)
+
         assert result == []
 
-    @mock.patch("lilbee.vision.extract_page_text", return_value="   ")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
-    def test_whitespace_only_pages_excluded(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
-    ) -> None:
-        from lilbee.vision import extract_pdf_vision
+    def test_skips_failed_pages(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=2)
+        mock_provider.chat.side_effect = [RuntimeError("fail"), "success text"]
 
-        result = extract_pdf_vision(Path("test.pdf"), "test-model", quiet=True)
-        assert result == []
-
-    @mock.patch("lilbee.vision.extract_page_text", side_effect=["Hello", "  ", "World"])
-    @mock.patch(
-        "lilbee.vision.rasterize_pdf",
-        return_value=iter([(0, b"p1"), (1, b"p2"), (2, b"p3")]),
-    )
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
-    def test_mixed_pages_filters_blank(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
-    ) -> None:
-        from lilbee.vision import extract_pdf_vision
-
-        result = extract_pdf_vision(Path("test.pdf"), "model", quiet=True)
-        assert result == [(1, "Hello"), (3, "World")]
-
-    @mock.patch("lilbee.vision.extract_page_text", return_value="Page text.")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
-    def test_passes_timeout_to_extract_page_text(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, mock_ext: mock.MagicMock
-    ) -> None:
-        from lilbee.vision import extract_pdf_vision
-
-        extract_pdf_vision(Path("test.pdf"), "model", quiet=True, timeout=30.0)
-        mock_ext.assert_called_once_with(b"png1", "model", timeout=30.0)
-
-    @mock.patch("lilbee.vision.extract_page_text", return_value="Page text.")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
-    def test_progress_bar_shown_when_not_quiet(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
-    ) -> None:
-        mock_progress = mock.MagicMock()
-        mock_progress.add_task.return_value = 0
-        mock_progress_cls = mock.MagicMock(return_value=mock_progress)
-        mock_progress.__enter__ = mock.Mock(return_value=mock_progress)
-        mock_progress.__exit__ = mock.Mock(return_value=False)
-
-        with mock.patch.dict(
-            "sys.modules",
-            {
-                "rich.progress": mock.MagicMock(
-                    Progress=mock_progress_cls,
-                    BarColumn=mock.MagicMock(),
-                    MofNCompleteColumn=mock.MagicMock(),
-                    TextColumn=mock.MagicMock(),
-                    TimeElapsedColumn=mock.MagicMock(),
-                ),
-            },
-        ):
-            from lilbee.vision import extract_pdf_vision
-
-            extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
-
-        mock_progress_cls.assert_called_once()
-        mock_progress.add_task.assert_called_once()
-        mock_progress.advance.assert_called_once()
-
-    @mock.patch("lilbee.vision.extract_page_text", return_value="Page text.")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
-    def test_no_progress_bar_when_quiet(
-        self, mock_page_count: mock.MagicMock, _rast: mock.MagicMock, _ext: mock.MagicMock
-    ) -> None:
-        # Poison the rich.progress import — if quiet=True tries to import it, we'll know
-        sentinel = ImportError("rich.progress should not be imported in quiet mode")
-        with mock.patch.dict(sys.modules, {"rich.progress": sentinel}):
-            from lilbee.vision import extract_pdf_vision
-
-            # Should succeed without importing rich.progress
-            result = extract_pdf_vision(Path("test.pdf"), "model", quiet=True)
-
-        assert result == [(1, "Page text.")]
-
-    @mock.patch("lilbee.vision.extract_page_text", side_effect=[None, "Good text", None])
-    @mock.patch(
-        "lilbee.vision.rasterize_pdf",
-        return_value=iter([(0, b"p1"), (1, b"p2"), (2, b"p3")]),
-    )
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=3)
-    def test_failed_pages_counted(
-        self,
-        mock_page_count: mock.MagicMock,
-        _rast: mock.MagicMock,
-        _ext: mock.MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="lilbee.vision"):
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
 
             result = extract_pdf_vision(Path("test.pdf"), "model", quiet=True)
 
-        assert result == [(2, "Good text")]
-        assert any("2/3 pages failed" in r.message for r in caplog.records)
+        assert len(result) == 1
+        assert result[0][1] == "success text"
 
-    @mock.patch("lilbee.vision.extract_page_text", side_effect=[None, None])
-    @mock.patch(
-        "lilbee.vision.rasterize_pdf",
-        return_value=iter([(0, b"p1"), (1, b"p2")]),
-    )
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=2)
-    def test_failed_summary_printed_when_not_quiet(
-        self,
-        mock_page_count: mock.MagicMock,
-        _rast: mock.MagicMock,
-        _ext: mock.MagicMock,
-    ) -> None:
-        mock_progress = mock.MagicMock()
-        mock_progress.add_task.return_value = 0
-        mock_progress.__enter__ = mock.Mock(return_value=mock_progress)
-        mock_progress.__exit__ = mock.Mock(return_value=False)
-        mock_progress_cls = mock.MagicMock(return_value=mock_progress)
+    def test_skips_empty_text(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=2)
+        mock_provider.chat.side_effect = ["  \n  ", "real text"]
 
-        mock_console = mock.MagicMock()
-        mock_console_cls = mock.MagicMock(return_value=mock_console)
-
-        with mock.patch.dict(
-            "sys.modules",
-            {
-                "rich.progress": mock.MagicMock(
-                    Progress=mock_progress_cls,
-                    BarColumn=mock.MagicMock(),
-                    MofNCompleteColumn=mock.MagicMock(),
-                    TextColumn=mock.MagicMock(),
-                    TimeElapsedColumn=mock.MagicMock(),
-                ),
-                "rich.console": mock.MagicMock(Console=mock_console_cls),
-            },
-        ):
-            from lilbee.vision import extract_pdf_vision
-
-            extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
-
-        mock_console_cls.assert_any_call(stderr=True)
-        mock_console.print.assert_called()
-        msg = mock_console.print.call_args[0][0]
-        assert "2/2 pages failed" in msg
-
-    @mock.patch("lilbee.vision.extract_page_text", return_value="All good.")
-    @mock.patch("lilbee.vision.rasterize_pdf", return_value=iter([(0, b"png1")]))
-    @mock.patch("lilbee.vision.pdf_page_count", return_value=1)
-    def test_no_failure_summary_when_all_succeed(
-        self,
-        mock_page_count: mock.MagicMock,
-        _rast: mock.MagicMock,
-        _ext: mock.MagicMock,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.WARNING, logger="lilbee.vision"):
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
             from lilbee.vision import extract_pdf_vision
 
             result = extract_pdf_vision(Path("test.pdf"), "model", quiet=True)
 
-        assert result == [(1, "All good.")]
-        assert not any("pages failed" in r.message for r in caplog.records)
+        assert len(result) == 1
+        assert result[0][1] == "real text"
+
+    def test_fires_progress_events(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=1)
+        mock_provider.chat.return_value = "text"
+        progress_calls: list[tuple[str, dict]] = []
+
+        def capture_progress(event_type: str, data: dict) -> None:
+            progress_calls.append((event_type, data))
+
+        with mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter):
+            from lilbee.vision import extract_pdf_vision
+
+            extract_pdf_vision(Path("test.pdf"), "model", quiet=True, on_progress=capture_progress)
+
+        assert len(progress_calls) >= 1
+        assert progress_calls[0][0] == "extract"
 
 
 class TestSharedTask:
-    def test_enter_returns_self_and_sets_description(self) -> None:
+    def test_enter_updates_description(self) -> None:
         from lilbee.vision import _SharedTask
-
-        progress = mock.MagicMock()
-        st = _SharedTask(progress, batch_task=42, name="scan.pdf", total=10)
-        assert st.__enter__() is st
-        progress.update.assert_called_once_with(42, description="Vision OCR scan.pdf (0/10)")
-
-    def test_exit_is_noop(self) -> None:
-        from lilbee.vision import _SharedTask
-
-        progress = mock.MagicMock()
-        st = _SharedTask(progress, batch_task=7, name="x.pdf", total=3)
-        st.__exit__(None, None, None)
-        # exit should NOT remove any task — batch loop handles description after
-        progress.remove_task.assert_not_called()
-
-    def test_advance_updates_description(self) -> None:
-        from lilbee.vision import _SharedTask
-
-        progress = mock.MagicMock()
-        st = _SharedTask(progress, batch_task=3, name="doc.pdf", total=5)
-        st.advance(3)
-        progress.update.assert_called_with(3, description="Vision OCR doc.pdf (1/5)")
-        st.advance(3)
-        progress.update.assert_called_with(3, description="Vision OCR doc.pdf (2/5)")
-
-    def test_context_manager_full_cycle(self) -> None:
-        from lilbee.vision import _SharedTask
-
-        progress = mock.MagicMock()
-        st = _SharedTask(progress, batch_task=99, name="big.pdf", total=3)
-        with st as ctx:
-            assert ctx is st
-            ctx.advance(99)
-            ctx.advance(99)
-            ctx.advance(99)
-        # 1 from __enter__ + 3 from advance = 4 update calls
-        assert progress.update.call_count == 4
-        assert progress.update.call_args_list[-1] == mock.call(
-            99, description="Vision OCR big.pdf (3/3)"
-        )
-
-
-class TestMakeProgressShared:
-    def test_returns_shared_task_when_contextvar_set(self) -> None:
-        from lilbee.progress import shared_progress
-        from lilbee.vision import _make_progress, _SharedTask
 
         mock_progress = mock.MagicMock()
-        batch_task = 42
-        token = shared_progress.set((mock_progress, batch_task))
+        mock_batch = mock.MagicMock()
+        task = _SharedTask(mock_progress, mock_batch, "doc.pdf", 5)
+        with task:
+            pass
+        mock_progress.update.assert_called()
+        desc = mock_progress.update.call_args_list[0][1]["description"]
+        assert "0/5" in desc
+
+    def test_advance_increments(self) -> None:
+        from lilbee.vision import _SharedTask
+
+        mock_progress = mock.MagicMock()
+        mock_batch = mock.MagicMock()
+        task = _SharedTask(mock_progress, mock_batch, "doc.pdf", 3)
+        task.advance(None)
+        task.advance(None)
+        desc = mock_progress.update.call_args_list[-1][1]["description"]
+        assert "2/3" in desc
+
+
+class TestMakeProgress:
+    def test_quiet_returns_nullcontext(self) -> None:
+        from lilbee.vision import _make_progress
+
+        _ctx, task = _make_progress("test", 5, quiet=True)
+        assert task is None
+
+    def test_shared_progress_returns_shared_task(self) -> None:
+        from lilbee.vision import _make_progress, shared_progress
+
+        mock_progress = mock.MagicMock()
+        mock_task = mock.MagicMock()
+        token = shared_progress.set((mock_progress, mock_task))
         try:
-            ctx, task_id = _make_progress("test.pdf", 5, quiet=False)
-            assert isinstance(ctx, _SharedTask)
-            assert task_id == batch_task
+            ctx, task = _make_progress("test", 5, quiet=False)
+            assert task is mock_task
+            with ctx:
+                ctx.advance(task)  # type: ignore[attr-defined]
         finally:
             shared_progress.reset(token)
 
-    def test_returns_standalone_when_contextvar_unset(self) -> None:
-        from lilbee.progress import shared_progress
-        from lilbee.vision import _make_progress, _SharedTask
+    def test_no_shared_creates_rich_progress(self) -> None:
+        from lilbee.vision import _make_progress
 
-        # Ensure contextvar is unset
-        assert shared_progress.get(None) is None
+        ctx, task = _make_progress("test", 5, quiet=False)
+        assert task is not None
+        with ctx:
+            pass
+
+
+class TestExtractPdfVisionNonQuiet:
+    def test_failed_pages_logs_warning_and_prints(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=2)
+        mock_provider.chat.side_effect = [RuntimeError("fail"), RuntimeError("fail")]
+
+        mock_console_instance = mock.MagicMock()
+        mock_console_cls = mock.MagicMock(return_value=mock_console_instance)
+
+        with (
+            mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter),
+            mock.patch("lilbee.vision._make_progress", return_value=(mock.MagicMock(), None)),
+            mock.patch("rich.console.Console", mock_console_cls),
+        ):
+            from lilbee.vision import extract_pdf_vision
+
+            result = extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
+
+        assert result == []
+        mock_console_instance.print.assert_called_once()
+
+    def test_progress_advance_called(self, mock_provider) -> None:
+        mock_iter = _mock_iterator(num_pages=1)
+        mock_provider.chat.return_value = "text"
 
         mock_progress = mock.MagicMock()
-        mock_progress.add_task.return_value = 0
-        mock_progress.__enter__ = mock.Mock(return_value=mock_progress)
-        mock_progress.__exit__ = mock.Mock(return_value=False)
-        mock_progress_cls = mock.MagicMock(return_value=mock_progress)
+        mock_task = mock.MagicMock()
 
-        with mock.patch.dict(
-            "sys.modules",
-            {
-                "rich.progress": mock.MagicMock(
-                    Progress=mock_progress_cls,
-                    BarColumn=mock.MagicMock(),
-                    MofNCompleteColumn=mock.MagicMock(),
-                    TextColumn=mock.MagicMock(),
-                    TimeElapsedColumn=mock.MagicMock(),
-                ),
-            },
+        with (
+            mock.patch("kreuzberg.PdfPageIterator", return_value=mock_iter),
+            mock.patch("lilbee.vision.shared_progress") as mock_sp,
         ):
-            ctx, task_id = _make_progress("test.pdf", 3, quiet=False)
-            assert not isinstance(ctx, _SharedTask)
-            assert task_id == 0
+            mock_sp.get.return_value = (mock_progress, mock_task)
+            from lilbee.vision import extract_pdf_vision
 
-    def test_quiet_returns_nullcontext(self) -> None:
-        from lilbee.vision import _make_progress, _SharedTask
+            extract_pdf_vision(Path("test.pdf"), "model", quiet=False)
 
-        ctx, task_id = _make_progress("test.pdf", 3, quiet=True)
-        assert task_id is None
-        assert not isinstance(ctx, _SharedTask)
+
+class TestExtractPageTextTimeout:
+    def test_timeout_path_uses_thread_pool(self, mock_provider) -> None:
+        """When timeout > 0, extract_page_text uses ThreadPoolExecutor."""
+        mock_provider.chat.return_value = "ocr result"
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"fake-png", "model", timeout=30)
+        assert result == "ocr result"
+        mock_provider.chat.assert_called_once()
+
+    def test_timeout_expiry_returns_none(self, mock_provider) -> None:
+        """When the provider exceeds timeout, returns None (logs warning)."""
+        import time
+
+        def slow_chat(*args, **kwargs):
+            time.sleep(5)
+            return "too late"
+
+        mock_provider.chat.side_effect = slow_chat
+        from lilbee.vision import extract_page_text
+
+        result = extract_page_text(b"fake-png", "model", timeout=0.01)
+        assert result is None
+
+
+class TestPngToDataUrl:
+    def test_encodes_png_bytes(self) -> None:
+        import base64
+
+        from lilbee.vision import _png_to_data_url
+
+        png_bytes = b"\x89PNG\r\n\x1a\n"
+        result = _png_to_data_url(png_bytes)
+        assert result.startswith("data:image/png;base64,")
+        # Verify round-trip
+        encoded = result.split(",", 1)[1]
+        assert base64.b64decode(encoded) == png_bytes
+
+
+class TestBuildVisionMessages:
+    def test_builds_openai_format(self) -> None:
+        from lilbee.vision import build_vision_messages
+
+        messages = build_vision_messages("describe this", b"fake-png")
+        assert len(messages) == 1
+        msg = messages[0]
+        assert msg["role"] == "user"
+        content = msg["content"]
+        assert isinstance(content, list)
+        assert len(content) == 2
+        assert content[0]["type"] == "image_url"
+        assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[1]["type"] == "text"
+        assert content[1]["text"] == "describe this"

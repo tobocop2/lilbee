@@ -1,0 +1,63 @@
+/* lilbee TUI layout — colors come from Textual's built-in theme system */
+
+ListView {
+    height: 1fr;
+}
+
+TabbedContent > ContentSwitcher {
+    height: 1fr;
+}
+
+Footer {
+    background: transparent;
+}
+
+Footer > .footer-key--key {
+    color: $text;
+    background: transparent;
+    padding: 0 1;
+}
+
+Footer > .footer-key--description {
+    color: $text-muted;
+    padding: 0 1 0 0;
+}
+
+HelpPanel {
+    border-left: solid $surface-lighten-2;
+    padding-right: 0;
+}
+
+HelpPanel #widget-help {
+    border: round $secondary;
+    background: transparent;
+    margin-top: 0;
+    padding: 0 0;
+}
+
+HelpPanel #widget-help MarkdownBlock {
+    padding: 0 1;
+}
+
+HelpPanel #widget-help MarkdownH2 {
+    margin: 0 0 1 0;
+}
+
+HelpPanel #widget-help MarkdownBlock:last-child {
+    margin: 0 0 0 0;
+}
+
+#edit-bar {
+    height: auto;
+    max-height: 3;
+    padding: 0 1;
+}
+
+#setup-title {
+    text-style: bold;
+    padding: 1 0;
+    text-align: center;
+}
+#setup-skip {
+    margin: 1 0 0 0;
+}

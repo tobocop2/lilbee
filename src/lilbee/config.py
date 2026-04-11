@@ -1,17 +1,48 @@
 """Application configuration for lilbee.
 
 All settings can be overridden via environment variables prefixed with LILBEE_.
+Uses pydantic-settings for automatic env var loading with TOML config file support.
 """
 
 import logging
 import os
+from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from lilbee import settings
-from lilbee.platform import default_data_dir, env, env_int
+
+class ClustererBackend(StrEnum):
+    """Known wiki clusterer backends."""
+
+    EMBEDDING = "embedding"
+    CONCEPTS = "concepts"
+
+
+def ConfigField(
+    *args: Any,
+    writable: bool = False,
+    reindex: bool = False,
+    write_only: bool = False,
+    public: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``."""
+    extra: dict[str, bool] = {}
+    if writable:
+        extra["writable"] = True
+    if reindex:
+        extra["reindex"] = True
+    if write_only:
+        extra["write_only"] = True
+    if not public:
+        extra["public"] = False
+    if extra:
+        kwargs["json_schema_extra"] = extra
+    return Field(*args, **kwargs)
+
 
 log = logging.getLogger(__name__)
 
@@ -32,191 +63,472 @@ DEFAULT_IGNORE_DIRS = frozenset(
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"
+CITATIONS_TABLE = "_citations"
+CONCEPT_NODES_TABLE = "concept_nodes"
+CONCEPT_EDGES_TABLE = "concept_edges"
+CHUNK_CONCEPTS_TABLE = "chunk_concepts"
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a precise, direct assistant grounded in the provided context. "
+    "Answer using only the context — if it doesn't contain enough information, "
+    "say so rather than guessing. Be specific: quote relevant passages, cite file "
+    "paths, and prefer exact values over approximations. For code, prefer working "
+    "examples over abstract explanations. Keep responses concise unless asked to "
+    "elaborate."
+)
 
 
-class Config(BaseModel):
+class Config(BaseSettings):
     """Runtime configuration — one singleton instance, mutated by CLI overrides."""
 
-    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
+    model_config = SettingsConfigDict(
+        env_prefix="LILBEE_",
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+        extra="ignore",
+    )
 
-    data_root: Path
-    documents_dir: Path
-    data_dir: Path
-    lancedb_dir: Path
-    chat_model: str = Field(min_length=1)
-    embedding_model: str = Field(min_length=1)
-    embedding_dim: int = Field(ge=1)
-    chunk_size: int = Field(ge=1)
-    chunk_overlap: int = Field(ge=0)
-    max_embed_chars: int = Field(ge=1)
-    top_k: int = Field(ge=1)
-    max_distance: float = Field(ge=0.0)
-    system_prompt: str = Field(min_length=1)
-    ignore_dirs: frozenset[str]
+    # Paths — resolved from env/defaults in model_validator(mode='before')
+    data_root: Path = Field(default=Path())
+    documents_dir: Path = Field(default=Path())
+    data_dir: Path = Field(default=Path())
+    lancedb_dir: Path = Field(default=Path())
+    models_dir: Path = Field(default=Path())
+
+    chat_model: str = Field(default="qwen3", min_length=1)
+    embedding_model: str = Field(default="nomic-embed-text", min_length=1)
+    embedding_dim: int = Field(default=768, ge=1)
+    chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
+    chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    max_embed_chars: int = Field(default=2000, ge=1)
+    top_k: int = ConfigField(default=10, ge=1, writable=True)
+    max_distance: float = ConfigField(default=0.9, ge=0.0, writable=True)
+    adaptive_threshold: bool = Field(default=False)
+    system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
+    ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
     vision_model: str = ""
     vision_timeout: float = Field(default=120.0, ge=0.0)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
     json_mode: bool = False
-    temperature: float | None = Field(default=None, ge=0.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    top_k_sampling: int | None = Field(default=None, ge=1)
-    repeat_penalty: float | None = Field(default=None, ge=0.0)
-    num_ctx: int | None = Field(default=None, ge=1)
-    seed: int | None = None
+    temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
+    top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
+    repeat_penalty: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
+    max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
+    seed: int | None = ConfigField(default=None, writable=True)
+    llm_provider: str = ConfigField(default="auto", writable=True)
+    litellm_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
+    llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
+
+    # Retrieval quality knobs — defaults chosen from academic research and grantflow
+    # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
+
+    # Max chunks per source document in results. Prevents one large file from
+    # dominating all top-k slots. 3 balances coverage vs diversity.
+    diversity_max_per_source: int = ConfigField(default=3, ge=1, writable=True)
+
+    # MMR relevance/diversity tradeoff. 0.0 = max diversity, 1.0 = pure relevance.
+    # 0.5 is the standard default from Carbonell & Goldstein 1998.
+    mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # How many extra candidates to retrieve for MMR reranking.
+    # 3x gives enough candidates to find diverse results without excessive latency.
+    candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
+
+    # Number of LLM-generated alternative queries for expansion.
+    # 3 variants covers lexical + semantic angles. Set to 0 to disable expansion.
+    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
+
+    # Cosine distance threshold step for adaptive widening.
+    # When too few results are found, threshold widens by this amount per retry.
+    # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
+    adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
+
+    # Reject expansion variants below expansion_similarity_threshold.
+    expansion_guardrails: bool = ConfigField(default=True, writable=True)
+
+    # Minimum cosine similarity (question vs variant embedding).
+    # Calibrate per embedding model.
+    expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # BM25 confidence score above which query expansion is skipped entirely.
+    # Based on 90th percentile of sigmoid-normalized BM25 score distribution.
+    # Higher = expansion runs more often. Calibrate per-corpus.
+    expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    # Minimum gap between top-1 and top-2 BM25 scores to skip expansion.
+    # Approximately 1 standard deviation of typical score spread.
+    expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # Maximum chunks included in LLM context after adaptive selection.
+    # More = more complete answers but higher latency and token cost.
+    max_context_sources: int = ConfigField(default=5, ge=1, writable=True)
+
+    # Enable HyDE (Hypothetical Document Embeddings) for search.
+    # Gao et al. 2022. Adds ~500ms per query. Best for vague queries.
+    hyde: bool = ConfigField(default=False, writable=True)
+
+    # Weight for HyDE results relative to original search (0.0-1.0).
+    # Lower = less trust in hypothetical documents.
+    hyde_weight: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+
+    # HyDE prompt template. Must contain {question} placeholder.
+    hyde_prompt: str = (
+        "Write a 50-100 word passage that directly answers this question as if "
+        "it were an excerpt from a real document. Do not include any preamble, "
+        "just write the passage.\n\nQuestion: {question}"
+    )
+
+    # Cross-encoder model for reranking. Empty = disabled.
+    # Requires sentence-transformers installed.
+    reranker_model: str = ConfigField(default="", writable=True, public=False)
+
+    # Number of candidates to rerank with cross-encoder.
+    rerank_candidates: int = ConfigField(default=20, ge=1, writable=True, public=False)
+
+    # Enable temporal filtering (date-based result filtering).
+    # Only activates when temporal keywords detected in query.
+    temporal_filtering: bool = ConfigField(default=True, writable=True)
+
+    # Show reasoning model thinking process (<think>...</think> tags).
+    # When False, thinking is stripped silently. When True, emitted as
+    # separate SSE events (event: reasoning) for UI rendering.
+    show_reasoning: bool = ConfigField(default=False, writable=True)
+
+    # Web crawling settings
+    # Maximum link-following depth for recursive crawls.
+    crawl_max_depth: int = ConfigField(default=2, ge=0, writable=True)
+
+    # Maximum pages to fetch in a single crawl operation.
+    crawl_max_pages: int = ConfigField(default=50, ge=1, writable=True)
+
+    # Per-page timeout in seconds for fetching a URL.
+    crawl_timeout: int = ConfigField(default=30, ge=1, writable=True)
+
+    # Maximum concurrent crawl operations (0 = unlimited, default = CPU count).
+    crawl_max_concurrent: int = Field(default=0, ge=0)
+
+    # Seconds between periodic syncs during crawl (0 = sync only at end).
+    crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
+
+    # Fraction of GPU/unified memory available for loaded models.
+    # 0.75 leaves headroom for the OS and other processes.
+    gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
+
+    # Seconds a model stays loaded after last use. 0 = unload immediately.
+    model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
+
+    # Run embedding and vision inference in a subprocess to avoid GIL blocking.
+    # Applies only to the llama-cpp provider.
+    subprocess_embed: bool = ConfigField(default=False, writable=True)
+
+    # Use Markdown widget for chat responses in the TUI. When False, uses
+    # plain Static text (faster rendering, no formatting).
+    markdown_rendering: bool = True
+
+    # Per-model generation defaults (not serialized, not a config field).
+    # Set via apply_model_defaults() when switching models.
+    _model_defaults: Any = None
+
+    # Wiki layer — LLM-maintained synthesis pages with citation provenance.
+    # On by default; no extras required. Set to False to hide the Wiki view
+    # and disable wiki generation/sync.
+    wiki: bool = True
+    wiki_dir: str = "wiki"
+    wiki_prune_raw: bool = False
+    wiki_faithfulness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+    # Fraction of citations that must be stale before a wiki page is flagged
+    # for regeneration during pruning. 0.5 = flag when >50% are stale.
+    wiki_stale_citation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # Maximum fraction of content that may change before a regeneration is
+    # flagged for human review instead of overwriting the existing page.
+    # 0.3 = 30% of lines changed triggers the drift guard.
+    wiki_drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # LLM prompt templates for wiki page generation. Override via env vars
+    # LILBEE_WIKI_SUMMARY_PROMPT, LILBEE_WIKI_FAITHFULNESS_PROMPT,
+    # LILBEE_WIKI_SYNTHESIS_PROMPT. Must contain the expected {placeholders}.
+    wiki_summary_prompt: str = (
+        "You are a knowledge compiler. Given the source chunks below from a single "
+        "document, write a concise wiki summary page in markdown.\n\n"
+        "Rules:\n"
+        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+        "3. For interpretations or connections not directly stated in the source, "
+        "mark with [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {source_name}, excerpt: "exact quoted text"\n'
+        '[^src2]: {source_name}, excerpt: "exact quoted text"\n\n'
+        "Source document: {source_name}\n\n"
+        "Chunks:\n{chunks_text}\n\n"
+        "Write the wiki summary page now. Start with a heading."
+    )
+    wiki_faithfulness_prompt: str = (
+        "You are a fact-checker. Given source chunks and a wiki summary page generated "
+        "from them, score the summary's faithfulness to the sources on a scale of 0.0 "
+        "to 1.0.\n\n"
+        "Criteria:\n"
+        "- 1.0 = every claim is directly supported by the source chunks\n"
+        "- 0.5 = some claims are supported, some are unsupported extrapolations\n"
+        "- 0.0 = the summary contains fabricated information\n\n"
+        "Source chunks:\n{chunks_text}\n\n"
+        "Wiki summary:\n{wiki_text}\n\n"
+        "Respond with ONLY a number between 0.0 and 1.0. Nothing else."
+    )
+    wiki_synthesis_prompt: str = (
+        "You are a knowledge compiler. Given source chunks from MULTIPLE documents "
+        "about related concepts, write a synthesis wiki page in markdown that connects "
+        "ideas across sources.\n\n"
+        "Rules:\n"
+        "1. Every factual claim MUST have an inline citation [^src1], [^src2], etc.\n"
+        "2. Cite the EXACT text from the source that supports each claim by quoting it.\n"
+        "3. For connections, interpretations, or patterns you identify across sources, "
+        "mark with [*inference*].\n"
+        "4. Use blockquotes (>) for directly cited facts.\n"
+        "5. Reference each source by its filename when drawing connections.\n"
+        "6. End with a citation block in this format:\n\n"
+        "---\n"
+        "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+        '[^src1]: {{source_name}}, excerpt: "exact quoted text"\n'
+        '[^src2]: {{source_name}}, excerpt: "exact quoted text"\n\n'
+        "Topic: {topic}\n\n"
+        "Sources:\n{source_list}\n\n"
+        "Chunks:\n{chunks_text}\n\n"
+        "Write the synthesis page now. Start with a heading."
+    )
+
+    # Wiki synthesis clusterer backend. EMBEDDING (default, no extra deps)
+    # runs chunk-level mutual kNN + label propagation over chunk embeddings.
+    # CONCEPTS uses the concept graph adapter and requires the [graph] extra;
+    # when [graph] is missing the services factory logs a warning and falls
+    # back to EMBEDDING.
+    wiki_clusterer: ClustererBackend = ConfigField(
+        default=ClustererBackend.EMBEDDING, writable=True
+    )
+
+    # Neighborhood size for the embedding clusterer's mutual-kNN graph.
+    # 0 means "auto-scale from corpus size" via clamp(log2(N)+2, 5, 20).
+    # Raise to get larger, looser clusters; lower for tighter, smaller ones.
+    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
+
+    # Enable concept graph (LazyGraphRAG-style index). Extracts noun phrases
+    # from chunks, builds a co-occurrence graph, and uses it to boost search
+    # results and expand queries. Requires spacy + networkx + graspologic-native.
+    concept_graph: bool = ConfigField(default=True, writable=True)
+
+    # Weight for concept overlap boosting in search results (0.0-1.0).
+    # Higher = concept overlap matters more relative to vector similarity.
+    concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
+
+    # Maximum noun-phrase concepts extracted per chunk.
+    # Caps extraction to avoid noise from very long chunks.
+    concept_max_per_chunk: int = ConfigField(default=10, ge=1, writable=True)
+
+    # Class variable — not a settings field
+    _toml_cache: ClassVar[dict[str, Any]] = {}
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "repeat_penalty",
+        "top_k_sampling",
+        "num_ctx",
+        "seed",
+        mode="before",
+    )
+    @classmethod
+    def _empty_string_to_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("ignore_dirs", mode="before")
+    @classmethod
+    def _merge_ignore_dirs(cls, v: Any) -> frozenset[str]:
+        if isinstance(v, str):
+            extra = frozenset(name.strip() for name in v.split(",") if name.strip())
+            return DEFAULT_IGNORE_DIRS | extra
+        if isinstance(v, (set, frozenset, list)):
+            return DEFAULT_IGNORE_DIRS | frozenset(v)
+        return DEFAULT_IGNORE_DIRS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_defaults(cls, data: Any) -> Any:
+        from lilbee.platform import canonical_models_dir, default_data_dir, find_local_root
+
+        if not isinstance(data, dict):  # pragma: no cover
+            return data
+
+        _UNSET = Path()
+
+        if data.get("data_root") in (None, _UNSET):
+            data_env = os.environ.get("LILBEE_DATA", "").strip()
+            if data_env:
+                data["data_root"] = Path(data_env)
+            else:
+                local = find_local_root()
+                data["data_root"] = local if local is not None else default_data_dir()
+        root = data["data_root"]
+        if data.get("documents_dir") in (None, _UNSET):
+            data["documents_dir"] = root / "documents"
+        if data.get("data_dir") in (None, _UNSET):
+            data["data_dir"] = root / "data"
+        if data.get("lancedb_dir") in (None, _UNSET):
+            data["lancedb_dir"] = root / "data" / "lancedb"
+        if data.get("models_dir") in (None, _UNSET):
+            data["models_dir"] = canonical_models_dir()
+
+        if "LILBEE_LITELLM_BASE_URL" not in os.environ:
+            ollama_host = os.environ.get("OLLAMA_HOST")
+            if ollama_host:
+                data["litellm_base_url"] = ollama_host
+
+        return data
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        from lilbee.platform import default_data_dir, find_local_root
+
+        data_env = os.environ.get("LILBEE_DATA", "")
+        if data_env:
+            toml_dir = Path(data_env)
+        else:
+            local = find_local_root()
+            toml_dir = local if local else default_data_dir()
+        toml_path = toml_dir / "config.toml"
+
+        plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
+        sources: list[Any] = [init_settings, plain_env]
+        if toml_path.exists():
+            sources.append(_TomlSource(settings_cls, toml_path))
+        return tuple(sources)
+
+    @property
+    def model_defaults(self) -> Any:
+        """Per-model generation defaults (read-only). Set via apply_model_defaults()."""
+        return self._model_defaults
+
+    def apply_model_defaults(self, defaults: Any) -> None:
+        """Store per-model generation defaults for 3-layer merge."""
+        object.__setattr__(self, "_model_defaults", defaults)
+
+    def clear_model_defaults(self) -> None:
+        """Reset per-model defaults to None."""
+        object.__setattr__(self, "_model_defaults", None)
 
     def generation_options(self, **overrides: Any) -> dict[str, Any]:
-        """Build Ollama generation options from config fields and overrides.
+        """Build LLM generation options with 3-layer merge.
+        Layer 1 (base): model defaults from ``_model_defaults``
+        Layer 2 (override): user config fields — only if explicitly set (not None)
+        Layer 3 (override): per-call ``overrides`` parameter
 
-        Remaps ``top_k_sampling`` to Ollama's ``top_k`` key.
-        Filters out ``None`` values so Ollama uses its model defaults.
+        Remaps ``top_k_sampling`` to the provider's ``top_k`` key.
+        Filters out ``None`` values so the provider uses its model defaults.
         """
-        mapping: dict[str, Any] = {
+        result = _model_defaults_dict(self._model_defaults)
+        user_fields: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k_sampling,
             "repeat_penalty": self.repeat_penalty,
             "num_ctx": self.num_ctx,
             "seed": self.seed,
+            "max_tokens": self.max_tokens,
         }
-        mapping.update(overrides)
-        return {k: v for k, v in mapping.items() if v is not None}
-
-    @classmethod
-    def from_env(cls) -> "Config":
-        """Build config from environment variables and settings file."""
-        data_root = _resolve_data_root()
-        chat_model = _load_chat_model(data_root)
-        vision_model = _load_vision_model(data_root)
-        vision_timeout = _parse_vision_timeout()
-
-        extra = env("IGNORE", "")
-        ignore_dirs = DEFAULT_IGNORE_DIRS | frozenset(
-            name.strip() for name in extra.split(",") if name.strip()
-        )
-
-        _DEFAULT_SYSTEM_PROMPT = (
-            "You are a precise, direct assistant grounded in the provided context. "
-            "Answer using only the context — if it doesn't contain enough information, "
-            "say so rather than guessing. Be specific: quote relevant passages, cite file "
-            "paths, and prefer exact values over approximations. For code, prefer working "
-            "examples over abstract explanations. Keep responses concise unless asked to "
-            "elaborate."
-        )
-
-        return cls(
-            data_root=data_root,
-            documents_dir=data_root / "documents",
-            data_dir=data_root / "data",
-            lancedb_dir=data_root / "data" / "lancedb",
-            chat_model=chat_model,
-            embedding_model=_load_setting(
-                data_root, "embedding_model", "EMBEDDING_MODEL", "nomic-embed-text", str
-            ),
-            embedding_dim=_load_setting(data_root, "embedding_dim", "EMBEDDING_DIM", 768, int),
-            chunk_size=_load_setting(data_root, "chunk_size", "CHUNK_SIZE", 512, int),
-            chunk_overlap=_load_setting(data_root, "chunk_overlap", "CHUNK_OVERLAP", 100, int),
-            max_embed_chars=_load_setting(
-                data_root, "max_embed_chars", "MAX_EMBED_CHARS", 2000, int
-            ),
-            top_k=_load_setting(data_root, "top_k", "TOP_K", 10, int),
-            max_distance=_load_setting(data_root, "max_distance", "MAX_DISTANCE", 0.7, float),
-            system_prompt=_load_setting(
-                data_root,
-                "system_prompt",
-                "SYSTEM_PROMPT",
-                _DEFAULT_SYSTEM_PROMPT,
-                str,
-            ),
-            ignore_dirs=ignore_dirs,
-            vision_model=vision_model,
-            vision_timeout=vision_timeout,
-            server_host=env("SERVER_HOST", "127.0.0.1"),
-            server_port=env_int("SERVER_PORT", 0),
-            cors_origins=_parse_cors_origins(),
-            temperature=_load_setting(data_root, "temperature", "TEMPERATURE", None, float),
-            top_p=_load_setting(data_root, "top_p", "TOP_P", None, float),
-            top_k_sampling=_load_setting(data_root, "top_k_sampling", "TOP_K_SAMPLING", None, int),
-            repeat_penalty=_load_setting(
-                data_root, "repeat_penalty", "REPEAT_PENALTY", None, float
-            ),
-            num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
-            seed=_load_setting(data_root, "seed", "SEED", None, int),
-        )
+        for k, v in user_fields.items():
+            if v is not None:
+                result[k] = v
+        for k, v in overrides.items():
+            if v is not None:
+                result[k] = v
+        return result
 
 
-def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:
-    """Load setting with precedence: LILBEE_<ENV> env > config.toml > default."""
-    raw = os.environ.get(f"LILBEE_{env_var}")
-    if raw is not None:
-        return typ(raw)
-    try:
-        saved = settings.get(data_root, key)
-    except (ValueError, OSError):
-        saved = None
-    if saved:
-        return typ(saved)
-    return default
+def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
+    """Convert a ModelDefaults instance to a dict with provider key names.
+    Remaps ``top_k`` to the provider's ``top_k`` key (same name for model defaults).
+    Filters out None values.
+    """
+    if defaults is None:
+        return {}
+    from dataclasses import fields as dc_fields
+
+    return {
+        f.name: getattr(defaults, f.name)
+        for f in dc_fields(defaults)
+        if getattr(defaults, f.name) is not None
+    }
 
 
-def _resolve_data_root() -> Path:
-    """Determine the data root: LILBEE_DATA env > local .lilbee/ > platform default."""
-    data_env = env("DATA", "")
-    if data_env:
-        return Path(data_env)
+class _PlainEnvSource:
+    """Env source that reads LILBEE_* env vars as plain strings.
+    Avoids pydantic-settings' default JSON parsing of complex types (list, frozenset)
+    so that comma-separated values like ``LILBEE_CORS_ORIGINS=a,b`` pass through to
+    field validators instead of failing JSON decode.
+    """
 
-    from lilbee.platform import find_local_root
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        env_prefix: str,
+        env_ignore_empty: bool = True,
+    ) -> None:
+        self._prefix = env_prefix
+        self._ignore_empty = env_ignore_empty
+        self._fields = set(settings_cls.model_fields)
 
-    local = find_local_root()
-    if local is not None:
-        return local
+    def __call__(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for field_name in self._fields:
+            env_key = f"{self._prefix}{field_name.upper()}"
+            raw = os.environ.get(env_key)
+            if raw is None:
+                continue
+            if self._ignore_empty and raw == "":
+                continue
+            result[field_name] = raw
+        return result
 
-    return default_data_dir()
 
+class _TomlSource:
+    """Custom pydantic-settings source that reads config.toml."""
 
-def _load_chat_model(data_root: Path) -> str:
-    """Resolve chat model: LILBEE_CHAT_MODEL env > persisted setting > default."""
-    chat_model = env("CHAT_MODEL", "qwen3:8b")
-    if "LILBEE_CHAT_MODEL" not in os.environ:
+    def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
+        self._path = path
+
+    def __call__(self) -> dict[str, Any]:
+        import tomllib
+
         try:
-            saved = settings.get(data_root, "chat_model")
+            with self._path.open("rb") as f:
+                data = tomllib.load(f)
+            return {k: str(v) for k, v in data.items()}
         except (ValueError, OSError):
-            saved = None
-        if saved:
-            chat_model = saved
-    return chat_model
+            log.warning("Failed to read %s, ignoring", self._path)
+            return {}
 
 
-def _load_vision_model(data_root: Path) -> str:
-    """Resolve vision model: LILBEE_VISION_MODEL env > persisted setting > empty."""
-    vision_model_env = os.environ.get("LILBEE_VISION_MODEL", "").strip()
-    if vision_model_env:
-        return vision_model_env
-    try:
-        return settings.get(data_root, "vision_model") or ""
-    except (ValueError, OSError):
-        return ""
-
-
-def _parse_vision_timeout() -> float:
-    """Parse LILBEE_VISION_TIMEOUT env var, returning default on invalid input."""
-    raw = os.environ.get("LILBEE_VISION_TIMEOUT", "").strip()
-    if not raw:
-        return 120.0
-    try:
-        return float(raw)
-    except ValueError:
-        log.warning("Invalid LILBEE_VISION_TIMEOUT=%r, ignoring", raw)
-        return 120.0
-
-
-def _parse_cors_origins() -> list[str]:
-    """Parse LILBEE_CORS_ORIGINS env var (comma-separated list of origins)."""
-    raw = os.environ.get("LILBEE_CORS_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [o.strip() for o in raw.split(",") if o.strip()]
-
-
-cfg = Config.from_env()
+cfg = Config()

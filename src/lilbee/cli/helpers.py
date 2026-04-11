@@ -6,6 +6,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -18,9 +19,11 @@ from rich.table import Table
 from lilbee.cli import theme
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.security import validate_path_within
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
-    from lilbee.cli.chat.sync import SyncStatus
+    from lilbee.cli.sync import SyncStatus
     from lilbee.store import SearchChunk
 
 
@@ -117,9 +120,7 @@ def clean_result(result: SearchChunk) -> dict:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    from lilbee.store import get_sources
-
-    sources = get_sources()
+    sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
     return StatusResult(
@@ -162,11 +163,12 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
     result = CopyResult()
     for p in paths:
         dest = cfg.documents_dir / p.name
+        validate_path_within(dest, cfg.documents_dir)
         if dest.exists() and not force:
             result.skipped.append(p.name)
             continue
         if p.is_dir():
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore)
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore, symlinks=False)
         else:
             shutil.copy2(p, dest)
         result.copied.append(p.name)
@@ -195,7 +197,6 @@ def add_paths(
     sync_status: SyncStatus | None = None,
 ) -> None:
     """Copy *paths* into the knowledge base and sync (human output).
-
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after copying files.
     """
@@ -210,7 +211,7 @@ def add_paths(
         )
 
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
         run_sync_background(
             con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
@@ -228,6 +229,7 @@ def perform_reset() -> ResetResult:
 
     if cfg.documents_dir.exists():
         for item in list(cfg.documents_dir.iterdir()):
+            validate_path_within(item, cfg.documents_dir)
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -236,6 +238,7 @@ def perform_reset() -> ResetResult:
 
     if cfg.data_dir.exists():
         for item in list(cfg.data_dir.iterdir()):
+            validate_path_within(item, cfg.data_dir)
             if item.is_dir():
                 shutil.rmtree(item)
             else:
@@ -254,19 +257,19 @@ def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
     from lilbee.ingest import SyncResult
 
-    assert isinstance(result, SyncResult)
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     return {"command": "sync", **result.model_dump()}
 
 
 def auto_sync(con: Console, *, background: bool = False) -> None:
     """Run document sync before queries.
-
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
     sync blocks until complete (for ``lilbee ask``).
     """
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
         run_sync_background(con)
         return
@@ -286,3 +289,16 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
+
+
+@contextmanager
+def temporary_vision_model(model: str) -> Generator[None, None, None]:
+    """Temporarily override ``cfg.vision_model`` for the duration of the block."""
+    old = cfg.vision_model
+    if model:
+        cfg.vision_model = model
+    try:
+        yield
+    finally:
+        if model:
+            cfg.vision_model = old
