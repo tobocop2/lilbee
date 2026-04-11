@@ -165,8 +165,6 @@ class TaskQueue:
             if task:
                 task.progress = progress
                 task.detail = detail
-        # Notify outside the lock so synchronous subscribers (e.g. TaskBar's
-        # same-thread refresh) can acquire the lock again without deadlocking.
         self._notify()
 
     def complete_task(self, task_id: str) -> None:
@@ -252,5 +250,12 @@ class TaskQueue:
             self._queues[task_type] = [tid for tid in queue if tid != task_id]
 
     def _notify(self) -> None:
-        for callback in self._on_change:
+        # Snapshot under the lock so subscribe/unsubscribe from another thread
+        # (or from inside a callback) cannot mutate the list mid-iteration.
+        # Callbacks run outside the lock so synchronous subscribers that
+        # re-enter the queue (e.g. TaskBar refreshing from displayable_tasks)
+        # do not deadlock on the non-reentrant lock.
+        with self._lock:
+            callbacks = list(self._on_change)
+        for callback in callbacks:
             callback()

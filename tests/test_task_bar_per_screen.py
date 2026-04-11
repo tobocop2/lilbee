@@ -15,6 +15,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogResult
+from lilbee.cli.tui.widgets import task_bar as task_bar_module
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 from lilbee.config import cfg
 from lilbee.services import set_services
@@ -220,7 +221,8 @@ async def test_task_bar_auto_hides_when_queue_drains() -> None:
         assert bar.display is True
 
         app.task_bar.complete_task(task_id)
-        await pilot.pause(delay=1.2)  # wait out the flash
+        # Wait out the post-completion flash window before the panel is dropped.
+        await pilot.pause(delay=task_bar_module._DONE_FLASH_SECONDS + 0.2)
         await pilot.pause()
         assert app.task_bar.queue.is_empty
         assert bar.display is False

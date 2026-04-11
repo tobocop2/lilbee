@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from conftest import make_test_catalog_model as _make_model
@@ -2382,8 +2383,8 @@ class TestTaskBarAdditional:
             assert t1 in bar._panels
             assert t2 in bar._panels
 
-    async def test_panel_removed_on_dismiss(self) -> None:
-        """Panel is removed from DOM after dismiss."""
+    async def test_panel_removed_when_task_removed_from_queue(self) -> None:
+        """Removing a task from the shared queue drops its panel on next refresh."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         app = _TaskBarApp()
@@ -2392,12 +2393,12 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
-            bar._refresh_display()
             await pilot.pause()
-            assert task_id in bar._panels
-            bar._dismiss_panel(task_id, "download")
+            bar.query_one(f"#task-panel-{task_id}")  # raises NoMatches if absent
+            bar.queue.remove_task(task_id)
             await pilot.pause()
-            assert task_id not in bar._panels
+            with pytest.raises(NoMatches):
+                bar.query_one(f"#task-panel-{task_id}")
 
     async def test_fail_task_adds_failed_class_to_panel(self) -> None:
         """fail_task marks the panel with task-failed CSS class."""

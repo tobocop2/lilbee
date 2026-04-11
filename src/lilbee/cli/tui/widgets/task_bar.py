@@ -165,12 +165,18 @@ class TaskBar(Static):
     @property
     def _controller(self) -> TaskBarController:
         """Return the app's TaskBarController, creating one if missing.
-        LilbeeApp wires up a controller in its `__init__`, but minimal test
-        harnesses may instantiate a TaskBar on a plain `App`. In that case we
-        lazily attach a controller so the widget stays self-sufficient.
+        LilbeeApp wires up a controller in its `__init__`. Bare test harnesses
+        that instantiate a TaskBar on a plain `App` (without a controller) get
+        one lazily attached so every screen in the app still shares state. In
+        production this branch is a bug indicator: log a warning so accidental
+        misuse surfaces instead of silently regressing the per-screen fix.
         """
         controller = getattr(self.app, "task_bar", None)
         if not isinstance(controller, TaskBarController):
+            log.warning(
+                "TaskBar mounted on %s without a TaskBarController; creating one lazily",
+                type(self.app).__name__,
+            )
             controller = TaskBarController(self.app)
             self.app.task_bar = controller  # type: ignore[attr-defined]
         return controller
@@ -195,11 +201,6 @@ class TaskBar(Static):
 
     def cancel_task(self, task_id: str) -> None:
         self._controller.cancel_task(task_id)
-
-    def _dismiss_panel(self, task_id: str, task_type: str | None) -> None:
-        """Remove a task from the shared queue; panels rebuild on next refresh."""
-        del task_type
-        self.queue.remove_task(task_id)
 
     @staticmethod
     def _status_icon(status: TaskStatus) -> str:
