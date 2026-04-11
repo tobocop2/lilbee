@@ -28,6 +28,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
@@ -137,7 +138,7 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         with PromptArea(id="chat-prompt-area"):
-            yield Input(
+            yield NavAwareInput(
                 placeholder=msg.CHAT_INPUT_PLACEHOLDER,
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),

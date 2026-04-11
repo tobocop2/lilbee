@@ -1526,21 +1526,34 @@ class TestSettingsInteractions:
             assert cfg.system_prompt == "test system prompt"
 
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
-        """Toggling a boolean checkbox updates cfg."""
+        """Toggling a boolean checkbox updates cfg.
+
+        Drives the real user gesture: focus the Checkbox and press space.
+        This covers the full binding path (keyboard dispatch -> Checkbox
+        toggle -> reactive watcher -> Checkbox.Changed bubbles to
+        SettingsScreen -> ``_on_checkbox_save`` writes cfg). Uses a tall
+        enough test size so the widget is in the visible scroll region.
+        """
         from textual.widgets import Checkbox
 
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 120)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
 
             checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
             initial = checkbox.value
-            checkbox.toggle()
+            checkbox.focus()
             await pilot.pause()
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert checkbox.value != initial
+            assert cfg.show_reasoning == checkbox.value
             assert cfg.show_reasoning != initial
 
     async def test_read_only_fields_have_no_editor(self, _mock_resolve):
