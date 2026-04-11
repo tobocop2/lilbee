@@ -1007,12 +1007,7 @@ class TestCatalogInteractions:
                 assert app.screen.has_class("-grid-view")
 
     async def test_v_toggles_to_list_and_back(self, _mock_resolve):
-        """Press v: grid->list, v again: list->grid.
-
-        Exercises the actual key binding end-to-end via `pilot.press("v")`
-        so the footer-advertised shortcut is verified, not just the
-        `action_toggle_view` method.
-        """
+        """Pressing v flips the catalog between grid and list views."""
         from textual.widgets import DataTable
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1045,10 +1040,7 @@ class TestCatalogInteractions:
                 assert table.display is False
 
     async def test_v_toggle_after_bracket_nav_from_chat(self, _mock_resolve):
-        """Regression: the footer advertises `v` as the view toggle, and the
-        bead repro walks in via `]` from ChatScreen. Make sure the keystroke
-        dispatched through the real binding path actually flips the view.
-        """
+        """Pressing v still toggles the view after navigating in from chat via ]."""
         from textual.widgets import DataTable
 
         from lilbee.cli.tui.app import LilbeeApp
