@@ -4732,6 +4732,32 @@ async def test_setup_wizard_mounts_with_recommendations():
             assert screen._selected_embed is not None
 
 
+async def test_setup_wizard_model_cards_render_compact():
+    """Wizard ModelCards render compact instead of stretching to fill the grid row.
+
+    Regression: setup.tcss had no ModelCard rules, so cards fell back to grid
+    defaults and rendered ~22 rows tall each, eating almost the whole viewport.
+    The base layout now lives in ModelCard.DEFAULT_CSS so both the setup wizard
+    and the catalog share it.
+    """
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cards = list(screen.query(ModelCard))
+            assert cards, "expected model cards in the wizard"
+            for card in cards:
+                assert card.size.height <= 6, (
+                    f"wizard ModelCard is {card.size.height} rows tall, "
+                    "expected compact layout (<=6 rows)"
+                )
+
+
 async def test_setup_wizard_select_chat_updates_slot():
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.grid_select import GridSelect
