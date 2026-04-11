@@ -2341,6 +2341,67 @@ class TestSetupWizardGrid:
                 await pilot.pause()
                 assert isinstance(app.screen, SetupWizard)
 
+    async def test_setup_grid_highlights_focused_card(self, _mock_resolve):
+        """The focused card in the SetupWizard grid shows a visible focus
+        indicator so keyboard users can see which card is under the cursor."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                grid = app.screen.query(GridSelect).first()
+                grid.focus()
+                await pilot.pause()
+                await pilot.press("right")
+                await pilot.pause()
+                cards = [c for c in grid.children if isinstance(c, ModelCard)]
+                highlighted = [c for c in cards if c.has_class("-highlight")]
+                others = [c for c in cards if not c.has_class("-highlight")]
+                assert len(highlighted) == 1
+                assert others, "need a non-focused card to compare against"
+                focused_border = highlighted[0].styles.border_top
+                baseline_border = others[0].styles.border_top
+                assert focused_border is not None
+                assert focused_border[0] == "tall"
+                # The focus rule paints a visible color; baseline is transparent.
+                assert focused_border[1] != baseline_border[1]
+
+    async def test_setup_focused_selected_card_keeps_green_bar(self, _mock_resolve):
+        """A card that is both selected and focused keeps its green left bar.
+        Guards against the focus border shorthand clobbering border-left."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                grid = app.screen.query(GridSelect).first()
+                cards = [c for c in grid.children if isinstance(c, ModelCard)]
+                assert cards
+                cards[0].selected = True
+                grid.focus()
+                await pilot.pause()
+                assert cards[0].has_class("-highlight")
+                assert cards[0].has_class("-selected")
+                border_left = cards[0].styles.border_left
+                assert border_left is not None
+                assert border_left[0] == "thick"
+
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""
         from lilbee.cli.tui.app import LilbeeApp
