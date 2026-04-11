@@ -102,6 +102,25 @@ class TaskQueue:
             return tasks
 
     @property
+    def displayable_tasks(self) -> list[Task]:
+        """Active tasks plus recently-finished (DONE/FAILED) tasks awaiting dismissal.
+        Widgets render this so completed tasks stay visible for their flash period.
+        """
+        with self._lock:
+            result: list[Task] = []
+            active_ids = set(self._active_ids.values())
+            for tid in self._active_ids.values():
+                task = self._tasks.get(tid)
+                if task:
+                    result.append(task)
+            for tid, task in self._tasks.items():
+                if tid in active_ids:
+                    continue
+                if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+                    result.append(task)
+            return result
+
+    @property
     def queued_tasks(self) -> list[Task]:
         with self._lock:
             result: list[Task] = []
@@ -146,8 +165,7 @@ class TaskQueue:
             if task:
                 task.progress = progress
                 task.detail = detail
-            # Notify while still holding lock to ensure consistency
-            self._notify()
+        self._notify()
 
     def complete_task(self, task_id: str) -> None:
         """Mark a task as done and remove it from tracking."""
@@ -191,6 +209,7 @@ class TaskQueue:
         If omitted, advance any type that has no active task.
         Returns None if nothing can advance.
         """
+        advanced: Task | None = None
         with self._lock:
             types = [task_type] if task_type else list(self._queues.keys())
             for tt in types:
@@ -204,8 +223,11 @@ class TaskQueue:
                 if task:
                     task.status = TaskStatus.ACTIVE
                     self._active_ids[tt] = tid
-                    return task
-            return None
+                    advanced = task
+                    break
+        if advanced is not None:
+            self._notify()
+        return advanced
 
     def remove_task(self, task_id: str) -> None:
         """Remove a completed/failed/cancelled task from tracking entirely."""
@@ -228,5 +250,12 @@ class TaskQueue:
             self._queues[task_type] = [tid for tid in queue if tid != task_id]
 
     def _notify(self) -> None:
-        for callback in self._on_change:
+        # Snapshot under the lock so subscribe/unsubscribe from another thread
+        # (or from inside a callback) cannot mutate the list mid-iteration.
+        # Callbacks run outside the lock so synchronous subscribers that
+        # re-enter the queue (e.g. TaskBar refreshing from displayable_tasks)
+        # do not deadlock on the non-reentrant lock.
+        with self._lock:
+            callbacks = list(self._on_change)
+        for callback in callbacks:
             callback()

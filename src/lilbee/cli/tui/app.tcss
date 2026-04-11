@@ -1,12 +1,5 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
-#task-bar {
-    dock: bottom;
-    height: auto;
-    max-height: 5;
-    padding: 0 1;
-}
-
 ListView {
     height: 1fr;
 }

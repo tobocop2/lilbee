@@ -25,17 +25,14 @@ class _IntegrationChatApp(App[None]):
 
     CSS = ""
 
+    def __init__(self) -> None:
+        super().__init__()
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+        self.task_bar = TaskBarController(self)
+
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        yield TaskBar(id="app-task-bar")
         yield Footer()
-
-    @property
-    def task_bar(self):
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        return self.query_one("#app-task-bar", TaskBar)
 
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen

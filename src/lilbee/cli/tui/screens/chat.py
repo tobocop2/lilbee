@@ -29,6 +29,7 @@ from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completio
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -36,7 +37,7 @@ from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
 
 if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
 log = logging.getLogger(__name__)
 
@@ -113,15 +114,9 @@ class ChatScreen(Screen[None]):
         self._history_index: int = -1
 
     @property
-    def _task_bar(self) -> TaskBar:
-        """The app-level TaskBar (created by LilbeeApp)."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
-
-        bar = getattr(self.app, "task_bar", None)  # test apps lack task_bar
-        if isinstance(bar, _TaskBar):
-            return bar
-        msg_text = "App does not have a TaskBar"
-        raise RuntimeError(msg_text)
+    def _task_bar(self) -> TaskBarController:
+        """The app-level TaskBarController (always set by LilbeeApp)."""
+        return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
     def compose(self) -> ComposeResult:
         yield ModelBar(id="model-bar")
@@ -137,6 +132,7 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
+        yield TaskBar()
         yield ViewTabs()
         yield Footer()
 
@@ -160,7 +156,11 @@ class ChatScreen(Screen[None]):
         dismiss()
 
     def _needs_setup(self) -> bool:
-        """Check if both chat and embedding models are resolvable."""
+        """True when the setup wizard should run: fresh data dir or unresolved models."""
+        # Fresh install: an uninitialized data dir still needs the wizard even
+        # if default models are already cached globally (Ollama, HF cache).
+        if not cfg.lancedb_dir.is_dir():
+            return True
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 

@@ -37,6 +37,9 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # doesn't push the SetupWizard during tests that exercise chat.
+    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for field_name in type(snapshot).model_fields:
         setattr(cfg, field_name, getattr(snapshot, field_name))

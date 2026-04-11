@@ -47,6 +47,9 @@ def _isolated_cfg(tmp_path):
     cfg.embedding_model = "test-embed:latest"
     cfg.vision_model = ""
     cfg.chunk_size = 512
+    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # doesn't push the SetupWizard during tests that exercise chat.
+    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -837,9 +840,9 @@ class ChatTestApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-        self.task_bar = TaskBar(id="app-task-bar")
+        self.task_bar = TaskBarController(self)
 
     def compose(self) -> ComposeResult:
         yield from ()
@@ -847,7 +850,6 @@ class ChatTestApp(App[None]):
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.mount(self.task_bar)
         self.push_screen(ChatScreen())
 
 
@@ -1866,7 +1868,6 @@ async def test_catalog_vim_keys_in_input():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_cursor_down()
@@ -1901,7 +1902,6 @@ async def test_catalog_page_down_no_focus():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_page_down()
@@ -3018,7 +3018,6 @@ async def test_catalog_key_g_G_noop_in_input():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_jump_top()
@@ -4732,6 +4731,26 @@ async def test_setup_wizard_mounts_with_recommendations():
             assert screen._selected_embed is not None
 
 
+async def test_setup_wizard_model_cards_render_compact():
+    """Wizard ModelCards render in the compact layout, not stretched to fill the grid."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            cards = list(screen.query(ModelCard))
+            assert cards, "expected model cards in the wizard"
+            for card in cards:
+                assert card.size.height <= 6, (
+                    f"wizard ModelCard is {card.size.height} rows tall, "
+                    "expected compact layout (<=6 rows)"
+                )
+
+
 async def test_setup_wizard_select_chat_updates_slot():
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -5232,6 +5251,54 @@ async def test_setup_wizard_on_partial_success():
             assert screen._selections[ModelTask.EMBEDDING] == (None, None)
 
 
+async def test_setup_wizard_grid_leave_down_walks_focus_forward():
+    """Arrow-down past the last card advances focus out of the grid."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert grids, "expected at least one GridSelect in the wizard"
+            last_grid = grids[-1]
+            last_grid.focus()
+            last_grid.highlight_last()
+            await pilot.pause()
+            assert app.focused is last_grid
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.focused is not last_grid
+            assert app.focused is not None
+
+
+async def test_setup_wizard_grid_leave_up_walks_focus_backward():
+    """Arrow-up past the first card walks focus backward."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert len(grids) >= 2, "expected multiple GridSelects in the wizard"
+            second_grid = grids[1]
+            second_grid.focus()
+            second_grid.highlight_first()
+            await pilot.pause()
+            assert app.focused is second_grid
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.focused is not second_grid
+            assert app.focused is not None
+
+
 async def test_setup_wizard_on_download_progress():
     """_on_download_progress updates progress bar and status."""
     from lilbee.cli.tui.screens.setup import SetupWizard
@@ -5244,10 +5311,19 @@ async def test_setup_wizard_on_download_progress():
             assert isinstance(screen, SetupWizard)
             from lilbee.catalog import DownloadProgress
 
+            cm = _make_catalog_model(name="prog-m")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
+            await pilot.pause()
             screen._on_download_progress(
                 lambda fn, *a: fn(*a),
+                cm.ref,
                 DownloadProgress(percent=50, detail="25/50 MB", is_cache_hit=False),
             )
+            await pilot.pause()
+            row = screen._download_rows[cm.ref]
+            assert "50" in str(row.label.content)
+            assert row.bar.progress == 50
 
 
 async def test_setup_wizard_handle_download_error_401():
@@ -5260,15 +5336,17 @@ async def test_setup_wizard_handle_download_error_401():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="gated")
-            result = screen._handle_download_error(
+            cm = _make_catalog_model(name="gated", display_name="Gated")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
+            screen._handle_download_error(
                 lambda fn, *a: fn(*a),
                 PermissionError("401 Unauthorized"),
                 cm,
                 is_first=True,
-                total=2,
             )
-            assert result is True
+            row = screen._download_rows[cm.ref]
+            assert "requires login" in str(row.label.content)
 
 
 async def test_setup_wizard_handle_download_error_partial():
@@ -5281,16 +5359,18 @@ async def test_setup_wizard_handle_download_error_partial():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="embed-fail")
+            cm = _make_catalog_model(name="embed-fail", display_name="EmbedFail")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
             with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
-                result = screen._handle_download_error(
+                screen._handle_download_error(
                     lambda fn, *a: fn(*a),
                     Exception("download failed"),
                     cm,
                     is_first=False,
-                    total=2,
                 )
-            assert result is True
+            row = screen._download_rows[cm.ref]
+            assert "download failed" in str(row.label.content)
 
 
 async def test_setup_wizard_download_progress_callback():
@@ -5304,7 +5384,7 @@ async def test_setup_wizard_download_progress_callback():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
 
-            cm = _make_catalog_model(name="prog-m")
+            cm = _make_catalog_model(name="prog-m", display_name="ProgM")
             screen._download_models = [cm]
 
             def _fake(model, on_progress=None):
@@ -5313,11 +5393,57 @@ async def test_setup_wizard_download_progress_callback():
                     on_progress(50 * 1024 * 1024, 50 * 1024 * 1024)
 
             with (
-                patch("lilbee.catalog.download_model", side_effect=_fake),
+                patch("lilbee.cli.tui.screens.setup.download_model", side_effect=_fake),
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
                 screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+
+            row = screen._download_rows[cm.ref]
+            assert "done" in str(row.label.content)
+            assert row.bar.progress == 100
+
+
+async def test_setup_wizard_two_downloads_show_independent_rows():
+    """Two concurrent downloads render side-by-side with independent labels and bars."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm_chat = _make_catalog_model(name="chat-x", display_name="ChatX")
+            cm_embed = _make_catalog_model(name="embed-y", display_name="EmbedY")
+            screen._download_models = [cm_chat, cm_embed]
+            screen._mount_download_rows()
+            await pilot.pause()
+
+            # Both rows exist before any downloads start.
+            assert cm_chat.ref in screen._download_rows
+            assert cm_embed.ref in screen._download_rows
+            chat_row = screen._download_rows[cm_chat.ref]
+            embed_row = screen._download_rows[cm_embed.ref]
+            assert "ChatX" in str(chat_row.label.content)
+            assert "EmbedY" in str(embed_row.label.content)
+
+            # Simulate chat finishing, then embed progressing mid-way.
+            screen._mark_row_done(cm_chat.ref)
+            screen._update_row(cm_embed.ref, 40, "20/50 MB")
+            await pilot.pause()
+
+            # Chat row stays at 100% with its own label intact.
+            assert chat_row.bar.progress == 100
+            assert "done" in str(chat_row.label.content)
+            assert "ChatX" in str(chat_row.label.content)
+
+            # Embed row shows its independent 40% state.
+            assert embed_row.bar.progress == 40
+            assert "40" in str(embed_row.label.content)
+            assert "EmbedY" in str(embed_row.label.content)
 
 
 def test_param_sort_value_with_match():
@@ -5725,26 +5851,6 @@ async def test_catalog_run_download_generic_error():
 # ---------------------------------------------------------------------------
 
 
-async def test_chat_task_bar_property_raises_when_missing():
-    """_task_bar raises RuntimeError when app has no task_bar attribute."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class NoTaskBarApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    app = NoTaskBarApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with pytest.raises(RuntimeError, match="TaskBar"):
-            _ = app.screen._task_bar
-
-
 async def test_chat_on_show_calls_dismiss():
     """on_show calls splash.dismiss() to signal splash stop."""
     app = ChatTestApp()
@@ -6077,9 +6183,9 @@ class TaskCenterTestApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-        self.task_bar = TaskBar(id="app-task-bar")
+        self.task_bar = TaskBarController(self)
 
     def compose(self) -> ComposeResult:
         yield Footer()
@@ -6087,7 +6193,6 @@ class TaskCenterTestApp(App[None]):
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.task_center import TaskCenter
 
-        self.mount(self.task_bar)
         self.push_screen(TaskCenter())
 
 
@@ -6510,11 +6615,14 @@ async def test_chat_auto_sync_on_mount_runs_sync():
     class SyncApp(App[None]):
         CSS = ""
 
-        def compose(self) -> ComposeResult:
-            from lilbee.cli.tui.widgets.task_bar import TaskBar
+        def __init__(self) -> None:
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-            self.task_bar = TaskBar(id="app-task-bar")
-            yield self.task_bar
+            self.task_bar = TaskBarController(self)
+
+        def compose(self) -> ComposeResult:
+            yield from ()
 
         def on_mount(self) -> None:
             self.push_screen(ChatScreen(auto_sync=True))

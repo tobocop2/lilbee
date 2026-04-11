@@ -31,6 +31,9 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # doesn't push the SetupWizard during tests that exercise chat.
+    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for field_name in type(snapshot).model_fields:
         setattr(cfg, field_name, getattr(snapshot, field_name))
@@ -1007,7 +1010,9 @@ class TestCatalogInteractions:
                 assert app.screen.has_class("-grid-view")
 
     async def test_v_toggles_to_list_and_back(self, _mock_resolve):
-        """Press v: grid->list, v again: list->grid."""
+        """Pressing v flips the catalog between grid and list views."""
+        from textual.widgets import DataTable
+
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -1018,16 +1023,54 @@ class TestCatalogInteractions:
                 await pilot.pause()
 
                 assert app.screen.has_class("-grid-view")
+                grid = app.screen.query_one("#catalog-grid")
+                table = app.screen.query_one("#catalog-table", DataTable)
+                assert grid.display is True
+                assert table.display is False
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-list-view")
                 assert not app.screen.has_class("-grid-view")
+                assert grid.display is False
+                assert table.display is True
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-grid-view")
                 assert not app.screen.has_class("-list-view")
+                assert grid.display is True
+                assert table.display is False
+
+    async def test_v_toggle_after_bracket_nav_from_chat(self, _mock_resolve):
+        """Pressing v still toggles the view after navigating in from chat via ]."""
+        from textual.widgets import DataTable
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                # ChatScreen auto-focuses the insert-mode input; leave it
+                # before reaching for the screen-level nav keys.
+                await pilot.press("escape")
+                await pilot.press("right_square_bracket")
+                await pilot.pause()
+                assert isinstance(app.screen, CatalogScreen)
+                assert app.screen.has_class("-grid-view")
+
+                grid = app.screen.query_one("#catalog-grid")
+                table = app.screen.query_one("#catalog-table", DataTable)
+                assert grid.display is True
+                assert table.display is False
+
+                await pilot.press("v")
+                await pilot.pause()
+                assert app.screen.has_class("-list-view")
+                assert grid.display is False
+                assert table.display is True
 
     async def test_search_filters_cards_in_grid_view(self, _mock_resolve):
         """Type search text in grid view, verify cards filter by visibility."""
@@ -1046,7 +1089,6 @@ class TestCatalogInteractions:
                 assert initial_count > 0
 
                 search = app.screen.query_one("#catalog-search")
-                search.display = True
                 search.value = "TestChat"
                 await pilot.pause()
 
@@ -1057,8 +1099,8 @@ class TestCatalogInteractions:
                 assert len(visible) >= 1
                 assert len(hidden) >= 1
 
-    async def test_search_submit_closes_search(self, _mock_resolve):
-        """Pressing Enter in search closes the search input."""
+    async def test_search_input_is_visible_when_opened(self, _mock_resolve):
+        """Pressing / focuses a visible search input ready for text entry."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1070,15 +1112,154 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_focus_search()
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+                assert search.region.width > 0
+                assert search.region.height > 0
+                assert search.has_focus
+
+                await pilot.press("q", "w", "e", "n")
+                await pilot.pause()
+                assert search.value == "qwen"
+
+    async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
+        """Pressing Enter in search returns focus to the visible grid."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                search.value = "test"
+                await search.action_submit()
+                await pilot.pause()
+                grid = app.screen.query_one(GridSelect)
+                assert grid.has_focus
+
+    async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
+        """In list view, pressing Enter in search returns focus to the DataTable."""
+        from textual.widgets import DataTable, Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                app.screen.action_toggle_view()
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                search.value = "test"
+                await search.action_submit()
+                await pilot.pause()
+                table = app.screen.query_one("#catalog-table", DataTable)
+                assert table.has_focus
+
+    async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
+        """Submitting search in grid view returns focus to the GridSelect."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+                assert search.has_focus
+
+                search.value = "test"
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert search.display is False
+                focused = app.focused
+                assert focused is not None
+                assert focused.display
+                assert isinstance(focused, GridSelect)
+
+    async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
+        """Submitting search in list view returns focus to the DataTable."""
+        from textual.widgets import DataTable, Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+
+                await pilot.press("slash")
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 assert search.display is True
 
                 search.value = "test"
-                await search.action_submit()
+                await pilot.press("enter")
                 await pilot.pause()
+
                 assert search.display is False
+                focused = app.focused
+                assert isinstance(focused, DataTable)
+
+    async def test_search_escape_closes_and_unfreezes(self, _mock_resolve):
+        """Escape closes the search and restores focus so catalog bindings work again."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert search.display is False
+                # Still on the catalog screen -- escape only closed the search,
+                # it didn't pop back to Chat.
+                assert isinstance(app.screen, CatalogScreen)
+
+                # Bindings still work: toggle the view.
+                await pilot.press("v")
+                await pilot.pause()
+                assert app.screen.has_class("-list-view")
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
@@ -1107,7 +1288,7 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
 
                 table = app.screen.query_one("#catalog-table", DataTable)
@@ -1134,7 +1315,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.pause()
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
                 await pilot.pause()
 
@@ -1162,7 +1343,7 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
 
                 app.screen.action_page_down()
@@ -1182,7 +1363,7 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
 
                 assert app.screen._sort_column == "Name"
@@ -1226,14 +1407,13 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
 
                 table = app.screen.query_one("#catalog-table", DataTable)
                 initial_rows = table.row_count
 
                 search = app.screen.query_one("#catalog-search")
-                search.display = True
                 search.value = "TestChat"
                 await pilot.pause()
 
@@ -1250,7 +1430,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
                 app.screen.action_delete_model()
                 await pilot.pause()
@@ -2337,6 +2517,67 @@ class TestSetupWizardGrid:
                 app.screen._handle_slash("/setup")
                 await pilot.pause()
                 assert isinstance(app.screen, SetupWizard)
+
+    async def test_setup_grid_highlights_focused_card(self, _mock_resolve):
+        """The focused card in the SetupWizard grid shows a visible focus
+        indicator so keyboard users can see which card is under the cursor."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                grid = app.screen.query(GridSelect).first()
+                grid.focus()
+                await pilot.pause()
+                await pilot.press("right")
+                await pilot.pause()
+                cards = [c for c in grid.children if isinstance(c, ModelCard)]
+                highlighted = [c for c in cards if c.has_class("-highlight")]
+                others = [c for c in cards if not c.has_class("-highlight")]
+                assert len(highlighted) == 1
+                assert others, "need a non-focused card to compare against"
+                focused_border = highlighted[0].styles.border_top
+                baseline_border = others[0].styles.border_top
+                assert focused_border is not None
+                assert focused_border[0] == "tall"
+                # The focus rule paints a visible color; baseline is transparent.
+                assert focused_border[1] != baseline_border[1]
+
+    async def test_setup_focused_selected_card_keeps_green_bar(self, _mock_resolve):
+        """A card that is both selected and focused keeps its green left bar.
+        Guards against the focus border shorthand clobbering border-left."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+        from lilbee.cli.tui.widgets.model_card import ModelCard
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with mock.patch(
+                "lilbee.cli.tui.screens.setup._scan_installed_models",
+                return_value=([], []),
+            ):
+                app.push_screen(SetupWizard())
+                await pilot.pause()
+                grid = app.screen.query(GridSelect).first()
+                cards = [c for c in grid.children if isinstance(c, ModelCard)]
+                assert cards
+                cards[0].selected = True
+                grid.focus()
+                await pilot.pause()
+                assert cards[0].has_class("-highlight")
+                assert cards[0].has_class("-selected")
+                border_left = cards[0].styles.border_left
+                assert border_left is not None
+                assert border_left[0] == "thick"
 
     async def test_catalog_grid_to_status_preserves_state(self, _mock_resolve):
         """Switching from catalog grid to status and back."""
