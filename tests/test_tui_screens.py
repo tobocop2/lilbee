@@ -5339,9 +5339,7 @@ async def test_setup_wizard_download_progress_callback():
 
 
 async def test_setup_wizard_two_downloads_show_independent_rows():
-    """Regression for bb-hvfn: two model downloads render side-by-side, each with
-    its own label and progress bar, so the second download does not overwrite
-    the first model's display."""
+    """Two concurrent downloads render side-by-side with independent labels and bars."""
     from lilbee.cli.tui.screens.setup import SetupWizard
 
     app = SetupTestApp()
