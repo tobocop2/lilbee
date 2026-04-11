@@ -47,6 +47,9 @@ def _isolated_cfg(tmp_path):
     cfg.embedding_model = "test-embed:latest"
     cfg.vision_model = ""
     cfg.chunk_size = 512
+    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # doesn't push the SetupWizard during tests that exercise chat.
+    cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

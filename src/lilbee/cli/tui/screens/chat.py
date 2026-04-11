@@ -156,7 +156,11 @@ class ChatScreen(Screen[None]):
         dismiss()
 
     def _needs_setup(self) -> bool:
-        """Check if both chat and embedding models are resolvable."""
+        """True when the setup wizard should run: fresh data dir or unresolved models."""
+        # Fresh install: an uninitialized data dir still needs the wizard even
+        # if default models are already cached globally (Ollama, HF cache).
+        if not cfg.lancedb_dir.is_dir():
+            return True
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 
