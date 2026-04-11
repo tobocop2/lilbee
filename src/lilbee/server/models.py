@@ -172,11 +172,17 @@ class CatalogEntryResponse(BaseModel):
     """A single model in the catalog browser."""
 
     name: str
+    tag: str
+    hf_repo: str
+    task: str
     display_name: str
+    param_count: str
     size_gb: float
     min_ram_gb: float
     description: str
     quality_tier: str
+    featured: bool
+    downloads: int
     installed: bool
     source: str
 

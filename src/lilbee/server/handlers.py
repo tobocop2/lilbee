@@ -643,11 +643,17 @@ async def models_catalog(
         models=[
             CatalogEntryResponse(
                 name=e.name,
+                tag=e.tag,
+                hf_repo=e.hf_repo,
+                task=e.task,
                 display_name=e.display_name,
+                param_count=e.param_count,
                 size_gb=e.size_gb,
                 min_ram_gb=e.min_ram_gb,
                 description=e.description,
                 quality_tier=e.quality_tier,
+                featured=e.featured,
+                downloads=e.downloads,
                 installed=e.installed,
                 source=e.source,
             )
