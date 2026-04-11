@@ -344,6 +344,38 @@ async def test_settings_persist_on_change():
         assert cfg.top_k == 20
 
 
+async def test_settings_exposes_wiki_fields():
+    """Settings screen renders an editor for every wiki config field."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        wiki_keys = [
+            "wiki",
+            "wiki_dir",
+            "wiki_prune_raw",
+            "wiki_faithfulness_threshold",
+            "wiki_stale_citation_threshold",
+            "wiki_drift_threshold",
+            "wiki_clusterer",
+            "wiki_clusterer_k",
+        ]
+        for key in wiki_keys:
+            assert app.screen.query_one(f"#ed-{key}") is not None
+
+
+async def test_settings_wiki_clusterer_k_persists():
+    """Editing wiki_clusterer_k writes through to cfg."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
+        editor.focus()
+        editor.value = "8"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert cfg.wiki_clusterer_k == 8
+
+
 async def test_settings_checkbox_persist():
     """Toggling a checkbox persists the boolean value."""
     app = SettingsTestApp()
