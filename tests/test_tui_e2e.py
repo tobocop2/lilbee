@@ -269,7 +269,6 @@ class TestViewCycling:
             assert app.active_view == "Chat"
 
             # Blur the chat input so the app-level ] binding fires.
-            # Tracked as bb-44fj: nav keys should work from focused inputs.
             await pilot.press("escape")
             await pilot.pause()
 
@@ -522,7 +521,7 @@ class TestScreenTransitions:
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
-                # Blur the chat input so the app-level ] binding fires (bb-44fj).
+                # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
                 expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
@@ -573,7 +572,7 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                # Blur the chat input so the app-level ] binding fires (bb-44fj).
+                # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
                 full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
@@ -591,7 +590,7 @@ class TestScreenTransitions:
             async with app.run_test(size=(120, 40)) as pilot:
                 await pilot.pause()
                 assert app.active_view == "Chat"
-                # Blur the chat input so the app-level [ binding fires (bb-44fj).
+                # Blur the chat input so the app-level [ binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
                 backward_cycle = ["Wiki", "Tasks", "Settings", "Status", "Catalog", "Chat"]
@@ -627,8 +626,8 @@ class TestScreenTransitions:
                     await pilot.pause()
                     assert app.active_view == view
 
-                    # Use f1 instead of ? because focused inputs swallow
-                    # question_mark (tracked as bb-44fj).
+                    # Use f1 instead of ? because focused inputs still swallow
+                    # question_mark.
                     await pilot.press("f1")
                     await pilot.pause()
                     assert app.screen.query("HelpPanel")
