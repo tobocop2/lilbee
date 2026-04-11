@@ -136,6 +136,8 @@ class SetupWizard(Screen[str | None]):
         return self._selections[ModelTask.EMBEDDING][0]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
         yield Static(msg.SETUP_WELCOME, id="setup-title")
         yield Static(msg.SETUP_SUBTITLE, id="setup-subtitle")
         yield VerticalScroll(id="setup-grid-container")
@@ -148,6 +150,7 @@ class SetupWizard(Screen[str | None]):
         yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
         yield Label("", id="setup-status")
         yield ProgressBar(total=100, show_eta=False, id="setup-progress")
+        yield TaskBar()
 
     def on_mount(self) -> None:
         self._build_grid()

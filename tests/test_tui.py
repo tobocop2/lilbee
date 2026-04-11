@@ -92,6 +92,30 @@ class TestTaskBarUnit:
         assert isinstance(task_id, str)
         assert len(task_id) == 8
 
+    def test_update_task_does_not_deadlock_reentrant_subscriber(self) -> None:
+        """Regression: a subscriber that reads the queue inside its callback
+        must not deadlock on the non-reentrant lock held by `update_task`.
+        """
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        task_id = q.enqueue(lambda: None, "Test", "sync")
+        q.advance()
+
+        observed: list[int] = []
+
+        def _on_change() -> None:
+            # Re-enter the queue from inside the callback (TaskBar does this
+            # via `displayable_tasks` during `_refresh_display`). If `_notify`
+            # fired while still holding the lock, this would hang forever.
+            task = q.get_task(task_id)
+            if task is not None:
+                observed.append(task.progress)
+
+        q.subscribe(_on_change)
+        q.update_task(task_id, 42, "halfway")
+        assert observed == [42]
+
 
 class TestRemoteClassification:
     @mock.patch("httpx.get")

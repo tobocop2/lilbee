@@ -139,6 +139,7 @@ class SettingsScreen(Screen[None]):
         from textual.widgets import Footer
 
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Input(
             placeholder="Filter settings...",
@@ -146,6 +147,7 @@ class SettingsScreen(Screen[None]):
         )
         with VerticalScroll(id="settings-scroll"):
             yield from self._compose_groups()
+        yield TaskBar()
         yield ViewTabs()
         yield Footer()
 

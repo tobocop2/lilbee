@@ -6,7 +6,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -41,6 +41,9 @@ from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
 log = logging.getLogger(__name__)
 
@@ -109,12 +112,14 @@ class CatalogScreen(Screen[None]):
         from textual.widgets import Footer
 
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
         yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
+        yield TaskBar()
         yield ViewTabs()
         yield Footer()
 
@@ -480,24 +485,20 @@ class CatalogScreen(Screen[None]):
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
         self._run_download(model, task_id, task_bar)
 
-    def _make_progress_callback(self, task_id: str, bar: object) -> Callable[[int, int], None]:
+    def _make_progress_callback(
+        self, task_id: str, bar: TaskBarController
+    ) -> Callable[[int, int], None]:
         """Build a progress callback that reports download progress to the TaskBar."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        tb: TaskBar = bar  # type: ignore[assignment]
 
         def _on_update(p: DownloadProgress) -> None:
-            self._safe_call(tb.update_task, task_id, p.percent, p.detail)
+            self._safe_call(bar.update_task, task_id, p.percent, p.detail)
 
         return make_download_callback(_on_update)
 
     @work(thread=True)
-    def _run_download(self, model: CatalogModel, task_id: str, task_bar: object) -> None:
+    def _run_download(self, model: CatalogModel, task_id: str, bar: TaskBarController) -> None:
         """Download a model in a background thread, reporting to TaskBar."""
         from lilbee.catalog import download_model
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        bar: TaskBar = task_bar  # type: ignore[assignment]
 
         try:
             download_model(model, on_progress=self._make_progress_callback(task_id, bar))

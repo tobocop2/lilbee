@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from conftest import make_test_catalog_model as _make_model
@@ -183,6 +184,12 @@ class TestHelpPanel:
 
 
 class _TaskBarApp(App):
+    def __init__(self) -> None:
+        super().__init__()
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+        self.task_bar = TaskBarController(self)
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -301,15 +308,15 @@ class TestTaskBar:
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
-        """TaskBar is accessible via app.task_bar from other screens."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        """TaskBarController is accessible via app.task_bar from other screens."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            app.task_bar = bar
-            assert app.task_bar is bar
+            assert isinstance(app.task_bar, TaskBarController)
+            assert bar.queue is app.task_bar.queue
 
 
 class _ModelBarApp(App):
@@ -2376,8 +2383,8 @@ class TestTaskBarAdditional:
             assert t1 in bar._panels
             assert t2 in bar._panels
 
-    async def test_panel_removed_on_dismiss(self) -> None:
-        """Panel is removed from DOM after dismiss."""
+    async def test_panel_removed_when_task_removed_from_queue(self) -> None:
+        """Removing a task from the shared queue drops its panel on next refresh."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         app = _TaskBarApp()
@@ -2386,12 +2393,12 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
-            bar._refresh_display()
             await pilot.pause()
-            assert task_id in bar._panels
-            bar._dismiss_panel(task_id, "download")
+            bar.query_one(f"#task-panel-{task_id}")  # raises NoMatches if absent
+            bar.queue.remove_task(task_id)
             await pilot.pause()
-            assert task_id not in bar._panels
+            with pytest.raises(NoMatches):
+                bar.query_one(f"#task-panel-{task_id}")
 
     async def test_fail_task_adds_failed_class_to_panel(self) -> None:
         """fail_task marks the panel with task-failed CSS class."""
@@ -2455,6 +2462,29 @@ class TestTaskBarAdditional:
             )
             bar._render_task_panel("nonexistent", task)  # should not raise
             bar._render_task_panel("nonexistent", None)  # should not raise
+
+    async def test_on_queue_change_from_worker_thread(self) -> None:
+        """Queue notifications fired from a background thread must marshal back."""
+        import threading
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+
+            called = threading.Event()
+
+            def worker() -> None:
+                bar._on_queue_change()
+                called.set()
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join(timeout=2)
+            await pilot.pause()
+            assert called.is_set()
 
     async def test_render_task_panel_queued_status(self) -> None:
         """_render_task_panel with QUEUED status uses fallback icon."""

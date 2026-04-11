@@ -837,9 +837,9 @@ class ChatTestApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-        self.task_bar = TaskBar(id="app-task-bar")
+        self.task_bar = TaskBarController(self)
 
     def compose(self) -> ComposeResult:
         yield from ()
@@ -847,7 +847,6 @@ class ChatTestApp(App[None]):
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.mount(self.task_bar)
         self.push_screen(ChatScreen())
 
 
@@ -5725,26 +5724,6 @@ async def test_catalog_run_download_generic_error():
 # ---------------------------------------------------------------------------
 
 
-async def test_chat_task_bar_property_raises_when_missing():
-    """_task_bar raises RuntimeError when app has no task_bar attribute."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
-
-    class NoTaskBarApp(App[None]):
-        CSS = ""
-
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(ChatScreen())
-
-    app = NoTaskBarApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with pytest.raises(RuntimeError, match="TaskBar"):
-            _ = app.screen._task_bar
-
-
 async def test_chat_on_show_calls_dismiss():
     """on_show calls splash.dismiss() to signal splash stop."""
     app = ChatTestApp()
@@ -6077,9 +6056,9 @@ class TaskCenterTestApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-        self.task_bar = TaskBar(id="app-task-bar")
+        self.task_bar = TaskBarController(self)
 
     def compose(self) -> ComposeResult:
         yield Footer()
@@ -6087,7 +6066,6 @@ class TaskCenterTestApp(App[None]):
     def on_mount(self) -> None:
         from lilbee.cli.tui.screens.task_center import TaskCenter
 
-        self.mount(self.task_bar)
         self.push_screen(TaskCenter())
 
 
@@ -6510,11 +6488,14 @@ async def test_chat_auto_sync_on_mount_runs_sync():
     class SyncApp(App[None]):
         CSS = ""
 
-        def compose(self) -> ComposeResult:
-            from lilbee.cli.tui.widgets.task_bar import TaskBar
+        def __init__(self) -> None:
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
-            self.task_bar = TaskBar(id="app-task-bar")
-            yield self.task_bar
+            self.task_bar = TaskBarController(self)
+
+        def compose(self) -> ComposeResult:
+            yield from ()
 
         def on_mount(self) -> None:
             self.push_screen(ChatScreen(auto_sync=True))
