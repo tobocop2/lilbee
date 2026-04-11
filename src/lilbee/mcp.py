@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
@@ -15,6 +18,8 @@ from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
+
+log = logging.getLogger(__name__)
 
 mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed documents.")
 
@@ -351,6 +356,105 @@ def lilbee_wiki_prune() -> dict[str, Any]:
         "archived": report.archived_count,
         "flagged": report.flagged_count,
     }
+
+
+@mcp.tool()
+def lilbee_model_list(source: str = "", task: str = "") -> dict[str, Any]:
+    """List installed models across native and litellm sources.
+
+    Args:
+        source: Filter by source: "native", "litellm", or "" for all.
+        task: Filter by task: "chat", "embedding", "vision", or "" for all.
+    """
+    from lilbee.cli.model import list_models_data
+    from lilbee.model_manager import ModelSource
+
+    try:
+        src = ModelSource.parse(source)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return list_models_data(source=src, task=task or None).model_dump()
+
+
+@mcp.tool()
+def lilbee_model_show(model: str) -> dict[str, Any]:
+    """Show catalog and installed metadata for a model ref (e.g. 'qwen3:0.6b')."""
+    from lilbee.cli.model import show_model_data
+    from lilbee.model_manager import ModelNotFoundError
+
+    try:
+        return show_model_data(model).model_dump()
+    except ModelNotFoundError as exc:
+        return {"error": str(exc)}
+
+
+def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
+    """Log report_progress failures without raising.
+
+    Progress notifications are best-effort: a failure should not abort
+    an in-flight pull.
+    """
+    try:
+        future.result()
+    except Exception:
+        log.warning("MCP report_progress failed", exc_info=True)
+
+
+@mcp.tool()
+async def lilbee_model_pull(
+    model: str,
+    source: str = "native",
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Download a model, streaming progress via MCP notifications.
+
+    Args:
+        model: Model ref to pull (e.g. "qwen3:0.6b").
+        source: "native" (HuggingFace GGUF) or "litellm" (remote backend).
+    """
+    from lilbee.catalog import DownloadProgress
+    from lilbee.cli.model import pull_model_data
+    from lilbee.model_manager import ModelSource
+
+    try:
+        src = ModelSource.parse(source) or ModelSource.NATIVE
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    loop = asyncio.get_running_loop()
+
+    def on_update(p: DownloadProgress) -> None:
+        if ctx is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            ctx.report_progress(progress=float(p.percent), total=100.0, message=p.detail),
+            loop,
+        )
+        future.add_done_callback(_log_progress_failure)
+
+    try:
+        result = await asyncio.to_thread(pull_model_data, model, src, on_update=on_update)
+    except (RuntimeError, PermissionError) as exc:
+        return {"error": str(exc)}
+    return result.model_dump()
+
+
+@mcp.tool()
+def lilbee_model_rm(model: str, source: str = "") -> dict[str, Any]:
+    """Remove an installed model.
+
+    Args:
+        model: Model ref to remove.
+        source: Restrict to "native" or "litellm"; empty = both.
+    """
+    from lilbee.cli.model import remove_model_data
+    from lilbee.model_manager import ModelSource
+
+    try:
+        src = ModelSource.parse(source)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return remove_model_data(model, source=src).model_dump()
 
 
 def clean(result: SearchChunk) -> dict[str, object]:
