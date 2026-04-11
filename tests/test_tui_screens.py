@@ -357,6 +357,25 @@ async def test_settings_checkbox_persist():
         assert cfg.show_reasoning != original
 
 
+async def test_settings_tab_reaches_checkbox_and_space_toggles():
+    """Tab walks focus to the checkbox and Space toggles it."""
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Checkbox
+
+        cb = app.screen.query_one("#ed-show_reasoning", Checkbox)
+        original = cfg.show_reasoning
+        for _ in range(30):
+            await pilot.press("tab")
+            await pilot.pause()
+            if app.focused is cb:
+                break
+        assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
+        await pilot.press("space")
+        await pilot.pause()
+        assert cfg.show_reasoning != original
+
+
 async def test_settings_vim_keys():
     """Vim navigation keys work on the scroll container."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -628,6 +647,18 @@ async def test_status_screen_vim_keys(mock_svc):
         await _pilot.press("j")
         await _pilot.press("k")
         assert table.has_focus
+
+
+async def test_status_tab_moves_focus_between_sections(mock_svc):
+    """Tab on StatusScreen advances focus across focusable widgets."""
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        initial = app.focused
+        assert initial is not None
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.focused is not None
+        assert app.focused is not initial
 
 
 async def test_status_screen_escape_pops():
