@@ -227,6 +227,9 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         value = str(event.value) if event.value != Select.BLANK else ""
+        current = str(getattr(cfg, name, ""))
+        if value == current:
+            return
         self._persist_value(name, defn, value)
 
     def _persist_value(self, key: str, defn: SettingDef, raw: str) -> None:
