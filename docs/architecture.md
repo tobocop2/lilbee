@@ -116,7 +116,7 @@ flowchart TD
     CONF -->|No| EXPAND[LLM Query Expansion]
 
     EXPAND --> GEXP[+ Graph Expansion]
-    GEXP --> GUARD[Guardrails: overlap check + dedup]
+    GEXP --> GUARD[Guardrails: embedding cosine similarity]
     GUARD --> MULTI[Multi-Query Search + Merge]
     MULTI --> HYBRID
 
@@ -179,9 +179,9 @@ flowchart TD
 #### Expansion Guardrails
 **On by default.** Validates LLM-generated query variants to prevent drift.
 
-- **Technique**: token overlap validation + embedding deduplication
-- **Overlap threshold**: 0.3 (at least 30% of original query tokens must appear in the variant). Below this, the variant has semantically drifted too far from the original question.
-- **Dedup threshold**: cosine similarity > 0.85 between variant embeddings → keep the longer one (more specific).
+- **Technique**: cosine similarity between the question's embedding and each variant's embedding. Language-agnostic — works for any corpus the embedding model supports — and reuses the variant vectors that the multi-query search would have embedded anyway, so there are zero extra embed calls.
+- **Threshold**: 0.5 by default via `LILBEE_EXPANSION_SIMILARITY_THRESHOLD`. Raise it to reject more variants (stricter); lower it to keep more (looser). Calibrate per embedding model — dense 768-dim models cluster higher by default than contrastively-trained ones.
+- **Concept-graph variants bypass this check**: they come from deterministic graph traversal and are expected to be partial phrases with lower similarity to the full question.
 - **Tradeoff**: guardrails may filter out creative but valid variants. Disable via `LILBEE_EXPANSION_GUARDRAILS=false` if recall is more important than precision.
 
 #### HyDE (Hypothetical Document Embeddings)
@@ -309,6 +309,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 score above which expansion is skipped | 90th percentile of sigmoid-normalized BM25 scores. Calibrate per-corpus. |
 | `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Min score gap (top-1 minus top-2) to skip expansion | Approximately 1 std dev of typical score spread. Ensures the match isn't ambiguous. |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Validate expansion variants for drift | Prevents hallucinated variants at the cost of potentially filtering valid creative expansions |
+| `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum question↔variant cosine similarity for an expansion variant to survive the guardrail | Raise for stricter filtering, lower to keep more variants. Calibrate per embedding model. |
 | `LILBEE_MAX_CONTEXT_SOURCES` | `5` | Max chunks included in LLM context | More = more complete answers but higher latency and token cost |
 | `LILBEE_HYDE` | `false` | Enable hypothetical document embeddings | Adds ~500ms per query. Best for vague queries where terminology doesn't match docs. |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | Weight for HyDE results relative to original | Lower = less trust in hypothetical documents. 0.7 prevents fabricated vectors from dominating. |
