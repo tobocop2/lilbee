@@ -1057,7 +1057,7 @@ class TestCatalogInteractions:
                 assert len(hidden) >= 1
 
     async def test_search_input_is_visible_when_opened(self, _mock_resolve):
-        """Pressing / focuses a visible search input. Regression for bb-lufk."""
+        """Pressing / focuses a visible search input ready for text entry."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
