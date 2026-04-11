@@ -563,6 +563,12 @@ class TestModelsCatalog:
         assert len(result.models) == 1
         m = result.models[0]
         assert m.name == "qwen3"
+        assert m.tag == "8b"
+        assert m.hf_repo == "Qwen/Qwen3-8B-GGUF"
+        assert m.task == "chat"
+        assert m.featured is True
+        assert m.downloads == 1000
+        assert m.param_count == "8B"
         assert m.installed is True
         assert m.source == "litellm"
 

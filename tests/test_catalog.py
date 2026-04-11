@@ -1494,12 +1494,44 @@ class TestEnrichCatalog:
         original = result.models[0]
         e = enriched[0]
         assert e.name == original.name
+        assert e.tag == original.tag
         assert e.hf_repo == original.hf_repo
         assert e.size_gb == original.size_gb
         assert e.description == original.description
         assert e.featured == original.featured
         assert e.downloads == original.downloads
         assert e.task == original.task
+
+    def test_param_count_extracted_from_display_name(self) -> None:
+        result = self._make_result()
+        enriched = enrich_catalog(result, set())
+        # "Model-7B-GGUF" -> "7B"; "Qwen3 8B" -> "8B"
+        assert enriched[0].param_count == "7B"
+        assert enriched[1].param_count == "8B"
+
+    def test_param_count_falls_back_to_tag(self) -> None:
+        result = CatalogResult(
+            total=1,
+            limit=20,
+            offset=0,
+            models=[
+                CatalogModel(
+                    name="nomic-embed-text",
+                    tag="v1.5",
+                    display_name="Nomic Embed Text v1.5",
+                    hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+                    gguf_filename="*Q4_K_M.gguf",
+                    size_gb=0.3,
+                    min_ram_gb=1.0,
+                    description="Embedding model",
+                    featured=True,
+                    downloads=42,
+                    task="embedding",
+                )
+            ],
+        )
+        enriched = enrich_catalog(result, set())
+        assert enriched[0].param_count == "v1.5"
 
 
 class TestFormatSizeMb:
