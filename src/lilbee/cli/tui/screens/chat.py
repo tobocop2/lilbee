@@ -160,20 +160,9 @@ class ChatScreen(Screen[None]):
         dismiss()
 
     def _needs_setup(self) -> bool:
-        """Check if the user should see the setup wizard on mount.
-
-        The wizard appears whenever either of two conditions holds:
-
-        1. The LanceDB directory for the current ``LILBEE_DATA`` does not
-           exist as a directory. This is the "fresh install" signal. Even
-           when the default models happen to be installed globally (for
-           example via Ollama or the HuggingFace cache), a brand-new data
-           directory still needs the wizard to onboard the user and trigger
-           the first sync.
-        2. The configured chat or embedding model cannot be resolved, so
-           the user needs to pick models that actually exist before chat
-           can work.
-        """
+        """True when the setup wizard should run: fresh data dir or unresolved models."""
+        # Fresh install: an uninitialized data dir still needs the wizard even
+        # if default models are already cached globally (Ollama, HF cache).
         if not cfg.lancedb_dir.is_dir():
             return True
         try:

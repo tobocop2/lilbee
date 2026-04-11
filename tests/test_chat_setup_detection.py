@@ -1,11 +1,4 @@
-"""Tests for ChatScreen._needs_setup fresh-install detection.
-
-Verifies that the setup wizard shows even when the configured models are
-resolvable globally (Ollama, HuggingFace cache) as long as the current data
-directory has not been initialized yet. Prevents a regression where users
-with common models already cached on their machine would silently skip the
-onboarding wizard.
-"""
+"""Tests for ChatScreen._needs_setup: wizard shows on fresh data dirs."""
 
 from __future__ import annotations
 
@@ -33,20 +26,11 @@ def isolated_data_dir(tmp_path):
 
 
 def _make_screen() -> ChatScreen:
-    """Construct a ChatScreen without mounting it in an App.
-
-    ``_needs_setup`` only reads module-level config, so bypassing ``__init__``
-    (which would otherwise require an App context) is safe and keeps these
-    tests narrowly scoped to the setup-detection logic.
-    """
     return ChatScreen.__new__(ChatScreen)
 
 
 def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
-    """A fresh LILBEE_DATA (no lancedb dir) must always show the wizard,
-    even when the configured models are globally resolvable. The check must
-    also short-circuit model resolution because the answer is already known.
-    """
+    """Fresh data dir must trigger the wizard even when models resolve globally."""
     assert not cfg.lancedb_dir.exists()
     with mock.patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -57,9 +41,7 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
 
 
 def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir):
-    """After first sync (lancedb dir exists) and both models resolve, the
-    user should skip the wizard and go straight to chat.
-    """
+    """Initialized data dir plus resolvable models skips the wizard."""
     cfg.lancedb_dir.mkdir(parents=True)
     with mock.patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -69,9 +51,7 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
 
 
 def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
-    """An initialized data directory but a missing chat or embedding model
-    should still show the wizard so the user can pick a valid one.
-    """
+    """Unresolvable chat/embedding model still triggers the wizard."""
     cfg.lancedb_dir.mkdir(parents=True)
     with mock.patch(
         "lilbee.providers.llama_cpp_provider.resolve_model_path",
@@ -81,9 +61,7 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
 
 
 def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
-    """A stray file at the lancedb path is not a real data directory,
-    so the wizard must still show. This exercises the ``is_dir`` check.
-    """
+    """A stray file at the lancedb path is not a real data directory."""
     cfg.lancedb_dir.parent.mkdir(parents=True, exist_ok=True)
     cfg.lancedb_dir.write_text("not a directory")
     assert cfg.lancedb_dir.exists()
