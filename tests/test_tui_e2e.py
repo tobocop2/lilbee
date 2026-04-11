@@ -1046,7 +1046,6 @@ class TestCatalogInteractions:
                 assert initial_count > 0
 
                 search = app.screen.query_one("#catalog-search")
-                search.display = True
                 search.value = "TestChat"
                 await pilot.pause()
 
@@ -1057,8 +1056,8 @@ class TestCatalogInteractions:
                 assert len(visible) >= 1
                 assert len(hidden) >= 1
 
-    async def test_search_submit_closes_search(self, _mock_resolve):
-        """Pressing Enter in search closes the search input."""
+    async def test_search_input_is_visible_when_opened(self, _mock_resolve):
+        """Pressing / focuses a visible search input. Regression for bb-lufk."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1070,15 +1069,64 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
 
-                app.screen.action_focus_search()
+                await pilot.press("slash")
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 assert search.display is True
+                assert search.region.width > 0
+                assert search.region.height > 0
+                assert search.has_focus
 
+                await pilot.press("q", "w", "e", "n")
+                await pilot.pause()
+                assert search.value == "qwen"
+
+    async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
+        """Pressing Enter in search returns focus to the visible grid."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
                 await search.action_submit()
                 await pilot.pause()
-                assert search.display is False
+                grid = app.screen.query_one(GridSelect)
+                assert grid.has_focus
+
+    async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
+        """In list view, pressing Enter in search returns focus to the DataTable."""
+        from textual.widgets import DataTable, Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                app.screen.action_toggle_view()
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                search.value = "test"
+                await search.action_submit()
+                await pilot.pause()
+                table = app.screen.query_one("#catalog-table", DataTable)
+                assert table.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
@@ -1233,7 +1281,6 @@ class TestCatalogInteractions:
                 initial_rows = table.row_count
 
                 search = app.screen.query_one("#catalog-search")
-                search.display = True
                 search.value = "TestChat"
                 await pilot.pause()
 

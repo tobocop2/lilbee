@@ -119,7 +119,6 @@ class CatalogScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#catalog-search", Input).display = False
         table = self.query_one("#catalog-table", DataTable)
         for col in COLUMNS:
             table.add_column(col, key=col)
@@ -171,9 +170,7 @@ class CatalogScreen(Screen[None]):
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
-        filter_input = self.query_one("#catalog-search", Input)
-        filter_input.display = True
-        filter_input.focus()
+        self.query_one("#catalog-search", Input).focus()
 
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
@@ -185,10 +182,12 @@ class CatalogScreen(Screen[None]):
 
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
-        """Close filter on Enter."""
-        event.input.display = False
+        """Return focus to the visible view on Enter."""
         with contextlib.suppress(Exception):
-            self.query_one("#catalog-table", DataTable).focus()
+            if self._grid_view:
+                self.query_one(GridSelect).focus()
+            else:
+                self.query_one("#catalog-table", DataTable).focus()
 
     def _fetch_hf_page(self) -> list[CatalogModel]:
         """Fetch one page of HF models for all task types (runs in worker thread)."""

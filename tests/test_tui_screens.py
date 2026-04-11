@@ -1866,7 +1866,6 @@ async def test_catalog_vim_keys_in_input():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_cursor_down()
@@ -1901,7 +1900,6 @@ async def test_catalog_page_down_no_focus():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_page_down()
@@ -3018,7 +3016,6 @@ async def test_catalog_key_g_G_noop_in_input():
             from textual.widgets import Input
 
             inp = screen.query_one("#catalog-search", Input)
-            inp.display = True
             inp.focus()
             await _pilot.pause()
             screen.action_jump_top()
