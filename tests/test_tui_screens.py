@@ -342,7 +342,7 @@ async def test_settings_persist_on_change():
 
 
 async def test_settings_exposes_wiki_fields():
-    """Settings screen renders an editor for every new wiki config field (bb-piyt)."""
+    """Settings screen renders an editor for every wiki config field."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         wiki_keys = [
@@ -360,7 +360,7 @@ async def test_settings_exposes_wiki_fields():
 
 
 async def test_settings_wiki_clusterer_k_persists():
-    """Editing wiki_clusterer_k writes through to cfg (bb-piyt)."""
+    """Editing wiki_clusterer_k writes through to cfg."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
