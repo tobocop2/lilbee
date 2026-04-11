@@ -80,7 +80,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/reset", "_cmd_reset", args_hint="confirm", help_text="Factory reset"),
     SlashCommand("/status", "_cmd_status", help_text="Knowledge base status"),
     SlashCommand("/settings", "_cmd_settings", help_text="View/change settings"),
-    SlashCommand("/models", "_cmd_catalog", aliases=("/m",), help_text="Browse catalog"),
+    SlashCommand(
+        "/models",
+        "_cmd_catalog",
+        aliases=("/m", "/catalog"),
+        help_text="Browse catalog",
+    ),
     SlashCommand("/setup", "_cmd_setup", help_text="Run setup wizard"),
     SlashCommand(
         "/remove",
@@ -108,6 +113,10 @@ def build_dispatch_dict() -> dict[str, str]:
     return dispatch
 
 
-def command_names() -> tuple[str, ...]:
-    """All primary command names (excludes aliases), for tab completion."""
-    return tuple(cmd.name for cmd in COMMANDS)
+def completion_names() -> tuple[str, ...]:
+    """All command names including aliases, for tab completion."""
+    names: list[str] = []
+    for cmd in COMMANDS:
+        names.append(cmd.name)
+        names.extend(cmd.aliases)
+    return tuple(names)

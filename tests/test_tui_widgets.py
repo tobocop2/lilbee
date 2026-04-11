@@ -755,6 +755,13 @@ class TestGetCompletions:
         r = get_completions("/model ")
         assert "qwen3:8b" in r
 
+    def test_slash_prefix_includes_aliases(self) -> None:
+        """/cat expands via the /catalog alias for /models."""
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        r = get_completions("/cat")
+        assert "/catalog" in r
+
     def test_unknown_command_arg_returns_empty(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
