@@ -2339,9 +2339,8 @@ class TestSetupWizardGrid:
                 assert isinstance(app.screen, SetupWizard)
 
     async def test_setup_grid_highlights_focused_card(self, _mock_resolve):
-        """Focused GridSelect in SetupWizard marks its cursor card with
-        -highlight, and setup.tcss styles that class so users see the
-        focus indicator. Regression test for bb-x075."""
+        """The focused card in the SetupWizard grid shows a visible focus
+        indicator so keyboard users can see which card is under the cursor."""
         from lilbee.cli.tui.screens.setup import SetupWizard
         from lilbee.cli.tui.widgets.grid_select import GridSelect
         from lilbee.cli.tui.widgets.model_card import ModelCard
