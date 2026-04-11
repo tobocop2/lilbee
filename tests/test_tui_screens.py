@@ -355,7 +355,7 @@ async def test_settings_checkbox_persist():
 
 
 async def test_settings_tab_reaches_checkbox_and_space_toggles():
-    """Tab walks focus to the checkbox and Space toggles it (bb-r1rl)."""
+    """Tab walks focus to the checkbox and Space toggles it."""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Checkbox
@@ -647,7 +647,7 @@ async def test_status_screen_vim_keys(mock_svc):
 
 
 async def test_status_tab_moves_focus_between_sections(mock_svc):
-    """Tab on StatusScreen advances focus across focusable widgets (bb-r1rl twin)."""
+    """Tab on StatusScreen advances focus across focusable widgets."""
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         initial = app.focused
