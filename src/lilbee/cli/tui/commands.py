@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from textual.command import Hit, Hits, Provider
 
 from lilbee import settings
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 from lilbee.services import get_services
 
@@ -50,6 +51,11 @@ class LilbeeCommandProvider(Provider):
             ("Help", "Show keybinding reference", app.action_push_help),
             ("Cycle theme", "Switch to next color theme", app.action_cycle_theme),
             ("Sync documents", "Sync knowledge base", self._action_sync),
+            (
+                "Generate wiki pages",
+                "Summarize every indexed document into the wiki",
+                self._action_wiki_generate,
+            ),
             ("Show version", "Display lilbee version", self._action_version),
             (
                 "Reset knowledge base",
@@ -147,6 +153,9 @@ class LilbeeCommandProvider(Provider):
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         self.screen.app.push_screen(SetupWizard())
+
+    def _action_wiki_generate(self) -> None:
+        self.screen.app.notify(msg.CMD_WIKI_USAGE)
 
     def _action_noop(self) -> None:
         self.screen.app.notify("Type '/reset confirm' in chat to reset")
