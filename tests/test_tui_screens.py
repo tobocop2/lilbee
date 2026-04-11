@@ -1462,6 +1462,23 @@ async def test_chat_action_complete_cycle():
                 assert "qwen:latest" in inp.value
 
 
+async def test_chat_tab_completes_alias_prefix():
+    """Pressing Tab on '/cat' expands to the /catalog alias."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Input
+
+        inp = app.screen.query_one("#chat-input", Input)
+        inp.focus()
+        for key in ("slash", "c", "a", "t"):
+            await pilot.press(key)
+        await pilot.pause()
+        assert inp.value == "/cat"
+        await pilot.press("tab")
+        await pilot.pause()
+        assert inp.value == "/catalog"
+
+
 async def test_chat_action_complete_cycle_no_selection():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
