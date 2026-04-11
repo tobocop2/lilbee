@@ -74,6 +74,7 @@ class WikiScreen(Screen[None]):
         from textual.widgets import Footer
 
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Horizontal(
             Vertical(
@@ -94,6 +95,7 @@ class WikiScreen(Screen[None]):
             ),
             id="wiki-layout",
         )
+        yield TaskBar()
         yield ViewTabs()
         yield Footer()
 

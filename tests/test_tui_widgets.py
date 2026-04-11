@@ -183,6 +183,12 @@ class TestHelpPanel:
 
 
 class _TaskBarApp(App):
+    def __init__(self) -> None:
+        super().__init__()
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+        self.task_bar = TaskBarController(self)
+
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -301,15 +307,15 @@ class TestTaskBar:
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
-        """TaskBar is accessible via app.task_bar from other screens."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        """TaskBarController is accessible via app.task_bar from other screens."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            app.task_bar = bar
-            assert app.task_bar is bar
+            assert isinstance(app.task_bar, TaskBarController)
+            assert bar.queue is app.task_bar.queue
 
 
 class _ModelBarApp(App):
@@ -2455,6 +2461,29 @@ class TestTaskBarAdditional:
             )
             bar._render_task_panel("nonexistent", task)  # should not raise
             bar._render_task_panel("nonexistent", None)  # should not raise
+
+    async def test_on_queue_change_from_worker_thread(self) -> None:
+        """Queue notifications fired from a background thread must marshal back."""
+        import threading
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+
+            called = threading.Event()
+
+            def worker() -> None:
+                bar._on_queue_change()
+                called.set()
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join(timeout=2)
+            await pilot.pause()
+            assert called.is_set()
 
     async def test_render_task_panel_queued_status(self) -> None:
         """_render_task_panel with QUEUED status uses fallback icon."""

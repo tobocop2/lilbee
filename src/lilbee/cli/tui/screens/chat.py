@@ -36,7 +36,7 @@ from lilbee.query import ChatMessage
 from lilbee.services import get_services, reset_services
 
 if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
+    from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
 log = logging.getLogger(__name__)
 
@@ -113,17 +113,16 @@ class ChatScreen(Screen[None]):
         self._history_index: int = -1
 
     @property
-    def _task_bar(self) -> TaskBar:
-        """The app-level TaskBar (created by LilbeeApp)."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar as _TaskBar
-
-        bar = getattr(self.app, "task_bar", None)  # test apps lack task_bar
-        if isinstance(bar, _TaskBar):
-            return bar
-        msg_text = "App does not have a TaskBar"
-        raise RuntimeError(msg_text)
+    def _task_bar(self) -> TaskBarController:
+        """The app-level TaskBarController.
+        Always present: LilbeeApp creates one in `__init__`, and the screen's
+        own TaskBar widget lazy-creates one if a bare test harness omits it.
+        """
+        return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
         yield ModelBar(id="model-bar")
         yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
         yield VerticalScroll(id="chat-log")
@@ -137,6 +136,7 @@ class ChatScreen(Screen[None]):
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
             )
+        yield TaskBar()
         yield ViewTabs()
         yield Footer()
 
