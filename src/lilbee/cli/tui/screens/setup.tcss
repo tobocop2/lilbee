@@ -72,9 +72,22 @@ SetupWizard.-downloading #setup-progress {
     display: block;
 }
 
+ModelCard {
+    border: tall transparent;
+}
+
 ModelCard.-selected {
     border-left: thick $success;
     background: $success 10%;
+}
+
+GridSelect:focus ModelCard.-highlight {
+    border: tall $primary;
+    background: $panel;
+}
+
+GridSelect:focus ModelCard.-highlight.-selected {
+    border-left: thick $success;
 }
 
 .section-heading {
