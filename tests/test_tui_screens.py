@@ -5233,7 +5233,7 @@ async def test_setup_wizard_on_partial_success():
 
 
 async def test_setup_wizard_grid_leave_down_walks_focus_forward():
-    """Arrow-down past the last card advances focus out of the grid (bb-8epo)."""
+    """Arrow-down past the last card advances focus out of the grid."""
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.grid_select import GridSelect
 
@@ -5257,7 +5257,7 @@ async def test_setup_wizard_grid_leave_down_walks_focus_forward():
 
 
 async def test_setup_wizard_grid_leave_up_walks_focus_backward():
-    """Arrow-up past the first card walks focus backward (bb-8epo)."""
+    """Arrow-up past the first card walks focus backward."""
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.grid_select import GridSelect
 
