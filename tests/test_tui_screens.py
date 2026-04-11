@@ -5291,10 +5291,19 @@ async def test_setup_wizard_on_download_progress():
             assert isinstance(screen, SetupWizard)
             from lilbee.catalog import DownloadProgress
 
+            cm = _make_catalog_model(name="prog-m")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
+            await pilot.pause()
             screen._on_download_progress(
                 lambda fn, *a: fn(*a),
+                cm.ref,
                 DownloadProgress(percent=50, detail="25/50 MB", is_cache_hit=False),
             )
+            await pilot.pause()
+            row = screen._download_rows[cm.ref]
+            assert "50" in str(row.label.content)
+            assert row.bar.progress == 50
 
 
 async def test_setup_wizard_handle_download_error_401():
@@ -5307,15 +5316,17 @@ async def test_setup_wizard_handle_download_error_401():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="gated")
-            result = screen._handle_download_error(
+            cm = _make_catalog_model(name="gated", display_name="Gated")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
+            screen._handle_download_error(
                 lambda fn, *a: fn(*a),
                 PermissionError("401 Unauthorized"),
                 cm,
                 is_first=True,
-                total=2,
             )
-            assert result is True
+            row = screen._download_rows[cm.ref]
+            assert "requires login" in str(row.label.content)
 
 
 async def test_setup_wizard_handle_download_error_partial():
@@ -5328,16 +5339,18 @@ async def test_setup_wizard_handle_download_error_partial():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="embed-fail")
+            cm = _make_catalog_model(name="embed-fail", display_name="EmbedFail")
+            screen._download_models = [cm]
+            screen._mount_download_rows()
             with patch("lilbee.settings.set_value"), patch("lilbee.services.reset_services"):
-                result = screen._handle_download_error(
+                screen._handle_download_error(
                     lambda fn, *a: fn(*a),
                     Exception("download failed"),
                     cm,
                     is_first=False,
-                    total=2,
                 )
-            assert result is True
+            row = screen._download_rows[cm.ref]
+            assert "download failed" in str(row.label.content)
 
 
 async def test_setup_wizard_download_progress_callback():
@@ -5351,7 +5364,7 @@ async def test_setup_wizard_download_progress_callback():
             screen = app.screen
             assert isinstance(screen, SetupWizard)
 
-            cm = _make_catalog_model(name="prog-m")
+            cm = _make_catalog_model(name="prog-m", display_name="ProgM")
             screen._download_models = [cm]
 
             def _fake(model, on_progress=None):
@@ -5360,11 +5373,57 @@ async def test_setup_wizard_download_progress_callback():
                     on_progress(50 * 1024 * 1024, 50 * 1024 * 1024)
 
             with (
-                patch("lilbee.catalog.download_model", side_effect=_fake),
+                patch("lilbee.cli.tui.screens.setup.download_model", side_effect=_fake),
                 patch("lilbee.settings.set_value"),
                 patch("lilbee.services.reset_services"),
             ):
                 screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+
+            row = screen._download_rows[cm.ref]
+            assert "done" in str(row.label.content)
+            assert row.bar.progress == 100
+
+
+async def test_setup_wizard_two_downloads_show_independent_rows():
+    """Two concurrent downloads render side-by-side with independent labels and bars."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            cm_chat = _make_catalog_model(name="chat-x", display_name="ChatX")
+            cm_embed = _make_catalog_model(name="embed-y", display_name="EmbedY")
+            screen._download_models = [cm_chat, cm_embed]
+            screen._mount_download_rows()
+            await pilot.pause()
+
+            # Both rows exist before any downloads start.
+            assert cm_chat.ref in screen._download_rows
+            assert cm_embed.ref in screen._download_rows
+            chat_row = screen._download_rows[cm_chat.ref]
+            embed_row = screen._download_rows[cm_embed.ref]
+            assert "ChatX" in str(chat_row.label.content)
+            assert "EmbedY" in str(embed_row.label.content)
+
+            # Simulate chat finishing, then embed progressing mid-way.
+            screen._mark_row_done(cm_chat.ref)
+            screen._update_row(cm_embed.ref, 40, "20/50 MB")
+            await pilot.pause()
+
+            # Chat row stays at 100% with its own label intact.
+            assert chat_row.bar.progress == 100
+            assert "done" in str(chat_row.label.content)
+            assert "ChatX" in str(chat_row.label.content)
+
+            # Embed row shows its independent 40% state.
+            assert embed_row.bar.progress == 40
+            assert "40" in str(embed_row.label.content)
+            assert "EmbedY" in str(embed_row.label.content)
 
 
 def test_param_sort_value_with_match():
