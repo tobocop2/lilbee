@@ -103,9 +103,10 @@ class LilbeeApp(App[None]):
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self, *, auto_sync: bool = False, initial_view: str | None = None) -> None:
         super().__init__()
         self._auto_sync = auto_sync
+        self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
         self._theme_index = 0
         self.last_quit_time: float = 0.0
@@ -126,6 +127,8 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         self.push_screen(ChatScreen(auto_sync=self._auto_sync))
+        if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
+            self.switch_view(self._initial_view)
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)

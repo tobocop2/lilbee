@@ -26,6 +26,20 @@ class TestModelSource:
     def test_members(self) -> None:
         assert set(ModelSource) == {ModelSource.NATIVE, ModelSource.LITELLM}
 
+    def test_parse_none_and_empty_return_none(self) -> None:
+        assert ModelSource.parse(None) is None
+        assert ModelSource.parse("") is None
+
+    def test_parse_valid_values(self) -> None:
+        assert ModelSource.parse("native") is ModelSource.NATIVE
+        assert ModelSource.parse("litellm") is ModelSource.LITELLM
+
+    def test_parse_invalid_raises_value_error(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="invalid source 'bogus'"):
+            ModelSource.parse("bogus")
+
 
 def _install_registry_model(
     models_dir: Path,
@@ -266,7 +280,7 @@ class TestModelManagerPull:
         fake_entry = mock.Mock()
         fake_entry.name = "test-model"
 
-        def fake_download(entry: object) -> Path:
+        def fake_download(entry: object, *, on_progress: object = None) -> Path:
             path = models_dir / f"{entry.name}.gguf"
             path.write_text("fake model")
             return path
@@ -279,7 +293,7 @@ class TestModelManagerPull:
             result = mgr.pull("test-model", ModelSource.NATIVE)
 
         mock_find.assert_called_once_with("test-model")
-        mock_dl.assert_called_once_with(fake_entry)
+        mock_dl.assert_called_once_with(fake_entry, on_progress=None)
         assert result is not None
         assert result.name == "test-model.gguf"
 

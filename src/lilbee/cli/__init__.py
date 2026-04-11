@@ -14,6 +14,9 @@ from lilbee.cli.helpers import (
     perform_reset,
     sync_result_to_json,
 )
+from lilbee.cli.model import model_app
+
+app.add_typer(model_app)
 
 __all__ = [
     "CHUNK_PREVIEW_LEN",
