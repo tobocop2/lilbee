@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 from textual import containers, widgets
 from textual.app import ComposeResult
@@ -15,6 +16,8 @@ from lilbee.models import ModelTask
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
 
+_CSS_FILE = Path(__file__).parent / "model_card.tcss"
+
 MIDDLE_DOT = "·"
 
 _TASK_COLORS: dict[str, str] = {
@@ -26,6 +29,12 @@ _TASK_COLORS: dict[str, str] = {
 
 class ModelCard(containers.VerticalGroup):
     """A single model card displaying name, task pill, specs, and status."""
+
+    # Widget CSS lives in model_card.tcss so it gets syntax highlighting and
+    # matches the convention used for screens. Textual's Widget class only
+    # supports DEFAULT_CSS (there is no widget-level CSS_PATH), so we load the
+    # file once at import time.
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     selected: reactive[bool] = reactive(False)
 
