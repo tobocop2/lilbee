@@ -107,6 +107,17 @@ class ListModelsResult(BaseModel):
     models: list[ModelEntry]
     total: int
 
+    def __rich__(self) -> Table:
+        table = Table(title="Installed models")
+        table.add_column("Name", style=theme.ACCENT)
+        table.add_column("Source", style=theme.MUTED)
+        table.add_column("Task")
+        table.add_column("Size", justify="right")
+        for entry in self.models:
+            size = f"{entry.size_gb:.2f} GB" if entry.size_gb is not None else ""
+            table.add_row(entry.name, entry.source, entry.task or "", size)
+        return table
+
 
 class CatalogEntryData(BaseModel):
     name: str
@@ -170,6 +181,28 @@ class ShowModelResult(BaseModel):
     source: str | None = None
     path: str | None = None
     manifest: ManifestData | None = None
+
+    def __rich__(self) -> str:
+        lines = [f"[{theme.ACCENT}]{self.model}[/{theme.ACCENT}]"]
+        if self.catalog is not None:
+            lines.extend(
+                [
+                    f"  display_name: {self.catalog.display_name}",
+                    f"  task:         {self.catalog.task}",
+                    f"  size_gb:      {self.catalog.size_gb}",
+                    f"  min_ram_gb:   {self.catalog.min_ram_gb}",
+                    f"  hf_repo:      {self.catalog.hf_repo}",
+                    f"  description:  {self.catalog.description}",
+                ]
+            )
+        lines.append(f"  installed:    {self.installed}")
+        if self.source:
+            lines.append(f"  source:       {self.source}")
+        if self.path:
+            lines.append(f"  path:         {self.path}")
+        if self.manifest is not None:
+            lines.append(f"  downloaded:   {self.manifest.downloaded_at}")
+        return "\n".join(lines)
 
 
 class PullResult(BaseModel):
@@ -357,37 +390,6 @@ def remove_model_data(
     )
 
 
-def _render_list_table(models: list[ModelEntry]) -> None:
-    table = Table(title="Installed models")
-    table.add_column("Name", style=theme.ACCENT)
-    table.add_column("Source", style=theme.MUTED)
-    table.add_column("Task")
-    table.add_column("Size", justify="right")
-    for entry in models:
-        size = f"{entry.size_gb:.2f} GB" if entry.size_gb is not None else ""
-        table.add_row(entry.name, entry.source, entry.task or "", size)
-    console.print(table)
-
-
-def _render_show_human(ref: str, data: ShowModelResult) -> None:
-    console.print(f"[{theme.ACCENT}]{ref}[/{theme.ACCENT}]")
-    cat = data.catalog
-    if cat is not None:
-        console.print(f"  display_name: {cat.display_name}")
-        console.print(f"  task:         {cat.task}")
-        console.print(f"  size_gb:      {cat.size_gb}")
-        console.print(f"  min_ram_gb:   {cat.min_ram_gb}")
-        console.print(f"  hf_repo:      {cat.hf_repo}")
-        console.print(f"  description:  {cat.description}")
-    console.print(f"  installed:    {data.installed}")
-    if data.source:
-        console.print(f"  source:       {data.source}")
-    if data.path:
-        console.print(f"  path:         {data.path}")
-    if data.manifest is not None:
-        console.print(f"  downloaded:   {data.manifest.downloaded_at}")
-
-
 model_app = typer.Typer(
     name="model",
     help="Manage installed and available models (pull / list / show / rm / browse).",
@@ -440,7 +442,7 @@ def list_cmd(
     if not data.models:
         console.print("No models installed.")
         return
-    _render_list_table(data.models)
+    console.print(data)
 
 
 @model_app.command("show")
@@ -464,7 +466,7 @@ def show_cmd(
     if cfg.json_mode:
         json_output(data.model_dump())
         return
-    _render_show_human(ref, data)
+    console.print(data)
 
 
 def _run_pull(
