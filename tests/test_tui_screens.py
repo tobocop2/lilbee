@@ -4733,13 +4733,7 @@ async def test_setup_wizard_mounts_with_recommendations():
 
 
 async def test_setup_wizard_model_cards_render_compact():
-    """Wizard ModelCards render compact instead of stretching to fill the grid row.
-
-    Regression: setup.tcss had no ModelCard rules, so cards fell back to grid
-    defaults and rendered ~22 rows tall each, eating almost the whole viewport.
-    The base layout now lives in ModelCard.DEFAULT_CSS so both the setup wizard
-    and the catalog share it.
-    """
+    """Wizard ModelCards render in the compact layout, not stretched to fill the grid."""
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
