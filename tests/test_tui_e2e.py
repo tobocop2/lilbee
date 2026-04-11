@@ -1390,32 +1390,33 @@ class TestSettingsInteractions:
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
         """Toggling a boolean checkbox updates cfg.
 
-        This dispatches ``Checkbox.Changed`` synchronously rather than flipping
-        the reactive and waiting for ``pilot.pause()`` to drain the message
-        queue. ``pilot.pause()`` uses ``wait_for_idle(0)`` which can return
-        before a message posted from a reactive watcher has propagated to the
-        ancestor screen's ``@on`` handler on slower runners (observed on
-        Windows Python 3.11 and 3.12), leading to flaky failures.
+        Drives the real user gesture: focus the Checkbox and press space.
+        This covers the full binding path (keyboard dispatch -> Checkbox
+        toggle -> reactive watcher -> Checkbox.Changed bubbles to
+        SettingsScreen -> ``_on_checkbox_save`` writes cfg). Uses a tall
+        enough test size so the widget is in the visible scroll region.
         """
         from textual.widgets import Checkbox
 
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 120)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
 
             checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
             initial = checkbox.value
-            with checkbox.prevent(Checkbox.Changed):
-                checkbox.value = not initial
-            event = Checkbox.Changed(checkbox, checkbox.value)
-            app.screen._on_checkbox_save(event)
+            checkbox.focus()
             await pilot.pause()
-            assert cfg.show_reasoning != initial
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert checkbox.value != initial
             assert cfg.show_reasoning == checkbox.value
+            assert cfg.show_reasoning != initial
 
     async def test_read_only_fields_have_no_editor(self, _mock_resolve):
         """Read-only settings do not have an editor widget."""
