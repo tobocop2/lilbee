@@ -1081,9 +1081,7 @@ class TestCatalogInteractions:
                 assert search.display is False
 
     async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
-        """After submitting search in grid view, focus returns to the visible
-        GridSelect instead of being trapped on the hidden DataTable.
-        Regression for bb-2g12: CatalogScreen freeze after using /."""
+        """Submitting search in grid view returns focus to the GridSelect."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1113,8 +1111,7 @@ class TestCatalogInteractions:
                 assert isinstance(focused, GridSelect)
 
     async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
-        """After submitting search in list view, focus returns to the
-        DataTable. Covers the list-view branch of _close_search."""
+        """Submitting search in list view returns focus to the DataTable."""
         from textual.widgets import DataTable, Input
 
         from lilbee.cli.tui.app import LilbeeApp
@@ -1142,9 +1139,7 @@ class TestCatalogInteractions:
                 assert isinstance(focused, DataTable)
 
     async def test_search_escape_closes_and_unfreezes(self, _mock_resolve):
-        """Pressing Escape while the search input is open closes it and
-        restores focus to the grid, so subsequent bindings work again.
-        Regression for bb-2g12."""
+        """Escape closes the search and restores focus so catalog bindings work again."""
         from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
