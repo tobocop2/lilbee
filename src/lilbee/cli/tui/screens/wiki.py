@@ -100,6 +100,10 @@ class WikiScreen(Screen[None]):
     def on_mount(self) -> None:
         self._load_pages()
 
+    def reload(self) -> None:
+        """Refresh the sidebar from disk. Public entry point for external callers."""
+        self._load_pages()
+
     def _load_pages(self, filter_text: str = "") -> None:
         """Populate the sidebar with wiki pages, optionally filtered."""
         from lilbee.wiki.browse import list_pages

@@ -83,6 +83,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/models", "_cmd_catalog", aliases=("/m",), help_text="Browse catalog"),
     SlashCommand("/setup", "_cmd_setup", help_text="Run setup wizard"),
     SlashCommand(
+        "/wiki",
+        "_cmd_wiki",
+        args_hint="generate [source]",
+        help_text="Generate wiki pages for indexed sources",
+    ),
+    SlashCommand(
         "/remove",
         "_cmd_remove",
         aliases=(),

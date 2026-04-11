@@ -44,6 +44,16 @@ _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
 
+_WIKI_SUBCMD_GENERATE = "generate"
+_WIKI_STAGE_PREPARING = "preparing"
+# Monotonic fractions per wiki pipeline stage (see lilbee.wiki.gen._emit calls).
+# Used to advance the progress bar smoothly across preparing → generating → faithfulness_check.
+_WIKI_STAGE_FRACTIONS: dict[str, float] = {
+    _WIKI_STAGE_PREPARING: 0.0,
+    "generating": 0.33,
+    "faithfulness_check": 0.67,
+}
+
 
 class ChatStatusLine(Label):
     """One-line status bar showing the current model as a pill badge."""
@@ -585,6 +595,99 @@ class ChatScreen(Screen[None]):
 
     def _cmd_version(self, _args: str) -> None:
         self.notify(msg.CHAT_VERSION.format(version=get_version()))
+
+    def _cmd_wiki(self, args: str) -> None:
+        if not cfg.wiki:
+            self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
+            return
+        parts = args.split()
+        if not parts or parts[0] != _WIKI_SUBCMD_GENERATE:
+            self.notify(msg.CMD_WIKI_USAGE, severity="warning")
+            return
+        requested = parts[1] if len(parts) > 1 else None
+        try:
+            sources = get_services().store.get_sources()
+        except Exception:
+            log.warning("Failed to list sources for /wiki", exc_info=True)
+            sources = []
+        names = [s["filename"] for s in sources if s.get("filename")]
+        if not names:
+            self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
+            return
+        if requested is not None:
+            if requested not in names:
+                self.notify(msg.CMD_WIKI_NOT_FOUND.format(name=requested), severity="error")
+                return
+            targets = [requested]
+        else:
+            targets = names
+        task_bar = self._task_bar
+        task_id = task_bar.add_task(f"Wiki ({len(targets)})", "wiki")
+        task_bar.queue.advance("wiki")
+        self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
+        self._run_wiki_background(targets, task_id)
+
+    @work(thread=True)
+    def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
+        """Generate wiki pages for each source in a background thread."""
+        from lilbee.wiki.gen import generate_summary_page
+
+        task_bar = self._task_bar
+        svc = get_services()
+        total = len(sources)
+        generated = 0
+        try:
+            for idx, source in enumerate(sources):
+                base_pct = int(idx * 100 / total)
+                self.app.call_from_thread(
+                    task_bar.update_task,
+                    task_id,
+                    base_pct,
+                    msg.CMD_WIKI_PROGRESS.format(name=source, stage=_WIKI_STAGE_PREPARING),
+                )
+                chunks = svc.store.get_chunks_by_source(source)
+                if not chunks:
+                    continue
+
+                def _on_progress(
+                    stage: str,
+                    _data: dict[str, object],
+                    source_name: str = source,
+                    source_idx: int = idx,
+                ) -> None:
+                    fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
+                    pct = int((source_idx + fraction) * 100 / total)
+                    self.app.call_from_thread(
+                        task_bar.update_task,
+                        task_id,
+                        pct,
+                        msg.CMD_WIKI_PROGRESS.format(name=source_name, stage=stage),
+                    )
+
+                result = generate_summary_page(
+                    source, chunks, svc.provider, svc.store, on_progress=_on_progress
+                )
+                if result is not None:
+                    generated += 1
+            self.app.call_from_thread(task_bar.complete_task, task_id)
+            self.app.call_from_thread(
+                self.notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
+            )
+            self.app.call_from_thread(self._refresh_wiki_screen)
+        except Exception as exc:
+            log.warning("Wiki generation failed", exc_info=True)
+            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
+            self.app.call_from_thread(
+                self.notify, msg.CMD_WIKI_FAILED.format(error=exc), severity="error"
+            )
+
+    def _refresh_wiki_screen(self) -> None:
+        """If a WikiScreen is mounted, reload its sidebar after generation."""
+        from lilbee.cli.tui.screens.wiki import WikiScreen
+
+        for screen in self.app.screen_stack:
+            if isinstance(screen, WikiScreen):
+                screen.reload()
 
     def _cmd_vision(self, args: str) -> None:
         if args == "off":
