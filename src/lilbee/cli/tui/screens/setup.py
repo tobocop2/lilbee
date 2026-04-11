@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Label, ProgressBar, Static
 
@@ -100,6 +100,14 @@ def _card_download_size(card: ModelCard | None) -> float:
     return 0.0
 
 
+class _DownloadRow(NamedTuple):
+    """Per-model progress row: display name + the widgets that render its state."""
+
+    display_name: str
+    label: Label
+    bar: ProgressBar
+
+
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
     """Return the CatalogModel to download for a non-installed card, or None."""
     if card and not card.row.installed:
@@ -126,6 +134,7 @@ class SetupWizard(Screen[str | None]):
         self._recommended_chat: CatalogModel | None = None
         self._recommended_embed: CatalogModel | None = None
         self._download_models: list[CatalogModel] = []
+        self._download_rows: dict[str, _DownloadRow] = {}
 
     @property
     def _selected_chat(self) -> str | None:
@@ -146,8 +155,7 @@ class SetupWizard(Screen[str | None]):
         yield Button(msg.SETUP_INSTALL_BUTTON, id="setup-action", disabled=True)
         yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse", variant="default")
         yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
-        yield Label("", id="setup-status")
-        yield ProgressBar(total=100, show_eta=False, id="setup-progress")
+        yield VerticalGroup(id="setup-downloads")
 
     def on_mount(self) -> None:
         self._build_grid()
@@ -291,15 +299,30 @@ class SetupWizard(Screen[str | None]):
         self.query_one("#setup-action", Button).disabled = True
         self._run_downloads()
 
+    def _mount_download_rows(self) -> None:
+        """Mount one label+progress row per pending download before starting."""
+        container = self.query_one("#setup-downloads", VerticalGroup)
+        container.remove_children()
+        self._download_rows = {}
+        for model in self._download_models:
+            label = Label(
+                msg.SETUP_DOWNLOAD_WAITING.format(name=model.display_name),
+                classes="download-label",
+            )
+            bar = ProgressBar(total=100, show_eta=False, classes="download-bar")
+            container.mount(label, bar)
+            self._download_rows[model.ref] = _DownloadRow(model.display_name, label, bar)
+
     @work(thread=True)
     def _run_downloads(self) -> None:
         """Download all selected models in a background thread."""
         self._download_loop(self.app.call_from_thread)  # pragma: no cover
 
-    def _on_download_progress(self, notify: Callable[..., None], p: DownloadProgress) -> None:
-        """Handle a single download progress update."""
-        notify(self._update_progress, p.percent)
-        notify(self._set_status, f"Downloading... {p.detail} ({p.percent}%)")
+    def _on_download_progress(
+        self, notify: Callable[..., None], model_ref: str, p: DownloadProgress
+    ) -> None:
+        """Handle a single download progress update for the given model."""
+        notify(self._update_row, model_ref, p.percent, p.detail)
 
     def _handle_download_error(
         self,
@@ -308,56 +331,59 @@ class SetupWizard(Screen[str | None]):
         model: CatalogModel,
         *,
         is_first: bool,
-        total: int,
-    ) -> bool:
-        """Handle a download error. Returns True if the loop should stop."""
+    ) -> None:
+        """Mark the row as failed and, if the chat model succeeded first, save partial state."""
         log.warning("Download failed for %s", model.ref, exc_info=True)
         error_msg = str(exc)
         if "401" in error_msg or "PermissionError" in error_msg:
             error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
-        notify(self._set_status, f"Error: {error_msg}")
-        if is_first and total > 1:
-            return True
+        notify(self._mark_row_failed, model.ref, error_msg)
         if not is_first:
             notify(self._on_partial_success)
-        return True
 
     def _download_loop(self, notify: Callable[..., None]) -> None:
         """Download all selected models sequentially."""
-        total = len(self._download_models)
+        notify(self._mount_download_rows)
         for idx, model in enumerate(self._download_models, 1):
             is_first = idx == 1
-            notify(
-                self._set_status,
-                msg.SETUP_DOWNLOADING_N.format(name=model.display_name, current=idx, total=total),
-            )
-            notify(self._update_progress, 0)
+            notify(self._update_row, model.ref, 0, msg.SETUP_DOWNLOAD_STARTING)
 
-            callback = make_download_callback(lambda p: self._on_download_progress(notify, p))
+            def _progress(p: DownloadProgress, ref: str = model.ref) -> None:
+                self._on_download_progress(notify, ref, p)
+
+            callback = make_download_callback(_progress)
             try:
                 download_model(model, on_progress=callback)
             except Exception as exc:
-                if self._handle_download_error(notify, exc, model, is_first=is_first, total=total):
-                    return
+                self._handle_download_error(notify, exc, model, is_first=is_first)
+                return
+            notify(self._mark_row_done, model.ref)
 
         notify(self._on_all_downloads_complete)
 
     def _on_all_downloads_complete(self) -> None:
-        self._set_status(msg.SETUP_ALL_DONE)
-        self._update_progress(100)
         self._save_and_dismiss("completed")
 
     def _on_partial_success(self) -> None:
         """Chat downloaded but embedding failed."""
-        self._set_status(msg.SETUP_PARTIAL_FAIL)
         self._selections[ModelTask.EMBEDDING] = (None, None)
         self._save_and_dismiss("completed")
 
-    def _set_status(self, text: str) -> None:
-        self.query_one("#setup-status", Label).update(text)
+    def _update_row(self, model_ref: str, percent: int, detail: str) -> None:
+        row = self._download_rows[model_ref]
+        row.label.update(
+            msg.SETUP_DOWNLOAD_ACTIVE.format(name=row.display_name, detail=detail, percent=percent)
+        )
+        row.bar.update(total=100, progress=percent)
 
-    def _update_progress(self, percent: int) -> None:
-        self.query_one("#setup-progress", ProgressBar).update(total=100, progress=percent)
+    def _mark_row_done(self, model_ref: str) -> None:
+        row = self._download_rows[model_ref]
+        row.label.update(msg.SETUP_DOWNLOAD_DONE.format(name=row.display_name))
+        row.bar.update(total=100, progress=100)
+
+    def _mark_row_failed(self, model_ref: str, error: str) -> None:
+        row = self._download_rows[model_ref]
+        row.label.update(msg.SETUP_DOWNLOAD_FAILED.format(name=row.display_name, error=error))
 
     def _save_and_dismiss(self, result: str) -> None:
         """Persist selected models to config and dismiss."""

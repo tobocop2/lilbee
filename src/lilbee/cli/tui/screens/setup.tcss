@@ -51,24 +51,22 @@
     width: 100%;
 }
 
-#setup-status {
-    height: 1;
-    padding: 0 1;
-    color: $text-muted;
-    display: none;
-}
-
-#setup-progress {
-    height: 1;
+#setup-downloads {
+    height: auto;
     margin: 0 1;
     display: none;
 }
 
-SetupWizard.-downloading #setup-status {
-    display: block;
+#setup-downloads .download-label {
+    padding: 0 1;
+    color: $text-muted;
 }
 
-SetupWizard.-downloading #setup-progress {
+#setup-downloads .download-bar {
+    height: 1;
+}
+
+SetupWizard.-downloading #setup-downloads {
     display: block;
 }
 
