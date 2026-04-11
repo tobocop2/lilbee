@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from textual.command import Hit, Hits, Provider
 
 from lilbee import settings
+from lilbee.cli.tui import messages as msg
 from lilbee.config import cfg
 from lilbee.services import get_services
 
@@ -154,8 +155,6 @@ class LilbeeCommandProvider(Provider):
         self.screen.app.push_screen(SetupWizard())
 
     def _action_wiki_generate(self) -> None:
-        from lilbee.cli.tui import messages as msg
-
         self.screen.app.notify(msg.CMD_WIKI_USAGE)
 
     def _action_noop(self) -> None:
