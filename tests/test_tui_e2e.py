@@ -1080,6 +1080,101 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 assert search.display is False
 
+    async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
+        """After submitting search in grid view, focus returns to the visible
+        GridSelect instead of being trapped on the hidden DataTable.
+        Regression for bb-2g12: CatalogScreen freeze after using /."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+                assert search.has_focus
+
+                search.value = "test"
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert search.display is False
+                focused = app.focused
+                assert focused is not None
+                assert focused.display
+                assert isinstance(focused, GridSelect)
+
+    async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
+        """After submitting search in list view, focus returns to the
+        DataTable. Covers the list-view branch of _close_search."""
+        from textual.widgets import DataTable, Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+                await pilot.press("v")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+
+                search.value = "test"
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert search.display is False
+                focused = app.focused
+                assert isinstance(focused, DataTable)
+
+    async def test_search_escape_closes_and_unfreezes(self, _mock_resolve):
+        """Pressing Escape while the search input is open closes it and
+        restores focus to the grid, so subsequent bindings work again.
+        Regression for bb-2g12."""
+        from textual.widgets import Input
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        with _mock_catalog_deps(), _mock_remote_models():
+            app = LilbeeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                app.switch_view("Catalog")
+                await pilot.pause()
+
+                await pilot.press("slash")
+                await pilot.pause()
+                search = app.screen.query_one("#catalog-search", Input)
+                assert search.display is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert search.display is False
+                # Still on the catalog screen -- escape only closed the search,
+                # it didn't pop back to Chat.
+                assert isinstance(app.screen, CatalogScreen)
+
+                # Bindings still work: toggle the view.
+                await pilot.press("v")
+                await pilot.pause()
+                assert app.screen.has_class("-list-view")
+
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
         from lilbee.cli.tui.app import LilbeeApp

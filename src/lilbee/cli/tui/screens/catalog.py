@@ -175,6 +175,15 @@ class CatalogScreen(Screen[None]):
         filter_input.display = True
         filter_input.focus()
 
+    def _close_search(self) -> None:
+        """Hide the search input and return focus to the visible view."""
+        self.query_one("#catalog-search", Input).display = False
+        with contextlib.suppress(Exception):
+            if self._grid_view:
+                self.query_one(GridSelect).focus()
+            else:
+                self.query_one("#catalog-table", DataTable).focus()
+
     @on(Input.Changed, "#catalog-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
         """Filter models when search input changes."""
@@ -186,9 +195,7 @@ class CatalogScreen(Screen[None]):
     @on(Input.Submitted, "#catalog-search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
         """Close filter on Enter."""
-        event.input.display = False
-        with contextlib.suppress(Exception):
-            self.query_one("#catalog-table", DataTable).focus()
+        self._close_search()
 
     def _fetch_hf_page(self) -> list[CatalogModel]:
         """Fetch one page of HF models for all task types (runs in worker thread)."""
@@ -527,6 +534,11 @@ class CatalogScreen(Screen[None]):
             )
 
     def action_go_back(self) -> None:
+        # Escape closes an open search first, so users aren't trapped.
+        search = self.query_one("#catalog-search", Input)
+        if search.display:
+            self._close_search()
+            return
         from lilbee.cli.tui.app import LilbeeApp
 
         if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
