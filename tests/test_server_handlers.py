@@ -879,6 +879,8 @@ class TestGetConfig:
         assert "concept_graph" in dumped
         assert "concept_boost_weight" in dumped
         assert "concept_max_per_chunk" in dumped
+        assert "expansion_guardrails" in dumped
+        assert "expansion_similarity_threshold" in dumped
         assert "llm_api_key" not in dumped
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections.abc import Generator, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -19,22 +20,22 @@ from typing_extensions import TypedDict
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
-from lilbee.store import CitationRecord, SearchChunk, Store, _cosine_sim
+from lilbee.store import CitationRecord, SearchChunk, Store, cosine_sim
 
 log = logging.getLogger(__name__)
 
 # Minimum token length — single characters carry no selection signal.
 _MIN_TOKEN_LEN = 2
 
+# Any run of non-alphanumeric characters (whitespace, punctuation,
+# hyphens) is treated as a word boundary so ``"state-of-the-art"``
+# becomes four tokens rather than collapsing into one.
+_TOKEN_SPLIT_RE = re.compile(r"\W+")
+
 
 def _tokenize(text: str) -> list[str]:
     """Lowercase alphanumeric tokens for IDF-weighted context selection."""
-    result: list[str] = []
-    for raw in text.lower().split():
-        word = "".join(ch for ch in raw if ch.isalnum())
-        if len(word) >= _MIN_TOKEN_LEN:
-            result.append(word)
-    return result
+    return [word for word in _TOKEN_SPLIT_RE.split(text.lower()) if len(word) >= _MIN_TOKEN_LEN]
 
 
 def _idf_weights(
@@ -45,16 +46,55 @@ def _idf_weights(
 
     ``log(N / (1 + df))`` is clamped to zero for terms that appear in
     (almost) every candidate chunk — the corpus-specific stopwords that
-    a hand-curated English list would otherwise approximate.
+    a hand-curated English list would otherwise approximate. The only
+    caller is ``select_context``, which short-circuits on empty
+    ``results``, so ``chunk_tokens`` is guaranteed non-empty here.
     """
     n = len(chunk_tokens)
-    if n == 0:
-        return {t: 0.0 for t in question_terms}
     df: dict[str, int] = {}
     for tokens in chunk_tokens:
         for term in tokens & question_terms:
             df[term] = df.get(term, 0) + 1
     return {t: max(0.0, math.log(n / (1 + df.get(t, 0)))) for t in question_terms}
+
+
+def _greedy_cover(
+    chunk_tokens: list[set[str]],
+    question_terms: set[str],
+    term_weights: dict[str, float],
+    budget: int,
+) -> list[int]:
+    """Greedy IDF-weighted set cover over candidate chunks.
+
+    Picks chunks whose distinctive (high-IDF) query terms contribute
+    the most uncovered weight until either the budget is exhausted or
+    no chunk can add anything new. Any remaining budget is filled in
+    retrieval order so callers always receive ``budget`` chunks when
+    that many are available.
+    """
+    selected: list[int] = []
+    covered: set[str] = set()
+    remaining = list(range(len(chunk_tokens)))
+    while remaining and len(selected) < budget:
+        best_pos = -1
+        best_gain = 0.0
+        for pos, idx in enumerate(remaining):
+            new_terms = (chunk_tokens[idx] & question_terms) - covered
+            gain = sum(term_weights[t] for t in new_terms)
+            if gain > best_gain:
+                best_gain = gain
+                best_pos = pos
+        if best_pos < 0:
+            break
+        chosen = remaining.pop(best_pos)
+        selected.append(chosen)
+        covered |= chunk_tokens[chosen] & question_terms
+
+    for idx in remaining:
+        if len(selected) >= budget:
+            break
+        selected.append(idx)
+    return selected
 
 
 class ChatMessage(TypedDict):
@@ -283,9 +323,7 @@ class Searcher:
         if not self._config.expansion_guardrails:
             return variants
         threshold = self._config.expansion_similarity_threshold
-        return [
-            (text, vec) for text, vec in variants if _cosine_sim(question_vec, vec) >= threshold
-        ]
+        return [(text, vec) for text, vec in variants if cosine_sim(question_vec, vec) >= threshold]
 
     def _concept_query_expansion(self, question: str) -> list[str]:
         if not self._config.concept_graph:
@@ -315,12 +353,19 @@ class Searcher:
     ) -> list[tuple[str, list[float]]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
+        Expansion is disabled entirely when both ``query_expansion_count``
+        is zero and concept-graph expansion is off — matching the old
+        early-return so ``LILBEE_QUERY_EXPANSION_COUNT=0`` remains an
+        off-switch for users who have ``cfg.concept_graph`` enabled.
+
         LLM expansions run through the similarity guardrail; concept-graph
         expansions bypass it because they come from deterministic graph
         traversal and are expected to be partial phrases with lower
         similarity to the full question.
         """
         count = self._config.query_expansion_count
+        if count <= 0 and not self._config.concept_graph:
+            return []
         try:
             llm_variants: list[tuple[str, list[float]]] = []
             if count > 0:
@@ -330,8 +375,8 @@ class Searcher:
             for concept in self._concept_query_expansion(question):
                 llm_variants.append((concept, self._embedder.embed(concept)))
             return llm_variants
-        except Exception:
-            log.debug("Query expansion failed", exc_info=True)
+        except (ConnectionError, OSError, RuntimeError) as exc:
+            log.warning("Query expansion disabled for this call: %s", exc, exc_info=True)
             return []
 
     def _should_skip_expansion(self, question: str) -> bool:
@@ -425,33 +470,9 @@ class Searcher:
         if not any(term_weights.values()):
             return results[:max_sources]
 
-        selected_indices: list[int] = []
-        covered: set[str] = set()
-        remaining = list(range(len(results)))
-        while remaining and len(selected_indices) < max_sources:
-            best_pos = -1
-            best_gain = 0.0
-            for pos, idx in enumerate(remaining):
-                new_terms = (chunk_tokens[idx] & question_terms) - covered
-                gain = sum(term_weights[t] for t in new_terms)
-                if gain > best_gain:
-                    best_gain = gain
-                    best_pos = pos
-            if best_pos < 0:
-                break
-            chosen_idx = remaining.pop(best_pos)
-            selected_indices.append(chosen_idx)
-            covered |= chunk_tokens[chosen_idx] & question_terms
-
-        # Fill any remaining budget in retrieval order so callers always
-        # receive ``max_sources`` chunks when that many are available.
-        for idx in remaining:
-            if len(selected_indices) >= max_sources:
-                break
-            selected_indices.append(idx)
-
-        selected_indices.sort()
-        return [results[i] for i in selected_indices]
+        selected = _greedy_cover(chunk_tokens, question_terms, term_weights, max_sources)
+        selected.sort()
+        return [results[i] for i in selected]
 
     def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.

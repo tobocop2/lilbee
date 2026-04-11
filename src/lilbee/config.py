@@ -150,11 +150,13 @@ class Config(BaseSettings):
     # Validate LLM-generated expansion variants to prevent query drift
     # by comparing the cosine similarity of the variant's embedding to
     # the original question's embedding.
-    expansion_guardrails: bool = True
+    expansion_guardrails: bool = ConfigField(default=True, writable=True)
 
     # Minimum cosine similarity (question vs variant embedding) for an
     # expansion variant to survive the guardrail. 0.5 accepts rephrases
-    # and related questions while rejecting semantic drift.
+    # and related questions while rejecting semantic drift. Calibrate
+    # per embedding model — dense 768-dim models cluster higher by
+    # default than contrastively-trained ones.
     expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # BM25 confidence score above which query expansion is skipped entirely.

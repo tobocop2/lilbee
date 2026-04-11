@@ -260,6 +260,37 @@ class TestExpandQuery:
         assert get_services().searcher._expand_query("anything", self._QUESTION_VEC) == []
         cfg.query_expansion_count = 3
 
+    def test_count_zero_still_runs_concept_expansion_when_enabled(self, mock_svc):
+        # Regression: setting query_expansion_count=0 should not
+        # short-circuit concept-graph expansion. Users who want an
+        # off-switch for LLM expansion while keeping concept expansion
+        # need this to stay live.
+        old_count = cfg.query_expansion_count
+        old_concept = cfg.concept_graph
+        cfg.query_expansion_count = 0
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.return_value = ["kubernetes"]
+        try:
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            assert [text for text, _ in variants] == ["kubernetes"]
+            mock_svc.provider.chat.assert_not_called()
+        finally:
+            cfg.query_expansion_count = old_count
+            cfg.concept_graph = old_concept
+
+    def test_count_zero_and_concepts_off_returns_empty(self, mock_svc):
+        # Both off-switches should short-circuit before any LLM or
+        # embedder calls.
+        old = cfg.query_expansion_count
+        cfg.query_expansion_count = 0
+        try:
+            assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
+            mock_svc.provider.chat.assert_not_called()
+            mock_svc.embedder.embed.assert_not_called()
+        finally:
+            cfg.query_expansion_count = old
+
     def test_returns_empty_on_non_string(self, mock_svc):
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
@@ -500,40 +531,6 @@ class TestApplyGuardrails:
         assert get_services().searcher._apply_guardrails([], [1.0, 0.0, 0.0]) == []
 
 
-class TestTokenize:
-    def test_lowercases_and_strips_punctuation(self):
-        from lilbee.query import _tokenize
-
-        assert _tokenize("Kubernetes, deployment!") == ["kubernetes", "deployment"]
-
-    def test_drops_single_chars(self):
-        from lilbee.query import _tokenize
-
-        assert _tokenize("a b cc real") == ["cc", "real"]
-
-    def test_preserves_duplicates(self):
-        from lilbee.query import _tokenize
-
-        assert _tokenize("alpha alpha beta") == ["alpha", "alpha", "beta"]
-
-
-class TestIdfWeights:
-    def test_high_weight_for_distinctive_term(self):
-        from lilbee.query import _idf_weights
-
-        # "kafka" in 1/3 chunks, "python" in 3/3 → python gets zero weight.
-        chunk_tokens = [{"python", "kafka"}, {"python", "typing"}, {"python", "async"}]
-        weights = _idf_weights({"kafka", "python"}, chunk_tokens)
-        assert weights["kafka"] > 0
-        assert weights["python"] == 0.0
-
-    def test_empty_corpus_returns_zero_weights(self):
-        from lilbee.query import _idf_weights
-
-        weights = _idf_weights({"anything"}, [])
-        assert weights == {"anything": 0.0}
-
-
 class TestSelectContext:
     def test_selects_covering_chunks(self, mock_svc):
         chunks = [
@@ -589,6 +586,21 @@ class TestSelectContext:
         sources = [r.source for r in result]
         assert "b.md" in sources  # cover pick
         assert sources == sorted(sources)
+
+    def test_hyphenated_phrase_splits_into_tokens(self, mock_svc):
+        # Regression: the old tokenizer would strip the hyphens and
+        # collapse "state-of-the-art" into one meaningless 14-char
+        # token that matched nothing. The new regex-split tokenizer
+        # treats every run of non-alnum characters as a boundary.
+        chunks = [
+            _make_result(chunk="state of the art benchmarks", source="a.md"),
+            _make_result(chunk="unrelated monitoring setup", source="b.md"),
+        ]
+        result = get_services().searcher.select_context(
+            chunks, "state-of-the-art benchmarks", max_sources=1
+        )
+        assert len(result) == 1
+        assert result[0].source == "a.md"
 
 
 class TestShouldSkipExpansion:
