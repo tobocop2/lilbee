@@ -5232,6 +5232,54 @@ async def test_setup_wizard_on_partial_success():
             assert screen._selections[ModelTask.EMBEDDING] == (None, None)
 
 
+async def test_setup_wizard_grid_leave_down_walks_focus_forward():
+    """Arrow-down past the last card advances focus out of the grid (bb-8epo)."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert grids, "expected at least one GridSelect in the wizard"
+            last_grid = grids[-1]
+            last_grid.focus()
+            last_grid.highlight_last()
+            await pilot.pause()
+            assert app.focused is last_grid
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.focused is not last_grid
+            assert app.focused is not None
+
+
+async def test_setup_wizard_grid_leave_up_walks_focus_backward():
+    """Arrow-up past the first card walks focus backward (bb-8epo)."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert len(grids) >= 2, "expected multiple GridSelects in the wizard"
+            second_grid = grids[1]
+            second_grid.focus()
+            second_grid.highlight_first()
+            await pilot.pause()
+            assert app.focused is second_grid
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.focused is not second_grid
+            assert app.focused is not None
+
+
 async def test_setup_wizard_on_download_progress():
     """_on_download_progress updates progress bar and status."""
     from lilbee.cli.tui.screens.setup import SetupWizard

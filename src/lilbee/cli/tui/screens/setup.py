@@ -266,6 +266,16 @@ class SetupWizard(Screen[str | None]):
         if task in self._selections:
             self._select_card(card, task)
 
+    @on(GridSelect.LeaveDown)
+    def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
+        """Arrow-down past the last card walks to the next focusable widget."""
+        self.focus_next()
+
+    @on(GridSelect.LeaveUp)
+    def _on_grid_leave_up(self, event: GridSelect.LeaveUp) -> None:
+        """Arrow-up past the first card walks to the previous focusable widget."""
+        self.focus_previous()
+
     @on(Button.Pressed, "#setup-browse")
     def _on_browse_catalog(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
