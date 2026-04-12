@@ -39,6 +39,24 @@ def _config_line(label: str, value: str, status: Content) -> Content:
     )
 
 
+def _ocr_label() -> str:
+    """Return a human-readable OCR status string."""
+    if cfg.enable_ocr is True:
+        return "enabled"
+    if cfg.enable_ocr is False:
+        return "disabled"
+    return "auto"
+
+
+def _ocr_pill() -> Content:
+    """Return a pill reflecting OCR status."""
+    if cfg.enable_ocr is True:
+        return pill("on", "$success", "$text")
+    if cfg.enable_ocr is False:
+        return pill("off", "$warning", "$text")
+    return pill("auto", "$accent", "$text")
+
+
 def _data_dir_pill() -> Content:
     """Return a pill based on whether the data directory exists."""
     if Path(cfg.data_dir).exists():
@@ -52,7 +70,7 @@ def _build_config_content() -> Content:
         _config_line("Data dir", str(cfg.data_dir), _data_dir_pill()),
         _config_line("Chat model", cfg.chat_model, _model_pill(cfg.chat_model)),
         _config_line("Embed model", cfg.embedding_model, _model_pill(cfg.embedding_model)),
-        _config_line("Vision model", cfg.vision_model or "(none)", _model_pill(cfg.vision_model)),
+        _config_line("OCR", _ocr_label(), _ocr_pill()),
     ]
     return Content("\n").join(lines)
 
@@ -74,7 +92,7 @@ def _build_arch_content(info: ModelArchInfo) -> Content:
         Content.assemble(("Embed arch: ", "bold"), info.embed_arch),
         Content.assemble(("Handler: ", "bold"), info.active_handler),
     ]
-    if cfg.vision_model:
+    if info.vision_projector:
         lines.append(Content.assemble(("Vision proj: ", "bold"), info.vision_projector))
     return Content("\n").join(lines)
 

@@ -189,14 +189,14 @@ class TestTomlConfigFile:
             c = Config()
             assert c.system_prompt == "Be brief."
 
-    def test_vision_model_from_toml(self, tmp_path):
+    def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('vision_model = "maternion/LightOnOCR-2"\n')
+        toml_path.write_text("enable_ocr = true\n")
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.vision_model == "maternion/LightOnOCR-2"
+            assert c.enable_ocr is True
 
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -251,42 +251,6 @@ class TestTomlConfigFile:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.seed == 123
-
-
-class TestVisionModelConfig:
-    def test_default_vision_model_is_empty(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.vision_model == ""
-
-    def test_vision_model_env_override(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}):
-            c = Config()
-            assert c.vision_model == "minicpm-v"
-
-
-class TestVisionTimeoutConfig:
-    def test_valid_timeout_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "60.5"}):
-            c = Config()
-            assert c.vision_timeout == 60.5
-
-    def test_no_timeout_env_returns_default(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.vision_timeout == 120.0
-
-    def test_zero_timeout_means_no_limit(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "0"}):
-            c = Config()
-            assert c.vision_timeout == 0
-
-    def test_invalid_timeout_raises(self) -> None:
-        with (
-            mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "abc"}),
-            pytest.raises(ValueError),
-        ):
-            Config()
 
 
 class TestEnableOcrConfig:
@@ -586,8 +550,8 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_vision_model_allowed(self, tmp_path):
-        """vision_model is nullable — empty string is valid."""
+    def test_enable_ocr_none_allowed(self, tmp_path):
+        """enable_ocr is nullable, None means auto."""
         c = Config(
             data_root=tmp_path,
             documents_dir=tmp_path / "docs",
@@ -604,9 +568,9 @@ class TestEmptyStringValidation:
             max_distance=0.7,
             system_prompt="You are helpful.",
             ignore_dirs=frozenset(),
-            vision_model="",
+            enable_ocr=None,
         )
-        assert c.vision_model == ""
+        assert c.enable_ocr is None
 
 
 class TestEmptyStringToNone:

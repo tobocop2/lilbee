@@ -402,9 +402,6 @@ def load_llama(model_path: Path, *, embedding: bool) -> Any:
 
 def _is_vision_model(model: str) -> bool:
     """Check if a model name corresponds to a vision model in the catalog."""
-    if model == cfg.vision_model and cfg.vision_model:
-        return True
-
     from lilbee.catalog import FEATURED_VISION
 
     model_lower = model.lower()

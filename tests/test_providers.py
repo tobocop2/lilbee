@@ -1917,28 +1917,15 @@ class TestLoadLlama:
 
 
 class TestIsVisionModel:
-    def test_matches_config_vision_model(self) -> None:
-        """_is_vision_model matches cfg.vision_model."""
+    def test_no_match_for_unknown_model(self) -> None:
+        """_is_vision_model returns False for models not in the catalog."""
         from lilbee.providers.llama_cpp_provider import _is_vision_model
 
-        cfg.vision_model = "my-vision"
-
-        assert _is_vision_model("my-vision") is True
-
-    def test_no_match_when_empty(self) -> None:
-        """_is_vision_model returns False for empty vision_model."""
-        from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        cfg.vision_model = ""
-
-        # Only matches featured catalog entries
         assert _is_vision_model("random-model") is False
 
     def test_matches_featured_vision(self) -> None:
         """_is_vision_model matches FEATURED_VISION entries."""
         from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        cfg.vision_model = ""
 
         mock_entry = mock.MagicMock()
         mock_entry.name = "LightOnOCR"

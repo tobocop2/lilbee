@@ -88,7 +88,7 @@ def _derive_field_sets() -> tuple[
                 public.add(name)
             if _get_extra(info, "reindex"):
                 reindex.add(name)
-        elif name in {"chat_model", "embedding_model", "vision_model"}:
+        elif name in {"chat_model", "embedding_model"}:
             public.add(name)
     return types.MappingProxyType(writable), frozenset(reindex), frozenset(public)
 
@@ -118,7 +118,7 @@ class ModelsResponse(BaseModel):
     """Response for the list-models endpoint."""
 
     chat: ModelCatalogSection
-    vision: ModelCatalogSection
+    vision: ModelCatalogSection | None = None
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -434,14 +434,12 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
 
 
 async def list_models() -> ModelsResponse:
-    """Return chat and vision model catalogs with installed status."""
-    from lilbee.models import MODEL_CATALOG, VISION_CATALOG, list_installed_models
+    """Return chat model catalog with installed status."""
+    from lilbee.models import MODEL_CATALOG, list_installed_models
 
     installed = set(list_installed_models())
-    chat_installed = set(list_installed_models(exclude_vision=True))
-    vision_refs = {v.ref for v in VISION_CATALOG}
 
-    response = ModelsResponse(
+    return ModelsResponse(
         chat=ModelCatalogSection(
             active=cfg.chat_model,
             catalog=[
@@ -454,28 +452,13 @@ async def list_models() -> ModelsResponse:
                 )
                 for m in MODEL_CATALOG
             ],
-            installed=sorted(chat_installed),
-        ),
-        vision=ModelCatalogSection(
-            active=cfg.vision_model,
-            catalog=[
-                ModelCatalogEntry(
-                    name=m.display_name,
-                    size_gb=m.size_gb,
-                    min_ram_gb=m.min_ram_gb,
-                    description=m.description,
-                    installed=m.ref in installed,
-                )
-                for m in VISION_CATALOG
-            ],
-            installed=sorted(m for m in installed if m in vision_refs),
+            installed=sorted(installed),
         ),
     )
-    return response
 
 
 async def _set_model(
-    field: Literal["chat_model", "vision_model", "embedding_model"],
+    field: Literal["chat_model", "embedding_model"],
     model: str,
     *,
     normalize: bool = False,
@@ -493,11 +476,6 @@ async def _set_model(
 async def set_chat_model(model: str) -> SetModelResponse:
     """Switch active chat model."""
     return await _set_model("chat_model", model, normalize=True)
-
-
-async def set_vision_model(model: str) -> SetModelResponse:
-    """Switch active vision model. Pass empty string to disable."""
-    return await _set_model("vision_model", model)
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:

@@ -36,13 +36,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Models",
         help_text="LLM used for chat and generation",
     ),
-    "vision_model": SettingDef(
-        str,
-        nullable=True,
-        writable=False,
-        group="Models",
-        help_text="Vision model for OCR on images and PDFs",
-    ),
     "enable_ocr": SettingDef(
         bool,
         nullable=True,

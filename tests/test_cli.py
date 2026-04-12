@@ -101,14 +101,14 @@ class TestStatus:
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
 
-    def test_status_shows_vision_model_when_set(self):
-        cfg.vision_model = "test-vision:latest"
+    def test_status_shows_ocr_when_enabled(self):
+        cfg.enable_ocr = True
         result = runner.invoke(app, ["status"])
         assert "Vision OCR:" in result.output
-        assert "test-vision:latest" in result.output
+        assert "enabled" in result.output
 
-    def test_status_hides_vision_model_when_empty(self):
-        cfg.vision_model = ""
+    def test_status_hides_ocr_when_none(self):
+        cfg.enable_ocr = None
         result = runner.invoke(app, ["status"])
         assert "Vision OCR:" not in result.output
 
@@ -602,15 +602,6 @@ class TestListInstalledModels:
         result = list_installed_models()
         assert result == ["llama3:latest"]
         assert "nomic-embed-text:latest" not in result
-
-    def test_exclude_vision_filters_vision_catalog(self, mock_svc):
-        mock_svc.provider.list_models.return_value = [
-            "llama3:latest",
-            "lightonocr:2-1b",
-        ]
-        result = list_installed_models(exclude_vision=True)
-        assert result == ["llama3:latest"]
-        assert "lightonocr:2-1b" not in result
 
 
 def _search_chunk(**overrides: object) -> SearchChunk:
@@ -1141,17 +1132,17 @@ class TestStatusJson:
         assert data["total_chunks"] == 10
         assert "documents_dir" in data["config"]
 
-    def test_status_json_includes_vision_model_when_set(self):
-        cfg.vision_model = "test-vision:latest"
+    def test_status_json_includes_enable_ocr_when_set(self):
+        cfg.enable_ocr = True
         result = runner.invoke(app, ["--json", "status"])
         data = json.loads(result.output.strip())
-        assert data["config"]["vision_model"] == "test-vision:latest"
+        assert data["config"]["enable_ocr"] is True
 
-    def test_status_json_excludes_vision_model_when_empty(self):
-        cfg.vision_model = ""
+    def test_status_json_excludes_enable_ocr_when_none(self):
+        cfg.enable_ocr = None
         result = runner.invoke(app, ["--json", "status"])
         data = json.loads(result.output.strip())
-        assert "vision_model" not in data["config"]
+        assert "enable_ocr" not in data["config"]
 
 
 # ---------------------------------------------------------------------------

@@ -106,9 +106,6 @@ class Config(BaseSettings):
     adaptive_threshold: bool = Field(default=False)
     system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
-    vision_model: str = ""
-    vision_timeout: float = Field(default=120.0, ge=0.0)
-
     # OCR for scanned PDFs via vision-capable chat model.
     # None = auto-detect (use OCR if chat model is vision-capable).
     # True = force OCR regardless of detection.

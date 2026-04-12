@@ -79,18 +79,9 @@ def _get_model_catalog() -> tuple[ModelInfo, ...]:
     return _catalog_from_featured(FEATURED_CHAT)
 
 
-@functools.cache
-def _get_vision_catalog() -> tuple[ModelInfo, ...]:
-    from lilbee.catalog import FEATURED_VISION
-
-    return _catalog_from_featured(FEATURED_VISION)
-
-
 def __getattr__(name: str) -> tuple[ModelInfo, ...]:
     if name == "MODEL_CATALOG":
         return _get_model_catalog()
-    if name == "VISION_CATALOG":
-        return _get_vision_catalog()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -185,53 +176,6 @@ def display_model_picker(
 
     console.print()
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
-    console.print(table)
-    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print(f"  {FEATURED_STAR} = recommended for your system")
-    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
-
-    return recommended
-
-
-def pick_default_vision_model() -> ModelInfo:
-    """Return the recommended vision model (first catalog entry, best quality)."""
-    return _get_vision_catalog()[0]
-
-
-def display_vision_picker(
-    ram_gb: float, free_disk_gb: float, *, console: Console | None = None
-) -> ModelInfo:
-    """Show a Rich table of vision models and return the recommended model."""
-    console = console or Console(stderr=True)
-    recommended = pick_default_vision_model()
-
-    table = Table(title="Vision OCR Models", show_lines=False)
-    table.add_column("#", justify="right", style="bold")
-    table.add_column("Model", style="cyan")
-    table.add_column("Size", justify="right")
-    table.add_column("Description")
-
-    for idx, model in enumerate(_get_vision_catalog(), 1):
-        num_str = str(idx)
-        name = model.display_name
-        size_str = f"{model.size_gb:.1f} GB"
-        desc = model.description
-
-        is_recommended = model == recommended
-        disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
-
-        if is_recommended:
-            name = f"[bold]{name} {FEATURED_STAR}[/bold]"
-            desc = f"[bold]{desc}[/bold]"
-            num_str = f"[bold]{num_str}[/bold]"
-
-        if disk_too_small:
-            size_str = f"[red]{model.size_gb:.1f} GB[/red]"
-
-        table.add_row(num_str, name, size_str, desc)
-
-    console.print()
-    console.print("[bold]Select a vision OCR model for scanned PDF extraction:[/bold]\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
     console.print(f"  {FEATURED_STAR} = recommended for your system")
@@ -348,18 +292,12 @@ def ensure_chat_model() -> None:
     validate_disk_and_pull(model_info, free_gb)
 
 
-def list_installed_models(*, exclude_vision: bool = False) -> list[str]:
-    """Return installed model names, excluding embedding models.
-    When *exclude_vision* is True, also filters out known vision catalog models.
-    """
+def list_installed_models() -> list[str]:
+    """Return installed model names, excluding embedding models."""
     try:
         provider = get_services().provider
         embed_base = cfg.embedding_model.split(":")[0]
-        models = [m for m in provider.list_models() if m.split(":")[0] != embed_base]
-        if exclude_vision:
-            vision_refs = {m.ref for m in _get_vision_catalog()}
-            models = [m for m in models if m not in vision_refs]
-        return models
+        return [m for m in provider.list_models() if m.split(":")[0] != embed_base]
     except Exception:
         log.debug("Failed to list installed models", exc_info=True)
         return []

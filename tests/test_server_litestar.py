@@ -238,18 +238,6 @@ class TestModelsSetChatRoute:
         assert resp.json()["model"] == "llama3:8b"
 
 
-class TestModelsSetVisionRoute:
-    @mock.patch(
-        "lilbee.server.handlers.set_vision_model",
-        new_callable=AsyncMock,
-        return_value={"model": "llava:13b"},
-    )
-    def test_returns_model(self, mock_set, client):
-        resp = client.put("/api/models/vision", json={"model": "llava:13b"})
-        assert resp.status_code == 200
-        assert resp.json()["model"] == "llava:13b"
-
-
 class TestModelsCatalogRoute:
     @mock.patch(
         "lilbee.server.handlers.models_catalog",

@@ -690,24 +690,6 @@ class ChatScreen(Screen[None]):
             if isinstance(screen, WikiScreen):
                 screen.reload()
 
-    def _cmd_vision(self, args: str) -> None:
-        if args == "off":
-            cfg.vision_model = ""
-            settings.set_value(cfg.data_root, "vision_model", "")
-            self.notify(msg.CMD_VISION_DISABLED)
-            self._refresh_model_bar()
-            return
-
-        if args:
-            cfg.vision_model = args
-            settings.set_value(cfg.data_root, "vision_model", args)
-            self.notify(msg.CMD_VISION_SET.format(name=args))
-            self._refresh_model_bar()
-            return
-
-        current = cfg.vision_model or "disabled"
-        self.notify(msg.CMD_VISION_STATUS.format(current=current))
-
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         log = self.query_one("#chat-log", VerticalScroll)

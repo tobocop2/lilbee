@@ -6,7 +6,7 @@ import pytest
 
 from lilbee import models
 from lilbee.config import cfg
-from lilbee.models import MODEL_CATALOG, VISION_CATALOG, ModelInfo
+from lilbee.models import MODEL_CATALOG, ModelInfo
 
 
 class TestModelCatalog:
@@ -371,64 +371,6 @@ class TestEnsureChatModel:
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
         ):
             models.ensure_chat_model()
-
-
-class TestVisionCatalog:
-    def test_catalog_not_empty(self) -> None:
-        assert len(VISION_CATALOG) > 0
-
-    def test_all_entries_are_model_info(self) -> None:
-        for m in VISION_CATALOG:
-            assert isinstance(m, ModelInfo)
-
-    def test_derived_from_catalog(self) -> None:
-        """VISION_CATALOG entries match catalog.py's FEATURED_VISION."""
-        from lilbee.catalog import FEATURED_VISION
-
-        assert len(VISION_CATALOG) == len(FEATURED_VISION)
-        for vc, fv in zip(VISION_CATALOG, FEATURED_VISION, strict=True):
-            assert vc.name == fv.name
-
-    def test_frozen(self) -> None:
-        with pytest.raises(AttributeError):
-            VISION_CATALOG[0].name = "nope"  # type: ignore[misc]
-
-
-class TestPickDefaultVisionModel:
-    def test_returns_first_catalog_entry(self) -> None:
-        """Always returns the best-quality model (first in catalog)."""
-        assert models.pick_default_vision_model() == VISION_CATALOG[0]
-
-
-class TestDisplayVisionPicker:
-    def test_renders_table(self, capsys: pytest.CaptureFixture[str]) -> None:
-        m = models.display_vision_picker(32, 50.0)
-        captured = capsys.readouterr()
-        assert "Vision OCR Models" in captured.err
-        assert isinstance(m, ModelInfo)
-
-    def test_recommended_highlighted(self, capsys: pytest.CaptureFixture[str]) -> None:
-        recommended = models.display_vision_picker(32.0, 100.0)
-        assert isinstance(recommended, ModelInfo)
-        captured = capsys.readouterr()
-        assert "\u2605" in captured.err
-
-    def test_disk_warning_with_low_space(self, capsys: pytest.CaptureFixture[str]) -> None:
-        models.display_vision_picker(32.0, 3.0)
-        captured = capsys.readouterr()
-        assert "3.0 GB free disk" in captured.err
-        assert "Vision OCR Models" in captured.err
-
-    def test_shows_system_stats(self, capsys: pytest.CaptureFixture[str]) -> None:
-        models.display_vision_picker(16.0, 42.5)
-        captured = capsys.readouterr()
-        assert "16 GB RAM" in captured.err
-        assert "42.5 GB free disk" in captured.err
-
-    def test_shows_browse_link(self, capsys: pytest.CaptureFixture[str]) -> None:
-        models.display_vision_picker(8.0, 50.0)
-        captured = capsys.readouterr()
-        assert models.MODELS_BROWSE_URL in captured.err
 
 
 class TestEnsureTag:

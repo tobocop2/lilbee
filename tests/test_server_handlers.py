@@ -482,8 +482,7 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert "qwen3:8b" in result.chat.installed
 
-        assert isinstance(result.vision.catalog, list)
-        assert isinstance(result.vision.installed, list)
+        assert result.vision is None
 
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
@@ -508,19 +507,6 @@ class TestSetChatModel:
         result = await handlers.set_chat_model("llama3:7b")
         assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
-
-
-class TestSetVisionModel:
-    async def test_updates_config_and_persists(self, tmp_path):
-        result = await handlers.set_vision_model("minicpm-v:latest")
-        assert result.model == "minicpm-v:latest"
-        assert cfg.vision_model == "minicpm-v:latest"
-
-    async def test_empty_string_disables(self, tmp_path):
-        cfg.vision_model = "some-model:latest"
-        result = await handlers.set_vision_model("")
-        assert result.model == ""
-        assert cfg.vision_model == ""
 
 
 class TestModelsCatalog:

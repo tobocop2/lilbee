@@ -104,7 +104,7 @@ def config_snapshot_from_cfg() -> ConfigSnapshot:
         embedding_dim=cfg.embedding_dim,
         num_ctx=cfg.num_ctx,
         gpu_memory_fraction=cfg.gpu_memory_fraction,
-        vision_model=cfg.vision_model,
+        vision_model=cfg.chat_model,
     )
 
 
@@ -345,7 +345,6 @@ def _apply_config_snapshot(config: ConfigSnapshot) -> None:
 
     cfg.models_dir = Path(config.models_dir)
     cfg.embedding_model = config.embedding_model
-    cfg.vision_model = config.vision_model
     cfg.num_ctx = config.num_ctx
 
 

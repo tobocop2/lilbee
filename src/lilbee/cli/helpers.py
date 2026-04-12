@@ -6,7 +6,6 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -44,7 +43,7 @@ class StatusConfig(BaseModel):
     data_dir: str
     chat_model: str
     embedding_model: str
-    vision_model: str | None = None
+    enable_ocr: bool | None = None
 
 
 class SourceInfo(BaseModel):
@@ -71,8 +70,9 @@ class StatusResult(BaseModel):
         yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
         yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
         yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
-        if self.config.vision_model:
-            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {self.config.vision_model}"
+        if self.config.enable_ocr is not None:
+            ocr_label = "enabled" if self.config.enable_ocr else "disabled"
+            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
         yield ""
 
         if not self.sources:
@@ -129,7 +129,7 @@ def gather_status() -> StatusResult:
             data_dir=str(cfg.data_dir),
             chat_model=cfg.chat_model,
             embedding_model=cfg.embedding_model,
-            vision_model=cfg.vision_model or None,
+            enable_ocr=cfg.enable_ocr,
         ),
         sources=[
             SourceInfo(
@@ -286,16 +286,3 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
-
-
-@contextmanager
-def temporary_vision_model(model: str) -> Generator[None, None, None]:
-    """Temporarily override ``cfg.vision_model`` for the duration of the block."""
-    old = cfg.vision_model
-    if model:
-        cfg.vision_model = model
-    try:
-        yield
-    finally:
-        if model:
-            cfg.vision_model = old

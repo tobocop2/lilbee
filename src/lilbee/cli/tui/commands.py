@@ -86,27 +86,6 @@ class LilbeeCommandProvider(Provider):
         except Exception:
             log.debug("Failed to list installed models", exc_info=True)
 
-        try:
-            from lilbee.models import VISION_CATALOG
-
-            for m in VISION_CATALOG:
-                commands.append(
-                    (
-                        f"Set vision → {m.name}",
-                        m.description,
-                        lambda n=m.name: self._set_model("vision_model", n),
-                    )
-                )
-            commands.append(
-                (
-                    "Set vision → off",
-                    "Disable vision OCR",
-                    lambda: self._set_model("vision_model", ""),
-                )
-            )
-        except Exception:
-            log.debug("Failed to load vision catalog", exc_info=True)
-
         return commands
 
     def _document_commands(self) -> list[tuple[str, str, Any]]:

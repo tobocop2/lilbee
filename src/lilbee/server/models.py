@@ -43,7 +43,7 @@ class AddRequest(BaseModel):
 
 
 class SetModelRequest(BaseModel):
-    """Request body for /api/models/chat and /api/models/vision."""
+    """Request body for /api/models/chat."""
 
     model: str
 
