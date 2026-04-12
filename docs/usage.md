@@ -205,7 +205,8 @@ All settings are configurable via environment variables:
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `LILBEE_SERVER_PORT` | `7433` | Server port |
-| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of allowed CORS origins (e.g. `app://obsidian.md,https://my-app.com`). Localhost is always allowed. |
+| `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins for remote clients, e.g. `https://my-app.com`. Additive — the default regex below is still applied. |
+| `LILBEE_CORS_ORIGIN_REGEX` | *(see below)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS`. |
 
 **Generation** — tune LLM output:
 

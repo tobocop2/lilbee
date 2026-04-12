@@ -1,12 +1,14 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
 import os
+import re
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from lilbee.config import (
+    _DEFAULT_CORS_ORIGIN_REGEX,
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
@@ -301,6 +303,83 @@ class TestCorsOriginsConfig:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
             assert c.cors_origins == []
+
+
+class TestCorsOriginRegexConfig:
+    def test_cors_origin_regex_default_matches_obsidian_desktop(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert pat.fullmatch("app://obsidian.md")
+
+    def test_cors_origin_regex_default_matches_capacitor_localhost(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert pat.fullmatch("capacitor://localhost")
+
+    def test_cors_origin_regex_default_matches_http_localhost_any_port(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert pat.fullmatch("http://localhost")
+            assert pat.fullmatch("http://localhost:3000")
+            assert pat.fullmatch("http://localhost:7433")
+            assert pat.fullmatch("https://localhost:8443")
+
+    def test_cors_origin_regex_default_matches_loopback_ipv4(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert pat.fullmatch("http://127.0.0.1:7433")
+            assert pat.fullmatch("https://127.0.0.1")
+
+    def test_cors_origin_regex_default_matches_loopback_ipv6(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert pat.fullmatch("http://[::1]:7433")
+            assert pat.fullmatch("https://[::1]")
+
+    def test_cors_origin_regex_default_rejects_random_remote(self, tmp_path) -> None:
+
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            pat = re.compile(c.cors_origin_regex)
+            assert not pat.fullmatch("https://evil.example.com")
+            assert not pat.fullmatch("http://not-localhost.example")
+            assert not pat.fullmatch("app://some-other-app.md")
+
+    def test_cors_origin_regex_from_env_overrides_default(self, tmp_path) -> None:
+        env = _clean_env(tmp_path)
+        env["LILBEE_CORS_ORIGIN_REGEX"] = r"^https://only-this\.example$"
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.cors_origin_regex == r"^https://only-this\.example$"
+
+    def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
+        # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
+        # to set a regex that matches nothing — e.g. ^$.
+        env = _clean_env(tmp_path)
+        env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.cors_origin_regex == "^$"
+
+    def test_cors_origin_regex_default_compiles(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            re.compile(c.cors_origin_regex)
+
+    def test_cors_origin_regex_default_equals_constant(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.cors_origin_regex == _DEFAULT_CORS_ORIGIN_REGEX
 
 
 class TestLocalDotLilbee:

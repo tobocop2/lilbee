@@ -77,6 +77,20 @@ _DEFAULT_SYSTEM_PROMPT = (
     "elaborate."
 )
 
+# Default regex for the CORS allow-origin filter. Covers:
+#   - Obsidian desktop (Electron renderer uses app://obsidian.md)
+#   - Obsidian iOS (Capacitor webview uses capacitor://localhost)
+#   - Any http(s) localhost origin, including ports (Android Obsidian, local dev tools)
+#   - IPv4 and IPv6 loopback literals
+# Auth is still enforced on mutating endpoints regardless of CORS — see server/auth.py.
+_DEFAULT_CORS_ORIGIN_REGEX = (
+    r"^(app://obsidian\.md"
+    r"|capacitor://localhost"
+    r"|https?://localhost(:\d+)?"
+    r"|https?://127\.0\.0\.1(:\d+)?"
+    r"|https?://\[::1\](:\d+)?)$"
+)
+
 
 class Config(BaseSettings):
     """Runtime configuration — one singleton instance, mutated by CLI overrides."""
@@ -111,6 +125,7 @@ class Config(BaseSettings):
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
+    cors_origin_regex: str = Field(default=_DEFAULT_CORS_ORIGIN_REGEX)
     json_mode: bool = False
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
