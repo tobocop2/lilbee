@@ -16,7 +16,7 @@ test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n auto
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n auto
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
