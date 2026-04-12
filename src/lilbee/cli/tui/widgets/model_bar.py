@@ -92,21 +92,15 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Set options and value for a model Select widget.
-    Preserves the current value if it's in the options. Falls back to
-    *default* (typically the configured model from ``cfg``). If the
-    resolved value isn't in *opts*, prepends it so it remains selectable.
+    """Populate a model Select and set it to *default* (from cfg).
 
-    Note: may mutate *opts* by inserting the resolved value at index 0.
+    Prepends *default* if it is not already in *opts*.
     """
+    if default and not any(o.ref == default for o in opts):
+        opts.insert(0, ModelOption(default, default))
     sel.set_options(opts)
-    current = str(sel.value) if sel.value != _DISABLED else ""
-    target = current or default
-    if target:
-        if not any(o.ref == target for o in opts):
-            opts.insert(0, ModelOption(target, target))
-            sel.set_options(opts)
-        sel.value = target
+    if default:
+        sel.value = default
 
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select")

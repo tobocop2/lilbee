@@ -472,6 +472,101 @@ class TestCors:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+class TestCorsDefaultRegex:
+    """Default cors_origin_regex should allow Obsidian (desktop + mobile) and any
+    localhost origin out of the box, without any config or env var."""
+
+    @staticmethod
+    def _preflight(origin: str) -> str | None:
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+        return resp.headers.get("access-control-allow-origin")
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_desktop(self, mock_patched):
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_mobile_capacitor(self, mock_patched):
+        assert self._preflight("capacitor://localhost") == "capacitor://localhost"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_http_localhost_any_port(self, mock_patched):
+        assert self._preflight("http://localhost:3000") == "http://localhost:3000"
+        assert self._preflight("http://localhost:8080") == "http://localhost:8080"
+        assert self._preflight("https://localhost:8443") == "https://localhost:8443"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv4(self, mock_patched):
+        assert self._preflight("http://127.0.0.1:7433") == "http://127.0.0.1:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv6(self, mock_patched):
+        assert self._preflight("http://[::1]:7433") == "http://[::1]:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_rejects_random_remote(self, mock_patched):
+        assert self._preflight("https://evil.example.com") is None
+        assert self._preflight("app://some-other-app.md") is None
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_regex_and_explicit_list_combine(self, mock_patched):
+        # User adds an explicit remote origin; default regex is untouched.
+        cfg.cors_origins = ["https://my-remote-app.example"]
+        assert self._preflight("https://my-remote-app.example") == "https://my-remote-app.example"
+        # Default regex still applies on top.
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_match_nothing_regex_disables_default(self, mock_patched):
+        # Documented opt-out: set regex to ^$ so only the explicit list is consulted.
+        cfg.cors_origin_regex = "^$"
+        cfg.cors_origins = ["https://only-this.example"]
+        assert self._preflight("https://only-this.example") == "https://only-this.example"
+        assert self._preflight("app://obsidian.md") is None
+        assert self._preflight("http://localhost:3000") is None
+
+
 class TestCrawlRoute:
     @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_streams_sse(self, mock_stream, client):
