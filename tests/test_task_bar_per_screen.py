@@ -103,7 +103,18 @@ class _ControllerApp(App[None]):
 def _chat_screen():
     from lilbee.cli.tui.screens.chat import ChatScreen
 
-    return ChatScreen()
+    class _QuietChatScreen(ChatScreen):
+        """ChatScreen without lifecycle side effects for TaskBar tests."""
+
+        CSS_PATH = None  # type: ignore[assignment]
+
+        def on_mount(self) -> None:
+            pass
+
+        def on_show(self) -> None:
+            pass
+
+    return _QuietChatScreen()
 
 
 def _catalog_screen():
