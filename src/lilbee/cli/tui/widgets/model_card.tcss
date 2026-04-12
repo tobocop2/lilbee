@@ -9,8 +9,8 @@ ModelCard {
     }
 
     #card-header {
-        grid-size: 3 1;
-        grid-columns: 1fr auto auto;
+        grid-size: 4 1;
+        grid-columns: 1fr auto auto auto;
         height: auto;
     }
 
@@ -26,6 +26,10 @@ ModelCard {
     }
 
     #card-task {
+        text-align: right;
+    }
+
+    #card-backend {
         text-align: right;
     }
 

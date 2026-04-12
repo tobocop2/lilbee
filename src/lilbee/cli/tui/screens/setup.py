@@ -76,6 +76,7 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
         sort_downloads=0,
         sort_size=0.0,
         ref=name,
+        backend="llama-cpp",
     )
 
 

@@ -353,6 +353,58 @@ class TestRemoteToRow:
         row = remote_to_row(rm)
         assert row.params == "--"
 
+    def test_backend_from_provider(self):
+        rm = RemoteModel(
+            name="qwen:latest", task="chat", family="qwen", parameter_size="7B", provider="Ollama"
+        )
+        row = remote_to_row(rm)
+        assert row.backend == "ollama"
+
+
+class TestBackendField:
+    """Verify the backend field is set correctly across all row builders."""
+
+    def test_catalog_to_row_backend(self):
+        row = catalog_to_row(_make_catalog_model(), installed=False)
+        assert row.backend == "llama-cpp"
+
+    def test_variant_to_row_backend(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="org/qwen3-0.6b-GGUF",
+            filename="qwen3-0.6b.Q4_K_M.gguf",
+            param_count="0.6B",
+            tag="0.6b",
+            quant="Q4_K_M",
+            size_mb=400,
+            recommended=False,
+        )
+        family = ModelFamily(
+            slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.backend == "llama-cpp"
+
+    def test_installed_name_to_row_backend(self):
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+        row = _installed_name_to_row("qwen3:8b", "chat")
+        assert row.backend == "llama-cpp"
+
+    def test_remote_to_row_backend_remote(self):
+        rm = _make_remote_model()
+        row = remote_to_row(rm)
+        assert row.backend == "remote"
+
+    def test_matches_search_by_backend(self):
+        row = catalog_to_row(_make_catalog_model(), installed=False)
+        assert matches_search(row, "llama-cpp") is True
+
+    def test_matches_search_backend_no_match(self):
+        row = catalog_to_row(_make_catalog_model(), installed=False)
+        assert matches_search(row, "ollama") is False
+
 
 class SettingsTestApp(App[None]):
     CSS = ""
