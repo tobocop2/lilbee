@@ -79,14 +79,12 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
 
 def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
     """Pick chat + embedding models appropriate for system RAM.
-    Selects the largest featured chat model whose min_ram_gb fits,
-    and always picks the first embedding model (Nomic).
+    Selects the largest featured chat model (by ``size_gb``) whose
+    ``min_ram_gb`` fits the host, not just the first entry in authoring
+    order. Always picks the first embedding model (Nomic).
     """
-    chat = FEATURED_CHAT[0]
-    for m in reversed(FEATURED_CHAT):
-        if m.min_ram_gb <= ram_gb:
-            chat = m
-            break
+    eligible = [m for m in FEATURED_CHAT if m.min_ram_gb <= ram_gb]
+    chat = max(eligible, key=lambda m: m.size_gb) if eligible else FEATURED_CHAT[0]
     embed = FEATURED_EMBEDDING[0]
     return chat, embed
 
@@ -167,11 +165,17 @@ class SetupWizard(Screen[str | None]):
         self,
         heading: str,
         models: tuple[CatalogModel, ...],
+        installed_refs: set[str],
         widgets_out: list[Static | GridSelect],
     ) -> list[ModelCard]:
-        """Build a heading + GridSelect for a list of catalog models."""
+        """Build a heading + GridSelect for a list of catalog models.
+        Catalog entries whose canonical ``name:tag`` is already in
+        ``installed_refs`` render with ``installed=True`` so they report a
+        zero download size and don't trigger a redundant download on
+        Install & Go.
+        """
         widgets_out.append(Static(heading, classes="section-heading"))
-        cards = [ModelCard(catalog_to_row(m, installed=False)) for m in models]
+        cards = [ModelCard(catalog_to_row(m, installed=m.ref in installed_refs)) for m in models]
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
         return cards
 
@@ -184,6 +188,7 @@ class SetupWizard(Screen[str | None]):
 
         container = self.query_one("#setup-grid-container", VerticalScroll)
         widgets_to_mount: list[Static | GridSelect] = []
+        installed_refs = set(self._chat_installed) | set(self._embed_installed)
 
         if self._chat_installed or self._embed_installed:
             widgets_to_mount.append(Static(msg.HEADING_INSTALLED, classes="section-heading"))
@@ -197,9 +202,11 @@ class SetupWizard(Screen[str | None]):
                 GridSelect(*installed_cards, min_column_width=30, max_column_width=50)
             )
 
-        chat_cards = self._build_section(msg.SETUP_HEADING_CHAT, FEATURED_CHAT, widgets_to_mount)
+        chat_cards = self._build_section(
+            msg.SETUP_HEADING_CHAT, FEATURED_CHAT, installed_refs, widgets_to_mount
+        )
         embed_cards = self._build_section(
-            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, widgets_to_mount
+            msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, installed_refs, widgets_to_mount
         )
 
         container.mount_all(widgets_to_mount)

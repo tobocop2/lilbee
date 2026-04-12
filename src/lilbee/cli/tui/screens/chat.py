@@ -151,14 +151,27 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
         self._refresh_status_line()
         self.query_one("#chat-only-banner", Static).display = False
-        if self._needs_setup():
+        # ChatScreen is reinstantiated on every `switch_view("Chat")`, so
+        # wizard state must live on the app. Once setup has been handled in
+        # this session (shown, skipped, or deemed unnecessary on first mount),
+        # never re-push the wizard for the lifetime of this process.
+        setup_handled = bool(getattr(self.app, "setup_handled", False))
+        if not setup_handled and self._needs_setup():
+            self._mark_setup_handled()
             from lilbee.cli.tui.screens.setup import SetupWizard
 
             self.app.push_screen(SetupWizard(), self._on_setup_complete)
-        elif not self._embedding_ready():
+            return
+        self._mark_setup_handled()
+        if not self._embedding_ready():
             self._show_chat_only_banner()
         elif self._auto_sync:
             self._run_sync()
+
+    def _mark_setup_handled(self) -> None:
+        """Record on the app that setup has been resolved for this session."""
+        if hasattr(self.app, "setup_handled"):
+            self.app.setup_handled = True  # type: ignore[attr-defined]
 
     def on_show(self) -> None:
         """Called when screen becomes visible - signal splash to stop."""
@@ -167,19 +180,25 @@ class ChatScreen(Screen[None]):
         dismiss()
 
     def _needs_setup(self) -> bool:
-        """True when the setup wizard should run: fresh data dir or unresolved models."""
+        """True when the setup wizard should run: fresh data dir or unresolved models.
+        Any failure inside the model-resolution block is logged at DEBUG so the
+        app-level ``setup_handled`` guard never hides a real regression silently.
+        """
         # Fresh install: an uninitialized data dir still needs the wizard even
         # if default models are already cached globally (Ollama, HF cache).
         if not cfg.lancedb_dir.is_dir():
+            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            resolve_model_path(cfg.chat_model)
-            resolve_model_path(cfg.embedding_model)
-            return False
-        except Exception:
-            return True
+        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            try:
+                resolve_model_path(model)
+            except (ProviderError, KeyError, ValueError) as exc:
+                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
+                return True
+        return False
 
     def _embedding_ready(self) -> bool:
         """Quick check if embedding model exists (no network calls)."""
@@ -193,6 +212,7 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
+        self._mark_setup_handled()
         if result == "skipped":
             self._show_chat_only_banner()
         elif self._auto_sync and self._embedding_ready():

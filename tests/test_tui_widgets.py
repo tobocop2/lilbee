@@ -1407,6 +1407,77 @@ class TestSetupWizard:
         assert card.row.featured is True
         assert card.row.task == "chat"
 
+    def test_pick_recommended_picks_largest_fitting_not_first(self) -> None:
+        """Default pick is the biggest-size-gb model whose min_ram_gb fits."""
+        from lilbee.cli.tui.screens import setup as setup_mod
+
+        tiny = _make_model("Tiny", size_gb=0.4, min_ram_gb=0.5, featured=True)
+        small = _make_model("Small", size_gb=2.5, min_ram_gb=4, featured=True)
+        medium = _make_model("Medium", size_gb=5.0, min_ram_gb=8, featured=True)
+        large = _make_model("Large", size_gb=18.0, min_ram_gb=16, featured=True)
+        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
+        with (
+            mock.patch.object(setup_mod, "FEATURED_CHAT", (tiny, small, medium, large)),
+            mock.patch.object(setup_mod, "FEATURED_EMBEDDING", (embed,)),
+        ):
+            # 64 GB: everything fits, largest wins.
+            chat, picked_embed = setup_mod._pick_recommended(64.0)
+            assert chat is large
+            assert picked_embed is embed
+            # 16 GB: large just fits, still wins.
+            assert setup_mod._pick_recommended(16.0)[0] is large
+            # 8 GB: medium is the largest that fits.
+            assert setup_mod._pick_recommended(8.0)[0] is medium
+            # 4 GB: small is the largest that fits.
+            assert setup_mod._pick_recommended(4.0)[0] is small
+            # 1 GB: only tiny fits.
+            assert setup_mod._pick_recommended(1.0)[0] is tiny
+
+    def test_pick_recommended_falls_back_when_nothing_fits(self) -> None:
+        """If no featured model fits, fall back to the first entry."""
+        from lilbee.cli.tui.screens import setup as setup_mod
+
+        big = _make_model("BigOnly", size_gb=40.0, min_ram_gb=64, featured=True)
+        embed = _make_model("Embed", task="embedding", size_gb=0.3, min_ram_gb=1)
+        with (
+            mock.patch.object(setup_mod, "FEATURED_CHAT", (big,)),
+            mock.patch.object(setup_mod, "FEATURED_EMBEDDING", (embed,)),
+        ):
+            assert setup_mod._pick_recommended(4.0)[0] is big
+
+    def test_build_section_marks_installed_catalog_cards(self) -> None:
+        """Catalog cards whose name:tag is already installed come back with
+        ``installed=True`` so they report a zero download size."""
+        from lilbee.cli.tui.screens.setup import SetupWizard, _card_download_size
+
+        a = _make_model("Qwen3 0.6B", tag="0.6b", featured=True, size_gb=0.6)
+        b = _make_model("Qwen3 4B", tag="4b", featured=True, size_gb=2.5)
+        wizard = SetupWizard.__new__(SetupWizard)
+        widgets: list = []
+        cards = SetupWizard._build_section(wizard, "Chat", (a, b), {"qwen3-0.6b:0.6b"}, widgets)
+        assert cards[0].row.installed is True
+        assert cards[1].row.installed is False
+        assert _card_download_size(cards[0]) == 0.0
+        assert _card_download_size(cards[1]) == 2.5
+
+    def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
+        """_scan_installed_models output must be usable as installed refs for the
+        catalog grid so the same model never appears with a phantom download."""
+        from lilbee.cli.tui.screens.setup import _scan_installed_models
+        from lilbee.models import ModelTask
+
+        cfg.models_dir = tmp_path / "models"
+        cfg.models_dir.mkdir()
+        fake_chat = mock.Mock(name="qwen3-0.6b", tag="0.6b", task=ModelTask.CHAT)
+        fake_chat.name = "qwen3-0.6b"
+        fake_embed = mock.Mock(name="nomic", tag="v1.5", task=ModelTask.EMBEDDING)
+        fake_embed.name = "nomic"
+        with mock.patch("lilbee.registry.ModelRegistry") as MockRegistry:
+            MockRegistry.return_value.list_installed.return_value = [fake_chat, fake_embed]
+            chat, embed = _scan_installed_models()
+        assert "qwen3-0.6b:0.6b" in chat
+        assert "nomic:v1.5" in embed
+
 
 class TestAllTasksFetched:
     def test_all_tasks_constant(self) -> None:

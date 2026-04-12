@@ -133,6 +133,10 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
 
         self.task_bar = TaskBarController(self)
+        # True once the setup wizard has been shown, skipped, or a first-mount
+        # check determined it wasn't needed. Reset only on a new process, so
+        # re-entering Chat after visiting Catalog never re-pushes the wizard.
+        self.setup_handled: bool = False
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
