@@ -995,6 +995,45 @@ class TestVisionFallback:
         assert result == []
 
 
+class TestShouldRunOcrAutoDetect:
+    def test_auto_detect_vision_capable(self, isolated_env):
+        """When enable_ocr is None, _should_run_ocr defers to is_vision_capable."""
+        cfg.enable_ocr = None
+        cfg.chat_model = "some-model"
+        with mock.patch("lilbee.model_manager.is_vision_capable", return_value=True):
+            from lilbee.ingest import _should_run_ocr
+
+            assert _should_run_ocr() is True
+
+    def test_auto_detect_not_vision_capable(self, isolated_env):
+        """When enable_ocr is None and model lacks vision, returns False."""
+        cfg.enable_ocr = None
+        cfg.chat_model = "some-model"
+        with mock.patch("lilbee.model_manager.is_vision_capable", return_value=False):
+            from lilbee.ingest import _should_run_ocr
+
+            assert _should_run_ocr() is False
+
+
+class TestVisionFallbackException:
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_exception_returns_empty(self, mock_kf, isolated_env):
+        """When extract_pdf_vision raises, _vision_fallback returns []."""
+        cfg.enable_ocr = True
+        cfg.chat_model = "test-vision"
+        empty = _make_empty_result()
+        mock_kf.return_value = empty
+
+        f = isolated_env / "broken.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with mock.patch("lilbee.ingest.extract_pdf_vision", side_effect=RuntimeError("boom")):
+            from lilbee.ingest import ingest_document
+
+            result = await ingest_document(f, "broken.pdf", "pdf", quiet=True)
+        assert result == []
+
+
 class TestTesseractOcrMiddleTier:
     """Tests for the Tesseract OCR tier between text extraction and vision fallback."""
 

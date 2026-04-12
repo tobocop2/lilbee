@@ -2673,7 +2673,7 @@ class TestModelBarCfgSourceOfTruth:
     def mock_classify(self):
         with mock.patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], [], []),
+            return_value=([], []),
         ):
             yield
 
@@ -2685,7 +2685,6 @@ class TestModelBarCfgSourceOfTruth:
 
         cfg.chat_model = "mistral:latest"
         cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = ""
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2698,7 +2697,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("smollm2:135m", "smollm2:135m"),
                 ],
                 [ModelOption("nomic:latest", "nomic:latest")],
-                [],
             )
             await pilot.pause()
             assert chat_sel.value == "mistral:latest"
@@ -2711,7 +2709,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("smollm2:135m", "smollm2:135m"),
                 ],
                 [ModelOption("nomic:latest", "nomic:latest")],
-                [],
             )
             await pilot.pause()
             assert chat_sel.value == "smollm2:135m"
@@ -2724,7 +2721,6 @@ class TestModelBarCfgSourceOfTruth:
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = ""
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2737,7 +2733,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("nomic:latest", "nomic:latest"),
                     ModelOption("bge-small:latest", "bge-small:latest"),
                 ],
-                [],
             )
             await pilot.pause()
             assert embed_sel.value == "nomic:latest"
@@ -2749,48 +2744,9 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("nomic:latest", "nomic:latest"),
                     ModelOption("bge-small:latest", "bge-small:latest"),
                 ],
-                [],
             )
             await pilot.pause()
             assert embed_sel.value == "bge-small:latest"
-
-    async def test_refresh_follows_cfg_vision_model_change(self) -> None:
-        """Vision dropdown also snaps to cfg on refresh."""
-        from textual.widgets import Select
-
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = "qwen3:8b"
-        cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = "llava:7b"
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            vision_sel = app.query_one("#vision-model-select", Select)
-
-            bar._populate(
-                [ModelOption("qwen3:8b", "qwen3:8b")],
-                [ModelOption("nomic:latest", "nomic:latest")],
-                [
-                    ModelOption("llava:7b", "llava:7b"),
-                    ModelOption("moondream:latest", "moondream:latest"),
-                ],
-            )
-            await pilot.pause()
-            assert vision_sel.value == "llava:7b"
-
-            cfg.vision_model = "moondream:latest"
-            bar._populate(
-                [ModelOption("qwen3:8b", "qwen3:8b")],
-                [ModelOption("nomic:latest", "nomic:latest")],
-                [
-                    ModelOption("llava:7b", "llava:7b"),
-                    ModelOption("moondream:latest", "moondream:latest"),
-                ],
-            )
-            await pilot.pause()
-            assert vision_sel.value == "moondream:latest"
 
     async def test_manual_user_pick_writes_cfg_and_survives_refresh(self) -> None:
         """A real user pick flows through Select.Changed -> cfg, so refresh keeps it."""
@@ -2800,7 +2756,6 @@ class TestModelBarCfgSourceOfTruth:
 
         cfg.chat_model = "mistral:latest"
         cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = ""
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2813,7 +2768,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("smollm2:135m", "smollm2:135m"),
                 ],
                 [ModelOption("nomic:latest", "nomic:latest")],
-                [],
             )
             await pilot.pause()
             assert chat_sel.value == "mistral:latest"
@@ -2833,7 +2787,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("smollm2:135m", "smollm2:135m"),
                 ],
                 [ModelOption("nomic:latest", "nomic:latest")],
-                [],
             )
             await pilot.pause()
             assert chat_sel.value == "smollm2:135m"
@@ -2846,7 +2799,6 @@ class TestModelBarCfgSourceOfTruth:
 
         cfg.chat_model = "qwen3:8b"
         cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = ""
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2870,7 +2822,6 @@ class TestModelBarCfgSourceOfTruth:
 
         cfg.chat_model = "smollm2:135m"
         cfg.embedding_model = "nomic:latest"
-        cfg.vision_model = ""
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2884,7 +2835,6 @@ class TestModelBarCfgSourceOfTruth:
                     ModelOption("llama3:8b", "llama3:8b"),
                 ],
                 [ModelOption("nomic:latest", "nomic:latest")],
-                [],
             )
             await pilot.pause()
             assert chat_sel.value == "smollm2:135m"

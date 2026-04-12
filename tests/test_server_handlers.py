@@ -1093,6 +1093,15 @@ class TestRunLlmStreamCancel:
         assert items[-1] is None
 
 
+class TestParseOcrParams:
+    def test_ocr_timeout_coerced_to_float(self):
+        """_parse_ocr_params coerces ocr_timeout to float."""
+        enable_ocr, ocr_timeout = handlers._parse_ocr_params({"ocr_timeout": "60"})
+        assert ocr_timeout == 60.0
+        assert isinstance(ocr_timeout, float)
+        assert enable_ocr is None
+
+
 class TestAddHandlerCancel:
     async def test_cancel_returns_early(self):
         """When cancel is set before sync, add returns early with copy-only summary."""

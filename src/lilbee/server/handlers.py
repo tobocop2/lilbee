@@ -334,8 +334,8 @@ async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, 
     sse = SseStream()
     with temporary_ocr_config(enable_ocr):
         task = asyncio.create_task(sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel))
-        async for event in sse.drain(task, "Sync stream"):
-            yield event
+    async for event in sse.drain(task, "Sync stream"):
+        yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
         yield sse_done(task.result().model_dump())
 

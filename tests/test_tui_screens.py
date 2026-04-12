@@ -701,6 +701,36 @@ async def test_status_screen_escape_pops():
         assert not isinstance(app.screen, StatusScreen)
 
 
+def test_ocr_label_enabled():
+    from lilbee.cli.tui.screens.status import _ocr_label
+
+    cfg.enable_ocr = True
+    assert _ocr_label() == "enabled"
+
+
+def test_ocr_label_disabled():
+    from lilbee.cli.tui.screens.status import _ocr_label
+
+    cfg.enable_ocr = False
+    assert _ocr_label() == "disabled"
+
+
+def test_ocr_pill_enabled():
+    from lilbee.cli.tui.screens.status import _ocr_pill
+
+    cfg.enable_ocr = True
+    result = _ocr_pill()
+    assert "on" in str(result)
+
+
+def test_ocr_pill_disabled():
+    from lilbee.cli.tui.screens.status import _ocr_pill
+
+    cfg.enable_ocr = False
+    result = _ocr_pill()
+    assert "off" in str(result)
+
+
 def test_status_model_pill_truthy():
     from lilbee.cli.tui.screens.status import _model_pill
 

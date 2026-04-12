@@ -2184,6 +2184,17 @@ class TestChatSyncCallback:
             cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
 
 
+class TestTemporaryOcrConfig:
+    def test_ocr_timeout_override(self):
+        """temporary_ocr_config overrides ocr_timeout and restores it."""
+        from lilbee.cli.helpers import temporary_ocr_config
+
+        original = cfg.ocr_timeout
+        with temporary_ocr_config(ocr_timeout=99.0):
+            assert cfg.ocr_timeout == 99.0
+        assert cfg.ocr_timeout == original
+
+
 class TestSyncResultToJson:
     def test_non_sync_result_raises(self):
         """sync_result_to_json raises TypeError for non-SyncResult input."""

@@ -294,11 +294,7 @@ def temporary_ocr_config(
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
 ) -> Generator[None, None, None]:
-    """Temporarily override OCR config for the duration of the block.
-
-    Restores previous values on exit (even on exception). Pass None
-    to leave a field unchanged.
-    """
+    """Temporarily override OCR config for the duration of the block."""
     old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
     try:
         if enable_ocr is not None:

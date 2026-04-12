@@ -685,6 +685,15 @@ class TestOllamaHostFallback:
         assert c.litellm_base_url == "http://custom:11434"
 
 
+class TestParseEnableOcrFallback:
+    def test_non_string_non_bool_coerced_via_bool(self):
+        """An integer like 42 falls through to bool(v)."""
+        from lilbee.config import Config
+
+        assert Config._parse_enable_ocr(42) is True
+        assert Config._parse_enable_ocr(0) is False
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = _clean_env(tmp_path)
