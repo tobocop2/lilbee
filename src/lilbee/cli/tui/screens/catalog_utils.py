@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from lilbee.catalog import CatalogModel, ModelFamily, ModelVariant
+from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant
 from lilbee.model_manager import RemoteModel
 from lilbee.models import FEATURED_STAR
 
@@ -69,8 +69,6 @@ def format_size_gb(size_gb: float) -> str:
 
 def _is_param_count(label: str) -> bool:
     """True when label looks like a parameter count (e.g. '8B', '0.6B')."""
-    from lilbee.catalog import PARAM_COUNT_RE
-
     return bool(PARAM_COUNT_RE.fullmatch(label))
 
 
