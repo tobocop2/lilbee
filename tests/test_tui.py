@@ -40,6 +40,10 @@ def _patch_chat_setup():
             return_value=None,
         ),
         mock.patch(
+            "lilbee.cli.tui.screens.chat.ChatScreen.on_show",
+            return_value=None,
+        ),
+        mock.patch(
             "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
             return_value=None,
         ),
