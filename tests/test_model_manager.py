@@ -666,3 +666,138 @@ class TestRemoteModelProvider:
     def test_remote_model_default_provider(self) -> None:
         model = RemoteModel(name="test", task="chat", family="llama", parameter_size="8B")
         assert model.provider == "Remote"
+
+
+class TestIsVisionCapable:
+    """Tests for is_vision_capable() — 4-tier detection."""
+
+    def setup_method(self) -> None:
+        from lilbee.model_manager import reset_vision_cache
+
+        reset_vision_cache()
+
+    def teardown_method(self) -> None:
+        from lilbee.model_manager import reset_vision_cache
+
+        reset_vision_cache()
+
+    def test_empty_model_returns_false(self) -> None:
+        from lilbee.model_manager import is_vision_capable
+
+        assert is_vision_capable("") is False
+
+    def test_provider_capabilities_vision(self) -> None:
+        """Tier 1: provider reports vision capability."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = ["completion", "vision"]
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            assert is_vision_capable("llava:7b") is True
+
+    def test_provider_capabilities_no_vision(self) -> None:
+        """Tier 1: provider reports no vision, falls through to catalog/name."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = ["completion"]
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            # "qwen3:8b" has no vision name pattern and isn't in catalog
+            assert is_vision_capable("qwen3:8b") is False
+
+    def test_provider_error_falls_through(self) -> None:
+        """Tier 1 failure falls through to tier 2 (catalog)."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.side_effect = RuntimeError("no backend")
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        # "llava:7b" matches name pattern even without provider
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            assert is_vision_capable("llava:7b") is True
+
+    def test_catalog_match(self) -> None:
+        """Tier 2: model matches a FEATURED_VISION entry."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_entry = mock.MagicMock()
+        mock_entry.name = "lightonocr"
+        mock_entry.hf_repo = "noctrex/LightOnOCR-2-1B-GGUF"
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = []
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with (
+            mock.patch("lilbee.services.get_services", return_value=mock_services),
+            mock.patch("lilbee.catalog.FEATURED_VISION", (mock_entry,)),
+        ):
+            assert is_vision_capable("lightonocr") is True
+
+    def test_name_pattern_fallback(self) -> None:
+        """Tier 3: model name contains a known vision keyword."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = []
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            assert is_vision_capable("moondream:1.8b") is True
+            # Reset cache between checks
+            from lilbee.model_manager import reset_vision_cache
+
+            reset_vision_cache()
+            assert is_vision_capable("minicpm-v:8b") is True
+
+    def test_no_match_returns_false(self) -> None:
+        """Model matches no tier — returns False."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = []
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            assert is_vision_capable("mistral:7b") is False
+
+    def test_result_is_cached(self) -> None:
+        """Second call uses cache, not provider."""
+        from lilbee.model_manager import is_vision_capable
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = ["vision"]
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            assert is_vision_capable("llava:7b") is True
+            assert is_vision_capable("llava:7b") is True
+            # Provider called only once due to cache
+            mock_provider.get_capabilities.assert_called_once()
+
+    def test_reset_clears_cache(self) -> None:
+        """reset_vision_cache allows re-detection."""
+        from lilbee.model_manager import is_vision_capable, reset_vision_cache
+
+        mock_provider = mock.MagicMock()
+        mock_provider.get_capabilities.return_value = ["vision"]
+        mock_services = mock.MagicMock()
+        mock_services.provider = mock_provider
+
+        with mock.patch("lilbee.services.get_services", return_value=mock_services):
+            is_vision_capable("llava:7b")
+            reset_vision_cache()
+            is_vision_capable("llava:7b")
+            assert mock_provider.get_capabilities.call_count == 2

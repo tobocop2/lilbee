@@ -230,6 +230,58 @@ class ModelManager:
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
 
+_vision_cache: dict[str, bool] = {}
+
+
+def is_vision_capable(model: str) -> bool:
+    """Check whether *model* supports vision/image input.
+
+    Resolution order (first match wins):
+    1. Provider ``get_capabilities`` (mmproj for llama-cpp, /api/show for Ollama).
+    2. Featured catalog: model task is ``vision``.
+    3. Name-pattern fallback: model name contains a known vision keyword.
+
+    Results are cached per model name for the lifetime of the process.
+    """
+    if not model:
+        return False
+
+    if model in _vision_cache:
+        return _vision_cache[model]
+
+    result = _check_vision_capable(model)
+    _vision_cache[model] = result
+    return result
+
+
+def _check_vision_capable(model: str) -> bool:
+    """Uncached implementation of vision capability detection."""
+    from lilbee.services import get_services
+
+    try:
+        provider = get_services().provider
+        caps = provider.get_capabilities(model)
+        if "vision" in caps:
+            return True
+    except Exception:
+        log.debug("Provider capability check failed for %s", model, exc_info=True)
+
+    from lilbee.catalog import FEATURED_VISION
+
+    model_lower = model.lower()
+    if any(
+        model_lower in entry.name.lower() or model_lower in entry.hf_repo.lower()
+        for entry in FEATURED_VISION
+    ):
+        return True
+
+    return any(vp in model_lower for vp in _VISION_NAME_PATTERNS)
+
+
+def reset_vision_cache() -> None:
+    """Clear the vision capability cache (for testing)."""
+    _vision_cache.clear()
+
 
 @dataclass
 class RemoteModel:

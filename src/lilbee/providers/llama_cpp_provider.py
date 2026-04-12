@@ -199,13 +199,28 @@ class LlamaCppProvider(LLMProvider):
             "Download GGUF files manually or use the catalog."
         )
 
-    def show_model(self, model: str) -> dict[str, str] | None:
+    def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata from GGUF headers."""
         try:
             path = resolve_model_path(model)
         except ProviderError:
             return None
         return read_gguf_metadata(path)
+
+    def get_capabilities(self, model: str) -> list[str]:
+        """Detect capabilities from local GGUF files.
+
+        Vision is detected by the presence of an mmproj file alongside
+        the model.
+        """
+        caps: list[str] = ["completion"]
+        try:
+            path = resolve_model_path(model)
+            find_mmproj_for_model(path)
+            caps.append("vision")
+        except (ProviderError, Exception):
+            pass
+        return caps
 
     def shutdown(self) -> None:
         """Stop workers and unload all cached models."""
