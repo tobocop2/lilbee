@@ -116,6 +116,11 @@ def dismiss() -> None:
         return
     _active_handle = None
 
+    # Close the write end so the subprocess sees EOF. This may double-close
+    # the same fd that the env-var path already closed; _close_write_fd
+    # suppresses OSError so that is harmless.
+    # No _restore_cursor() here: we are inside Textual's alt-screen,
+    # where writing cursor-show would produce a visible artifact.
     _close_write_fd(handle.write_fd)
     try:
         handle.process.wait(timeout=_STOP_TIMEOUT)
