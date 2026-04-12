@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import ClassVar, NamedTuple
 
 from textual import on, work
@@ -28,6 +29,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     format_size_gb,
     parse_param_label,
 )
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
@@ -336,10 +338,6 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _run_downloads(self) -> None:
         """Download all selected models in a background thread."""
-        from functools import partial
-
-        from lilbee.cli.tui.thread_safe import call_from_thread
-
         self._download_loop(partial(call_from_thread, self))  # pragma: no cover
 
     def _on_download_progress(
