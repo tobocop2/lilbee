@@ -297,7 +297,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
         task_bar = self._task_bar
-        task_id = task_bar.add_task(f"Add {path.name}", "add")
+        task_id = task_bar.add_task(f"Add {path.name}", "add", indeterminate=True)
         task_bar.queue.advance("add")
         self._run_add_background(path, task_id)
 
@@ -306,7 +306,17 @@ class ChatScreen(Screen[None]):
         """Copy files and sync in a background thread."""
         self._sync_active = True
         task_bar = self._task_bar
-        self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Copying {path.name}...")
+        # Copy + ingest run as opaque phases from the TUI's perspective:
+        # the underlying pipeline does not emit percent-complete events,
+        # so a determinate bar would lie about progress (see BEE-65f). Use
+        # an indeterminate bar and update detail text as each phase runs.
+        self.app.call_from_thread(
+            task_bar.update_task,
+            task_id,
+            0,
+            f"Copying {path.name}...",
+            indeterminate=True,
+        )
         try:
             from lilbee.cli.helpers import copy_files
 
@@ -317,7 +327,11 @@ class ChatScreen(Screen[None]):
                     self.notify, f"{name} already exists (use --force to overwrite)"
                 )
             self.app.call_from_thread(
-                task_bar.update_task, task_id, 50, f"Copied {len(copied)} file(s), syncing..."
+                task_bar.update_task,
+                task_id,
+                0,
+                f"Copied {len(copied)} file(s), syncing...",
+                indeterminate=True,
             )
 
             from lilbee.ingest import sync
@@ -328,12 +342,12 @@ class ChatScreen(Screen[None]):
 
                     if not isinstance(data, FileStartEvent):
                         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-                    if data.total_files:
-                        pct = 50 + int(data.current_file * 50 / data.total_files)
-                    else:
-                        pct = 75
                     self.app.call_from_thread(
-                        task_bar.update_task, task_id, pct, f"Syncing {data.file}..."
+                        task_bar.update_task,
+                        task_id,
+                        0,
+                        f"Syncing {data.file}...",
+                        indeterminate=True,
                     )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
@@ -805,7 +819,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
             return
         task_bar = self._task_bar
-        task_id = task_bar.add_task("Sync documents", "sync")
+        task_id = task_bar.add_task("Sync documents", "sync", indeterminate=True)
         task_bar.queue.advance("sync")
         self._run_sync_worker(task_id)
 
@@ -833,13 +847,22 @@ class ChatScreen(Screen[None]):
 
                     if not isinstance(data, FileStartEvent):
                         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-                    pct = int(data.current_file * 100 / data.total_files) if data.total_files else 0
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=data.current_file,
                         total=data.total_files,
                         file=data.file,
                     )
-                    self.app.call_from_thread(task_bar.update_task, task_id, pct, status)
+                    self.app.call_from_thread(
+                        task_bar.update_task, task_id, 0, status, indeterminate=True
+                    )
+                elif event_type == EventType.FILE_DONE:
+                    from lilbee.progress import FileDoneEvent
+
+                    if not isinstance(data, FileDoneEvent):
+                        raise TypeError(f"Expected FileDoneEvent, got {type(data).__name__}")
+                    self.app.call_from_thread(
+                        task_bar.update_task, task_id, 0, f"Done: {data.file}", indeterminate=True
+                    )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
             self.app.call_from_thread(task_bar.complete_task, task_id)

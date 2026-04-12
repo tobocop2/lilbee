@@ -46,6 +46,7 @@ class Task:
     status: TaskStatus = TaskStatus.QUEUED
     progress: int = 0
     detail: str = ""
+    indeterminate: bool = False
 
 
 class TaskQueue:
@@ -148,23 +149,46 @@ class TaskQueue:
         with self._lock:
             return self._tasks.get(task_id)
 
-    def enqueue(self, fn: Callable[[], None], name: str, task_type: str) -> str:
+    def enqueue(
+        self,
+        fn: Callable[[], None],
+        name: str,
+        task_type: str,
+        *,
+        indeterminate: bool = False,
+    ) -> str:
         """Add a task to the per-type queue. Returns a task_id."""
         task_id = uuid.uuid4().hex[:8]
-        task = Task(task_id=task_id, name=name, task_type=task_type, fn=fn)
+        task = Task(
+            task_id=task_id, name=name, task_type=task_type, fn=fn, indeterminate=indeterminate
+        )
         with self._lock:
             self._tasks[task_id] = task
             self._queues.setdefault(task_type, []).append(task_id)
         self._notify()
         return task_id
 
-    def update_task(self, task_id: str, progress: int, detail: str = "") -> None:
-        """Update progress and detail text for a task."""
+    def update_task(
+        self,
+        task_id: str,
+        progress: int,
+        detail: str = "",
+        *,
+        indeterminate: bool | None = None,
+    ) -> None:
+        """Update progress and detail text for a task.
+        When *indeterminate* is True the task's progress bar renders as a
+        pulsing indeterminate bar instead of a percentage. When explicitly
+        False it returns to determinate mode. ``None`` leaves the flag as-is
+        so incremental progress updates don't clobber the caller's intent.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
                 task.progress = progress
                 task.detail = detail
+                if indeterminate is not None:
+                    task.indeterminate = indeterminate
         self._notify()
 
     def complete_task(self, task_id: str) -> None:
@@ -174,6 +198,7 @@ class TaskQueue:
             if task:
                 task.status = TaskStatus.DONE
                 task.progress = 100
+                task.indeterminate = False
                 self._history.append(task)
                 self._remove_from_active_locked(task_id, task.task_type)
                 self._remove_from_queue_locked(task_id, task.task_type)

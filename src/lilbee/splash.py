@@ -100,13 +100,28 @@ def stop(handle: SplashHandle | None) -> None:
 def dismiss() -> None:
     """Signal the splash to stop from the TUI side.
     Called by the chat screen's ``on_show()`` to dismiss the splash once
-    the TUI is ready to paint. Reads the pipe fd from the environment
-    variable and closes it — the subprocess sees EOF and exits.
+    the TUI is ready to paint. Closes the pipe so the subprocess sees EOF,
+    waits for it to exit, and clears the active handle so ``atexit`` does
+    not re-run ``stop()`` (which would write ``\\033[?25h`` into the
+    Textual alt-screen and leave a cursor artifact at (0,0)).
     """
+    global _active_handle
+
     fd_str = os.environ.pop(_SPLASH_FD_ENV, None)
-    if fd_str is None:
+    if fd_str is not None:
+        _close_write_fd(int(fd_str))
+
+    handle = _active_handle
+    if handle is None:
         return
-    _close_write_fd(int(fd_str))
+    _active_handle = None
+
+    _close_write_fd(handle.write_fd)
+    try:
+        handle.process.wait(timeout=_STOP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        handle.process.kill()
+        handle.process.wait(timeout=1.0)
 
 
 def _close_write_fd(fd: int) -> None:

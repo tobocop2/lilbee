@@ -2475,24 +2475,30 @@ async def test_chat_run_sync_worker():
             assert app.screen._sync_active is False
 
 
-async def test_chat_sync_progress_percentage():
-    """Verify sync progress reports actual percentage, not hardcoded 50%."""
+async def test_chat_sync_progress_uses_indeterminate():
+    """Verify sync progress uses indeterminate mode, not percentages."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType, FileStartEvent
+        from lilbee.progress import EventType, FileDoneEvent, FileStartEvent
 
         update_calls: list[tuple] = []
         task_bar = app.task_bar
         original_update = task_bar.update_task
 
-        def tracking_update(task_id, pct, status):
-            update_calls.append((task_id, pct, status))
-            return original_update(task_id, pct, status)
+        def tracking_update(task_id, pct, status, *, indeterminate=None):
+            update_calls.append((task_id, pct, status, indeterminate))
+            return original_update(task_id, pct, status, indeterminate=indeterminate)
 
         async def fake_sync(quiet=False, on_progress=None):
             if on_progress:
-                event = FileStartEvent(current_file=3, total_files=4, file="doc.md")
-                on_progress(EventType.FILE_START, event)
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(current_file=1, total_files=1, file="doc.md"),
+                )
+                on_progress(
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file="doc.md", status="ok", chunks=3),
+                )
             return {"added": 1}
 
         with (
@@ -2504,8 +2510,33 @@ async def test_chat_sync_progress_percentage():
             while app.screen.workers:
                 await _pilot.pause()
 
-        pct_values = [pct for _, pct, _ in update_calls if pct > 0]
-        assert 75 in pct_values
+        # All progress updates should use indeterminate mode
+        for _, _pct, _, indet in update_calls:
+            if indet is not None:
+                assert indet is True
+        # No update should report 100% progress
+        pct_values = [pct for _, pct, _, _ in update_calls]
+        assert 100 not in pct_values
+
+
+async def test_chat_sync_file_done_bad_type():
+    """Sync progress raises TypeError when FILE_DONE data is not FileDoneEvent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EventType
+
+        async def fake_sync(quiet=False, on_progress=None):
+            if on_progress:
+                on_progress(EventType.FILE_DONE, {"file": "x.md", "status": "ok", "chunks": 1})
+            return {"added": 0}
+
+        with patch("lilbee.ingest.sync", new=fake_sync):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+            # Worker catches the TypeError via the except Exception handler
+            assert app.screen._sync_active is False
 
 
 async def test_chat_run_sync_error_worker():
@@ -7081,7 +7112,6 @@ async def test_chat_add_skipped_file():
 
         async def fake_sync(*, quiet: bool = True, on_progress: object = None) -> None:
             if on_progress:
-                # Trigger with total_files=0 to cover pct=75 path
                 on_progress(
                     EventType.FILE_START,
                     FileStartEvent(file="test.txt", total_files=0, current_file=0),
@@ -7092,36 +7122,6 @@ async def test_chat_add_skipped_file():
             patch("lilbee.ingest.sync", new=fake_sync),
         ):
             app.screen._run_add_background(_Path("test.txt"), "task-1")
-            while app.screen.workers:
-                await _pilot.pause()
-            assert app.screen._sync_active is False
-
-
-async def test_chat_add_sync_progress_with_total_files():
-    """_run_add_background computes percentage when total_files > 0."""
-    from pathlib import Path as _Path
-
-    from lilbee.cli.helpers import CopyResult
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        mock_result = CopyResult(copied=[_Path("new.txt")], skipped=[])
-
-        from lilbee.progress import EventType, FileStartEvent
-
-        async def fake_sync(*, quiet=True, on_progress=None):
-            if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(file="doc.md", total_files=4, current_file=2),
-                )
-
-        with (
-            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", new=fake_sync),
-        ):
-            app.screen._run_add_background(_Path("doc.md"), "task-pct")
             while app.screen.workers:
                 await _pilot.pause()
             assert app.screen._sync_active is False
@@ -7502,3 +7502,116 @@ async def test_catalog_grid_selected_with_model_card():
             with patch.object(screen, "_select_row") as mock_sel:
                 screen._on_grid_selected(event)
                 mock_sel.assert_called_once_with(row)
+
+
+async def test_cmd_add_uses_indeterminate_progress_during_ingest(tmp_path):
+    """BEE-65f: /add must not claim determinate progress while ingest runs.
+    Before the fix, the task bar jumped 0 -> 50 -> 100 for a single-file add,
+    falsely showing "done" while parse/chunk/embed/store were still running
+    for tens of seconds. The TaskBarController must flip the task to
+    indeterminate mode during copy and sync so the bar pulses instead of
+    lying about completion.
+    """
+    from pathlib import Path as _Path
+
+    from lilbee.cli.helpers import CopyResult
+    from lilbee.progress import EventType, FileStartEvent
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        test_file = tmp_path / "note.md"
+        test_file.write_text("hello")
+
+        task_id = app.task_bar.add_task("Add note.md", "add")
+        app.task_bar.queue.advance("add")
+
+        snapshots: list[tuple[bool, int]] = []
+
+        def on_change() -> None:
+            task = app.task_bar.queue.get_task(task_id)
+            if task is not None:
+                snapshots.append((task.indeterminate, task.progress))
+
+        app.task_bar.queue.subscribe(on_change)
+
+        async def fake_sync(*, quiet=True, on_progress=None):
+            if on_progress:
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(file="note.md", total_files=1, current_file=1),
+                )
+
+        try:
+            with (
+                patch(
+                    "lilbee.cli.helpers.copy_files",
+                    return_value=CopyResult(copied=[_Path("note.md")], skipped=[]),
+                ),
+                patch("lilbee.ingest.sync", new=fake_sync),
+            ):
+                app.screen._run_add_background(test_file, task_id)
+                while app.screen.workers:
+                    await _pilot.pause()
+                await _pilot.pause()
+        finally:
+            app.task_bar.queue.unsubscribe(on_change)
+
+        # Drop the final DONE entry. The task bar flips indeterminate off at
+        # completion; everything BEFORE that must be indeterminate and must
+        # not claim 100% progress.
+        running_snapshots = [s for s in snapshots if s != (False, 100)]
+        assert running_snapshots, f"expected progress updates, got {snapshots}"
+        assert all(indet for indet, _ in running_snapshots), (
+            f"task should stay indeterminate until completion, got {running_snapshots}"
+        )
+        assert all(p < 100 for _, p in running_snapshots), (
+            f"no update should claim 100% progress while running, got {running_snapshots}"
+        )
+
+
+async def test_task_bar_indeterminate_renders_total_none():
+    """BEE-65f: indeterminate tasks render the Textual ProgressBar with total=None.
+    Setting total=None is how Textual draws an indeterminate pulsing bar.
+    A task flagged indeterminate=True must not leak a total=100 update.
+    """
+    from textual.widgets import ProgressBar
+
+    from lilbee.cli.tui.task_queue import TaskStatus
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    class _Harness(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+            self.task_bar = TaskBarController(self)
+
+        def compose(self) -> ComposeResult:
+            yield TaskBar(id="tbar")
+
+    app = _Harness()
+    async with app.run_test(size=(80, 24)) as _pilot:
+        task_id = app.task_bar.add_task("indet", "add")
+        app.task_bar.queue.advance("add")
+        app.task_bar.update_task(task_id, 0, "working", indeterminate=True)
+        # Panel compose + the spinner tick need a few frames to settle.
+        for _ in range(5):
+            await _pilot.pause()
+
+        task = app.task_bar.queue.get_task(task_id)
+        assert task is not None
+        assert task.indeterminate is True
+        assert task.status == TaskStatus.ACTIVE
+
+        bar = app.screen.query_one("#tbar", TaskBar)
+        pb = bar.query_one(ProgressBar)
+        # total=None is Textual's indeterminate mode
+        assert pb.total is None
+
+        # Completing flips indeterminate off and drives the bar to 100
+        app.task_bar.complete_task(task_id)
+        await _pilot.pause()
+        task = app.task_bar.queue.get_task(task_id)
+        if task is not None:
+            assert task.indeterminate is False

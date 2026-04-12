@@ -64,6 +64,8 @@ class _TaskPanel(Static):
     def __init__(self, task_id: str, **kwargs: object) -> None:
         super().__init__(id=f"task-panel-{task_id}", **kwargs)  # type: ignore[arg-type]
         self.task_id = task_id
+        self._last_progress: int = -1
+        self._last_indeterminate: bool | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("", classes="task-panel-label")
@@ -82,13 +84,33 @@ class TaskBarController:
         self._app = app
         self.queue = TaskQueue()
 
-    def add_task(self, name: str, task_type: str, fn: Callable[[], None] | None = None) -> str:
+    def add_task(
+        self,
+        name: str,
+        task_type: str,
+        fn: Callable[[], None] | None = None,
+        *,
+        indeterminate: bool = False,
+    ) -> str:
         """Enqueue a task. Returns the new task_id."""
-        return self.queue.enqueue(fn or (lambda: None), name, task_type)
+        return self.queue.enqueue(
+            fn or (lambda: None), name, task_type, indeterminate=indeterminate
+        )
 
-    def update_task(self, task_id: str, progress: int, detail: str = "") -> None:
-        """Update progress and detail text for a task."""
-        self.queue.update_task(task_id, progress, detail)
+    def update_task(
+        self,
+        task_id: str,
+        progress: int,
+        detail: str = "",
+        *,
+        indeterminate: bool | None = None,
+    ) -> None:
+        """Update progress and detail text for a task.
+        When *indeterminate* is True the panel renders a pulsing bar instead
+        of a percentage, so long-running phases without a reliable percent
+        don't falsely claim to be finished.
+        """
+        self.queue.update_task(task_id, progress, detail, indeterminate=indeterminate)
 
     def complete_task(self, task_id: str) -> None:
         """Mark a task done; keep it visible for a brief flash, then remove."""
@@ -186,12 +208,26 @@ class TaskBar(Static):
         """Expose the shared queue for callers that iterate or advance it."""
         return self._controller.queue
 
-    def add_task(self, name: str, task_type: str, fn: Callable[[], None] | None = None) -> str:
+    def add_task(
+        self,
+        name: str,
+        task_type: str,
+        fn: Callable[[], None] | None = None,
+        *,
+        indeterminate: bool = False,
+    ) -> str:
         """Enqueue a task via the app's controller. Returns the task_id."""
-        return self._controller.add_task(name, task_type, fn)
+        return self._controller.add_task(name, task_type, fn, indeterminate=indeterminate)
 
-    def update_task(self, task_id: str, progress: int, detail: str = "") -> None:
-        self._controller.update_task(task_id, progress, detail)
+    def update_task(
+        self,
+        task_id: str,
+        progress: int,
+        detail: str = "",
+        *,
+        indeterminate: bool | None = None,
+    ) -> None:
+        self._controller.update_task(task_id, progress, detail, indeterminate=indeterminate)
 
     def complete_task(self, task_id: str) -> None:
         self._controller.complete_task(task_id)
@@ -284,7 +320,18 @@ class TaskBar(Static):
         try:
             label = panel.query_one(".task-panel-label", Label)
             label.update(f" {icon} {task.name}{detail}")
-            progress_bar = panel.query_one(ProgressBar)
-            progress_bar.update(total=100, progress=task.progress)
+            is_indeterminate = task.indeterminate and task.status == TaskStatus.ACTIVE
+            progress_changed = (
+                is_indeterminate != panel._last_indeterminate
+                or task.progress != panel._last_progress
+            )
+            if progress_changed:
+                progress_bar = panel.query_one(ProgressBar)
+                if is_indeterminate:
+                    progress_bar.update(total=None, progress=0)
+                else:
+                    progress_bar.update(total=100, progress=task.progress)
+                panel._last_progress = task.progress
+                panel._last_indeterminate = is_indeterminate
         except NoMatches:
             pass  # panel children not yet composed, next refresh will catch up

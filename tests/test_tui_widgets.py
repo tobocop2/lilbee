@@ -2426,9 +2426,140 @@ class TestTaskBarAdditional:
             await pilot.pause()
 
 
-# ---------------------------------------------------------------------------
-# GridSelect additional coverage — highlight_first, highlight_last, cursor moves
-# ---------------------------------------------------------------------------
+class TestTaskBarIndeterminate:
+    """Tests for indeterminate progress bar rendering (BEE-65f) and
+    redundant ProgressBar update avoidance (BEE-jmj, BEE-73k).
+    """
+
+    async def test_add_task_indeterminate_creates_indeterminate_task(self) -> None:
+        """Tasks created with indeterminate=True start in indeterminate mode."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync", indeterminate=True)
+            task = bar.queue.get_task(task_id)
+            assert task is not None
+            assert task.indeterminate is True
+
+    async def test_enqueue_indeterminate_flag(self) -> None:
+        """TaskQueue.enqueue passes indeterminate to the Task."""
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Add", "add", indeterminate=True)
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.indeterminate is True
+
+    async def test_indeterminate_renders_pulsing_bar(self) -> None:
+        """An indeterminate active task renders ProgressBar with total=None."""
+        from textual.widgets import ProgressBar as PB
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync", indeterminate=True)
+            bar.queue.advance()
+            bar._refresh_display()
+            # Wait for the panel to compose its children
+            await pilot.pause()
+            # Re-render now that children are mounted
+            bar._refresh_display()
+            await pilot.pause()
+            panel = bar._panels[task_id]
+            pb = panel.query_one(PB)
+            assert pb.total is None
+
+    async def test_progress_bar_not_updated_when_unchanged(self) -> None:
+        """Redundant ProgressBar.update calls are skipped when state matches."""
+        from textual.widgets import ProgressBar as PB
+
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Panel children are now composed. Re-render to populate tracking state.
+            bar._refresh_display()
+            await pilot.pause()
+
+            panel = bar._panels[task_id]
+            pb = panel.query_one(PB)
+            assert panel._last_progress == 0
+            assert panel._last_indeterminate is False
+
+            # Same state renders should not touch the progress bar
+            original_update = pb.update
+            call_count = 0
+
+            def counting_update(**kwargs: object) -> None:
+                nonlocal call_count
+                call_count += 1
+                original_update(**kwargs)
+
+            pb.update = counting_update  # type: ignore[assignment]
+
+            task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.ACTIVE,
+                progress=0,
+            )
+            bar._render_task_panel(task_id, task)
+            assert call_count == 0, "Should skip ProgressBar.update when state unchanged"
+
+    async def test_progress_bar_updated_when_progress_changes(self) -> None:
+        """ProgressBar.update is called when task progress changes."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Panel children are now composed. Re-render to populate tracking state.
+            bar._refresh_display()
+            await pilot.pause()
+
+            panel = bar._panels[task_id]
+            assert panel._last_progress == 0
+
+            # Now change progress and verify the bar updates
+            bar.update_task(task_id, 50, "halfway")
+            bar._refresh_display()
+            await pilot.pause()
+            assert panel._last_progress == 50
+
+    async def test_controller_add_task_indeterminate(self) -> None:
+        """TaskBarController.add_task passes indeterminate through to queue."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            controller = app.task_bar
+            assert isinstance(controller, TaskBarController)
+            task_id = controller.add_task("Sync", "sync", indeterminate=True)
+            task = controller.queue.get_task(task_id)
+            assert task is not None
+            assert task.indeterminate is True
 
 
 class TestGridSelectExtra:

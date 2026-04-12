@@ -27,9 +27,15 @@ def main() -> None:
 
     try:
         from lilbee.cli import app
-    except BaseException:
+    finally:
+        # Stop the splash BEFORE the TUI takes over the terminal. Otherwise
+        # the subprocess's final writes (erase + home) land on Textual's
+        # alt-screen and leave the cursor visible, producing stray artifacts
+        # during background tasks and a stuck glyph in the top-left corner
+        # of every screen (BEE-73k, BEE-jmj). stop() is synchronous and
+        # waits for the child to exit, so by the time app() runs no more
+        # splash writes can reach the terminal.
         stop(handle)
-        raise
 
     try:
         app()
@@ -37,5 +43,3 @@ def main() -> None:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()
         raise SystemExit(130) from None
-    finally:
-        stop(handle)
