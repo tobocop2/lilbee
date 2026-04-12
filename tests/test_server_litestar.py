@@ -244,6 +244,19 @@ class TestModelsSetChatRoute:
     def test_returns_422_for_unavailable_model(self, mock_set, client):
         resp = client.put("/api/models/chat", json={"model": "bogus"})
         assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
+
+
+class TestSetEmbeddingModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_embedding_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
+    )
+    def test_returns_422_for_unavailable_embedding(self, mock_set, client):
+        resp = client.put("/api/models/embedding", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
 
 
 class TestModelsCatalogRoute:

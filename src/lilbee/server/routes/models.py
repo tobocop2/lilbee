@@ -55,7 +55,10 @@ async def models_set_chat_route(data: SetModelRequest) -> SetModelResponse:
 @put("/api/models/embedding")
 async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active embedding model."""
-    return await handlers.set_embedding_model(model=data.model)
+    try:
+        return await handlers.set_embedding_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @get("/api/models/catalog")
