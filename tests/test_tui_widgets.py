@@ -2186,25 +2186,25 @@ class TestModelBarAdditional:
 
 
 class TestSyncSelectPrepend:
-    """Cover _sync_select branch: current value not in scanned options."""
+    """Cover _sync_select contract: cfg default is the source of truth."""
 
-    def test_current_value_prepended_when_not_in_options(self) -> None:
-        """When Select holds a value absent from the new options, it's prepended."""
+    def test_default_overrides_stale_current_value(self) -> None:
+        """Stale sel.value is discarded in favor of the configured default."""
         from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
 
-        # Mock a Select widget that retains its value after set_options
         sel = mock.MagicMock()
-        sel.value = "custom:latest"
-        opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
-        _sync_select(sel, opts)
-        # Prepended the missing value and called set_options twice
-        assert sel.set_options.call_count == 2
-        prepended = sel.set_options.call_args_list[1][0][0]
-        assert prepended[0] == ModelOption("custom:latest", "custom:latest")
-        assert sel.value == "custom:latest"
+        sel.value = "mistral:latest"
+        opts = [
+            ModelOption("mistral:latest", "mistral:latest"),
+            ModelOption("smollm2:135m", "smollm2:135m"),
+        ]
+        _sync_select(sel, opts, default="smollm2:135m")
+        assert sel.value == "smollm2:135m"
+        # Single set_options call since default is already in opts
+        assert sel.set_options.call_count == 1
 
-    def test_default_used_when_no_current_value(self) -> None:
-        """When Select has no value, fall back to the configured default."""
+    def test_default_used_when_select_is_disabled(self) -> None:
+        """When Select has no value, use the configured default."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
@@ -2214,20 +2214,20 @@ class TestSyncSelectPrepend:
         assert sel.value == "qwen3:8b"
 
     def test_default_prepended_when_not_in_opts(self) -> None:
-        """When the configured default isn't in opts, it's prepended."""
+        """When the configured default isn't in opts, it's prepended before set_options."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
         sel.value = _DISABLED
         opts = [ModelOption("Qwen3 8B", "qwen3:8b")]
         _sync_select(sel, opts, default="llama3:8b")
-        assert sel.set_options.call_count == 2
-        prepended = sel.set_options.call_args_list[1][0][0]
-        assert prepended[0] == ModelOption("llama3:8b", "llama3:8b")
+        assert sel.set_options.call_count == 1
+        passed = sel.set_options.call_args_list[0][0][0]
+        assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
         assert sel.value == "llama3:8b"
 
-    def test_no_default_no_current_leaves_unset(self) -> None:
-        """When no current value and no default, don't set a value."""
+    def test_no_default_leaves_value_untouched(self) -> None:
+        """When there's no default, don't assign a value."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
@@ -2884,3 +2884,234 @@ class TestModelBarPopulateBranches:
                 await pilot.pause()
                 await pilot.pause()
                 mock_reset.assert_called_once()
+
+
+class TestModelBarCfgSourceOfTruth:
+    """Regression tests for BEE-0gw: dropdown must follow cfg on refresh.
+
+    The bug: _sync_select used to preserve sel.value across set_options even
+    when cfg had changed, so a stale scanner pick would override the configured
+    model. cfg is the single source of truth, and manual user picks already
+    write back to cfg via the Select.Changed handler, so refresh should always
+    re-sync the dropdown to cfg.
+    """
+
+    @pytest.fixture(autouse=True)
+    def mock_classify(self):
+        with mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=([], [], []),
+        ):
+            yield
+
+    async def test_refresh_follows_cfg_chat_model_change(self) -> None:
+        """After cfg.chat_model changes, refresh snaps dropdown to the new value."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "mistral:latest"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            chat_sel = app.query_one("#chat-model-select", Select)
+
+            bar._populate(
+                [
+                    ModelOption("mistral:latest", "mistral:latest"),
+                    ModelOption("smollm2:135m", "smollm2:135m"),
+                ],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "mistral:latest"
+
+            cfg.chat_model = "smollm2:135m"
+
+            bar._populate(
+                [
+                    ModelOption("mistral:latest", "mistral:latest"),
+                    ModelOption("smollm2:135m", "smollm2:135m"),
+                ],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "smollm2:135m"
+
+    async def test_refresh_follows_cfg_embedding_model_change(self) -> None:
+        """Embedding dropdown also snaps to cfg on refresh."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            embed_sel = app.query_one("#embed-model-select", Select)
+
+            bar._populate(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [
+                    ModelOption("nomic:latest", "nomic:latest"),
+                    ModelOption("bge-small:latest", "bge-small:latest"),
+                ],
+                [],
+            )
+            await pilot.pause()
+            assert embed_sel.value == "nomic:latest"
+
+            cfg.embedding_model = "bge-small:latest"
+            bar._populate(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [
+                    ModelOption("nomic:latest", "nomic:latest"),
+                    ModelOption("bge-small:latest", "bge-small:latest"),
+                ],
+                [],
+            )
+            await pilot.pause()
+            assert embed_sel.value == "bge-small:latest"
+
+    async def test_refresh_follows_cfg_vision_model_change(self) -> None:
+        """Vision dropdown also snaps to cfg on refresh."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = "llava:7b"
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            vision_sel = app.query_one("#vision-model-select", Select)
+
+            bar._populate(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [
+                    ModelOption("llava:7b", "llava:7b"),
+                    ModelOption("moondream:latest", "moondream:latest"),
+                ],
+            )
+            await pilot.pause()
+            assert vision_sel.value == "llava:7b"
+
+            cfg.vision_model = "moondream:latest"
+            bar._populate(
+                [ModelOption("qwen3:8b", "qwen3:8b")],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [
+                    ModelOption("llava:7b", "llava:7b"),
+                    ModelOption("moondream:latest", "moondream:latest"),
+                ],
+            )
+            await pilot.pause()
+            assert vision_sel.value == "moondream:latest"
+
+    async def test_manual_user_pick_writes_cfg_and_survives_refresh(self) -> None:
+        """A real user pick flows through Select.Changed -> cfg, so refresh keeps it."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "mistral:latest"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            chat_sel = app.query_one("#chat-model-select", Select)
+
+            bar._populate(
+                [
+                    ModelOption("mistral:latest", "mistral:latest"),
+                    ModelOption("smollm2:135m", "smollm2:135m"),
+                ],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "mistral:latest"
+
+            with (
+                mock.patch("lilbee.cli.tui.widgets.model_bar.settings.set_value"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
+            ):
+                chat_sel.value = "smollm2:135m"
+                await pilot.pause()
+
+            assert cfg.chat_model == "smollm2:135m"
+
+            bar._populate(
+                [
+                    ModelOption("mistral:latest", "mistral:latest"),
+                    ModelOption("smollm2:135m", "smollm2:135m"),
+                ],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "smollm2:135m"
+
+    async def test_chat_changed_ignores_null_event(self) -> None:
+        """A Select.Changed event with NULL value is ignored (no cfg write)."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelBar
+
+        cfg.chat_model = "qwen3:8b"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            bar._populating = False
+            chat_sel = app.query_one("#chat-model-select", Select)
+
+            null_event = mock.MagicMock(spec=Select.Changed)
+            null_event.value = _DISABLED
+            null_event.select = chat_sel
+            bar._on_chat_model_changed(null_event)
+
+            # cfg must not have been mutated (still the original value).
+            assert cfg.chat_model == "qwen3:8b"
+
+    async def test_first_populate_respects_cfg_over_scanner_order(self) -> None:
+        """First populate must honor cfg even when scanner lists other models first."""
+        from textual.widgets import Select
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        cfg.chat_model = "smollm2:135m"
+        cfg.embedding_model = "nomic:latest"
+        cfg.vision_model = ""
+        app = _ModelBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(ModelBar)
+            chat_sel = app.query_one("#chat-model-select", Select)
+
+            bar._populate(
+                [
+                    ModelOption("mistral:latest", "mistral:latest"),
+                    ModelOption("smollm2:135m", "smollm2:135m"),
+                    ModelOption("llama3:8b", "llama3:8b"),
+                ],
+                [ModelOption("nomic:latest", "nomic:latest")],
+                [],
+            )
+            await pilot.pause()
+            assert chat_sel.value == "smollm2:135m"

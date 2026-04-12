@@ -94,20 +94,20 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Set options and value for a model Select widget.
-    Preserves the current value if it's in the options. Falls back to
-    *default* (typically the configured model from ``cfg``). If the
-    resolved value isn't in *opts*, prepends it so it remains selectable.
 
-    Note: may mutate *opts* by inserting the resolved value at index 0.
+    ``default`` (the configured model from ``cfg``) is the single source of
+    truth. Any in-session manual pick has already been written back to cfg by
+    the Select.Changed handler, so we never preserve ``sel.value`` across a
+    sync. If ``default`` is not in ``opts``, it is prepended so it remains
+    selectable.
+
+    Note: may mutate *opts* by inserting ``default`` at index 0.
     """
+    if default and not any(o.ref == default for o in opts):
+        opts.insert(0, ModelOption(default, default))
     sel.set_options(opts)
-    current = str(sel.value) if sel.value != _DISABLED else ""
-    target = current or default
-    if target:
-        if not any(o.ref == target for o in opts):
-            opts.insert(0, ModelOption(target, target))
-            sel.set_options(opts)
-        sel.value = target
+    if default:
+        sel.value = default
 
 
 _SELECT_IDS = ("#chat-model-select", "#embed-model-select", "#vision-model-select")
@@ -211,10 +211,13 @@ class ModelBar(Widget, can_focus=False):
         self._populating = False
 
     def _sync_vision_select(self, sel: Select, models: list[ModelOption]) -> None:
-        """Sync vision Select with extra fallback to cfg.vision_model."""
+        """Sync vision Select from cfg.vision_model.
+
+        cfg is the source of truth. An empty cfg.vision_model means vision is
+        disabled, so the widget's value is cleared to ``_DISABLED``.
+        """
         opts = list(models)
-        current = str(sel.value) if sel.value != _DISABLED else ""
-        target = current or cfg.vision_model
+        target = cfg.vision_model
         if target:
             if not any(o.ref == target for o in opts):
                 opts.insert(0, ModelOption(target, target))
