@@ -839,7 +839,9 @@ class ChatScreen(Screen[None]):
         try:
             from lilbee.ingest import sync
 
-            self.app.call_from_thread(task_bar.update_task, task_id, 0, "Syncing...")
+            self.app.call_from_thread(
+                task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
+            )
 
             def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                 if event_type == EventType.FILE_START:

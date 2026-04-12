@@ -65,6 +65,7 @@ class _TaskPanel(Static):
         super().__init__(id=f"task-panel-{task_id}", **kwargs)  # type: ignore[arg-type]
         self.task_id = task_id
         self._last_progress: int = -1
+        # None means "never rendered yet", distinct from False (rendered as determinate).
         self._last_indeterminate: bool | None = None
 
     def compose(self) -> ComposeResult:
