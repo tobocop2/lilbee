@@ -25,6 +25,7 @@ from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
 from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -310,7 +311,8 @@ class ChatScreen(Screen[None]):
         # the underlying pipeline does not emit percent-complete events,
         # so a determinate bar would lie about progress (see BEE-65f). Use
         # an indeterminate bar and update detail text as each phase runs.
-        self.app.call_from_thread(
+        call_from_thread(
+            self,
             task_bar.update_task,
             task_id,
             0,
@@ -323,10 +325,11 @@ class ChatScreen(Screen[None]):
             result = copy_files([path])
             copied = result.copied
             for name in result.skipped:
-                self.app.call_from_thread(
-                    self.notify, f"{name} already exists (use --force to overwrite)"
+                call_from_thread(
+                    self, self.notify, f"{name} already exists (use --force to overwrite)"
                 )
-            self.app.call_from_thread(
+            call_from_thread(
+                self,
                 task_bar.update_task,
                 task_id,
                 0,
@@ -342,7 +345,8 @@ class ChatScreen(Screen[None]):
 
                     if not isinstance(data, FileStartEvent):
                         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-                    self.app.call_from_thread(
+                    call_from_thread(
+                        self,
                         task_bar.update_task,
                         task_id,
                         0,
@@ -351,13 +355,13 @@ class ChatScreen(Screen[None]):
                     )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
-            self.app.call_from_thread(task_bar.complete_task, task_id)
-            self.app.call_from_thread(self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+            call_from_thread(self, task_bar.complete_task, task_id)
+            call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
         except Exception as exc:
             log.warning("Failed to add %s", path, exc_info=True)
-            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
-            self.app.call_from_thread(
-                self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
+            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+            call_from_thread(
+                self, self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
             )
         finally:
             self._sync_active = False
@@ -409,7 +413,7 @@ class ChatScreen(Screen[None]):
         from lilbee.crawler import crawl_and_save
 
         task_bar = self._task_bar
-        self.app.call_from_thread(task_bar.update_task, task_id, 0, f"Crawling {url}...")
+        call_from_thread(self, task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
         try:
 
@@ -421,23 +425,23 @@ class ChatScreen(Screen[None]):
                         raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
                     pct = int(data.current * 100 / data.total) if data.total > 0 else 50
                     detail = f"[{data.current}/{data.total}]: {data.url}"
-                    self.app.call_from_thread(task_bar.update_task, task_id, pct, detail)
+                    call_from_thread(self, task_bar.update_task, task_id, pct, detail)
 
             paths = asyncio.run(
                 crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
             )
-            self.app.call_from_thread(task_bar.complete_task, task_id)
-            self.app.call_from_thread(
-                self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
+            call_from_thread(self, task_bar.complete_task, task_id)
+            call_from_thread(
+                self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
             )
         except Exception as exc:
-            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
-            self.app.call_from_thread(
-                self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
+            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+            call_from_thread(
+                self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
             )
             return
 
-        self.app.call_from_thread(self._run_sync)
+        call_from_thread(self, self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -490,11 +494,11 @@ class ChatScreen(Screen[None]):
             from huggingface_hub import login
 
             login(token=token, add_to_git_credential=False)
-            self.app.call_from_thread(self.notify, msg.CHAT_LOGGED_IN)
+            call_from_thread(self, self.notify, msg.CHAT_LOGGED_IN)
         except Exception as exc:
             log.warning("HuggingFace login failed", exc_info=True)
-            self.app.call_from_thread(
-                self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
+            call_from_thread(
+                self, self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
             )
 
     def _cmd_model(self, args: str) -> None:
@@ -528,22 +532,22 @@ class ChatScreen(Screen[None]):
 
         mgr = get_model_manager()
         if not mgr.is_installed(name):
-            self.app.call_from_thread(
-                self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
+            call_from_thread(
+                self, self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
             )
             return
         try:
             removed = mgr.remove(name)
             if removed:
-                self.app.call_from_thread(self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
+                call_from_thread(self, self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
             else:
-                self.app.call_from_thread(
-                    self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+                call_from_thread(
+                    self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
                 )
         except Exception:
             log.warning("Remove failed for %s", name, exc_info=True)
-            self.app.call_from_thread(
-                self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+            call_from_thread(
+                self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
 
     def _cmd_reset(self, args: str) -> None:
@@ -658,7 +662,8 @@ class ChatScreen(Screen[None]):
         try:
             for idx, source in enumerate(sources):
                 base_pct = int(idx * 100 / total)
-                self.app.call_from_thread(
+                call_from_thread(
+                    self,
                     task_bar.update_task,
                     task_id,
                     base_pct,
@@ -676,7 +681,8 @@ class ChatScreen(Screen[None]):
                 ) -> None:
                     fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
                     pct = int((source_idx + fraction) * 100 / total)
-                    self.app.call_from_thread(
+                    call_from_thread(
+                        self,
                         task_bar.update_task,
                         task_id,
                         pct,
@@ -688,16 +694,16 @@ class ChatScreen(Screen[None]):
                 )
                 if result is not None:
                     generated += 1
-            self.app.call_from_thread(task_bar.complete_task, task_id)
-            self.app.call_from_thread(
-                self.notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
+            call_from_thread(self, task_bar.complete_task, task_id)
+            call_from_thread(
+                self, self.notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
             )
-            self.app.call_from_thread(self._refresh_wiki_screen)
+            call_from_thread(self, self._refresh_wiki_screen)
         except Exception as exc:
             log.warning("Wiki generation failed", exc_info=True)
-            self.app.call_from_thread(task_bar.fail_task, task_id, str(exc))
-            self.app.call_from_thread(
-                self.notify, msg.CMD_WIKI_FAILED.format(error=exc), severity="error"
+            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+            call_from_thread(
+                self, self.notify, msg.CMD_WIKI_FAILED.format(error=exc), severity="error"
             )
 
     def _refresh_wiki_screen(self) -> None:
@@ -736,20 +742,20 @@ class ChatScreen(Screen[None]):
             for token in stream:
                 try:
                     if token.is_reasoning:
-                        self.app.call_from_thread(widget.append_reasoning, token.content)
+                        call_from_thread(self, widget.append_reasoning, token.content)
                     elif token.content:
                         response_parts.append(token.content)
-                        self.app.call_from_thread(widget.append_content, token.content)
+                        call_from_thread(self, widget.append_content, token.content)
                     now = time.monotonic()
                     if now - last_scroll >= 0.15:
-                        self.app.call_from_thread(self._scroll_to_bottom)
+                        call_from_thread(self, self._scroll_to_bottom)
                         last_scroll = now
                 except Exception:
                     break  # App shutting down (Ctrl-C) -- stop streaming
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
             with contextlib.suppress(Exception):
-                self.app.call_from_thread(widget.append_content, msg.STREAM_ERROR.format(error=exc))
+                call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
         finally:
             self.streaming = False
             full_response = "".join(response_parts)
@@ -757,8 +763,8 @@ class ChatScreen(Screen[None]):
                 with self._history_lock:
                     self._history.append({"role": "assistant", "content": full_response})
                     self._trim_history()
-            self.app.call_from_thread(widget.finish, sources)
-            self.app.call_from_thread(self._scroll_to_bottom)
+            call_from_thread(self, widget.finish, sources)
+            call_from_thread(self, self._scroll_to_bottom)
 
     def _trim_history(self) -> None:
         """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
@@ -839,8 +845,8 @@ class ChatScreen(Screen[None]):
         try:
             from lilbee.ingest import sync
 
-            self.app.call_from_thread(
-                task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
+            call_from_thread(
+                self, task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
             )
 
             def on_progress(event_type: EventType, data: ProgressEvent) -> None:
@@ -854,28 +860,33 @@ class ChatScreen(Screen[None]):
                         total=data.total_files,
                         file=data.file,
                     )
-                    self.app.call_from_thread(
-                        task_bar.update_task, task_id, 0, status, indeterminate=True
+                    call_from_thread(
+                        self, task_bar.update_task, task_id, 0, status, indeterminate=True
                     )
                 elif event_type == EventType.FILE_DONE:
                     from lilbee.progress import FileDoneEvent
 
                     if not isinstance(data, FileDoneEvent):
                         raise TypeError(f"Expected FileDoneEvent, got {type(data).__name__}")
-                    self.app.call_from_thread(
-                        task_bar.update_task, task_id, 0, f"Done: {data.file}", indeterminate=True
+                    call_from_thread(
+                        self,
+                        task_bar.update_task,
+                        task_id,
+                        0,
+                        f"Done: {data.file}",
+                        indeterminate=True,
                     )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))
-            self.app.call_from_thread(task_bar.complete_task, task_id)
+            call_from_thread(self, task_bar.complete_task, task_id)
         except asyncio.CancelledError:
             self._auto_sync = False
-            self.app.call_from_thread(
-                task_bar.fail_task, task_id, "Sync cancelled. Use /sync to resume."
+            call_from_thread(
+                self, task_bar.fail_task, task_id, "Sync cancelled. Use /sync to resume."
             )
         except Exception:
             log.warning("Background sync failed", exc_info=True)
-            self.app.call_from_thread(task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+            call_from_thread(self, task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
         finally:
             self._sync_active = False
 

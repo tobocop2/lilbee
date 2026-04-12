@@ -88,12 +88,7 @@ def _patch_chat_setup():
             return_value=([], []),
         ),
         patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
-            return_value=None,
-        ),
-        patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
-            return_value=None,
+            "lilbee.cli.tui.widgets.model_bar.ModelBar._scan_models",
         ),
     ):
         yield

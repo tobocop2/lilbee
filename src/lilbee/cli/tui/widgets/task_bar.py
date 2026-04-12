@@ -26,6 +26,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Label, ProgressBar, Static
 
 from lilbee.cli.tui.task_queue import STATUS_ICONS, Task, TaskQueue, TaskStatus
+from lilbee.cli.tui.thread_safe import call_from_thread
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -249,8 +250,7 @@ class TaskBar(Static):
             with contextlib.suppress(Exception):
                 self._refresh_display()
             return
-        with contextlib.suppress(Exception):
-            self.app.call_from_thread(self._refresh_display)
+        call_from_thread(self, self._refresh_display)
 
     def _tick_spinner(self) -> None:
         if self.queue.active_tasks:

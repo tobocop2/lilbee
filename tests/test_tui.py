@@ -36,20 +36,11 @@ def _patch_chat_setup():
             return_value=False,
         ),
         mock.patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
-            return_value=None,
-        ),
-        mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen.on_show",
-            return_value=None,
-        ),
-        mock.patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
-            return_value=None,
-        ),
-        mock.patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
             return_value=([], []),
+        ),
+        mock.patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar._scan_models",
         ),
     ):
         yield
