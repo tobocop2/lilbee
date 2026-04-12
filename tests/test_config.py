@@ -289,6 +289,91 @@ class TestVisionTimeoutConfig:
             Config()
 
 
+class TestEnableOcrConfig:
+    def test_default_is_none(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.enable_ocr is None
+
+    def test_true_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "true"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+    def test_false_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "false"}):
+            c = Config()
+            assert c.enable_ocr is False
+
+    def test_empty_string_means_auto(self, tmp_path) -> None:
+        with mock.patch.dict(
+            os.environ, {**_clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
+        ):
+            c = Config()
+            assert c.enable_ocr is None
+
+    def test_auto_string_means_none(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}):
+            c = Config()
+            assert c.enable_ocr is None
+
+    def test_yes_no_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "yes"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "no"}):
+            c = Config()
+            assert c.enable_ocr is False
+
+    def test_numeric_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "1"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "0"}):
+            c = Config()
+            assert c.enable_ocr is False
+
+    def test_case_insensitive(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "TRUE"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+    def test_from_toml(self, tmp_path) -> None:
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text("enable_ocr = true\n")
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.enable_ocr is True
+
+
+class TestOcrTimeoutConfig:
+    def test_default_is_120(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.ocr_timeout == 120.0
+
+    def test_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "60.5"}):
+            c = Config()
+            assert c.ocr_timeout == 60.5
+
+    def test_zero_means_no_limit(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "0"}):
+            c = Config()
+            assert c.ocr_timeout == 0
+
+    def test_invalid_raises(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "abc"}),
+            pytest.raises(ValueError),
+        ):
+            Config()
+
+
 class TestCorsOriginsConfig:
     def test_cors_origins_from_env(self) -> None:
         with mock.patch.dict(
