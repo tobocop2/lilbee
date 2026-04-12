@@ -45,6 +45,10 @@ CMD_WIKI_STARTED = "Generating wiki for {count} source(s)..."
 CMD_WIKI_PROGRESS = "{name}: {stage}"
 CMD_WIKI_SUCCESS = "Generated {generated}/{total} wiki page(s)"
 CMD_WIKI_FAILED = "Wiki generation failed: {error}"
+CMD_WIKI_NONE_GENERATED = (
+    "Wiki generation produced no pages for {total} source(s). "
+    "The model may not support structured output."
+)
 STREAM_ERROR = "\n\n*Error: {error}*"
 SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"
