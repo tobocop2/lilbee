@@ -86,6 +86,10 @@ def _patch_chat_setup():
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
             return_value=([], [], []),
         ),
+        patch(
+            "lilbee.cli.tui.screens.chat.ChatScreen._refresh_model_bar",
+            return_value=None,
+        ),
     ):
         yield
 
