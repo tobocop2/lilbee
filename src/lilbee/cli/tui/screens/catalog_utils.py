@@ -67,13 +67,26 @@ def format_size_gb(size_gb: float) -> str:
     return f"{size_gb:.1f} GB"
 
 
+def _is_param_count(label: str) -> bool:
+    """True when label looks like a parameter count (e.g. '8B', '0.6B')."""
+    from lilbee.catalog import PARAM_COUNT_RE
+
+    return bool(PARAM_COUNT_RE.fullmatch(label))
+
+
 def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
     """Convert a ModelVariant + family to a TableRow."""
     prefix = "* " if v.recommended else ""
+    # Avoid duplicating the tag when the family name already ends with it.
+    if f.name.endswith(v.param_count):
+        label = f"{prefix}{f.name}"
+    else:
+        label = f"{prefix}{f.name} {v.param_count}"
+    params = v.param_count if _is_param_count(v.param_count) else "--"
     return TableRow(
-        name=f"{prefix}{f.name} {v.param_count}",
+        name=label,
         task=f.task,
-        params=v.param_count,
+        params=params,
         size=_format_size_mb(v.size_mb),
         quant=v.quant or "--",
         downloads="--",
