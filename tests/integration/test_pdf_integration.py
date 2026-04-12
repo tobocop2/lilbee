@@ -59,8 +59,6 @@ def pdf_pipeline(tmp_path_factory):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
-    cfg.vision_model = ""
-
     reset_provider()
     reset_model_manager()
 
@@ -160,13 +158,14 @@ class TestTesseractOcrFallback:
 
 
 def _vision_model_available() -> bool:
-    """Check if a vision model is configured and actually exists locally."""
-    if not cfg.vision_model:
-        return False
+    """Check if the chat model is vision-capable and exists locally."""
     try:
+        from lilbee.model_manager import is_vision_capable
         from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-        resolve_model_path(cfg.vision_model)
+        if not is_vision_capable(cfg.chat_model):
+            return False
+        resolve_model_path(cfg.chat_model)
         return True
     except Exception:
         return False
@@ -177,7 +176,7 @@ class TestVisionOcrFallback:
 
     @pytest.mark.skipif(
         not _vision_model_available(),
-        reason="No vision model available locally (set LILBEE_VISION_MODEL)",
+        reason="No vision-capable chat model available locally",
     )
     async def test_vision_extracts_text(self):
         """Vision model OCR produces non-empty text from the scanned PDF fixture."""
@@ -185,16 +184,16 @@ class TestVisionOcrFallback:
 
         page_texts = extract_pdf_vision(
             SCANNED_PDF,
-            cfg.vision_model,
+            cfg.chat_model,
             quiet=True,
-            timeout=cfg.vision_timeout,
+            timeout=cfg.ocr_timeout,
         )
         all_text = " ".join(page_texts)
         assert len(all_text.strip()) > 0, "Vision OCR produced empty text"
 
     @pytest.mark.skipif(
         not _vision_model_available(),
-        reason="No vision model available locally (set LILBEE_VISION_MODEL)",
+        reason="No vision-capable chat model available locally",
     )
     async def test_vision_extracts_known_phrases(self):
         """Vision model OCR captures key phrases from the scanned document."""
@@ -202,9 +201,9 @@ class TestVisionOcrFallback:
 
         page_texts = extract_pdf_vision(
             SCANNED_PDF,
-            cfg.vision_model,
+            cfg.chat_model,
             quiet=True,
-            timeout=cfg.vision_timeout,
+            timeout=cfg.ocr_timeout,
         )
         all_text = " ".join(page_texts).lower()
         recognized = any(

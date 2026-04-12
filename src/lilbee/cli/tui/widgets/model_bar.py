@@ -1,4 +1,4 @@
-"""Model status bar — Select dropdowns for chat, embedding, and vision models."""
+"""Model status bar — Select dropdowns for chat and embedding models."""
 
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ def _is_mmproj(name: str) -> bool:
     return _MMPROJ_MARKER in name.lower()
 
 
-def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption], list[ModelOption]]:
-    """Classify installed models into (chat, embedding, vision) lists.
+def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
+    """Classify installed models into (chat, embedding) lists.
     Uses registry manifests for native models and the litellm backend's
     backend metadata for remote models. Filters out mmproj files.
     """
@@ -53,7 +53,6 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption], 
     return (
         sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
         sorted(buckets[ModelTask.EMBEDDING], key=lambda o: o.ref),
-        sorted(buckets[ModelTask.VISION], key=lambda o: o.ref),
     )
 
 
@@ -104,7 +103,7 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
         sel.value = default
 
 
-_SELECT_IDS = ("#chat-model-select", "#embed-model-select", "#vision-model-select")
+_SELECT_IDS = ("#chat-model-select", "#embed-model-select")
 
 
 class ModelBar(Widget, can_focus=False):
@@ -138,7 +137,6 @@ class ModelBar(Widget, can_focus=False):
     def compose(self) -> ComposeResult:
         chat_opts = [(cfg.chat_model, cfg.chat_model)] if cfg.chat_model else []
         embed_opts = [(cfg.embedding_model, cfg.embedding_model)] if cfg.embedding_model else []
-        vision_opts = [(cfg.vision_model, cfg.vision_model)] if cfg.vision_model else []
         with Horizontal():
             yield Label("Chat:")
             yield Select[str](
@@ -154,68 +152,42 @@ class ModelBar(Widget, can_focus=False):
                 id="embed-model-select",
                 allow_blank=False,
             )
-            yield Label("Vision:")
-            yield Select[str](
-                options=vision_opts,
-                prompt="Vision (optional)",
-                id="vision-model-select",
-                allow_blank=True,
-            )
 
     def on_mount(self) -> None:
         chat_sel = self.query_one("#chat-model-select", Select)
         embed_sel = self.query_one("#embed-model-select", Select)
-        vision_sel = self.query_one("#vision-model-select", Select)
 
         if cfg.chat_model:
             chat_sel.value = cfg.chat_model
         if cfg.embedding_model:
             embed_sel.value = cfg.embedding_model
-        if cfg.vision_model:
-            vision_sel.value = cfg.vision_model
 
         self._scan_models()
 
     @work(thread=True)
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate dropdowns."""
-        chat, embed, vision = _classify_installed_models()
-        self.app.call_from_thread(self._populate, chat, embed, vision)
+        chat, embed = _classify_installed_models()
+        self.app.call_from_thread(self._populate, chat, embed)
 
     def _populate(
         self,
         chat_models: list[ModelOption],
         embed_models: list[ModelOption],
-        vision_models: list[ModelOption],
     ) -> None:
         """Populate Select widgets from scanned models (main thread)."""
         self._populating = True
 
         chat_sel = self.query_one("#chat-model-select", Select)
         embed_sel = self.query_one("#embed-model-select", Select)
-        vision_sel = self.query_one("#vision-model-select", Select)
 
         chat_opts = list(chat_models) if chat_models else [ModelOption("(none)", "")]
         embed_opts = list(embed_models) if embed_models else [ModelOption("(none)", "")]
 
         _sync_select(chat_sel, chat_opts, cfg.chat_model)
         _sync_select(embed_sel, embed_opts, cfg.embedding_model)
-        self._sync_vision_select(vision_sel, vision_models)
 
         self._populating = False
-
-    def _sync_vision_select(self, sel: Select, models: list[ModelOption]) -> None:
-        """Populate the vision Select from cfg. Clears to disabled if unset."""
-        opts = list(models)
-        target = cfg.vision_model
-        if target:
-            if not any(o.ref == target for o in opts):
-                opts.insert(0, ModelOption(target, target))
-            sel.set_options(opts)
-            sel.value = target
-        else:
-            sel.set_options(opts)
-            sel.value = _DISABLED
 
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_changed(self, event: Select.Changed) -> None:
@@ -235,19 +207,6 @@ class ModelBar(Widget, can_focus=False):
             return
         cfg.embedding_model = value
         settings.set_value(cfg.data_root, "embedding_model", value)
-        self._after_model_change()
-
-    @on(Select.Changed, "#vision-model-select")
-    def _on_vision_model_changed(self, event: Select.Changed) -> None:
-        """Handle vision model selection change."""
-        if self._populating:
-            return
-        if event.value is _DISABLED or event.value is None or str(event.value) == "":
-            cfg.vision_model = ""
-            settings.set_value(cfg.data_root, "vision_model", "")
-            return
-        cfg.vision_model = str(event.value)
-        settings.set_value(cfg.data_root, "vision_model", cfg.vision_model)
         self._after_model_change()
 
     def _extract_value(self, event: Select.Changed) -> str | None:

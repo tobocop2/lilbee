@@ -32,7 +32,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "lancedb"
     cfg.chat_model = "test-model:latest"
     cfg.embedding_model = "test-embed:latest"
-    cfg.vision_model = ""
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -62,7 +61,7 @@ def _patch_chat_setup():
         ),
         patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], [], []),
+            return_value=([], []),
         ),
         patch(
             "lilbee.cli.tui.screens.catalog.CatalogScreen._fetch_remote_models",

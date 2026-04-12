@@ -31,14 +31,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         has_arg_completion=True,
     ),
     SlashCommand(
-        "/vision",
-        "_cmd_vision",
-        aliases=(),
-        args_hint="[name]",
-        help_text="Set vision model (/vision off)",
-        has_arg_completion=True,
-    ),
-    SlashCommand(
         "/add",
         "_cmd_add",
         aliases=(),

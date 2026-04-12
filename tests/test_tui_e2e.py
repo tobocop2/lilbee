@@ -26,7 +26,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = "test-chat-model.gguf"
     cfg.embedding_model = "test-embed-model"
-    cfg.vision_model = ""
     cfg.subprocess_embed = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -154,14 +153,12 @@ class TestModelClassification:
 
             mock_native.side_effect = fill_buckets
             with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
-                chat, embed, vision = _classify_installed_models()
+                chat, embed = _classify_installed_models()
 
         chat_refs = [o.ref for o in chat]
         embed_refs = [o.ref for o in embed]
-        vision_refs = [o.ref for o in vision]
         assert "Qwen3:latest" in chat_refs
         assert "Nomic Embed:latest" in embed_refs
-        assert "LightOnOCR:latest" in vision_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -175,9 +172,9 @@ class TestModelClassification:
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models"),
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
         ):
-            chat, embed, vision = _classify_installed_models()
+            chat, embed = _classify_installed_models()
 
-        all_models = chat + embed + vision
+        all_models = chat + embed
         assert "loose-chat.gguf" not in all_models
         assert "loose-vision.gguf" not in all_models
 
@@ -2081,34 +2078,6 @@ class TestChatSlashCommands:
                 from lilbee.cli.tui.screens.catalog import CatalogScreen
 
                 assert isinstance(app.screen, CatalogScreen)
-
-    async def test_cmd_vision_set(self, _mock_resolve):
-        """/vision <model> sets the vision model."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/vision test-vision-model")
-            await pilot.pause()
-            assert cfg.vision_model == "test-vision-model"
-
-    async def test_cmd_vision_off(self, _mock_resolve):
-        """/vision off disables vision."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            cfg.vision_model = "some-model"
-            app.screen._handle_slash("/vision off")
-            await pilot.pause()
-            assert cfg.vision_model == ""
-
-    async def test_cmd_vision_status(self, _mock_resolve):
-        """/vision with no args shows current status."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/vision")
-            await pilot.pause()
-            assert app.screen.is_current
 
     async def test_cmd_reset_without_confirm(self, _mock_resolve):
         """/reset without confirm shows warning."""

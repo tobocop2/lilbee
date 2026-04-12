@@ -36,12 +36,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Models",
         help_text="LLM used for chat and generation",
     ),
-    "vision_model": SettingDef(
-        str,
+    "enable_ocr": SettingDef(
+        bool,
         nullable=True,
-        writable=False,
-        group="Models",
-        help_text="Vision model for OCR on images and PDFs",
+        group="Ingest",
+        help_text="Vision OCR for scanned PDFs (empty = auto-detect from chat model)",
+    ),
+    "ocr_timeout": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
     ),
     "embedding_model": SettingDef(
         str,

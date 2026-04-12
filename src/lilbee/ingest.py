@@ -255,6 +255,21 @@ async def _try_tesseract_ocr(
         return fallback
 
 
+def _should_run_ocr() -> bool:
+    """Decide whether to attempt vision-based OCR on scanned PDFs.
+
+    Uses ``cfg.enable_ocr``: True = force on, False = force off,
+    None = auto-detect from chat model capabilities.
+    """
+    if cfg.enable_ocr is True:
+        return True
+    if cfg.enable_ocr is False:
+        return False
+    from lilbee.model_manager import is_vision_capable
+
+    return is_vision_capable(cfg.chat_model)
+
+
 async def _vision_fallback(
     path: Path,
     source_name: str,
@@ -263,15 +278,29 @@ async def _vision_fallback(
     *,
     quiet: bool = False,
 ) -> list[ChunkRecord]:
-    """OCR a scanned PDF via vision model, chunk, and embed."""
-    page_texts = await asyncio.to_thread(
-        extract_pdf_vision,
-        path,
-        cfg.vision_model,
-        quiet=quiet,
-        timeout=cfg.vision_timeout,
-        on_progress=on_progress,
-    )
+    """OCR a scanned PDF via vision model, chunk, and embed.
+
+    Uses ``cfg.chat_model`` as the vision model. Wraps the OCR call in
+    a try/except so that forced OCR on an incompatible model degrades
+    gracefully (logs a warning and returns empty).
+    """
+    try:
+        page_texts = await asyncio.to_thread(
+            extract_pdf_vision,
+            path,
+            cfg.chat_model,
+            quiet=quiet,
+            timeout=cfg.ocr_timeout,
+            on_progress=on_progress,
+        )
+    except Exception:
+        log.warning(
+            "Vision OCR failed for %s. The chat model (%s) may not support vision input.",
+            source_name,
+            cfg.chat_model,
+            exc_info=True,
+        )
+        return []
     if not page_texts:
         return []
 
@@ -306,24 +335,29 @@ async def _handle_scanned_pdf_fallback(
     content_type: str,
     result: ExtractionResult,
     *,
-    use_vision: bool,
     quiet: bool,
     on_progress: DetailedProgressCallback,
 ) -> list[ChunkRecord] | ExtractionResult:
     """Handle scanned PDF fallback chain: Tesseract OCR then vision model.
+
     Returns chunk records if a fallback produced final results, or an
     updated ExtractionResult when Tesseract OCR succeeded (so the
     caller can proceed with normal chunking/embedding).
+
+    Vision OCR is attempted when ``_should_run_ocr()`` is True. When
+    force-OCR is on, Tesseract is skipped and we go straight to vision.
     """
-    if not use_vision:
+    use_ocr = _should_run_ocr()
+
+    if cfg.enable_ocr is not True:
         result = await _try_tesseract_ocr(path, source_name, result)
 
     if not _has_meaningful_text(result):
-        if not cfg.vision_model:
+        if not use_ocr:
             log.warning(
-                "Skipped %s: Tesseract OCR produced no usable text. "
-                "For better results on complex scans, set a vision model "
-                "with /vision or LILBEE_VISION_MODEL.",
+                "Skipped %s: text extraction produced no usable text. "
+                "For better results on scanned PDFs, switch to a vision-capable "
+                "chat model or set LILBEE_ENABLE_OCR=true.",
                 source_name,
             )
             return []
@@ -332,7 +366,7 @@ async def _handle_scanned_pdf_fallback(
 
     log.info(
         "Scanned PDF detected — extracted with Tesseract OCR: %s. "
-        "For structured markdown output (tables, headings), re-add with --vision.",
+        "For structured markdown output (tables, headings), use a vision-capable chat model.",
         source_name,
     )
     return result
@@ -343,18 +377,14 @@ async def ingest_document(
     source_name: str,
     content_type: str,
     *,
-    force_vision: bool = False,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document, embed, return records.
-    When *force_vision* is True (CLI ``--vision``) or a vision model is
-    configured, Tesseract OCR is skipped and we go straight to the vision
-    model for scanned PDFs.
+
+    Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     """
     from kreuzberg import extract_file
-
-    use_vision = force_vision or bool(cfg.vision_model)
 
     config = extraction_config(content_type)
     result = await extract_file(str(path), config=config)
@@ -365,7 +395,6 @@ async def ingest_document(
             source_name,
             content_type,
             result,
-            use_vision=use_vision,
             quiet=quiet,
             on_progress=on_progress,
         )
@@ -504,7 +533,6 @@ async def _ingest_file(
     source_name: str,
     content_type: str,
     *,
-    force_vision: bool = False,
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> int:
@@ -519,7 +547,6 @@ async def _ingest_file(
             path,
             source_name,
             content_type,
-            force_vision=force_vision,
             quiet=quiet,
             on_progress=on_progress,
         )
@@ -534,7 +561,6 @@ async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
     *,
-    force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: threading.Event | None = None,
 ) -> SyncResult:
@@ -605,7 +631,6 @@ async def sync(
             updated,
             failed,
             quiet=quiet,
-            force_vision=force_vision,
             on_progress=on_progress,
             cancel=cancel,
         )
@@ -654,7 +679,6 @@ async def ingest_batch(
     failed: list[str],
     *,
     quiet: bool = False,
-    force_vision: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: threading.Event | None = None,
 ) -> None:
@@ -689,7 +713,6 @@ async def ingest_batch(
                     path,
                     name,
                     content_type,
-                    force_vision=force_vision,
                     quiet=quiet,
                     on_progress=on_progress,
                 )

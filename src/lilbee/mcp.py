@@ -43,7 +43,7 @@ def lilbee_status() -> dict[str, Any]:
             "data_dir": str(cfg.data_dir),
             "chat_model": cfg.chat_model,
             "embedding_model": cfg.embedding_model,
-            **({"vision_model": cfg.vision_model} if cfg.vision_model else {}),
+            "enable_ocr": cfg.enable_ocr,
         },
         "sources": [
             {"filename": s["filename"], "chunk_count": s["chunk_count"]}
@@ -65,7 +65,8 @@ async def lilbee_sync() -> dict[str, Any]:
 async def lilbee_add(
     paths: list[str],
     force: bool = False,
-    vision_model: str = "",
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base and sync.
     Copies the given paths into the documents directory, then ingests them.
@@ -75,12 +76,12 @@ async def lilbee_add(
     Args:
         paths: Absolute file/directory paths or URLs to add.
         force: Overwrite files that already exist in the knowledge base.
-        vision_model: Vision model for scanned PDF OCR
-            (e.g. "maternion/LightOnOCR-2:latest"). If empty, uses
-            the configured default. If no model is configured,
-            scanned PDFs are skipped.
+        enable_ocr: Force vision OCR on (True), off (False), or auto-detect
+            from chat model capabilities (None/omit).
+        ocr_timeout: Per-page timeout in seconds for vision OCR. Overrides
+            the configured default for this invocation only.
     """
-    from lilbee.cli.helpers import copy_files, temporary_vision_model
+    from lilbee.cli.helpers import copy_files
     from lilbee.ingest import sync
 
     errors: list[str] = []
@@ -116,8 +117,10 @@ async def lilbee_add(
 
     copy_result = copy_files(valid, force=force)
 
-    with temporary_vision_model(vision_model):
-        sync_result = (await sync(quiet=True, force_vision=bool(vision_model))).model_dump()
+    from lilbee.cli.helpers import temporary_ocr_config
+
+    with temporary_ocr_config(enable_ocr, ocr_timeout):
+        sync_result = (await sync(quiet=True)).model_dump()
 
     return {
         "command": "add",

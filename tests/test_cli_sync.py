@@ -302,7 +302,7 @@ class TestRunSyncBackground:
         monkeypatch.setattr(sync_mod, "_bg_executor", mock_executor)
 
         con = MagicMock()
-        sync_mod.run_sync_background(con, force_vision=True)
+        sync_mod.run_sync_background(con)
 
         submitted_fn = mock_executor.submit.call_args[0][0]
         submitted_fn()
@@ -312,7 +312,6 @@ class TestRunSyncBackground:
         mock_sync.assert_called_once()
         call_kwargs = mock_sync.call_args[1]
         assert call_kwargs["quiet"] is True
-        assert call_kwargs["force_vision"] is True
         assert callable(call_kwargs["on_progress"])
 
     @patch("lilbee.cli.sync.asyncio.run", side_effect=lambda coro: coro.close())

@@ -31,13 +31,6 @@ CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
 CMD_MODEL_SET = "Model set to {name}"
-CMD_VISION_DISABLED = "Vision OCR disabled"
-CMD_VISION_SET = "Vision model: {name}"
-CMD_VISION_STATUS = (
-    "Vision: {current}\n"
-    "Recommended: maternion/LightOnOCR-2 (fastest, best quality)\n"
-    "Usage: /vision maternion/LightOnOCR-2:latest  or  /vision off"
-)
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

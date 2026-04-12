@@ -100,9 +100,13 @@ class RoutingProvider(LLMProvider):
                 pass  # pragma: no cover
         raise ProviderError(f"Cannot pull model {model!r}: no pull-capable backend available")
 
-    def show_model(self, model: str) -> dict[str, str] | None:
+    def show_model(self, model: str) -> dict[str, Any] | None:
         """Show model info from the active provider."""
         return self._provider().show_model(model)
+
+    def get_capabilities(self, model: str) -> list[str]:
+        """Return capability tags from the active provider."""
+        return self._provider().get_capabilities(model)
 
     def invalidate_cache(self) -> None:
         """Clear cached litellm detection (after pull/delete)."""

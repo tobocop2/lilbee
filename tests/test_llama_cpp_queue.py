@@ -420,14 +420,11 @@ class TestVisionModel:
         result = find_mmproj_for_model(models_dir / "test-model.gguf")
         assert result == mmproj
 
-    def test_is_vision_model_matches_config(self, models_dir: Path) -> None:
-        """_is_vision_model returns True for cfg.vision_model."""
+    def test_is_vision_model_matches_catalog(self, models_dir: Path) -> None:
+        """_is_vision_model returns True for FEATURED_VISION entries."""
         from lilbee.providers.llama_cpp_provider import _is_vision_model
 
-        cfg.vision_model = "test-vision"
-        assert _is_vision_model("test-vision") is True
-        assert _is_vision_model("test-chat") is False
-        cfg.vision_model = ""
+        assert _is_vision_model("random-nonexistent-model") is False
 
     def test_get_vision_llm_caches(self, models_dir: Path, mock_llama_cpp: mock.MagicMock) -> None:
         """_get_vision_llm caches the vision model instance."""
@@ -435,7 +432,6 @@ class TestVisionModel:
 
         mmproj = models_dir / "test-mmproj-f16.gguf"
         mmproj.write_bytes(b"fake-mmproj")
-        cfg.vision_model = "test-model"
 
         mock_handler = mock.MagicMock()
         mock_chat_format = mock.MagicMock()
@@ -447,16 +443,18 @@ class TestVisionModel:
         mock_llama_cpp.Llama.return_value = instance
 
         try:
-            provider = LlamaCppProvider()
-            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
-            provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+            with mock.patch(
+                "lilbee.providers.llama_cpp_provider._is_vision_model", return_value=True
+            ):
+                provider = LlamaCppProvider()
+                provider.chat([{"role": "user", "content": "hi"}], model="test-model")
+                provider.chat([{"role": "user", "content": "hi"}], model="test-model")
 
-            # Llama should only be called once (cached)
-            assert mock_llama_cpp.Llama.call_count == 1
-            provider.shutdown()
+                # Llama should only be called once (cached)
+                assert mock_llama_cpp.Llama.call_count == 1
+                provider.shutdown()
         finally:
             sys.modules.pop("llama_cpp.llama_chat_format", None)
-            cfg.vision_model = ""
 
 
 class TestLoadLlamaNCtx:

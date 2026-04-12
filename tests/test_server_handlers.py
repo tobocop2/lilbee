@@ -364,9 +364,7 @@ class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, SyncDoneEvent
 
@@ -388,9 +386,7 @@ class TestSyncStream:
     async def test_yields_progress_events(self):
         sync_result = SyncResult(added=["b.txt"])
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
@@ -417,9 +413,7 @@ class TestSyncStream:
 
         sync_result = SyncResult()
 
-        async def slow_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
@@ -436,9 +430,7 @@ class TestSyncStream:
         barrier = threading.Event()
         captured_cancel: list[threading.Event] = []
 
-        async def blocking_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             captured_cancel.append(cancel)
             if on_progress:
                 from lilbee.progress import FileStartEvent
@@ -490,9 +482,6 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert "qwen3:8b" in result.chat.installed
 
-        assert isinstance(result.vision.catalog, list)
-        assert isinstance(result.vision.installed, list)
-
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:0.6b"]
@@ -516,19 +505,6 @@ class TestSetChatModel:
         result = await handlers.set_chat_model("llama3:7b")
         assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
-
-
-class TestSetVisionModel:
-    async def test_updates_config_and_persists(self, tmp_path):
-        result = await handlers.set_vision_model("minicpm-v:latest")
-        assert result.model == "minicpm-v:latest"
-        assert cfg.vision_model == "minicpm-v:latest"
-
-    async def test_empty_string_disables(self, tmp_path):
-        cfg.vision_model = "some-model:latest"
-        result = await handlers.set_vision_model("")
-        assert result.model == ""
-        assert cfg.vision_model == ""
 
 
 class TestModelsCatalog:
@@ -1115,6 +1091,15 @@ class TestRunLlmStreamCancel:
         assert items[-1] is None
 
 
+class TestParseOcrParams:
+    def test_ocr_timeout_coerced_to_float(self):
+        """_parse_ocr_params coerces ocr_timeout to float."""
+        enable_ocr, ocr_timeout = handlers._parse_ocr_params({"ocr_timeout": "60"})
+        assert ocr_timeout == 60.0
+        assert isinstance(ocr_timeout, float)
+        assert enable_ocr is None
+
+
 class TestAddHandlerCancel:
     async def test_cancel_returns_early(self):
         """When cancel is set before sync, add returns early with copy-only summary."""
@@ -1131,7 +1116,8 @@ class TestAddHandlerCancel:
             result = await handlers._run_add(
                 paths=[],
                 force=False,
-                vision_model="",
+                enable_ocr=None,
+                ocr_timeout=None,
                 sse=sse,
             )
         assert result is not None

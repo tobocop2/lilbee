@@ -156,24 +156,24 @@ class TestAddEndpoint:
         assert file_start["total_files"] >= 1
         assert file_start["current_file"] >= 1
 
-    async def test_add_with_vision_model(self, mock_extract_file, isolated_env, tmp_path):
-        """Vision model parameter is temporarily set on cfg during sync."""
+    async def test_add_with_enable_ocr(self, mock_extract_file, isolated_env, tmp_path):
+        """enable_ocr parameter is temporarily set on cfg during sync."""
         from lilbee.server.app import create_app
 
         src = tmp_path / "doc.txt"
-        src.write_text("Content for vision model test.")
-        original_vision = cfg.vision_model
+        src.write_text("Content for enable_ocr test.")
+        original_ocr = cfg.enable_ocr
 
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post(
                 "/api/add",
-                json={"paths": [str(src)], "vision_model": "test-vision"},
+                json={"paths": [str(src)], "enable_ocr": True},
                 headers=_auth_headers(),
             )
 
         assert resp.status_code == 201
-        # Vision model should be restored after the call
-        assert cfg.vision_model == original_vision
+        # enable_ocr should be restored after the call
+        assert cfg.enable_ocr == original_ocr
 
 
 class TestAddValidation:

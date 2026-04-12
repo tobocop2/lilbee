@@ -44,7 +44,7 @@ class StatusConfig(BaseModel):
     data_dir: str
     chat_model: str
     embedding_model: str
-    vision_model: str | None = None
+    enable_ocr: bool | None = None
 
 
 class SourceInfo(BaseModel):
@@ -71,8 +71,9 @@ class StatusResult(BaseModel):
         yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
         yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
         yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
-        if self.config.vision_model:
-            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {self.config.vision_model}"
+        if self.config.enable_ocr is not None:
+            ocr_label = "enabled" if self.config.enable_ocr else "disabled"
+            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
         yield ""
 
         if not self.sources:
@@ -129,7 +130,7 @@ def gather_status() -> StatusResult:
             data_dir=str(cfg.data_dir),
             chat_model=cfg.chat_model,
             embedding_model=cfg.embedding_model,
-            vision_model=cfg.vision_model or None,
+            enable_ocr=cfg.enable_ocr,
         ),
         sources=[
             SourceInfo(
@@ -191,7 +192,6 @@ def add_paths(
     con: Console,
     *,
     force: bool = False,
-    force_vision: bool = False,
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
@@ -213,12 +213,10 @@ def add_paths(
     if background:
         from lilbee.cli.sync import run_sync_background
 
-        run_sync_background(
-            con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
-        )
+        run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = asyncio.run(sync(force_vision=force_vision))
+    result = asyncio.run(sync())
     con.print(result)
 
 
@@ -292,13 +290,18 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
 
 
 @contextmanager
-def temporary_vision_model(model: str) -> Generator[None, None, None]:
-    """Temporarily override ``cfg.vision_model`` for the duration of the block."""
-    old = cfg.vision_model
-    if model:
-        cfg.vision_model = model
+def temporary_ocr_config(
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+) -> Generator[None, None, None]:
+    """Temporarily override OCR config for the duration of the block."""
+    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
     try:
+        if enable_ocr is not None:
+            cfg.enable_ocr = enable_ocr
+        if ocr_timeout is not None:
+            cfg.ocr_timeout = ocr_timeout
         yield
     finally:
-        if model:
-            cfg.vision_model = old
+        cfg.enable_ocr = old_ocr
+        cfg.ocr_timeout = old_timeout

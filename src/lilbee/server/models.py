@@ -30,7 +30,7 @@ class ChatRequest(BaseModel):
 class SyncRequest(BaseModel):
     """Request body for /api/sync."""
 
-    force_vision: bool = False
+    enable_ocr: bool | None = None
 
 
 class AddRequest(BaseModel):
@@ -38,11 +38,12 @@ class AddRequest(BaseModel):
 
     paths: list[str]
     force: bool = False
-    vision_model: str = ""
+    enable_ocr: bool | None = None
+    ocr_timeout: float | None = None
 
 
 class SetModelRequest(BaseModel):
-    """Request body for /api/models/chat and /api/models/vision."""
+    """Request body for /api/models/chat."""
 
     model: str
 
@@ -85,7 +86,7 @@ class StatusConfigInfo(BaseModel):
     data_dir: str
     chat_model: str
     embedding_model: str
-    vision_model: str | None = None
+    enable_ocr: bool | None = None
 
 
 class StatusResponse(BaseModel):

@@ -191,14 +191,14 @@ class TestTomlConfigFile:
             c = Config()
             assert c.system_prompt == "Be brief."
 
-    def test_vision_model_from_toml(self, tmp_path):
+    def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text('vision_model = "maternion/LightOnOCR-2"\n')
+        toml_path.write_text("enable_ocr = true\n")
         env = _clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.vision_model == "maternion/LightOnOCR-2"
+            assert c.enable_ocr is True
 
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -255,37 +255,86 @@ class TestTomlConfigFile:
             assert c.seed == 123
 
 
-class TestVisionModelConfig:
-    def test_default_vision_model_is_empty(self, tmp_path) -> None:
+class TestEnableOcrConfig:
+    def test_default_is_none(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.vision_model == ""
+            assert c.enable_ocr is None
 
-    def test_vision_model_env_override(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_MODEL": "minicpm-v"}):
+    def test_true_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "true"}):
             c = Config()
-            assert c.vision_model == "minicpm-v"
+            assert c.enable_ocr is True
 
-
-class TestVisionTimeoutConfig:
-    def test_valid_timeout_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "60.5"}):
+    def test_false_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "false"}):
             c = Config()
-            assert c.vision_timeout == 60.5
+            assert c.enable_ocr is False
 
-    def test_no_timeout_env_returns_default(self, tmp_path) -> None:
+    def test_empty_string_means_auto(self, tmp_path) -> None:
+        with mock.patch.dict(
+            os.environ, {**_clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
+        ):
+            c = Config()
+            assert c.enable_ocr is None
+
+    def test_auto_string_means_none(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}):
+            c = Config()
+            assert c.enable_ocr is None
+
+    def test_yes_no_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "yes"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "no"}):
+            c = Config()
+            assert c.enable_ocr is False
+
+    def test_numeric_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "1"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "0"}):
+            c = Config()
+            assert c.enable_ocr is False
+
+    def test_case_insensitive(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "TRUE"}):
+            c = Config()
+            assert c.enable_ocr is True
+
+    def test_from_toml(self, tmp_path) -> None:
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text("enable_ocr = true\n")
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.enable_ocr is True
+
+
+class TestOcrTimeoutConfig:
+    def test_default_is_120(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.vision_timeout == 120.0
+            assert c.ocr_timeout == 120.0
 
-    def test_zero_timeout_means_no_limit(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "0"}):
+    def test_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "60.5"}):
             c = Config()
-            assert c.vision_timeout == 0
+            assert c.ocr_timeout == 60.5
 
-    def test_invalid_timeout_raises(self) -> None:
+    def test_zero_means_no_limit(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "0"}):
+            c = Config()
+            assert c.ocr_timeout == 0
+
+    def test_invalid_raises(self) -> None:
         with (
-            mock.patch.dict(os.environ, {"LILBEE_VISION_TIMEOUT": "abc"}),
+            mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "abc"}),
             pytest.raises(ValueError),
         ):
             Config()
@@ -580,8 +629,8 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_empty_vision_model_allowed(self, tmp_path):
-        """vision_model is nullable — empty string is valid."""
+    def test_enable_ocr_none_allowed(self, tmp_path):
+        """enable_ocr is nullable, None means auto."""
         c = Config(
             data_root=tmp_path,
             documents_dir=tmp_path / "docs",
@@ -598,9 +647,9 @@ class TestEmptyStringValidation:
             max_distance=0.7,
             system_prompt="You are helpful.",
             ignore_dirs=frozenset(),
-            vision_model="",
+            enable_ocr=None,
         )
-        assert c.vision_model == ""
+        assert c.enable_ocr is None
 
 
 class TestEmptyStringToNone:
@@ -634,6 +683,15 @@ class TestOllamaHostFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
         assert c.litellm_base_url == "http://custom:11434"
+
+
+class TestParseEnableOcrFallback:
+    def test_non_string_non_bool_coerced_via_bool(self):
+        """An integer like 42 falls through to bool(v)."""
+        from lilbee.config import Config
+
+        assert Config._parse_enable_ocr(42) is True
+        assert Config._parse_enable_ocr(0) is False
 
 
 class TestPlainEnvSourceSkipsEmpty:
