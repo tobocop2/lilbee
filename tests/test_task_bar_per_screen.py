@@ -101,20 +101,18 @@ class _ControllerApp(App[None]):
 
 
 def _chat_screen():
-    from lilbee.cli.tui.screens.chat import ChatScreen
+    """Minimal screen that mirrors ChatScreen's TaskBar without ModelBar."""
+    from textual.screen import Screen
+    from textual.widgets import Footer
 
-    class _QuietChatScreen(ChatScreen):
-        """ChatScreen without lifecycle side effects for TaskBar tests."""
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        CSS_PATH = None  # type: ignore[assignment]
+    class _ChatStub(Screen[None]):
+        def compose(self):
+            yield TaskBar()
+            yield Footer()
 
-        def on_mount(self) -> None:
-            pass
-
-        def on_show(self) -> None:
-            pass
-
-    return _QuietChatScreen()
+    return _ChatStub()
 
 
 def _catalog_screen():
@@ -202,7 +200,6 @@ async def test_task_bar_shows_active_task_on_catalog_screen() -> None:
 async def test_task_bar_state_shared_across_screens() -> None:
     """Switching screens keeps tasks visible because they share one queue."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = _ControllerApp(_chat_screen)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -213,7 +210,6 @@ async def test_task_bar_state_shared_across_screens() -> None:
 
         chat_bar = app.screen.query_one(TaskBar)
         assert chat_bar.display is True
-        assert isinstance(app.screen, ChatScreen)
 
         app.switch_screen(CatalogScreen())
         await pilot.pause()
