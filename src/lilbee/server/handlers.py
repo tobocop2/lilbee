@@ -118,7 +118,6 @@ class ModelsResponse(BaseModel):
     """Response for the list-models endpoint."""
 
     chat: ModelCatalogSection
-    vision: ModelCatalogSection | None = None
 
 
 def sse_event(event: str, data: Any) -> str:
