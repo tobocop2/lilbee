@@ -117,16 +117,10 @@ async def lilbee_add(
 
     copy_result = copy_files(valid, force=force)
 
-    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
-    try:
-        if enable_ocr is not None:
-            cfg.enable_ocr = enable_ocr
-        if ocr_timeout is not None:
-            cfg.ocr_timeout = ocr_timeout
+    from lilbee.cli.helpers import temporary_ocr_config
+
+    with temporary_ocr_config(enable_ocr, ocr_timeout):
         sync_result = (await sync(quiet=True)).model_dump()
-    finally:
-        cfg.enable_ocr = old_ocr
-        cfg.ocr_timeout = old_timeout
 
     return {
         "command": "add",

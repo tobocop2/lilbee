@@ -6,6 +6,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -286,3 +287,25 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
+
+
+@contextmanager
+def temporary_ocr_config(
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+) -> Generator[None, None, None]:
+    """Temporarily override OCR config for the duration of the block.
+
+    Restores previous values on exit (even on exception). Pass None
+    to leave a field unchanged.
+    """
+    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
+    try:
+        if enable_ocr is not None:
+            cfg.enable_ocr = enable_ocr
+        if ocr_timeout is not None:
+            cfg.ocr_timeout = ocr_timeout
+        yield
+    finally:
+        cfg.enable_ocr = old_ocr
+        cfg.ocr_timeout = old_timeout

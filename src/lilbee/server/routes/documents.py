@@ -28,12 +28,9 @@ class RemoveRequest(BaseModel):
 @post("/api/sync")
 async def sync_route(data: SyncRequest | None = None) -> Stream:
     """Re-index changed documents with streaming SSE progress events."""
-    if data and data.enable_ocr is not None:
-        from lilbee.config import cfg
-
-        cfg.enable_ocr = data.enable_ocr
+    enable_ocr = data.enable_ocr if data else None
     return Stream(
-        handlers.sync_stream(),
+        handlers.sync_stream(enable_ocr=enable_ocr),
         media_type="text/event-stream",
     )
 

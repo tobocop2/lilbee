@@ -326,14 +326,16 @@ def chat_stream(
     return _stream_rag_response(question, history=history, top_k=top_k, options=options)
 
 
-async def sync_stream() -> AsyncGenerator[str, None]:
+async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event."""
+    from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
     sse = SseStream()
-    task = asyncio.create_task(sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel))
-    async for event in sse.drain(task, "Sync stream"):
-        yield event
+    with temporary_ocr_config(enable_ocr):
+        task = asyncio.create_task(sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel))
+        async for event in sse.drain(task, "Sync stream"):
+            yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
         yield sse_done(task.result().model_dump())
 
@@ -365,16 +367,10 @@ async def _run_add(
         sse.queue.put_nowait(None)
         return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
 
-    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
-    try:
-        if enable_ocr is not None:
-            cfg.enable_ocr = enable_ocr
-        if ocr_timeout is not None:
-            cfg.ocr_timeout = ocr_timeout
+    from lilbee.cli.helpers import temporary_ocr_config
+
+    with temporary_ocr_config(enable_ocr, ocr_timeout):
         sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
-    finally:
-        cfg.enable_ocr = old_ocr
-        cfg.ocr_timeout = old_timeout
 
     sr = sync_result.model_dump()
     summary = AddSummary(
@@ -401,13 +397,19 @@ def validate_add_paths(
         validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
+    enable_ocr, ocr_timeout = _parse_ocr_params(data)
+    return paths, force, enable_ocr, ocr_timeout
+
+
+def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
+    """Extract and coerce OCR parameters from a request dict."""
     enable_ocr = data.get("enable_ocr")
     ocr_timeout = data.get("ocr_timeout")
     if enable_ocr is not None:
         enable_ocr = bool(enable_ocr)
     if ocr_timeout is not None:
         ocr_timeout = float(ocr_timeout)
-    return paths, force, enable_ocr, ocr_timeout
+    return enable_ocr, ocr_timeout
 
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
@@ -416,12 +418,7 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     paths = data.get("paths", [])
     force = bool(data.get("force", False))
-    enable_ocr = data.get("enable_ocr")
-    ocr_timeout = data.get("ocr_timeout")
-    if enable_ocr is not None:
-        enable_ocr = bool(enable_ocr)
-    if ocr_timeout is not None:
-        ocr_timeout = float(ocr_timeout)
+    enable_ocr, ocr_timeout = _parse_ocr_params(data)
     sse = SseStream()
     task = asyncio.create_task(_run_add(paths, force, enable_ocr, ocr_timeout, sse))
     async for event in sse.drain(task, "Add files stream"):

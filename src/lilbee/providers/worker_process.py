@@ -89,7 +89,7 @@ class ConfigSnapshot:
     embedding_dim: int
     num_ctx: int | None
     gpu_memory_fraction: float
-    vision_model: str
+    ocr_model: str
 
 
 _WorkerRequest = EmbedRequest | VisionRequest | LoadModelRequest | ShutdownRequest
@@ -104,7 +104,7 @@ def config_snapshot_from_cfg() -> ConfigSnapshot:
         embedding_dim=cfg.embedding_dim,
         num_ctx=cfg.num_ctx,
         gpu_memory_fraction=cfg.gpu_memory_fraction,
-        vision_model=cfg.chat_model,
+        ocr_model=cfg.chat_model,
     )
 
 
@@ -317,7 +317,7 @@ def _worker_main(
             continue
 
         if isinstance(request, VisionRequest):
-            model_name = request.model or config.vision_model
+            model_name = request.model or config.ocr_model
             if vision_llm is None or model_name != current_vision_model:
                 _close_model(vision_llm)
                 vision_llm = _load_vision_model(model_name)
