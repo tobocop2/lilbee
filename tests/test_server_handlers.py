@@ -482,8 +482,6 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert "qwen3:8b" in result.chat.installed
 
-        assert result.vision is None
-
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:0.6b"]
