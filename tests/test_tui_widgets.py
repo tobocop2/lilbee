@@ -2186,7 +2186,7 @@ class TestModelBarAdditional:
 
 
 class TestSyncSelectPrepend:
-    """Cover _sync_select contract: cfg default is the source of truth."""
+    """_sync_select always sets the widget value from cfg."""
 
     def test_default_overrides_stale_current_value(self) -> None:
         """Stale sel.value is discarded in favor of the configured default."""
@@ -2887,14 +2887,7 @@ class TestModelBarPopulateBranches:
 
 
 class TestModelBarCfgSourceOfTruth:
-    """Regression tests for BEE-0gw: dropdown must follow cfg on refresh.
-
-    The bug: _sync_select used to preserve sel.value across set_options even
-    when cfg had changed, so a stale scanner pick would override the configured
-    model. cfg is the single source of truth, and manual user picks already
-    write back to cfg via the Select.Changed handler, so refresh should always
-    re-sync the dropdown to cfg.
-    """
+    """Model dropdowns must match cfg after every refresh."""
 
     @pytest.fixture(autouse=True)
     def mock_classify(self):

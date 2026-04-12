@@ -93,15 +93,9 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
-    """Set options and value for a model Select widget.
+    """Populate a model Select and set it to *default* (from cfg).
 
-    ``default`` (the configured model from ``cfg``) is the single source of
-    truth. Any in-session manual pick has already been written back to cfg by
-    the Select.Changed handler, so we never preserve ``sel.value`` across a
-    sync. If ``default`` is not in ``opts``, it is prepended so it remains
-    selectable.
-
-    Note: may mutate *opts* by inserting ``default`` at index 0.
+    Prepends *default* if it is not already in *opts*.
     """
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(default, default))
@@ -211,11 +205,7 @@ class ModelBar(Widget, can_focus=False):
         self._populating = False
 
     def _sync_vision_select(self, sel: Select, models: list[ModelOption]) -> None:
-        """Sync vision Select from cfg.vision_model.
-
-        cfg is the source of truth. An empty cfg.vision_model means vision is
-        disabled, so the widget's value is cleared to ``_DISABLED``.
-        """
+        """Populate the vision Select from cfg. Clears to disabled if unset."""
         opts = list(models)
         target = cfg.vision_model
         if target:
