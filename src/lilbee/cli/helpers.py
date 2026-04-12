@@ -191,7 +191,6 @@ def add_paths(
     con: Console,
     *,
     force: bool = False,
-    force_vision: bool = False,
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
@@ -213,12 +212,10 @@ def add_paths(
     if background:
         from lilbee.cli.sync import run_sync_background
 
-        run_sync_background(
-            con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
-        )
+        run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = asyncio.run(sync(force_vision=force_vision))
+    result = asyncio.run(sync())
     con.print(result)
 
 

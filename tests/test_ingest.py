@@ -842,12 +842,12 @@ class TestHasMeaningfulText:
 class TestVisionFallback:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_called_for_empty_pdf(self, mock_kf, isolated_env):
-        """When PDF extraction is empty and vision_model is set, fall back to vision."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 45.0
-        # Called twice: initial extraction + Tesseract OCR (both empty)
+        """When PDF extraction is empty and enable_ocr is True, fall back to vision."""
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 45.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
-        mock_kf.side_effect = [empty, empty]
+        mock_kf.return_value = empty
 
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
@@ -869,10 +869,11 @@ class TestVisionFallback:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_quiet_false_by_default(self, mock_kf, isolated_env):
         """Without quiet=True, vision fallback passes quiet=False."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 120.0
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 120.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
-        mock_kf.side_effect = [empty, empty]
+        mock_kf.return_value = empty
 
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
@@ -891,8 +892,9 @@ class TestVisionFallback:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_ingest_file_threads_quiet_to_vision(self, mock_kf, isolated_env):
         """quiet=True flows from _ingest_file through ingest_document to vision."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 120.0
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 120.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
         mock_kf.return_value = empty
 
@@ -911,10 +913,10 @@ class TestVisionFallback:
         )
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_vision_fallback_not_called_without_model(self, mock_kf, isolated_env):
-        """When vision_model is empty, no fallback occurs (Tesseract tried first)."""
+    async def test_vision_fallback_not_called_when_ocr_disabled(self, mock_kf, isolated_env):
+        """When enable_ocr is False, no vision fallback occurs."""
         mock_kf.return_value = _make_empty_result()
-        cfg.vision_model = ""
+        cfg.enable_ocr = False
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
 
@@ -929,7 +931,7 @@ class TestVisionFallback:
     async def test_vision_fallback_not_called_for_non_pdf(self, mock_kf, isolated_env):
         """Vision fallback only triggers for PDF content type."""
         mock_kf.return_value = _make_empty_result()
-        cfg.vision_model = "test-vision"
+        cfg.enable_ocr = True
         f = isolated_env / "doc.txt"
         f.write_text("")
 
@@ -943,9 +945,9 @@ class TestVisionFallback:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_empty_vision_text_returns_empty(self, mock_kf, isolated_env):
         """When vision also returns empty text, return empty list."""
-        cfg.vision_model = "test-vision"
+        cfg.enable_ocr = True
         empty = _make_empty_result()
-        mock_kf.side_effect = [empty, empty]
+        mock_kf.return_value = empty
 
         f = isolated_env / "blank.pdf"
         f.write_bytes(b"fake pdf")
@@ -962,7 +964,7 @@ class TestVisionFallback:
         mock_kf.return_value = _make_kreuzberg_result(
             text="Meaningful PDF content. " * 20, num_chunks=1, has_pages=True
         )
-        cfg.vision_model = "test-vision"
+        cfg.enable_ocr = True
         f = isolated_env / "good.pdf"
         f.write_bytes(b"fake pdf")
 
@@ -976,9 +978,9 @@ class TestVisionFallback:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_fallback_no_chunks_returns_empty(self, mock_kf, isolated_env):
         """When vision text produces no chunks, return empty list."""
-        cfg.vision_model = "test-vision"
+        cfg.enable_ocr = True
         empty = _make_empty_result()
-        mock_kf.side_effect = [empty, empty]
+        mock_kf.return_value = empty
 
         f = isolated_env / "nochunks.pdf"
         f.write_bytes(b"fake pdf")
@@ -999,7 +1001,7 @@ class TestTesseractOcrMiddleTier:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_succeeds_skips_vision(self, mock_kf, isolated_env):
         """When Tesseract OCR produces meaningful text, vision is not called."""
-        cfg.vision_model = ""
+        cfg.enable_ocr = False
         empty = _make_empty_result()
         ocr_result = _make_kreuzberg_result(
             text="Tesseract extracted text. " * 20, num_chunks=1, has_pages=True
@@ -1020,11 +1022,12 @@ class TestTesseractOcrMiddleTier:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_fails_falls_through_to_vision(self, mock_kf, isolated_env):
         """When Tesseract OCR also yields < 50 chars, fall through to vision."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 120.0
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 120.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
-        # Called twice: initial extraction + Tesseract OCR (both empty)
-        mock_kf.side_effect = [empty, empty]
+        # Called once: initial extraction (Tesseract skipped when enable_ocr=True)
+        mock_kf.return_value = empty
 
         f = isolated_env / "scanned.pdf"
         f.write_bytes(b"fake pdf")
@@ -1042,7 +1045,7 @@ class TestTesseractOcrMiddleTier:
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_exception_falls_through(self, mock_kf, isolated_env):
         """When Tesseract is not installed (raises exception), fall through gracefully."""
-        cfg.vision_model = ""
+        cfg.enable_ocr = False
         empty = _make_empty_result()
         mock_kf.side_effect = [empty, RuntimeError("tesseract not found")]
 
@@ -1058,7 +1061,7 @@ class TestTesseractOcrMiddleTier:
     async def test_non_pdf_skips_tesseract_ocr(self, mock_kf, isolated_env):
         """Non-PDF files never attempt Tesseract OCR retry."""
         mock_kf.return_value = _make_empty_result()
-        cfg.vision_model = ""
+        cfg.enable_ocr = False
 
         f = isolated_env / "doc.txt"
         f.write_text("")
@@ -1071,9 +1074,10 @@ class TestTesseractOcrMiddleTier:
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_vision_explicit_skips_tesseract(self, mock_kf, isolated_env):
-        """When force_vision=True, Tesseract OCR tier is skipped entirely."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 120.0
+        """When enable_ocr=True, Tesseract OCR tier is skipped entirely."""
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 120.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
         mock_kf.return_value = empty
 
@@ -1084,15 +1088,15 @@ class TestTesseractOcrMiddleTier:
         with mock.patch("lilbee.ingest.extract_pdf_vision", return_value=vision_pages):
             from lilbee.ingest import ingest_document
 
-            result = await ingest_document(f, "scanned.pdf", "pdf", force_vision=True)
+            result = await ingest_document(f, "scanned.pdf", "pdf")
         # extract_file called only once (initial extraction), not twice (no OCR retry)
         assert mock_kf.call_count == 1
         assert len(result) > 0
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_empty_no_vision_warns(self, mock_kf, isolated_env):
-        """When Tesseract fails and no vision model, warning mentions Tesseract."""
-        cfg.vision_model = ""
+        """When Tesseract fails and OCR disabled, warning is emitted."""
+        cfg.enable_ocr = False
         empty = _make_empty_result()
         mock_kf.side_effect = [empty, empty]
 
@@ -1105,10 +1109,11 @@ class TestTesseractOcrMiddleTier:
         assert result == []
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
-    async def test_configured_vision_model_skips_tesseract(self, mock_kf, isolated_env):
-        """With vision_model set, Tesseract is skipped — vision takes precedence."""
-        cfg.vision_model = "test-vision"
-        cfg.vision_timeout = 120.0
+    async def test_enable_ocr_skips_tesseract(self, mock_kf, isolated_env):
+        """With enable_ocr=True, Tesseract is skipped and vision takes precedence."""
+        cfg.chat_model = "test-vision"
+        cfg.ocr_timeout = 120.0
+        cfg.enable_ocr = True
         empty = _make_empty_result()
         mock_kf.return_value = empty
 

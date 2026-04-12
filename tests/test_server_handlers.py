@@ -364,9 +364,7 @@ class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, SyncDoneEvent
 
@@ -388,9 +386,7 @@ class TestSyncStream:
     async def test_yields_progress_events(self):
         sync_result = SyncResult(added=["b.txt"])
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
@@ -417,9 +413,7 @@ class TestSyncStream:
 
         sync_result = SyncResult()
 
-        async def slow_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
@@ -436,9 +430,7 @@ class TestSyncStream:
         barrier = threading.Event()
         captured_cancel: list[threading.Event] = []
 
-        async def blocking_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             captured_cancel.append(cancel)
             if on_progress:
                 from lilbee.progress import FileStartEvent
@@ -1131,7 +1123,8 @@ class TestAddHandlerCancel:
             result = await handlers._run_add(
                 paths=[],
                 force=False,
-                vision_model="",
+                enable_ocr=None,
+                ocr_timeout=None,
                 sse=sse,
             )
         assert result is not None

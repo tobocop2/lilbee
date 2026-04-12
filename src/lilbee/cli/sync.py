@@ -131,7 +131,6 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
 def run_sync_background(
     con: Console,
     *,
-    force_vision: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
 ) -> Future[object]:
@@ -143,7 +142,7 @@ def run_sync_background(
     def _run() -> object:
         if chat_mode:
             status.pending -= 1
-        return asyncio.run(sync(quiet=True, on_progress=callback, force_vision=force_vision))
+        return asyncio.run(sync(quiet=True, on_progress=callback))
 
     if chat_mode:
         status.pending += 1

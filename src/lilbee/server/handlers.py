@@ -326,14 +326,12 @@ def chat_stream(
     return _stream_rag_response(question, history=history, top_k=top_k, options=options)
 
 
-async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None]:
+async def sync_stream() -> AsyncGenerator[str, None]:
     """Trigger sync, yield SSE progress events, then done event."""
     from lilbee.ingest import sync
 
     sse = SseStream()
-    task = asyncio.create_task(
-        sync(quiet=True, on_progress=sse.callback, force_vision=force_vision, cancel=sse.cancel)
-    )
+    task = asyncio.create_task(sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel))
     async for event in sse.drain(task, "Sync stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
@@ -343,7 +341,8 @@ async def sync_stream(*, force_vision: bool = False) -> AsyncGenerator[str, None
 async def _run_add(
     paths: list[str],
     force: bool,
-    vision_model: str,
+    enable_ocr: bool | None,
+    ocr_timeout: float | None,
     sse: SseStream,
 ) -> AddSummary:
     """Copy files and sync, pushing SSE events to the queue.
@@ -366,12 +365,16 @@ async def _run_add(
         sse.queue.put_nowait(None)
         return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
 
-    from lilbee.cli.helpers import temporary_vision_model
-
-    with temporary_vision_model(vision_model):
-        sync_result = await sync(
-            quiet=True, force_vision=bool(vision_model), on_progress=sse.callback, cancel=sse.cancel
-        )
+    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
+    try:
+        if enable_ocr is not None:
+            cfg.enable_ocr = enable_ocr
+        if ocr_timeout is not None:
+            cfg.ocr_timeout = ocr_timeout
+        sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+    finally:
+        cfg.enable_ocr = old_ocr
+        cfg.ocr_timeout = old_timeout
 
     sr = sync_result.model_dump()
     summary = AddSummary(
@@ -384,7 +387,9 @@ async def _run_add(
     return summary
 
 
-def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
+def validate_add_paths(
+    data: dict[str, Any],
+) -> tuple[list[str], bool, bool | None, float | None]:
     """Validate add-files input. Raises ValueError on bad input."""
     paths = data.get("paths")
     if not isinstance(paths, list) or not paths:
@@ -396,8 +401,13 @@ def validate_add_paths(data: dict[str, Any]) -> tuple[list[str], bool, str]:
         validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
-    vision_model = str(data.get("vision_model", "") or "")
-    return paths, force, vision_model
+    enable_ocr = data.get("enable_ocr")
+    ocr_timeout = data.get("ocr_timeout")
+    if enable_ocr is not None:
+        enable_ocr = bool(enable_ocr)
+    if ocr_timeout is not None:
+        ocr_timeout = float(ocr_timeout)
+    return paths, force, enable_ocr, ocr_timeout
 
 
 async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
@@ -406,9 +416,14 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     """
     paths = data.get("paths", [])
     force = bool(data.get("force", False))
-    vision_model = str(data.get("vision_model", "") or "")
+    enable_ocr = data.get("enable_ocr")
+    ocr_timeout = data.get("ocr_timeout")
+    if enable_ocr is not None:
+        enable_ocr = bool(enable_ocr)
+    if ocr_timeout is not None:
+        ocr_timeout = float(ocr_timeout)
     sse = SseStream()
-    task = asyncio.create_task(_run_add(paths, force, vision_model, sse))
+    task = asyncio.create_task(_run_add(paths, force, enable_ocr, ocr_timeout, sse))
     async for event in sse.drain(task, "Add files stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():

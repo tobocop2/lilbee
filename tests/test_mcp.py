@@ -157,15 +157,15 @@ class TestLilbeeStatus:
         assert result["sources"][0]["filename"] == "test.pdf"
         assert result["total_chunks"] == 10
 
-    def test_status_includes_vision_model_when_set(self):
-        cfg.vision_model = "test-vision:latest"
+    def test_status_includes_enable_ocr_when_set(self):
+        cfg.enable_ocr = True
         result = lilbee_status()
-        assert result["config"]["vision_model"] == "test-vision:latest"
+        assert result["config"]["enable_ocr"] is True
 
-    def test_status_excludes_vision_model_when_empty(self):
-        cfg.vision_model = ""
+    def test_status_enable_ocr_none_by_default(self):
+        cfg.enable_ocr = None
         result = lilbee_status()
-        assert "vision_model" not in result["config"]
+        assert result["config"]["enable_ocr"] is None
 
 
 class TestLilbeeSync:
@@ -347,26 +347,26 @@ class TestLilbeeAdd:
         assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_with_vision_model(self, mock_sync, tmp_path):
+    async def test_add_with_enable_ocr(self, mock_sync, tmp_path):
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-fake")
-        original_vision = cfg.vision_model
+        original_ocr = cfg.enable_ocr
 
-        await lilbee_add([str(src)], vision_model="test-vision:latest")
+        await lilbee_add([str(src)], enable_ocr=True)
 
-        # vision_model should be restored after the call
-        assert cfg.vision_model == original_vision
+        # enable_ocr should be restored after the call
+        assert cfg.enable_ocr == original_ocr
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
-    async def test_add_vision_model_restored_on_error(self, mock_sync, tmp_path):
+    async def test_add_enable_ocr_restored_on_error(self, mock_sync, tmp_path):
         src = tmp_path / "file.txt"
         src.write_text("content")
-        original_vision = cfg.vision_model
+        original_ocr = cfg.enable_ocr
 
         with pytest.raises(RuntimeError, match="boom"):
-            await lilbee_add([str(src)], vision_model="test-vision:latest")
+            await lilbee_add([str(src)], enable_ocr=True)
 
-        assert cfg.vision_model == original_vision
+        assert cfg.enable_ocr == original_ocr
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, mock_sync):
@@ -416,13 +416,13 @@ class TestLilbeeAddWithUrls:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_add_url_with_vision(self, mock_crawl, mock_sync, isolated_env):
-        """Vision model is temporarily applied during sync."""
+    async def test_add_url_with_enable_ocr(self, mock_crawl, mock_sync, isolated_env):
+        """enable_ocr is temporarily applied during sync."""
         mock_crawl.return_value = []
-        old_vision = cfg.vision_model
+        old_ocr = cfg.enable_ocr
         with mock.patch("lilbee.crawler.crawler_available", return_value=True):
-            await lilbee_add(paths=["https://example.com"], vision_model="test-vision:latest")
-        assert cfg.vision_model == old_vision
+            await lilbee_add(paths=["https://example.com"], enable_ocr=True)
+        assert cfg.enable_ocr == old_ocr
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
