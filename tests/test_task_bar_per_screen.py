@@ -68,6 +68,10 @@ def _patch_chat_setup():
             return_value=None,
         ),
         patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
+            return_value=None,
+        ),
+        patch(
             "lilbee.cli.tui.screens.catalog.CatalogScreen._fetch_remote_models",
             return_value=None,
         ),
