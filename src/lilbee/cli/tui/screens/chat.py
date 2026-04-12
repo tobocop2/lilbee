@@ -161,25 +161,29 @@ class ChatScreen(Screen[None]):
             self._run_sync()
 
     def on_show(self) -> None:
-        """Called when screen becomes visible - signal splash to stop."""
+        """Called when screen becomes visible."""
         from lilbee.splash import dismiss
 
         dismiss()
+        self._refresh_model_bar()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models."""
         # Fresh install: an uninitialized data dir still needs the wizard even
         # if default models are already cached globally (Ollama, HF cache).
         if not cfg.lancedb_dir.is_dir():
+            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            resolve_model_path(cfg.chat_model)
-            resolve_model_path(cfg.embedding_model)
-            return False
-        except Exception:
-            return True
+        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            try:
+                resolve_model_path(model)
+            except (ProviderError, KeyError, ValueError) as exc:
+                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
+                return True
+        return False
 
     def _embedding_ready(self) -> bool:
         """Quick check if embedding model exists (no network calls)."""

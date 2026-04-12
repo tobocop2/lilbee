@@ -22,6 +22,7 @@ from lilbee.services import reset_services
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
+_CHAT_SCREEN_NAME = "chat"
 DARK_THEMES = (
     "monokai",
     "dracula",
@@ -143,7 +144,9 @@ class LilbeeApp(App[None]):
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.push_screen(ChatScreen(auto_sync=self._auto_sync))
+        chat = ChatScreen(auto_sync=self._auto_sync)
+        self.install_screen(chat, name=_CHAT_SCREEN_NAME)
+        self.push_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
 
@@ -199,7 +202,7 @@ class LilbeeApp(App[None]):
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
-                self.switch_screen(ChatScreen(auto_sync=False))
+                self.switch_screen(_CHAT_SCREEN_NAME)
         else:
             factory = get_views().get(view_name)
             if factory is None:
