@@ -122,6 +122,8 @@ class SetupWizard(Screen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "app.focus_next", "Next", show=False),
+        Binding("shift+tab", "app.focus_previous", "Prev", show=False),
     ]
 
     def __init__(self) -> None:
@@ -336,9 +338,9 @@ class SetupWizard(Screen[str | None]):
             self._download_rows[model.ref] = _DownloadRow(model.display_name, label, bar)
 
     @work(thread=True)
-    def _run_downloads(self) -> None:
+    def _run_downloads(self) -> None:  # pragma: no cover
         """Download all selected models in a background thread."""
-        self._download_loop(partial(call_from_thread, self))  # pragma: no cover
+        self._download_loop(partial(call_from_thread, self))
 
     def _on_download_progress(
         self, notify: Callable[..., None], model_ref: str, p: DownloadProgress

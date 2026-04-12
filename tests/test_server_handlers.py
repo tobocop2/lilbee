@@ -496,15 +496,22 @@ class TestListModels:
 
 
 class TestSetChatModel:
-    async def test_updates_config_and_persists(self, tmp_path):
+    async def test_updates_config_and_persists(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
         result = await handlers.set_chat_model("llama3")
         assert result.model == "llama3:latest"
         assert cfg.chat_model == "llama3:latest"
 
-    async def test_preserves_existing_tag(self, tmp_path):
+    async def test_preserves_existing_tag(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:7b"]
         result = await handlers.set_chat_model("llama3:7b")
         assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
+
+    async def test_rejects_unavailable_model(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("nonexistent:7b")
 
 
 class TestModelsCatalog:
@@ -820,7 +827,9 @@ class TestUpdateConfig:
 
 
 class TestSetEmbeddingModel:
-    async def test_updates_config_and_persists(self, tmp_path):
+    @patch("lilbee.server.handlers.get_services")
+    async def test_updates_config_and_persists(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
         result = await handlers.set_embedding_model("nomic-embed-text:latest")
         assert result.model == "nomic-embed-text:latest"
         assert cfg.embedding_model == "nomic-embed-text:latest"
@@ -829,17 +838,25 @@ class TestSetEmbeddingModel:
         stored = s.load(cfg.data_root)
         assert stored["embedding_model"] == "nomic-embed-text:latest"
 
-    async def test_empty_string_rejected(self):
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
+    @patch("lilbee.server.handlers.get_services")
+    async def test_empty_string_rejected(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = []
+        with pytest.raises(ValueError, match="not available"):
             await handlers.set_embedding_model("")
 
-    async def test_embedding_model_without_tag(self, tmp_path):
-        """Setting embedding model without a tag stores it as-is (no :latest append)."""
+    @patch("lilbee.server.handlers.get_services")
+    async def test_embedding_model_without_tag_normalizes(self, mock_svc, tmp_path):
+        """Setting embedding model without a tag normalizes to :latest."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
         result = await handlers.set_embedding_model("nomic-embed-text")
-        assert result.model == "nomic-embed-text"
-        assert cfg.embedding_model == "nomic-embed-text"
+        assert result.model == "nomic-embed-text:latest"
+        assert cfg.embedding_model == "nomic-embed-text:latest"
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_unavailable_embedding_model(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_embedding_model("bogus-embed")
 
 
 class TestGetConfig:

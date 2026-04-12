@@ -30,11 +30,16 @@ from lilbee.cli.tui.screens.catalog_utils import (
     row_display_name,
     variant_to_row,
 )
+from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 from lilbee.services import set_services
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
+
+# Save a reference to the real _embedding_ready before the autouse fixture
+# replaces it with a mock.  Tests that need the real implementation call this.
+_real_embedding_ready = _ChatScreen._embedding_ready
 
 
 @pytest.fixture(autouse=True)
@@ -6959,6 +6964,60 @@ async def test_chat_cmd_wiki_generate_failure_fails_task():
 
         fail_spy.assert_called_once()
         assert "boom" in fail_spy.call_args[0][1]
+
+
+async def test_chat_cmd_wiki_generate_none_produced_fails_task():
+    """/wiki generate fails the task when all sources return None (no pages generated)."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        fake_store = MagicMock()
+        fake_store.get_sources.return_value = [{"filename": "a.txt"}]
+        fake_store.get_chunks_by_source.return_value = [MagicMock()]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+
+        task_bar = app.task_bar
+        fail_spy = MagicMock(wraps=task_bar.fail_task)
+        with (
+            patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.wiki.gen.generate_summary_page", return_value=None),
+            patch.object(task_bar, "fail_task", fail_spy),
+            patch.object(app.screen, "notify"),
+        ):
+            mock_cfg.wiki = True
+            app.screen._cmd_wiki("generate")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        fail_spy.assert_called_once()
+        assert "No pages generated" in fail_spy.call_args[0][1]
+
+
+def test_chat_embedding_ready_true_via_provider_list(mock_svc):
+    """_embedding_ready returns True when provider list_models contains the model.
+
+    Uses _real_embedding_ready (saved before autouse fixture mocks the method).
+    The mock_svc autouse fixture injects a Services singleton; we configure its
+    provider.list_models to return a model that matches the embedding config.
+    """
+    mock_svc.provider.list_models.return_value = ["nomic-embed-text:latest"]
+    cfg.embedding_model = "nomic-embed-text"
+    sentinel = object()
+    with patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        side_effect=FileNotFoundError("not found"),
+    ):
+        assert _real_embedding_ready(sentinel) is True
+
+
+def test_chat_embedding_ready_false_when_no_model():
+    """_embedding_ready returns False when no embedding model is configured."""
+    sentinel = object()
+    with patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg:
+        mock_cfg.embedding_model = ""
+        assert _real_embedding_ready(sentinel) is False
 
 
 async def test_chat_auto_sync_on_mount_runs_sync():

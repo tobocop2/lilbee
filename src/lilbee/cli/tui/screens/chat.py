@@ -187,11 +187,29 @@ class ChatScreen(Screen[None]):
         return False
 
     def _embedding_ready(self) -> bool:
-        """Quick check if embedding model exists (no network calls)."""
+        """Quick check if embedding model exists (no network calls).
+
+        Checks both the provider model list and the native registry path
+        resolution so litellm/Ollama-backed models are detected too.
+        """
+        model = cfg.embedding_model
+        if not model:
+            return False
+        # Provider list check (covers litellm / Ollama backends)
+        try:
+            from lilbee.services import get_services
+
+            available = get_services().provider.list_models()
+            model_base = model.split(":")[0].lower().replace(" ", "-")
+            if any(model_base in m.lower().replace(" ", "-") for m in available):
+                return True
+        except Exception:
+            pass
+        # Native registry path check (covers llama-cpp managed models)
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            resolve_model_path(cfg.embedding_model)
+            resolve_model_path(model)
             return True
         except Exception:
             return False
@@ -694,11 +712,22 @@ class ChatScreen(Screen[None]):
                 )
                 if result is not None:
                     generated += 1
-            call_from_thread(self, task_bar.complete_task, task_id)
-            call_from_thread(
-                self, self.notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
-            )
-            call_from_thread(self, self._refresh_wiki_screen)
+            if generated > 0:
+                call_from_thread(self, task_bar.complete_task, task_id)
+                call_from_thread(
+                    self,
+                    self.notify,
+                    msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
+                )
+                call_from_thread(self, self._refresh_wiki_screen)
+            else:
+                call_from_thread(self, task_bar.fail_task, task_id, "No pages generated")
+                call_from_thread(
+                    self,
+                    self.notify,
+                    msg.CMD_WIKI_NONE_GENERATED.format(total=total),
+                    severity="warning",
+                )
         except Exception as exc:
             log.warning("Wiki generation failed", exc_info=True)
             call_from_thread(self, task_bar.fail_task, task_id, str(exc))

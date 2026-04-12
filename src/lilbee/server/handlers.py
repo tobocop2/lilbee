@@ -456,27 +456,34 @@ async def list_models() -> ModelsResponse:
 async def _set_model(
     field: Literal["chat_model", "embedding_model"],
     model: str,
-    *,
-    normalize: bool = False,
 ) -> SetModelResponse:
     """Shared helper for switching a model field."""
-    if normalize:
-        from lilbee.models import ensure_tag
-
-        model = ensure_tag(model)
     setattr(cfg, field, model)
     settings.set_value(cfg.data_root, field, model)
     return SetModelResponse(model=model)
 
 
+def _require_model_available(model: str) -> str:
+    """Validate that *model* exists locally. Returns the normalized name or raises ValueError."""
+    from lilbee.models import ensure_tag
+
+    normalized = ensure_tag(model)
+    available = get_services().provider.list_models()
+    if normalized not in available:
+        raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
+    return normalized
+
+
 async def set_chat_model(model: str) -> SetModelResponse:
-    """Switch active chat model."""
-    return await _set_model("chat_model", model, normalize=True)
+    """Switch active chat model. Validates the model exists before accepting."""
+    normalized = _require_model_available(model)
+    return await _set_model("chat_model", normalized)
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
-    """Switch embedding model."""
-    return await _set_model("embedding_model", model)
+    """Switch embedding model. Validates the model exists before accepting."""
+    normalized = _require_model_available(model)
+    return await _set_model("embedding_model", normalized)
 
 
 def _validate_config_updates(updates: dict[str, Any]) -> None:
