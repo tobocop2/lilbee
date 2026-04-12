@@ -21,12 +21,14 @@ from lilbee.cli.tui.screens.catalog import (
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     _format_downloads,
+    _is_param_count,
     catalog_to_row,
     format_size_gb,
     matches_search,
     parse_param_label,
     remote_to_row,
     row_display_name,
+    variant_to_row,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -137,6 +139,91 @@ class TestParseParamLabel:
 
     def test_case_insensitive(self):
         assert parse_param_label("model-3b-chat") == "3B"
+
+
+class TestIsParamCount:
+    def test_integer_param(self):
+        assert _is_param_count("8B") is True
+
+    def test_decimal_param(self):
+        assert _is_param_count("0.6B") is True
+
+    def test_version_string(self):
+        assert _is_param_count("v1.5") is False
+
+    def test_plain_text(self):
+        assert _is_param_count("latest") is False
+
+
+class TestVariantToRowDedup:
+    """Verify variant_to_row avoids tag duplication and version-as-params."""
+
+    def test_no_suffix_duplication(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+            filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
+            param_count="v1.5",
+            tag="v1.5",
+            quant="Q4_K_M",
+            size_mb=300,
+            recommended=True,
+        )
+        family = ModelFamily(
+            slug="nomic-embed-text",
+            name="Nomic Embed Text v1.5",
+            task="embedding",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.name.count("v1.5") == 1
+
+    def test_version_tag_params_dash(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+            filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
+            param_count="v1.5",
+            tag="v1.5",
+            quant="Q4_K_M",
+            size_mb=300,
+            recommended=True,
+        )
+        family = ModelFamily(
+            slug="nomic-embed-text",
+            name="Nomic Embed Text v1.5",
+            task="embedding",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.params == "--"
+
+    def test_numeric_param_kept(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="org/qwen3-0.6b-GGUF",
+            filename="qwen3-0.6b.Q4_K_M.gguf",
+            param_count="0.6B",
+            tag="0.6b",
+            quant="Q4_K_M",
+            size_mb=400,
+            recommended=False,
+        )
+        family = ModelFamily(
+            slug="qwen3",
+            name="Qwen3",
+            task="chat",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert "0.6B" in row.name
+        assert row.params == "0.6B"
 
 
 class TestFormatDownloads:
