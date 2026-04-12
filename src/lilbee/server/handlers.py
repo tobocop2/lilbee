@@ -456,14 +456,8 @@ async def list_models() -> ModelsResponse:
 async def _set_model(
     field: Literal["chat_model", "embedding_model"],
     model: str,
-    *,
-    normalize: bool = False,
 ) -> SetModelResponse:
     """Shared helper for switching a model field."""
-    if normalize:
-        from lilbee.models import ensure_tag
-
-        model = ensure_tag(model)
     setattr(cfg, field, model)
     settings.set_value(cfg.data_root, field, model)
     return SetModelResponse(model=model)
@@ -483,13 +477,13 @@ def _require_model_available(model: str) -> str:
 async def set_chat_model(model: str) -> SetModelResponse:
     """Switch active chat model. Validates the model exists before accepting."""
     normalized = _require_model_available(model)
-    return await _set_model("chat_model", normalized, normalize=False)
+    return await _set_model("chat_model", normalized)
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
     """Switch embedding model. Validates the model exists before accepting."""
     normalized = _require_model_available(model)
-    return await _set_model("embedding_model", normalized, normalize=False)
+    return await _set_model("embedding_model", normalized)
 
 
 def _validate_config_updates(updates: dict[str, Any]) -> None:
