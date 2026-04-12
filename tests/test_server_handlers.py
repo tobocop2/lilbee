@@ -496,15 +496,22 @@ class TestListModels:
 
 
 class TestSetChatModel:
-    async def test_updates_config_and_persists(self, tmp_path):
+    async def test_updates_config_and_persists(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
         result = await handlers.set_chat_model("llama3")
         assert result.model == "llama3:latest"
         assert cfg.chat_model == "llama3:latest"
 
-    async def test_preserves_existing_tag(self, tmp_path):
+    async def test_preserves_existing_tag(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:7b"]
         result = await handlers.set_chat_model("llama3:7b")
         assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
+
+    async def test_rejects_unavailable_model(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("nonexistent:7b")
 
 
 class TestModelsCatalog:

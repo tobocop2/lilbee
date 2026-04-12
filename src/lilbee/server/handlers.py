@@ -470,7 +470,13 @@ async def _set_model(
 
 
 async def set_chat_model(model: str) -> SetModelResponse:
-    """Switch active chat model."""
+    """Switch active chat model. Validates the model exists before accepting."""
+    from lilbee.models import ensure_tag
+
+    normalized = ensure_tag(model)
+    available = get_services().provider.list_models()
+    if normalized not in available:
+        raise ValueError(f"Model '{normalized}' is not available. Pull it first or check the name.")
     return await _set_model("chat_model", model, normalize=True)
 
 

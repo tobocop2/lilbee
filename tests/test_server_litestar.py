@@ -236,6 +236,15 @@ class TestModelsSetChatRoute:
         assert resp.status_code == 200
         assert resp.json()["model"] == "llama3:8b"
 
+    @mock.patch(
+        "lilbee.server.handlers.set_chat_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
+    )
+    def test_returns_422_for_unavailable_model(self, mock_set, client):
+        resp = client.put("/api/models/chat", json={"model": "bogus"})
+        assert resp.status_code == 422
+
 
 class TestModelsCatalogRoute:
     @mock.patch(
