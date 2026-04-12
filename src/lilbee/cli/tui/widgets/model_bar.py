@@ -12,6 +12,7 @@ from textual.widget import Widget
 from textual.widgets import Label, Select
 
 from lilbee import settings
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.services import reset_services
@@ -168,7 +169,7 @@ class ModelBar(Widget, can_focus=False):
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate dropdowns."""
         chat, embed = _classify_installed_models()
-        self.app.call_from_thread(self._populate, chat, embed)
+        call_from_thread(self, self._populate, chat, embed)
 
     def _populate(
         self,

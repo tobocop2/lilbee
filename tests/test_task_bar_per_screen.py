@@ -93,18 +93,9 @@ class _ControllerApp(App[None]):
 
 
 def _chat_screen():
-    """Minimal screen that mirrors ChatScreen's TaskBar without ModelBar."""
-    from textual.screen import Screen
-    from textual.widgets import Footer
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-    class _ChatStub(Screen[None]):
-        def compose(self):
-            yield TaskBar()
-            yield Footer()
-
-    return _ChatStub()
+    return ChatScreen()
 
 
 def _catalog_screen():

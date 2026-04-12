@@ -336,7 +336,11 @@ class SetupWizard(Screen[str | None]):
     @work(thread=True)
     def _run_downloads(self) -> None:
         """Download all selected models in a background thread."""
-        self._download_loop(self.app.call_from_thread)  # pragma: no cover
+        from functools import partial
+
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
+        self._download_loop(partial(call_from_thread, self))  # pragma: no cover
 
     def _on_download_progress(
         self, notify: Callable[..., None], model_ref: str, p: DownloadProgress
