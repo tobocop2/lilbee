@@ -144,10 +144,15 @@ class LiteLLMProvider(LLMProvider):
         except httpx.HTTPError as exc:
             raise ProviderError(f"Cannot pull model {model!r}: {exc}", provider="litellm") from exc
 
-    def show_model(self, model: str) -> dict[str, str] | None:
+    def show_model(self, model: str) -> dict[str, Any] | None:
         """Get model info via the /api/show endpoint.
-        Also parses and caches per-model generation defaults from the
-        ``parameters`` field so they can be applied via config.
+
+        Parses and caches per-model generation defaults from the
+        ``parameters`` field. Also extracts the ``capabilities`` list
+        (newer Ollama versions) so callers can check for vision support.
+
+        Returns a dict with ``"parameters"`` and/or ``"capabilities"``
+        keys, or None on error.
         """
         try:
             resp = httpx.post(
@@ -157,16 +162,37 @@ class LiteLLMProvider(LLMProvider):
             )
             resp.raise_for_status()
             data = resp.json()
+
+            result: dict[str, Any] = {}
+
             params = data.get("parameters", "")
             if isinstance(params, str) and params:
                 _cache_ollama_defaults(model, params)
-                return {"parameters": params}
-            if params:
+                result["parameters"] = params
+            elif params:
                 _cache_ollama_defaults(model, str(params))
-                return {"parameters": str(params)}
-            return None
+                result["parameters"] = str(params)
+
+            capabilities = data.get("capabilities")
+            if isinstance(capabilities, list):
+                result["capabilities"] = capabilities
+
+            return result or None
         except httpx.HTTPError:
             return None
+
+    def get_capabilities(self, model: str) -> list[str]:
+        """Return capability tags for *model* from the backend.
+
+        Uses the Ollama ``/api/show`` ``capabilities`` array when
+        available; returns an empty list on error or if the backend
+        does not support capabilities.
+        """
+        info = self.show_model(model)
+        if info is None:
+            return []
+        caps = info.get("capabilities", [])
+        return caps if isinstance(caps, list) else []
 
     def shutdown(self) -> None:
         """No resources to release for litellm provider."""

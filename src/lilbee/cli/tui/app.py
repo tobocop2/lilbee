@@ -22,6 +22,7 @@ from lilbee.services import reset_services
 log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "gruvbox"  # warm retro CRT aesthetic
+_CHAT_SCREEN_NAME = "chat"
 DARK_THEMES = (
     "monokai",
     "dracula",
@@ -98,14 +99,33 @@ class LilbeeApp(App[None]):
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("left_square_bracket", "nav_prev", "Prev", show=True, group=_NAV_GROUP),
-        Binding("right_square_bracket", "nav_next", "Next", show=True, group=_NAV_GROUP),
+        # priority=True is required: even though NavAwareInput lets [ and ]
+        # bubble past Input.check_consume_key, Textual's focused Input still
+        # handles printable keys in _on_key before a non-priority ancestor
+        # binding can fire. Both NavAwareInput and priority=True are needed.
+        Binding(
+            "left_square_bracket",
+            "nav_prev",
+            "Prev",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
+        Binding(
+            "right_square_bracket",
+            "nav_next",
+            "Next",
+            show=True,
+            group=_NAV_GROUP,
+            priority=True,
+        ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
     ]
 
-    def __init__(self, *, auto_sync: bool = False) -> None:
+    def __init__(self, *, auto_sync: bool = False, initial_view: str | None = None) -> None:
         super().__init__()
         self._auto_sync = auto_sync
+        self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
         self._theme_index = 0
         self.last_quit_time: float = 0.0
@@ -124,7 +144,11 @@ class LilbeeApp(App[None]):
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.push_screen(ChatScreen(auto_sync=self._auto_sync))
+        chat = ChatScreen(auto_sync=self._auto_sync)
+        self.install_screen(chat, name=_CHAT_SCREEN_NAME)
+        self.push_screen(_CHAT_SCREEN_NAME)
+        if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
+            self.switch_view(self._initial_view)
 
     def action_cycle_theme(self) -> None:
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
@@ -178,7 +202,7 @@ class LilbeeApp(App[None]):
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
-                self.switch_screen(ChatScreen(auto_sync=False))
+                self.switch_screen(_CHAT_SCREEN_NAME)
         else:
             factory = get_views().get(view_name)
             if factory is None:

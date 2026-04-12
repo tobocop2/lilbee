@@ -364,9 +364,7 @@ class TestSyncStream:
     async def test_yields_progress_and_done(self):
         sync_result = SyncResult(added=["a.txt"], unchanged=0)
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, SyncDoneEvent
 
@@ -388,9 +386,7 @@ class TestSyncStream:
     async def test_yields_progress_events(self):
         sync_result = SyncResult(added=["b.txt"])
 
-        async def fake_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def fake_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             if on_progress:
                 from lilbee.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
 
@@ -417,9 +413,7 @@ class TestSyncStream:
 
         sync_result = SyncResult()
 
-        async def slow_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def slow_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             await asyncio.sleep(0.2)  # force at least one timeout iteration
             return sync_result
 
@@ -436,9 +430,7 @@ class TestSyncStream:
         barrier = threading.Event()
         captured_cancel: list[threading.Event] = []
 
-        async def blocking_sync(
-            force_rebuild=False, quiet=False, *, force_vision=False, on_progress=None, cancel=None
-        ):
+        async def blocking_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
             captured_cancel.append(cancel)
             if on_progress:
                 from lilbee.progress import FileStartEvent
@@ -490,9 +482,6 @@ class TestListModels:
         assert len(result.chat.catalog) > 0
         assert "qwen3:8b" in result.chat.installed
 
-        assert isinstance(result.vision.catalog, list)
-        assert isinstance(result.vision.installed, list)
-
     @patch("lilbee.models.list_installed_models")
     async def test_installed_flag_in_catalog(self, mock_list):
         mock_list.return_value = ["qwen3:0.6b"]
@@ -507,28 +496,22 @@ class TestListModels:
 
 
 class TestSetChatModel:
-    async def test_updates_config_and_persists(self, tmp_path):
+    async def test_updates_config_and_persists(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
         result = await handlers.set_chat_model("llama3")
         assert result.model == "llama3:latest"
         assert cfg.chat_model == "llama3:latest"
 
-    async def test_preserves_existing_tag(self, tmp_path):
+    async def test_preserves_existing_tag(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:7b"]
         result = await handlers.set_chat_model("llama3:7b")
         assert result.model == "llama3:7b"
         assert cfg.chat_model == "llama3:7b"
 
-
-class TestSetVisionModel:
-    async def test_updates_config_and_persists(self, tmp_path):
-        result = await handlers.set_vision_model("minicpm-v:latest")
-        assert result.model == "minicpm-v:latest"
-        assert cfg.vision_model == "minicpm-v:latest"
-
-    async def test_empty_string_disables(self, tmp_path):
-        cfg.vision_model = "some-model:latest"
-        result = await handlers.set_vision_model("")
-        assert result.model == ""
-        assert cfg.vision_model == ""
+    async def test_rejects_unavailable_model(self, tmp_path, mock_svc):
+        mock_svc.provider.list_models.return_value = ["llama3:latest"]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_chat_model("nonexistent:7b")
 
 
 class TestModelsCatalog:
@@ -563,6 +546,12 @@ class TestModelsCatalog:
         assert len(result.models) == 1
         m = result.models[0]
         assert m.name == "qwen3"
+        assert m.tag == "8b"
+        assert m.hf_repo == "Qwen/Qwen3-8B-GGUF"
+        assert m.task == "chat"
+        assert m.featured is True
+        assert m.downloads == 1000
+        assert m.param_count == "8B"
         assert m.installed is True
         assert m.source == "litellm"
 
@@ -838,7 +827,9 @@ class TestUpdateConfig:
 
 
 class TestSetEmbeddingModel:
-    async def test_updates_config_and_persists(self, tmp_path):
+    @patch("lilbee.server.handlers.get_services")
+    async def test_updates_config_and_persists(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
         result = await handlers.set_embedding_model("nomic-embed-text:latest")
         assert result.model == "nomic-embed-text:latest"
         assert cfg.embedding_model == "nomic-embed-text:latest"
@@ -847,17 +838,25 @@ class TestSetEmbeddingModel:
         stored = s.load(cfg.data_root)
         assert stored["embedding_model"] == "nomic-embed-text:latest"
 
-    async def test_empty_string_rejected(self):
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
+    @patch("lilbee.server.handlers.get_services")
+    async def test_empty_string_rejected(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = []
+        with pytest.raises(ValueError, match="not available"):
             await handlers.set_embedding_model("")
 
-    async def test_embedding_model_without_tag(self, tmp_path):
-        """Setting embedding model without a tag stores it as-is (no :latest append)."""
+    @patch("lilbee.server.handlers.get_services")
+    async def test_embedding_model_without_tag_normalizes(self, mock_svc, tmp_path):
+        """Setting embedding model without a tag normalizes to :latest."""
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
         result = await handlers.set_embedding_model("nomic-embed-text")
-        assert result.model == "nomic-embed-text"
-        assert cfg.embedding_model == "nomic-embed-text"
+        assert result.model == "nomic-embed-text:latest"
+        assert cfg.embedding_model == "nomic-embed-text:latest"
+
+    @patch("lilbee.server.handlers.get_services")
+    async def test_rejects_unavailable_embedding_model(self, mock_svc):
+        mock_svc.return_value.provider.list_models.return_value = ["nomic-embed-text:latest"]
+        with pytest.raises(ValueError, match="not available"):
+            await handlers.set_embedding_model("bogus-embed")
 
 
 class TestGetConfig:
@@ -879,6 +878,8 @@ class TestGetConfig:
         assert "concept_graph" in dumped
         assert "concept_boost_weight" in dumped
         assert "concept_max_per_chunk" in dumped
+        assert "expansion_guardrails" in dumped
+        assert "expansion_similarity_threshold" in dumped
         assert "llm_api_key" not in dumped
 
 
@@ -1107,6 +1108,15 @@ class TestRunLlmStreamCancel:
         assert items[-1] is None
 
 
+class TestParseOcrParams:
+    def test_ocr_timeout_coerced_to_float(self):
+        """_parse_ocr_params coerces ocr_timeout to float."""
+        enable_ocr, ocr_timeout = handlers._parse_ocr_params({"ocr_timeout": "60"})
+        assert ocr_timeout == 60.0
+        assert isinstance(ocr_timeout, float)
+        assert enable_ocr is None
+
+
 class TestAddHandlerCancel:
     async def test_cancel_returns_early(self):
         """When cancel is set before sync, add returns early with copy-only summary."""
@@ -1123,7 +1133,8 @@ class TestAddHandlerCancel:
             result = await handlers._run_add(
                 paths=[],
                 force=False,
-                vision_model="",
+                enable_ocr=None,
+                ocr_timeout=None,
                 sse=sse,
             )
         assert result is not None

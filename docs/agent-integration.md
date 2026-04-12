@@ -35,6 +35,10 @@ Add to your MCP client's MCP server configuration:
 | `lilbee_remove(names, delete_files)` | Remove documents from the index (optionally delete source files) | No |
 | `lilbee_list_documents()` | List all indexed documents with chunk counts | No |
 | `lilbee_reset()` | Delete all documents and data (factory reset) | No |
+| `lilbee_model_list(source, task)` | List installed models, optionally filtered by source or task | No |
+| `lilbee_model_show(model)` | Show catalog and installed metadata for a model ref | No |
+| `lilbee_model_pull(model, source)` | Download a model, streaming progress via MCP progress notifications | Yes (download) |
+| `lilbee_model_rm(model, source)` | Remove an installed model | No |
 
 ### Example responses
 

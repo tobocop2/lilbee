@@ -42,8 +42,6 @@ class SlashSuggester(Suggester):
 
         if cmd == "/model":
             return self._suggest_from_list(value, partial, self._get_model_names())
-        if cmd == "/vision":
-            return self._suggest_from_list(value, partial, self._get_vision_names())
         if cmd == "/set":
             return self._suggest_from_list(value, partial, self._get_setting_names())
         if cmd == "/delete":
@@ -65,16 +63,6 @@ class SlashSuggester(Suggester):
             return list_installed_models()
         except Exception:
             return []
-
-    def _get_vision_names(self) -> list[str]:
-        names = ["off"]
-        try:
-            from lilbee.models import VISION_CATALOG
-
-            names.extend(m.name for m in VISION_CATALOG)
-        except Exception:
-            pass
-        return names
 
     def _get_setting_names(self) -> list[str]:
         return list(SETTINGS_MAP.keys())

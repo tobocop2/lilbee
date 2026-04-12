@@ -28,9 +28,9 @@ class RemoveRequest(BaseModel):
 @post("/api/sync")
 async def sync_route(data: SyncRequest | None = None) -> Stream:
     """Re-index changed documents with streaming SSE progress events."""
-    force_vision = data.force_vision if data else False
+    enable_ocr = data.enable_ocr if data else None
     return Stream(
-        handlers.sync_stream(force_vision=force_vision),
+        handlers.sync_stream(enable_ocr=enable_ocr),
         media_type="text/event-stream",
     )
 

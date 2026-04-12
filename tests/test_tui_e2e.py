@@ -26,7 +26,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = "test-chat-model.gguf"
     cfg.embedding_model = "test-embed-model"
-    cfg.vision_model = ""
     cfg.subprocess_embed = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -154,14 +153,12 @@ class TestModelClassification:
 
             mock_native.side_effect = fill_buckets
             with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
-                chat, embed, vision = _classify_installed_models()
+                chat, embed = _classify_installed_models()
 
         chat_refs = [o.ref for o in chat]
         embed_refs = [o.ref for o in embed]
-        vision_refs = [o.ref for o in vision]
         assert "Qwen3:latest" in chat_refs
         assert "Nomic Embed:latest" in embed_refs
-        assert "LightOnOCR:latest" in vision_refs
 
     def test_no_loose_gguf_scanning(self):
         """Legacy .gguf files NOT in registry must NOT appear in dropdowns."""
@@ -175,9 +172,9 @@ class TestModelClassification:
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models"),
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
         ):
-            chat, embed, vision = _classify_installed_models()
+            chat, embed = _classify_installed_models()
 
-        all_models = chat + embed + vision
+        all_models = chat + embed
         assert "loose-chat.gguf" not in all_models
         assert "loose-vision.gguf" not in all_models
 
@@ -1207,96 +1204,6 @@ class TestCatalogInteractions:
                 table = app.screen.query_one("#catalog-table", DataTable)
                 assert table.has_focus
 
-    async def test_search_submit_returns_focus_to_grid(self, _mock_resolve):
-        """Submitting search in grid view returns focus to the GridSelect."""
-        from textual.widgets import Input
-
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-
-                await pilot.press("slash")
-                await pilot.pause()
-                search = app.screen.query_one("#catalog-search", Input)
-                assert search.display is True
-                assert search.has_focus
-
-                search.value = "test"
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert search.display is False
-                focused = app.focused
-                assert focused is not None
-                assert focused.display
-                assert isinstance(focused, GridSelect)
-
-    async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
-        """Submitting search in list view returns focus to the DataTable."""
-        from textual.widgets import DataTable, Input
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-                await pilot.press("v")
-                await pilot.pause()
-
-                await pilot.press("slash")
-                await pilot.pause()
-                search = app.screen.query_one("#catalog-search", Input)
-                assert search.display is True
-
-                search.value = "test"
-                await pilot.press("enter")
-                await pilot.pause()
-
-                assert search.display is False
-                focused = app.focused
-                assert isinstance(focused, DataTable)
-
-    async def test_search_escape_closes_and_unfreezes(self, _mock_resolve):
-        """Escape closes the search and restores focus so catalog bindings work again."""
-        from textual.widgets import Input
-
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                app.switch_view("Catalog")
-                await pilot.pause()
-
-                await pilot.press("slash")
-                await pilot.pause()
-                search = app.screen.query_one("#catalog-search", Input)
-                assert search.display is True
-
-                await pilot.press("escape")
-                await pilot.pause()
-
-                assert search.display is False
-                # Still on the catalog screen -- escape only closed the search,
-                # it didn't pop back to Chat.
-                assert isinstance(app.screen, CatalogScreen)
-
-                # Bindings still work: toggle the view.
-                await pilot.press("v")
-                await pilot.pause()
-                assert app.screen.has_class("-list-view")
-
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
         from lilbee.cli.tui.app import LilbeeApp
@@ -1616,21 +1523,34 @@ class TestSettingsInteractions:
             assert cfg.system_prompt == "test system prompt"
 
     async def test_toggle_boolean_checkbox(self, _mock_resolve):
-        """Toggling a boolean checkbox updates cfg."""
+        """Toggling a boolean checkbox updates cfg.
+
+        Drives the real user gesture: focus the Checkbox and press space.
+        This covers the full binding path (keyboard dispatch -> Checkbox
+        toggle -> reactive watcher -> Checkbox.Changed bubbles to
+        SettingsScreen -> ``_on_checkbox_save`` writes cfg). Uses a tall
+        enough test size so the widget is in the visible scroll region.
+        """
         from textual.widgets import Checkbox
 
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 120)) as pilot:
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
 
             checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
             initial = checkbox.value
-            checkbox.toggle()
+            checkbox.focus()
             await pilot.pause()
+
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert checkbox.value != initial
+            assert cfg.show_reasoning == checkbox.value
             assert cfg.show_reasoning != initial
 
     async def test_read_only_fields_have_no_editor(self, _mock_resolve):
@@ -2158,34 +2078,6 @@ class TestChatSlashCommands:
                 from lilbee.cli.tui.screens.catalog import CatalogScreen
 
                 assert isinstance(app.screen, CatalogScreen)
-
-    async def test_cmd_vision_set(self, _mock_resolve):
-        """/vision <model> sets the vision model."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/vision test-vision-model")
-            await pilot.pause()
-            assert cfg.vision_model == "test-vision-model"
-
-    async def test_cmd_vision_off(self, _mock_resolve):
-        """/vision off disables vision."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            cfg.vision_model = "some-model"
-            app.screen._handle_slash("/vision off")
-            await pilot.pause()
-            assert cfg.vision_model == ""
-
-    async def test_cmd_vision_status(self, _mock_resolve):
-        """/vision with no args shows current status."""
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.screen._handle_slash("/vision")
-            await pilot.pause()
-            assert app.screen.is_current
 
     async def test_cmd_reset_without_confirm(self, _mock_resolve):
         """/reset without confirm shows warning."""

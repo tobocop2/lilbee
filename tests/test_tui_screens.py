@@ -21,12 +21,14 @@ from lilbee.cli.tui.screens.catalog import (
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     _format_downloads,
+    _is_param_count,
     catalog_to_row,
     format_size_gb,
     matches_search,
     parse_param_label,
     remote_to_row,
     row_display_name,
+    variant_to_row,
 )
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
@@ -45,7 +47,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "lancedb"
     cfg.chat_model = "test-model:latest"
     cfg.embedding_model = "test-embed:latest"
-    cfg.vision_model = ""
     cfg.chunk_size = 512
     # Simulate "already-initialized" state so ChatScreen._needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
@@ -84,7 +85,15 @@ def _patch_chat_setup():
         ),
         patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], [], []),
+            return_value=([], []),
+        ),
+        patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
+            return_value=None,
+        ),
+        patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
+            return_value=None,
         ),
     ):
         yield
@@ -137,6 +146,91 @@ class TestParseParamLabel:
 
     def test_case_insensitive(self):
         assert parse_param_label("model-3b-chat") == "3B"
+
+
+class TestIsParamCount:
+    def test_integer_param(self):
+        assert _is_param_count("8B") is True
+
+    def test_decimal_param(self):
+        assert _is_param_count("0.6B") is True
+
+    def test_version_string(self):
+        assert _is_param_count("v1.5") is False
+
+    def test_plain_text(self):
+        assert _is_param_count("latest") is False
+
+
+class TestVariantToRowDedup:
+    """Verify variant_to_row avoids tag duplication and version-as-params."""
+
+    def test_no_suffix_duplication(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+            filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
+            param_count="v1.5",
+            tag="v1.5",
+            quant="Q4_K_M",
+            size_mb=300,
+            recommended=True,
+        )
+        family = ModelFamily(
+            slug="nomic-embed-text",
+            name="Nomic Embed Text v1.5",
+            task="embedding",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.name.count("v1.5") == 1
+
+    def test_version_tag_params_dash(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="nomic-ai/nomic-embed-text-v1.5-GGUF",
+            filename="nomic-embed-text-v1.5.Q4_K_M.gguf",
+            param_count="v1.5",
+            tag="v1.5",
+            quant="Q4_K_M",
+            size_mb=300,
+            recommended=True,
+        )
+        family = ModelFamily(
+            slug="nomic-embed-text",
+            name="Nomic Embed Text v1.5",
+            task="embedding",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.params == "--"
+
+    def test_numeric_param_kept(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="org/qwen3-0.6b-GGUF",
+            filename="qwen3-0.6b.Q4_K_M.gguf",
+            param_count="0.6B",
+            tag="0.6b",
+            quant="Q4_K_M",
+            size_mb=400,
+            recommended=False,
+        )
+        family = ModelFamily(
+            slug="qwen3",
+            name="Qwen3",
+            task="chat",
+            description="test",
+            variants=(variant,),
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert "0.6B" in row.name
+        assert row.params == "0.6B"
 
 
 class TestFormatDownloads:
@@ -602,11 +696,10 @@ async def test_status_screen_config_shows_models(mock_svc):
         rendered = str(info.render())
         assert "Chat model" in rendered
         assert "Embed model" in rendered
-        assert "Vision model" in rendered
+        assert "OCR" in rendered
 
 
 async def test_status_screen_config_pills_render(mock_svc):
-    cfg.vision_model = ""
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#config-info", Static)
@@ -657,7 +750,7 @@ async def test_status_screen_arch_section(mock_svc):
 
 
 async def test_status_screen_arch_with_vision(mock_svc):
-    cfg.vision_model = "test-vision:latest"
+    cfg.chat_model = "test-vision:latest"
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#arch-info", Static)
@@ -701,6 +794,36 @@ async def test_status_screen_escape_pops():
         assert isinstance(app.screen, StatusScreen)
         await _pilot.press("escape")
         assert not isinstance(app.screen, StatusScreen)
+
+
+def test_ocr_label_enabled():
+    from lilbee.cli.tui.screens.status import _ocr_label
+
+    cfg.enable_ocr = True
+    assert _ocr_label() == "enabled"
+
+
+def test_ocr_label_disabled():
+    from lilbee.cli.tui.screens.status import _ocr_label
+
+    cfg.enable_ocr = False
+    assert _ocr_label() == "disabled"
+
+
+def test_ocr_pill_enabled():
+    from lilbee.cli.tui.screens.status import _ocr_pill
+
+    cfg.enable_ocr = True
+    result = _ocr_pill()
+    assert "on" in str(result)
+
+
+def test_ocr_pill_disabled():
+    from lilbee.cli.tui.screens.status import _ocr_pill
+
+    cfg.enable_ocr = False
+    result = _ocr_pill()
+    assert "off" in str(result)
 
 
 def test_status_model_pill_truthy():
@@ -757,9 +880,13 @@ def test_status_read_embed_arch_success():
 def test_status_read_vision_arch_success():
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.vision_model = "test-vision:latest"
+    cfg.chat_model = "test-vision:latest"
     info = ModelArchInfo()
     with (
+        patch(
+            "lilbee.model_manager.is_vision_capable",
+            return_value=True,
+        ),
         patch(
             "lilbee.providers.llama_cpp_provider.resolve_model_path",
             return_value="/fake/path",
@@ -780,9 +907,10 @@ def test_status_read_vision_arch_success():
 def test_status_read_vision_arch_skips_when_no_model():
     from lilbee.model_info import ModelArchInfo, _read_vision_arch
 
-    cfg.vision_model = ""
+    cfg.chat_model = "test-chat:latest"
     info = ModelArchInfo()
-    result = _read_vision_arch(info)
+    with patch("lilbee.model_manager.is_vision_capable", return_value=False):
+        result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
 
 
@@ -999,32 +1127,6 @@ async def test_chat_slash_theme_non_lilbee_app():
             app.screen._handle_slash("/theme dracula")
             mock_notify.assert_called_once()
             assert "Themes:" in mock_notify.call_args[0][0]
-
-
-async def test_chat_slash_vision_set():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.settings.set_value"):
-            app.screen._cmd_vision("maternion/LightOnOCR-2:latest")
-            assert cfg.vision_model == "maternion/LightOnOCR-2:latest"
-
-
-async def test_chat_slash_vision_off():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        cfg.vision_model = "some-model"
-        with patch("lilbee.settings.set_value"):
-            app.screen._cmd_vision("off")
-            assert cfg.vision_model == ""
-
-
-async def test_chat_slash_vision_no_arg():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._cmd_vision("")
-            mock_notify.assert_called_once()
-            assert "Vision:" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_with_match(mock_svc):
@@ -1444,14 +1546,6 @@ async def test_chat_slash_add_dispatch():
             assert "Not found" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_vision_dispatch():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.settings.set_value"):
-            app.screen._handle_slash("/vision off")
-            assert cfg.vision_model == ""
-
-
 async def test_chat_slash_delete_dispatch():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -1661,19 +1755,6 @@ async def test_command_provider_set_model():
             assert "new-model:latest" in app.title
 
 
-async def test_command_provider_set_model_vision():
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.settings.set_value"):
-            provider._set_model("vision_model", "")
-            assert cfg.vision_model == ""
-
-
 async def test_command_provider_wiki_generate_action():
     """Palette 'Generate wiki pages' action notifies the user to use /wiki generate."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -1779,25 +1860,7 @@ async def test_command_provider_model_commands_error():
             side_effect=Exception("no provider"),
         ):
             cmds = provider._model_commands()
-            assert any("vision" in c[0].lower() for c in cmds)
-
-
-async def test_command_provider_model_commands_vision_error():
-    """When both list_installed_models and VISION_CATALOG fail."""
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with (
-            patch("lilbee.models.list_installed_models", side_effect=Exception("fail")),
-            patch("lilbee.models.VISION_CATALOG", side_effect=Exception("fail")),
-        ):
-            cmds = provider._model_commands()
-            # Both failed, should return empty or partial
-            assert isinstance(cmds, list)
+            assert cmds == []
 
 
 async def test_command_provider_document_commands(mock_svc):
@@ -2836,52 +2899,6 @@ def test_check_embedding_model_not_found():
         # Would call self.app.call_from_thread(self._show_setup_modal, remote_embeds)
 
 
-async def test_command_provider_vision_catalog_error():
-    """Cover the except block when VISION_CATALOG import fails (lines 91-92)."""
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with (
-            patch("lilbee.models.list_installed_models", return_value=[]),
-            patch.dict(
-                "sys.modules",
-                {
-                    "lilbee.models": MagicMock(
-                        list_installed_models=MagicMock(return_value=[]),
-                        VISION_CATALOG=property(lambda s: (_ for _ in ()).throw(Exception("fail"))),
-                    )
-                },
-            ),
-        ):
-            # VISION_CATALOG is accessed via import; take a different approach
-            pass
-
-    # Simpler approach: patch at the point of import inside _model_commands
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-
-        # Make list_installed_models succeed but VISION_CATALOG raise
-        import lilbee.models as models_mod
-
-        original_vision = models_mod.VISION_CATALOG
-        try:
-            # Temporarily replace VISION_CATALOG with something that raises on iteration
-            models_mod.VISION_CATALOG = property(lambda s: 1 / 0)  # type: ignore[assignment]
-            with patch("lilbee.models.list_installed_models", return_value=["m1"]):
-                cmds = provider._model_commands()
-                # Should have model commands but no vision commands
-                assert any("m1" in c[0] for c in cmds)
-        finally:
-            models_mod.VISION_CATALOG = original_vision  # type: ignore[assignment]
-
-
 async def test_chat_slash_crawl_unavailable():
     """_cmd_crawl notifies when crawler is not installed."""
     app = ChatTestApp()
@@ -3451,7 +3468,6 @@ async def test_chat_escape_key_enters_normal_mode():
     """Escape key enters normal mode and focuses chat log."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.containers import VerticalScroll
@@ -3474,7 +3490,6 @@ async def test_chat_history_next_skips_in_normal_mode():
 
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -3489,7 +3504,6 @@ async def test_chat_history_prev_skips_in_normal_mode():
 
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -3502,7 +3516,6 @@ async def test_chat_enter_key_returns_to_insert_mode():
     """Enter key returns to insert mode from normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
@@ -3522,7 +3535,6 @@ async def test_app_nav_prev_cycles_views():
     """App-level h/left binding cycles to previous view."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3543,7 +3555,6 @@ async def test_app_nav_next_cycles_views():
     """App-level l/right binding cycles to next view."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3564,7 +3575,6 @@ async def test_app_nav_switches_all_views():
     """Nav prev/next cycles through all 5 views including Tasks."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -3953,7 +3963,6 @@ async def test_chat_mode_indicator_shows_normal():
     """ViewTabs shows NORMAL when entering normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
@@ -3969,7 +3978,6 @@ async def test_chat_mode_indicator_shows_insert():
     """ViewTabs shows INSERT when returning to insert mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui import messages as msg
@@ -3989,7 +3997,6 @@ async def test_chat_up_down_skip_in_normal_mode():
 
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -4004,7 +4011,6 @@ async def test_chat_vim_scroll_in_normal_mode():
     """j/k scroll the chat log in normal mode."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.action_enter_normal_mode()
@@ -4018,7 +4024,6 @@ async def test_chat_up_arrow_insert_mode_recalls_history():
     """Up arrow in insert mode still recalls input history."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
@@ -4159,7 +4164,6 @@ async def test_chat_screen_has_status_line():
     """ChatScreen compose includes a ChatStatusLine widget."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -4173,7 +4177,6 @@ async def test_chat_screen_has_prompt_area():
     """ChatScreen compose wraps input in a PromptArea container."""
     cfg.chat_model = "test-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -4187,7 +4190,6 @@ async def test_chat_refresh_status_line():
     """_refresh_status_line sets the model name on the status widget."""
     cfg.chat_model = "my-model"
     cfg.embedding_model = "test-embed"
-    cfg.vision_model = ""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()

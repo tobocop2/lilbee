@@ -60,17 +60,6 @@ def _model_options() -> list[str]:
         return []
 
 
-def _vision_options() -> list[str]:
-    names = ["off"]
-    try:
-        from lilbee.models import VISION_CATALOG
-
-        names.extend(m.name for m in VISION_CATALOG)
-    except Exception:
-        log.debug("Failed to load vision catalog for autocomplete", exc_info=True)
-    return names
-
-
 def _setting_options() -> list[str]:
     return list(SETTINGS_MAP.keys())
 
@@ -124,7 +113,6 @@ def _path_options(partial: str = "") -> list[str]:
 
 _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/model": _model_options,
-    "/vision": _vision_options,
     "/set": _setting_options,
     "/delete": _document_options,
     "/remove": _model_options,

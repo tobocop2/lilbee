@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
+import httpx
 import pytest
 
 from lilbee.config import cfg
 
 if TYPE_CHECKING:
+    from lilbee.providers.litellm_provider import LiteLLMProvider
     from lilbee.providers.routing_provider import RoutingProvider
 
 # ---------------------------------------------------------------------------
@@ -641,6 +643,17 @@ class TestRoutingProvider:
         with mock.patch("lilbee.providers.litellm_provider.litellm_available", return_value=False):
             assert rp._should_use_litellm() is False
 
+    def test_get_capabilities_delegates_to_active_provider(self) -> None:
+        rp = self._make_provider()
+        mock_litellm = mock.MagicMock()
+        mock_litellm.get_capabilities.return_value = ["completion", "vision"]
+        rp._litellm = mock_litellm
+        rp._use_litellm = True
+
+        caps = rp.get_capabilities("llava:7b")
+        assert caps == ["completion", "vision"]
+        mock_litellm.get_capabilities.assert_called_once_with("llava:7b")
+
 
 # ---------------------------------------------------------------------------
 # litellm_available guard
@@ -665,6 +678,103 @@ class TestLitellmAvailable:
             pytest.raises(ProviderError, match="litellm is not installed"),
         ):
             create_provider(cfg)
+
+
+class TestLiteLLMShowModelCapabilities:
+    """Tests for LiteLLMProvider.show_model capabilities parsing."""
+
+    def _make_provider(self) -> LiteLLMProvider:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        return LiteLLMProvider(base_url="http://localhost:11434")
+
+    def test_show_model_returns_capabilities(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {
+            "capabilities": ["completion", "vision"],
+            "parameters": "temperature 0.7",
+        }
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            result = provider.show_model("llava:7b")
+
+        assert result is not None
+        assert result["capabilities"] == ["completion", "vision"]
+        assert result["parameters"] == "temperature 0.7"
+
+    def test_show_model_no_capabilities_field(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"parameters": "temperature 0.7"}
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            result = provider.show_model("qwen3:8b")
+
+        assert result is not None
+        assert "capabilities" not in result
+        assert result["parameters"] == "temperature 0.7"
+
+    def test_show_model_only_capabilities_no_params(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"capabilities": ["completion"]}
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            result = provider.show_model("some-model")
+
+        assert result is not None
+        assert result["capabilities"] == ["completion"]
+
+    def test_show_model_empty_returns_none(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            result = provider.show_model("empty-model")
+
+        assert result is None
+
+    def test_show_model_http_error(self) -> None:
+        provider = self._make_provider()
+        with mock.patch("httpx.post", side_effect=httpx.HTTPError("fail")):
+            result = provider.show_model("bad-model")
+
+        assert result is None
+
+    def test_get_capabilities_returns_list(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"capabilities": ["completion", "vision", "tools"]}
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            caps = provider.get_capabilities("llava:7b")
+
+        assert caps == ["completion", "vision", "tools"]
+
+    def test_get_capabilities_returns_empty_on_error(self) -> None:
+        provider = self._make_provider()
+        with mock.patch("httpx.post", side_effect=httpx.HTTPError("fail")):
+            caps = provider.get_capabilities("bad-model")
+
+        assert caps == []
+
+    def test_get_capabilities_no_capabilities_field(self) -> None:
+        provider = self._make_provider()
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"parameters": "temp 0.7"}
+        mock_resp.raise_for_status = mock.Mock()
+
+        with mock.patch("httpx.post", return_value=mock_resp):
+            caps = provider.get_capabilities("qwen3:8b")
+
+        assert caps == []
 
 
 # ---------------------------------------------------------------------------
@@ -1399,6 +1509,59 @@ class TestLlamaCppProviderMethods:
 
         assert result is None
 
+    def test_get_capabilities_with_mmproj(self) -> None:
+        """get_capabilities returns ['completion', 'vision'] when mmproj found."""
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/llava.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                return_value=Path("/models/llava-mmproj.gguf"),
+            ),
+        ):
+            caps = provider.get_capabilities("llava:7b")
+
+        assert "completion" in caps
+        assert "vision" in caps
+
+    def test_get_capabilities_no_mmproj(self) -> None:
+        """get_capabilities returns ['completion'] when no mmproj found."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with (
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.resolve_model_path",
+                return_value=Path("/models/qwen.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.llama_cpp_provider.find_mmproj_for_model",
+                side_effect=ProviderError("no mmproj"),
+            ),
+        ):
+            caps = provider.get_capabilities("qwen:8b")
+
+        assert caps == ["completion"]
+
+    def test_get_capabilities_resolve_error(self) -> None:
+        """get_capabilities returns ['completion'] when model path not found."""
+        from lilbee.providers.base import ProviderError
+
+        provider = _make_provider_no_thread()
+
+        with mock.patch(
+            "lilbee.providers.llama_cpp_provider.resolve_model_path",
+            side_effect=ProviderError("not found"),
+        ):
+            caps = provider.get_capabilities("missing-model")
+
+        assert caps == ["completion"]
+
     def test_list_models(self) -> None:
         """list_models returns sorted registry models."""
         provider = _make_provider_no_thread()
@@ -1754,28 +1917,15 @@ class TestLoadLlama:
 
 
 class TestIsVisionModel:
-    def test_matches_config_vision_model(self) -> None:
-        """_is_vision_model matches cfg.vision_model."""
+    def test_no_match_for_unknown_model(self) -> None:
+        """_is_vision_model returns False for models not in the catalog."""
         from lilbee.providers.llama_cpp_provider import _is_vision_model
 
-        cfg.vision_model = "my-vision"
-
-        assert _is_vision_model("my-vision") is True
-
-    def test_no_match_when_empty(self) -> None:
-        """_is_vision_model returns False for empty vision_model."""
-        from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        cfg.vision_model = ""
-
-        # Only matches featured catalog entries
         assert _is_vision_model("random-model") is False
 
     def test_matches_featured_vision(self) -> None:
         """_is_vision_model matches FEATURED_VISION entries."""
         from lilbee.providers.llama_cpp_provider import _is_vision_model
-
-        cfg.vision_model = ""
 
         mock_entry = mock.MagicMock()
         mock_entry.name = "LightOnOCR"

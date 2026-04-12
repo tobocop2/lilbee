@@ -31,7 +31,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.chat_model = "test-chat-model.gguf"
     cfg.embedding_model = "test-embed-model"
-    cfg.vision_model = ""
     cfg.subprocess_embed = False
     cfg.wiki = False
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +91,30 @@ async def test_bracket_keys_cycle_all_screens():
             assert isinstance(app.screen, screen_type), (
                 f"Expected {screen_type.__name__}, got {type(app.screen).__name__}"
             )
+
+
+async def test_bracket_keys_work_with_chat_input_focused():
+    """Pressing ] with the chat input focused must switch screens, not insert text."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+
+        chat_input = app.screen.query_one("#chat-input", Input)
+        assert chat_input.has_focus, "Chat input should auto-focus on mount"
+        assert chat_input.value == ""
+
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CatalogScreen), (
+            f"Expected CatalogScreen after ], got {type(app.screen).__name__}"
+        )
+        # The original chat_input reference must still be unchanged — the ]
+        # keypress must not have been typed into it before the screen switched.
+        assert chat_input.value == "", (
+            f"] was typed into chat input instead of navigating (value={chat_input.value!r})"
+        )
 
 
 async def test_bracket_keys_cycle_backward():

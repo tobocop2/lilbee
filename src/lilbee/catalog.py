@@ -292,14 +292,21 @@ def _extract_quant(filename: str) -> str:
     return m.group(1).upper() if m else ""
 
 
+def _derive_param_count(model: CatalogModel) -> str:
+    """Extract the parameter-count label (e.g. ``7B``) from a catalog model.
+    Falls back to ``model.tag`` when the display name has no numeric suffix
+    (useful for embedding models whose tag is a version like ``v1.5``).
+    """
+    match = PARAM_COUNT_RE.search(model.display_name)
+    return match.group(1) if match else model.tag
+
+
 def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
     """Convert a CatalogModel to a ModelVariant."""
-    m = PARAM_COUNT_RE.search(model.display_name)
-    param_count = m.group(1) if m else model.tag
     return ModelVariant(
         hf_repo=model.hf_repo,
         filename=model.gguf_filename,
-        param_count=param_count,
+        param_count=_derive_param_count(model),
         tag=model.tag,
         quant=_extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
@@ -951,6 +958,7 @@ class EnrichedModel:
     """A catalog model enriched with display metadata and install status."""
 
     name: str
+    tag: str
     hf_repo: str
     gguf_filename: str
     size_gb: float
@@ -960,6 +968,7 @@ class EnrichedModel:
     downloads: int
     task: str
     display_name: str
+    param_count: str
     quality_tier: str
     installed: bool
     source: str
@@ -973,6 +982,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
         enriched.append(
             EnrichedModel(
                 name=m.name,
+                tag=m.tag,
                 hf_repo=m.hf_repo,
                 gguf_filename=m.gguf_filename,
                 size_gb=m.size_gb,
@@ -982,6 +992,7 @@ def enrich_catalog(result: CatalogResult, installed_names: set[str]) -> list[Enr
                 downloads=m.downloads,
                 task=m.task,
                 display_name=m.display_name or clean_display_name(m.hf_repo),
+                param_count=_derive_param_count(m),
                 quality_tier=quant_tier(_extract_quant(m.gguf_filename)),
                 installed=is_installed,
                 source="litellm" if is_installed else "native",

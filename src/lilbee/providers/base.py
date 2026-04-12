@@ -69,8 +69,16 @@ class LLMProvider(Protocol):
         """Download a model. Raises NotImplementedError if not supported."""
         ...
 
-    def show_model(self, model: str) -> dict[str, str] | None:
+    def show_model(self, model: str) -> dict[str, Any] | None:
         """Return model metadata, or None if backend doesn't expose it."""
+        ...
+
+    def get_capabilities(self, model: str) -> list[str]:
+        """Return capability tags (e.g. ``["completion", "vision"]``) for *model*.
+
+        Returns an empty list when the backend does not support capability
+        reporting or the model is not found.
+        """
         ...
 
     def shutdown(self) -> None:

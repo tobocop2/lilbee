@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     import uvicorn
 from rich.table import Table
 
-from lilbee import settings
 from lilbee.cli import theme
 from lilbee.cli.app import (
     app,
@@ -47,130 +46,20 @@ from lilbee.services import get_services
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 
-_vision_option = typer.Option(False, "--vision", help="Enable vision OCR for scanned PDFs.")
-_vision_timeout_option = typer.Option(
+_ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")
+_ocr_timeout_option = typer.Option(
     None,
-    "--vision-timeout",
+    "--ocr-timeout",
     help="Per-page timeout in seconds for vision OCR (default: 120, 0 = no limit).",
 )
 
 
-def _ensure_vision_model() -> None:
-    """Ensure a vision model is configured and available for this run."""
-    if cfg.vision_model:
-        _validate_configured_vision()
-        return
-
-    # Restore persisted model from TOML (--vision is explicit even if model was cleared)
-    saved = settings.get(cfg.data_root, "vision_model") or ""
-    if saved:
-        cfg.vision_model = saved
-        _validate_configured_vision()
-        return
-
-    from lilbee.models import list_installed_models
-
-    try:
-        installed = set(list_installed_models())
-    except Exception:
-        console.print(
-            f"[{theme.WARNING}]Warning: Cannot list models. Vision OCR disabled.[/{theme.WARNING}]"
-        )
-        return
-
-    if sys.stdin.isatty():
-        _pick_vision_interactive(installed)
-    else:
-        _pick_vision_auto(installed)
-
-
-def _validate_configured_vision() -> None:
-    """Check that a pre-configured vision model is available; pull if needed."""
-    from lilbee.models import ensure_tag, list_installed_models
-
-    tagged = ensure_tag(cfg.vision_model)
-    cfg.vision_model = tagged
-
-    try:
-        installed = set(list_installed_models())
-    except Exception:
-        # Can't reach model backend — keep the config and let downstream handle errors
-        return
-
-    if tagged in installed:
-        return
-
-    console.print(f"Vision model '{tagged}' not installed. Pulling...")
-    if not _try_pull(tagged):
-        cfg.vision_model = ""
-
-
-def _pick_vision_interactive(installed: set[str]) -> None:
-    """Interactive vision model picker for TTY sessions."""
-    from lilbee.models import (
-        VISION_CATALOG,
-        display_vision_picker,
-        get_free_disk_gb,
-        get_system_ram_gb,
-    )
-
-    ram_gb = get_system_ram_gb()
-    free_gb = get_free_disk_gb(cfg.data_dir)
-    recommended = display_vision_picker(ram_gb, free_gb)
-    default_idx = list(VISION_CATALOG).index(recommended) + 1
-
-    try:
-        raw = input(f"Choice [{default_idx}]: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return
-
-    if not raw:
-        model_info = recommended
-    else:
-        try:
-            choice = int(raw)
-        except ValueError:
-            console.print(f"[{theme.ERROR}]Enter a number 1-{len(VISION_CATALOG)}.[/{theme.ERROR}]")
-            return
-        if not (1 <= choice <= len(VISION_CATALOG)):
-            console.print(f"[{theme.ERROR}]Enter a number 1-{len(VISION_CATALOG)}.[/{theme.ERROR}]")
-            return
-        model_info = VISION_CATALOG[choice - 1]
-
-    _pull_and_save_vision(model_info.name, installed)
-
-
-def _pick_vision_auto(installed: set[str]) -> None:
-    """Non-interactive vision model auto-selection."""
-    from lilbee.models import pick_default_vision_model
-
-    model_info = pick_default_vision_model()
-    sys.stderr.write(f"No vision model configured. Auto-selecting '{model_info.name}'...\n")
-    _pull_and_save_vision(model_info.name, installed)
-
-
-def _try_pull(model_name: str) -> bool:
-    """Attempt to pull a model. Returns True on success, False on failure."""
-    from lilbee.models import pull_with_progress
-
-    try:
-        pull_with_progress(model_name)
-    except Exception as exc:
-        console.print(
-            f"[{theme.WARNING}]Warning: Failed to pull '{model_name}': {exc}[/{theme.WARNING}]"
-        )
-        console.print(f"[{theme.WARNING}]Continuing without vision OCR.[/{theme.WARNING}]")
-        return False
-    return True
-
-
-def _pull_and_save_vision(model_name: str, installed: set[str]) -> None:
-    """Pull if needed and persist vision model choice."""
-    if model_name not in installed and not _try_pull(model_name):
-        return
-
-    cfg.vision_model = model_name
-    settings.set_value(cfg.data_root, "vision_model", model_name)
+def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
+    """Apply --ocr/--no-ocr and --ocr-timeout CLI overrides to config."""
+    if ocr is not None:
+        cfg.enable_ocr = ocr
+    if ocr_timeout is not None:
+        cfg.ocr_timeout = ocr_timeout
 
 
 _paths_argument = typer.Argument(
@@ -221,19 +110,16 @@ def search(
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    vision: bool = _vision_option,
-    vision_timeout: float | None = _vision_timeout_option,
+    ocr: bool | None = _ocr_option,
+    ocr_timeout: float | None = _ocr_timeout_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    if vision_timeout is not None:
-        cfg.vision_timeout = vision_timeout
-    if vision:
-        _ensure_vision_model()
+    _apply_ocr_overrides(ocr, ocr_timeout)
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(quiet=cfg.json_mode, force_vision=vision))
+        result = asyncio.run(sync(quiet=cfg.json_mode))
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -250,19 +136,16 @@ def sync_cmd(
 def rebuild(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    vision: bool = _vision_option,
-    vision_timeout: float | None = _vision_timeout_option,
+    ocr: bool | None = _ocr_option,
+    ocr_timeout: float | None = _ocr_timeout_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    if vision_timeout is not None:
-        cfg.vision_timeout = vision_timeout
-    if vision:
-        _ensure_vision_model()
+    _apply_ocr_overrides(ocr, ocr_timeout)
     from lilbee.ingest import sync
 
     try:
-        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode, force_vision=vision))
+        result = asyncio.run(sync(force_rebuild=True, quiet=cfg.json_mode))
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -342,18 +225,15 @@ def add(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
     force: bool = _force_option,
-    vision: bool = _vision_option,
-    vision_timeout: float | None = _vision_timeout_option,
+    ocr: bool | None = _ocr_option,
+    ocr_timeout: float | None = _ocr_timeout_option,
     crawl: bool = _crawl_option,
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
 ) -> None:
     """Copy files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    if vision_timeout is not None:
-        cfg.vision_timeout = vision_timeout
-    if vision:
-        _ensure_vision_model()
+    _apply_ocr_overrides(ocr, ocr_timeout)
 
     file_paths, urls = _partition_inputs(paths)
     # Validate file paths exist
@@ -392,7 +272,7 @@ def add(
             copied: list[str] = []
             if file_paths:
                 copied = copy_paths(file_paths, console, force=force)
-            result = asyncio.run(sync(quiet=True, force_vision=vision))
+            result = asyncio.run(sync(quiet=True))
             json_output(
                 {
                     "command": "add",
@@ -404,12 +284,12 @@ def add(
             return
 
         if file_paths:
-            add_paths(file_paths, console, force=force, force_vision=vision)
+            add_paths(file_paths, console, force=force)
         elif urls:
             # URLs already saved; just trigger sync
             from lilbee.ingest import sync
 
-            result = asyncio.run(sync(force_vision=vision))
+            result = asyncio.run(sync())
             console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:

@@ -38,6 +38,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
+from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
@@ -117,7 +118,7 @@ class CatalogScreen(Screen[None]):
         yield Static("", id="sort-label", shrink=True)
         yield VerticalScroll(id="catalog-grid")
         yield DataTable(id="catalog-table", cursor_type="row")
-        yield Input(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
+        yield NavAwareInput(placeholder=msg.CATALOG_FILTER_PLACEHOLDER, id="catalog-search")
         yield Static("", id="model-detail")
         yield TaskBar()
         yield ViewTabs()

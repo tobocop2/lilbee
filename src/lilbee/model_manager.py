@@ -24,6 +24,29 @@ class ModelSource(Enum):
     NATIVE = "native"  # lilbee's GGUF files in cfg.models_dir
     LITELLM = "litellm"  # Models managed by an external backend
 
+    @classmethod
+    def parse(cls, value: str | None) -> "ModelSource | None":
+        """Parse a user-supplied source string. Empty or None means 'all'.
+
+        Raises ValueError on any other non-empty input so callers get a
+        consistent error type regardless of entry point (CLI, MCP, server).
+        """
+        if value is None or value == "":
+            return None
+        try:
+            return cls(value)
+        except ValueError as exc:
+            valid = ", ".join(s.value for s in cls)
+            raise ValueError(f"invalid source {value!r}; expected one of: {valid}") from exc
+
+
+class ModelNotFoundError(RuntimeError):
+    """Raised when a model ref is not found in any source or the catalog.
+
+    Subclasses RuntimeError so pre-existing `except RuntimeError` call
+    sites still catch it.
+    """
+
 
 class ModelManager:
     """Manages model lifecycle with distinct sources."""
@@ -99,23 +122,35 @@ class ModelManager:
         source: ModelSource,
         *,
         on_progress: Callable[[dict], None] | None = None,
+        on_bytes: Callable[[int, int], None] | None = None,
     ) -> Path | None:
         """Pull/download model to specified source.
+
         Returns the Path for native downloads, None for litellm-backed pulls.
+
+        *on_progress* receives dict events from the litellm backend.
+        *on_bytes* receives (downloaded_bytes, total_bytes) from native
+        HuggingFace downloads. The two sources report progress in different
+        shapes, so callers pass whichever matches the chosen source.
         """
         if source is ModelSource.NATIVE:
-            return self._pull_native(model)
+            return self._pull_native(model, on_bytes=on_bytes)
         self._pull_litellm(model, on_progress=on_progress)
         return None
 
-    def _pull_native(self, model: str) -> Path:
+    def _pull_native(
+        self,
+        model: str,
+        *,
+        on_bytes: Callable[[int, int], None] | None = None,
+    ) -> Path:
         """Download model to the native GGUF directory via catalog."""
         from lilbee.catalog import download_model, find_catalog_entry
 
         entry = find_catalog_entry(model)
         if entry is None:
-            raise RuntimeError(f"Model '{model}' not found in catalog")
-        path = download_model(entry)
+            raise ModelNotFoundError(f"Model '{model}' not found in catalog")
+        path = download_model(entry, on_progress=on_bytes)
         log.info("Downloaded %s to %s", model, path)
         return path
 
@@ -195,6 +230,58 @@ class ModelManager:
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
 _VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
 
+_vision_cache: dict[str, bool] = {}
+
+
+def is_vision_capable(model: str) -> bool:
+    """Check whether *model* supports vision/image input.
+
+    Resolution order (first match wins):
+    1. Provider ``get_capabilities`` (mmproj for llama-cpp, /api/show for Ollama).
+    2. Featured catalog: model task is ``vision``.
+    3. Name-pattern fallback: model name contains a known vision keyword.
+
+    Results are cached per model name for the lifetime of the process.
+    """
+    if not model:
+        return False
+
+    if model in _vision_cache:
+        return _vision_cache[model]
+
+    result = _check_vision_capable(model)
+    _vision_cache[model] = result
+    return result
+
+
+def _check_vision_capable(model: str) -> bool:
+    """Uncached implementation of vision capability detection."""
+    from lilbee.services import get_services
+
+    try:
+        provider = get_services().provider
+        caps = provider.get_capabilities(model)
+        if "vision" in caps:
+            return True
+    except Exception:
+        log.debug("Provider capability check failed for %s", model, exc_info=True)
+
+    from lilbee.catalog import FEATURED_VISION
+
+    model_lower = model.lower()
+    if any(
+        model_lower in entry.name.lower() or model_lower in entry.hf_repo.lower()
+        for entry in FEATURED_VISION
+    ):
+        return True
+
+    return any(vp in model_lower for vp in _VISION_NAME_PATTERNS)
+
+
+def reset_vision_cache() -> None:
+    """Clear the vision capability cache (for testing)."""
+    _vision_cache.clear()
+
 
 @dataclass
 class RemoteModel:
@@ -235,13 +322,23 @@ def _classify_remote_task(name: str, family: str) -> str:
     return ModelTask.CHAT
 
 
-def classify_remote_models(base_url: str = "http://localhost:11434") -> list[RemoteModel]:
+_CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
+
+
+def classify_remote_models(
+    base_url: str = "http://localhost:11434",
+    *,
+    timeout: float = _CLASSIFY_DEFAULT_TIMEOUT_S,
+) -> list[RemoteModel]:
     """Discover and classify all models from the litellm backend by task.
-    Uses /api/tags family metadata for embedding detection and
-    name patterns for vision detection.
+
+    Uses /api/tags family metadata for embedding detection and name
+    patterns for vision detection. Returns an empty list on any error
+    (including timeout) so callers in read-only code paths can stay
+    responsive when the backend is down.
     """
     try:
-        resp = httpx.get(f"{base_url}/api/tags", timeout=5.0)
+        resp = httpx.get(f"{base_url}/api/tags", timeout=timeout)
         resp.raise_for_status()
         raw_models = resp.json().get("models", [])
     except Exception:

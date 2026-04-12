@@ -47,7 +47,7 @@ def config_snap(tmp_path: Path) -> ConfigSnapshot:
         embedding_dim=768,
         num_ctx=None,
         gpu_memory_fraction=0.75,
-        vision_model="test-vision",
+        ocr_model="test-vision",
     )
 
 

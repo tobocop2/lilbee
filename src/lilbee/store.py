@@ -77,7 +77,7 @@ class SearchChunk(BaseModel):
     relevance_score: float | None = Field(None, alias="_relevance_score")
 
 
-def _cosine_sim(a: list[float], b: list[float]) -> float:
+def cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
@@ -107,7 +107,7 @@ def mmr_rerank(
     if len(results) <= top_k:
         return results
 
-    relevance_map = {id(r): _cosine_sim(query_vector, r.vector) for r in results}
+    relevance_map = {id(r): cosine_sim(query_vector, r.vector) for r in results}
     selected: list[SearchChunk] = []
     remaining = list(results)
 
@@ -118,7 +118,7 @@ def mmr_rerank(
             relevance = relevance_map[id(candidate)]
             redundancy = 0.0
             if selected:
-                redundancy = max(_cosine_sim(candidate.vector, s.vector) for s in selected)
+                redundancy = max(cosine_sim(candidate.vector, s.vector) for s in selected)
             score = mmr_lambda * relevance - (1 - mmr_lambda) * redundancy
             if score > best_score:
                 best_score = score

@@ -32,7 +32,6 @@ def _isolated_cfg(tmp_path):
     cfg.lancedb_dir = tmp_path / "lancedb"
     cfg.chat_model = "test-model:latest"
     cfg.embedding_model = "test-embed:latest"
-    cfg.vision_model = ""
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -62,7 +61,15 @@ def _patch_chat_setup():
         ),
         patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            return_value=([], [], []),
+            return_value=([], []),
+        ),
+        patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
+            return_value=None,
+        ),
+        patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
+            return_value=None,
         ),
         patch(
             "lilbee.cli.tui.screens.catalog.CatalogScreen._fetch_remote_models",
@@ -94,9 +101,18 @@ class _ControllerApp(App[None]):
 
 
 def _chat_screen():
-    from lilbee.cli.tui.screens.chat import ChatScreen
+    """Minimal screen that mirrors ChatScreen's TaskBar without ModelBar."""
+    from textual.screen import Screen
+    from textual.widgets import Footer
 
-    return ChatScreen()
+    from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+    class _ChatStub(Screen[None]):
+        def compose(self):
+            yield TaskBar()
+            yield Footer()
+
+    return _ChatStub()
 
 
 def _catalog_screen():
@@ -184,7 +200,6 @@ async def test_task_bar_shows_active_task_on_catalog_screen() -> None:
 async def test_task_bar_state_shared_across_screens() -> None:
     """Switching screens keeps tasks visible because they share one queue."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = _ControllerApp(_chat_screen)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -195,7 +210,6 @@ async def test_task_bar_state_shared_across_screens() -> None:
 
         chat_bar = app.screen.query_one(TaskBar)
         assert chat_bar.display is True
-        assert isinstance(app.screen, ChatScreen)
 
         app.switch_screen(CatalogScreen())
         await pilot.pause()

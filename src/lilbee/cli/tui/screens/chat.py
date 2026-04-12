@@ -28,6 +28,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.config import cfg
@@ -137,7 +138,7 @@ class ChatScreen(Screen[None]):
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         with PromptArea(id="chat-prompt-area"):
-            yield Input(
+            yield NavAwareInput(
                 placeholder=msg.CHAT_INPUT_PLACEHOLDER,
                 id="chat-input",
                 suggester=SlashSuggester(use_cache=False),
@@ -160,25 +161,29 @@ class ChatScreen(Screen[None]):
             self._run_sync()
 
     def on_show(self) -> None:
-        """Called when screen becomes visible - signal splash to stop."""
+        """Called when screen becomes visible."""
         from lilbee.splash import dismiss
 
         dismiss()
+        self._refresh_model_bar()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models."""
         # Fresh install: an uninitialized data dir still needs the wizard even
         # if default models are already cached globally (Ollama, HF cache).
         if not cfg.lancedb_dir.is_dir():
+            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
             return True
-        try:
-            from lilbee.providers.llama_cpp_provider import resolve_model_path
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            resolve_model_path(cfg.chat_model)
-            resolve_model_path(cfg.embedding_model)
-            return False
-        except Exception:
-            return True
+        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            try:
+                resolve_model_path(model)
+            except (ProviderError, KeyError, ValueError) as exc:
+                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
+                return True
+        return False
 
     def _embedding_ready(self) -> bool:
         """Quick check if embedding model exists (no network calls)."""
@@ -688,24 +693,6 @@ class ChatScreen(Screen[None]):
         for screen in self.app.screen_stack:
             if isinstance(screen, WikiScreen):
                 screen.reload()
-
-    def _cmd_vision(self, args: str) -> None:
-        if args == "off":
-            cfg.vision_model = ""
-            settings.set_value(cfg.data_root, "vision_model", "")
-            self.notify(msg.CMD_VISION_DISABLED)
-            self._refresh_model_bar()
-            return
-
-        if args:
-            cfg.vision_model = args
-            settings.set_value(cfg.data_root, "vision_model", args)
-            self.notify(msg.CMD_VISION_SET.format(name=args))
-            self._refresh_model_bar()
-            return
-
-        current = cfg.vision_model or "disabled"
-        self.notify(msg.CMD_VISION_STATUS.format(current=current))
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""

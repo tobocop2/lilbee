@@ -9,7 +9,7 @@ from lilbee.store import (
     CitationRecord,
     SearchChunk,
     Store,
-    _cosine_sim,
+    cosine_sim,
     escape_sql_string,
     mmr_rerank,
 )
@@ -258,11 +258,11 @@ class TestMMRRerank:
         selected = mmr_rerank(query, results, top_k=5)
         assert len(selected) == 1
 
-    def test_cosine_sim_zero_vectors(self):
-        assert _cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
+    def testcosine_sim_zero_vectors(self):
+        assert cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
 
-    def test_cosine_sim_identical(self):
-        sim = _cosine_sim([1.0, 0.0], [1.0, 0.0])
+    def testcosine_sim_identical(self):
+        sim = cosine_sim([1.0, 0.0], [1.0, 0.0])
         assert abs(sim - 1.0) < 1e-6
 
 

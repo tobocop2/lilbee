@@ -192,13 +192,13 @@ class TestSyncRoute:
         resp = client.post("/api/sync")
         assert resp.status_code == 201
         assert b"event: done" in resp.content
-        mock_stream.assert_called_once_with(force_vision=False)
+        mock_stream.assert_called_once_with(enable_ocr=None)
 
     @mock.patch("lilbee.server.handlers.sync_stream")
-    def test_force_vision(self, mock_stream, client):
+    def test_enable_ocr(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        client.post("/api/sync", json={"force_vision": True})
-        mock_stream.assert_called_once_with(force_vision=True)
+        client.post("/api/sync", json={"enable_ocr": True})
+        mock_stream.assert_called_once_with(enable_ocr=True)
 
 
 class TestModelsListRoute:
@@ -236,17 +236,27 @@ class TestModelsSetChatRoute:
         assert resp.status_code == 200
         assert resp.json()["model"] == "llama3:8b"
 
-
-class TestModelsSetVisionRoute:
     @mock.patch(
-        "lilbee.server.handlers.set_vision_model",
+        "lilbee.server.handlers.set_chat_model",
         new_callable=AsyncMock,
-        return_value={"model": "llava:13b"},
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
     )
-    def test_returns_model(self, mock_set, client):
-        resp = client.put("/api/models/vision", json={"model": "llava:13b"})
-        assert resp.status_code == 200
-        assert resp.json()["model"] == "llava:13b"
+    def test_returns_422_for_unavailable_model(self, mock_set, client):
+        resp = client.put("/api/models/chat", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
+
+
+class TestSetEmbeddingModelRoute:
+    @mock.patch(
+        "lilbee.server.handlers.set_embedding_model",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Model 'bogus:latest' is not available."),
+    )
+    def test_returns_422_for_unavailable_embedding(self, mock_set, client):
+        resp = client.put("/api/models/embedding", json={"model": "bogus"})
+        assert resp.status_code == 422
+        assert "not available" in resp.json()["detail"]
 
 
 class TestModelsCatalogRoute:
@@ -482,6 +492,101 @@ class TestCors:
                 },
             )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
+
+
+class TestCorsDefaultRegex:
+    """Default cors_origin_regex should allow Obsidian (desktop + mobile) and any
+    localhost origin out of the box, without any config or env var."""
+
+    @staticmethod
+    def _preflight(origin: str) -> str | None:
+        from lilbee.server.app import create_app
+
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+        return resp.headers.get("access-control-allow-origin")
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_desktop(self, mock_patched):
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_obsidian_mobile_capacitor(self, mock_patched):
+        assert self._preflight("capacitor://localhost") == "capacitor://localhost"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_http_localhost_any_port(self, mock_patched):
+        assert self._preflight("http://localhost:3000") == "http://localhost:3000"
+        assert self._preflight("http://localhost:8080") == "http://localhost:8080"
+        assert self._preflight("https://localhost:8443") == "https://localhost:8443"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv4(self, mock_patched):
+        assert self._preflight("http://127.0.0.1:7433") == "http://127.0.0.1:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_allows_loopback_ipv6(self, mock_patched):
+        assert self._preflight("http://[::1]:7433") == "http://[::1]:7433"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_rejects_random_remote(self, mock_patched):
+        assert self._preflight("https://evil.example.com") is None
+        assert self._preflight("app://some-other-app.md") is None
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_regex_and_explicit_list_combine(self, mock_patched):
+        # User adds an explicit remote origin; default regex is untouched.
+        cfg.cors_origins = ["https://my-remote-app.example"]
+        assert self._preflight("https://my-remote-app.example") == "https://my-remote-app.example"
+        # Default regex still applies on top.
+        assert self._preflight("app://obsidian.md") == "app://obsidian.md"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        return_value={"status": "ok", "version": "1.0.0"},
+    )
+    def test_match_nothing_regex_disables_default(self, mock_patched):
+        # Documented opt-out: set regex to ^$ so only the explicit list is consulted.
+        cfg.cors_origin_regex = "^$"
+        cfg.cors_origins = ["https://only-this.example"]
+        assert self._preflight("https://only-this.example") == "https://only-this.example"
+        assert self._preflight("app://obsidian.md") is None
+        assert self._preflight("http://localhost:3000") is None
 
 
 class TestCrawlRoute:

@@ -28,12 +28,28 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
-    """Patch out embedding model checks so ChatScreen mounts cleanly."""
+    """Patch out embedding model checks and background workers so ChatScreen mounts cleanly."""
     with (
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
+            return_value=None,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.screens.chat.ChatScreen.on_show",
+            return_value=None,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
+            return_value=None,
+        ),
+        mock.patch(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            return_value=([], []),
         ),
     ):
         yield
@@ -49,6 +65,25 @@ class TestRunTui:
 
         run_tui()
         mock_run.assert_called_once()
+
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
+    def test_run_tui_forwards_initial_view(self, mock_run: mock.MagicMock) -> None:
+        from lilbee.cli.tui import run_tui
+
+        with mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init:
+            run_tui(initial_view="Catalog")
+        init.assert_called_once_with(auto_sync=False, initial_view="Catalog")
+
+    @pytest.mark.asyncio
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_initial_view_switches_to_catalog(self, mock_catalog: mock.MagicMock) -> None:
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp(initial_view="Catalog")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.active_view == "Catalog"
 
 
 class TestUserMessage:

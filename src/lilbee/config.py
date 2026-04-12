@@ -77,6 +77,20 @@ _DEFAULT_SYSTEM_PROMPT = (
     "elaborate."
 )
 
+# Default regex for the CORS allow-origin filter. Covers:
+#   - Obsidian desktop (Electron renderer uses app://obsidian.md)
+#   - Obsidian iOS (Capacitor webview uses capacitor://localhost)
+#   - Any http(s) localhost origin, including ports (Android Obsidian, local dev tools)
+#   - IPv4 and IPv6 loopback literals
+# Auth is still enforced on mutating endpoints regardless of CORS — see server/auth.py.
+_DEFAULT_CORS_ORIGIN_REGEX = (
+    r"^(app://obsidian\.md"
+    r"|capacitor://localhost"
+    r"|https?://localhost(:\d+)?"
+    r"|https?://127\.0\.0\.1(:\d+)?"
+    r"|https?://\[::1\](:\d+)?)$"
+)
+
 
 class Config(BaseSettings):
     """Runtime configuration — one singleton instance, mutated by CLI overrides."""
@@ -106,11 +120,18 @@ class Config(BaseSettings):
     adaptive_threshold: bool = Field(default=False)
     system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
-    vision_model: str = ""
-    vision_timeout: float = Field(default=120.0, ge=0.0)
+    # OCR for scanned PDFs via vision-capable chat model.
+    # None = auto-detect (use OCR if chat model is vision-capable).
+    # True = force OCR regardless of detection.
+    # False = disable OCR entirely.
+    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+
+    # Per-page timeout in seconds for vision OCR (0 = no limit).
+    ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
+    cors_origin_regex: str = Field(default=_DEFAULT_CORS_ORIGIN_REGEX)
     json_mode: bool = False
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
@@ -147,10 +168,12 @@ class Config(BaseSettings):
     # 0.2 gives 4 steps from typical 0.3 start to 1.0 cap.
     adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
 
-    # Validate LLM-generated expansion variants to prevent query drift.
-    # Checks token overlap with original query (>= 0.3) and deduplicates
-    # near-identical variants (cosine similarity > 0.85).
-    expansion_guardrails: bool = True
+    # Reject expansion variants below expansion_similarity_threshold.
+    expansion_guardrails: bool = ConfigField(default=True, writable=True)
+
+    # Minimum cosine similarity (question vs variant embedding).
+    # Calibrate per embedding model.
+    expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # BM25 confidence score above which query expansion is skipped entirely.
     # Based on 90th percentile of sigmoid-normalized BM25 score distribution.
@@ -347,6 +370,28 @@ class Config(BaseSettings):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+    @field_validator("enable_ocr", mode="before")
+    @classmethod
+    def _parse_enable_ocr(cls, v: Any) -> bool | None:
+        """Parse enable_ocr from env var string or direct value.
+
+        Accepts: true/false/1/0/yes/no (case-insensitive), empty string
+        or None for auto-detect.
+        """
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            stripped = v.strip().lower()
+            if stripped in ("", "auto", "none"):
+                return None
+            if stripped in ("true", "1", "yes"):
+                return True
+            if stripped in ("false", "0", "no"):
+                return False
+        return bool(v)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

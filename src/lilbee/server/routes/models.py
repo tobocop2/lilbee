@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from litestar import delete, get, post, put
+from litestar.exceptions import HTTPException
 from litestar.params import Parameter
 from litestar.response import Stream
 from pydantic import BaseModel
@@ -45,19 +46,19 @@ async def models_external_route() -> ExternalModelsResponse:
 @put("/api/models/chat")
 async def models_set_chat_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active chat model used for RAG answers."""
-    return await handlers.set_chat_model(model=data.model)
-
-
-@put("/api/models/vision")
-async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
-    """Switch the active vision model used for image and PDF OCR."""
-    return await handlers.set_vision_model(model=data.model)
+    try:
+        return await handlers.set_chat_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @put("/api/models/embedding")
 async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
     """Switch the active embedding model."""
-    return await handlers.set_embedding_model(model=data.model)
+    try:
+        return await handlers.set_embedding_model(model=data.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @get("/api/models/catalog")

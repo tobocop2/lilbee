@@ -160,6 +160,7 @@ def make_test_catalog_model(
     description: str = "A test model",
     tag: str = "latest",
     display_name: str = "",
+    min_ram_gb: float = 4,
 ) -> CatalogModel:
     """Build a CatalogModel with sensible test defaults."""
     return CatalogModel(
@@ -169,7 +170,7 @@ def make_test_catalog_model(
         hf_repo=f"test/{name.lower().replace(' ', '-')}",
         gguf_filename="*.gguf",
         size_gb=size_gb,
-        min_ram_gb=4,
+        min_ram_gb=min_ram_gb,
         description=description,
         featured=featured,
         downloads=100,
