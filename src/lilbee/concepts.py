@@ -75,7 +75,6 @@ def _ensure_spacy_model() -> Any:
             ) from exc
 
 
-
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     """Extract deduplicated, filtered noun chunks from a spaCy doc."""
     seen: set[str] = set()
