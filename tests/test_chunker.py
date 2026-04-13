@@ -234,6 +234,47 @@ class Greeter:
             path.unlink()
 
 
+class TestDedupHeading:
+    def test_dedup_single_heading(self):
+        from lilbee.chunk import _dedup_heading
+
+        text = "# Heading\n\n# Heading"
+        assert _dedup_heading(text) == "# Heading"
+
+    def test_dedup_breadcrumb(self):
+        from lilbee.chunk import _dedup_heading
+
+        text = "# Top > ## Sub\n\n## Sub"
+        assert _dedup_heading(text) == "# Top > ## Sub"
+
+    def test_dedup_with_body(self):
+        from lilbee.chunk import _dedup_heading
+
+        text = "# Heading\n\n# Heading\n\nBody content here."
+        assert _dedup_heading(text) == "# Heading\n\nBody content here."
+
+    def test_no_dedup_when_different(self):
+        from lilbee.chunk import _dedup_heading
+
+        text = "# Heading\n\nSome body text."
+        assert _dedup_heading(text) == text
+
+    def test_no_dedup_single_part(self):
+        from lilbee.chunk import _dedup_heading
+
+        assert _dedup_heading("no heading here") == "no heading here"
+
+    def test_heading_context_chunks_no_duplicate(self):
+        """Integration: chunk_text with heading_context strips duplicates."""
+        md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        for c in chunks:
+            parts = c.split("\n\n", 2)
+            if len(parts) >= 2:
+                ctx_last = parts[0].rsplit(" > ", 1)[-1].strip()
+                assert parts[1].strip() != ctx_last, f"Duplicate heading in chunk: {c[:100]}"
+
+
 class TestChunkTextEmptyResult:
     def test_returns_empty_when_no_chunks(self):
         from unittest.mock import MagicMock, patch
