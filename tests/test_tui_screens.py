@@ -7198,6 +7198,22 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
         assert _real_embedding_ready(sentinel) is True
 
 
+def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
+    """_embedding_ready returns True via resolve_model_path when provider raises.
+
+    When provider.list_models raises, the method falls through to the native
+    registry path check. If resolve_model_path succeeds, it returns True.
+    """
+    mock_svc.provider.list_models.side_effect = RuntimeError("no provider")
+    cfg.embedding_model = "nomic-embed-text"
+    sentinel = object()
+    with patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        return_value="/fake/path/to/model.gguf",
+    ):
+        assert _real_embedding_ready(sentinel) is True
+
+
 def test_chat_embedding_ready_false_when_no_model():
     """_embedding_ready returns False when no embedding model is configured."""
     sentinel = object()
