@@ -45,6 +45,13 @@ class TestUserMessage:
         msg = UserMessage("hi")
         assert "user-message" in msg.classes
 
+    def test_has_speaker_label(self) -> None:
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        msg = UserMessage("hi")
+        children = list(msg.compose())
+        assert len(children) == 2  # speaker label + content
+
 
 class TestAssistantMessageAsync:
     async def test_append_reasoning_expands_collapsible(self) -> None:
