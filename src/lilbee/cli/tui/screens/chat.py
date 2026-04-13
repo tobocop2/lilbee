@@ -221,7 +221,7 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if result == "skipped":
+        if result == "skipped" and not self._embedding_ready():
             self._show_chat_only_banner()
         elif self._embedding_ready():
             self._hide_chat_only_banner()
