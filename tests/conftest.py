@@ -13,6 +13,7 @@ from lilbee.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
+
 def pytest_configure(config: pytest.Config) -> None:
     """Suppress asyncio event loop teardown noise from Textual worker threads."""
     config.addinivalue_line(
