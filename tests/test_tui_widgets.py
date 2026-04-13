@@ -1284,7 +1284,7 @@ class TestSetupWizard:
         assert row.task == "chat"
         assert row.installed is True
         assert row.featured is False
-        assert row.backend == "llama-cpp"
+        assert row.backend == ""
 
     def test_model_card_from_table_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
@@ -1296,7 +1296,7 @@ class TestSetupWizard:
         assert card.row is row
         assert card.row.featured is True
         assert card.row.task == "chat"
-        assert card.row.backend == "llama-cpp"
+        assert card.row.backend == ""
 
     def test_pick_recommended_picks_largest_fitting_not_first(self) -> None:
         """Default pick is the biggest-size-gb model whose min_ram_gb fits."""

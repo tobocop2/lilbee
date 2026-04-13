@@ -130,8 +130,11 @@ def _make_remote_model(
     task: str = "chat",
     family: str = "llama",
     parameter_size: str = "7B",
+    provider: str = "Remote",
 ) -> RemoteModel:
-    return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
+    return RemoteModel(
+        name=name, task=task, family=family, parameter_size=parameter_size, provider=provider
+    )
 
 
 class TestParseParamLabel:
@@ -362,13 +365,18 @@ class TestRemoteToRow:
 
 
 class TestBackendField:
-    """Verify the backend field is set correctly across all row builders."""
+    """Verify the backend field is set correctly across all row builders.
 
-    def test_catalog_to_row_backend(self):
+    Native (llama-cpp) models have backend="" because they are managed by
+    lilbee itself. Only externally-managed models (ollama, litellm) show
+    a backend pill so users know lilbee cannot install/delete them.
+    """
+
+    def test_catalog_to_row_backend_empty(self):
         row = catalog_to_row(_make_catalog_model(), installed=False)
-        assert row.backend == "llama-cpp"
+        assert row.backend == ""
 
-    def test_variant_to_row_backend(self):
+    def test_variant_to_row_backend_empty(self):
         from lilbee.catalog import ModelFamily, ModelVariant
 
         variant = ModelVariant(
@@ -384,22 +392,23 @@ class TestBackendField:
             slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
         )
         row = variant_to_row(variant, family, installed=False)
-        assert row.backend == "llama-cpp"
+        assert row.backend == ""
 
-    def test_installed_name_to_row_backend(self):
+    def test_installed_name_to_row_backend_empty(self):
         from lilbee.cli.tui.screens.setup import _installed_name_to_row
 
         row = _installed_name_to_row("qwen3:8b", "chat")
-        assert row.backend == "llama-cpp"
+        assert row.backend == ""
 
-    def test_remote_to_row_backend_remote(self):
+    def test_remote_to_row_backend_from_provider(self):
         rm = _make_remote_model()
         row = remote_to_row(rm)
         assert row.backend == "remote"
 
     def test_matches_search_by_backend(self):
-        row = catalog_to_row(_make_catalog_model(), installed=False)
-        assert matches_search(row, "llama-cpp") is True
+        rm = _make_remote_model(provider="ollama")
+        row = remote_to_row(rm)
+        assert matches_search(row, "ollama") is True
 
     def test_matches_search_backend_no_match(self):
         row = catalog_to_row(_make_catalog_model(), installed=False)
