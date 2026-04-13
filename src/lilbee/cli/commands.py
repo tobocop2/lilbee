@@ -29,10 +29,11 @@ from lilbee.cli.app import (
     top_p_option,
 )
 from lilbee.cli.helpers import (
+    CopyResult,
     add_paths,
     auto_sync,
     clean_result,
-    copy_paths,
+    copy_files,
     gather_status,
     get_version,
     json_output,
@@ -269,14 +270,15 @@ def add(
         if cfg.json_mode:
             from lilbee.ingest import sync
 
-            copied: list[str] = []
+            copy_result = CopyResult()
             if file_paths:
-                copied = copy_paths(file_paths, console, force=force)
+                copy_result = copy_files(file_paths, force=force)
             result = asyncio.run(sync(quiet=True))
             json_output(
                 {
                     "command": "add",
-                    "copied": copied,
+                    "copied": copy_result.copied,
+                    "skipped": copy_result.skipped,
                     "crawled": len(crawled_paths),
                     "sync": sync_result_to_json(result),
                 }
@@ -370,6 +372,8 @@ def remove(
         if result.not_found:
             payload["not_found"] = result.not_found
         json_output(payload)
+        if not result.removed and result.not_found:
+            raise SystemExit(1)
         return
 
     for name in result.removed:

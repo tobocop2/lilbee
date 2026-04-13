@@ -829,14 +829,14 @@ class TestRemove:
         assert data["command"] == "remove"
         assert "test.pdf" in data["removed"]
 
-    def test_remove_json_not_found(self, mock_svc):
+    def test_remove_json_not_found_exits_1(self, mock_svc):
         from lilbee.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["nope.pdf"]
         )
         result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
@@ -1196,6 +1196,22 @@ class TestAddJson:
         assert data["command"] == "add"
         assert "manual.txt" in data["copied"]
         assert "sync" in data
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_skipped_no_stdout_pollution(self, mock_sync, isolated_env, tmp_path):
+        """JSON add with existing file returns skipped list, no console warnings."""
+        src = tmp_path / "source" / "notes.txt"
+        src.parent.mkdir()
+        src.write_text("some content")
+        # Pre-populate documents dir so file is skipped
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "notes.txt").write_text("old content")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["copied"] == []
+        assert "notes.txt" in data["skipped"]
+        assert "Warning" not in result.output
 
 
 # ---------------------------------------------------------------------------
