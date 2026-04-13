@@ -351,10 +351,10 @@ async def crawl_recursive(
         with stdout_ctx:
             async with AsyncWebCrawler(verbose=not quiet) as crawler:
                 crawl_results = await crawler.arun(url=url, config=config)
-            # arun with deep crawl returns a list
-            if not isinstance(crawl_results, list):
-                crawl_results = [crawl_results]
-            for i, cr in enumerate(crawl_results):
+        # arun with deep crawl returns a list
+        if not isinstance(crawl_results, list):
+            crawl_results = [crawl_results]
+        for i, cr in enumerate(crawl_results):
                 if on_progress:
                     on_progress(
                         EventType.CRAWL_PAGE,
