@@ -285,7 +285,7 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
-async def crawl_single(url: str) -> CrawlResult:
+async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     """Fetch a single URL and return its markdown content."""
     validate_crawl_url(url)
     from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
@@ -294,7 +294,7 @@ async def crawl_single(url: str) -> CrawlResult:
         page_timeout=cfg.crawl_timeout * 1000,  # ms
     )
     try:
-        async with AsyncWebCrawler() as crawler:
+        async with AsyncWebCrawler(verbose=not quiet) as crawler:
             result = await crawler.arun(url=url, config=config)
             # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
             # even when the main page has valid markdown. Trust the content, not the flag.
@@ -316,6 +316,8 @@ async def crawl_recursive(
     max_depth: int = 0,
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
+    *,
+    quiet: bool = False,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, returning results for all pages.
     Uses crawl4ai's deep crawl strategy for link discovery.
@@ -339,7 +341,7 @@ async def crawl_recursive(
 
     results: list[CrawlResult] = []
     try:
-        async with AsyncWebCrawler() as crawler:
+        async with AsyncWebCrawler(verbose=not quiet) as crawler:
             crawl_results = await crawler.arun(url=url, config=config)
             # arun with deep crawl returns a list
             if not isinstance(crawl_results, list):
@@ -407,6 +409,7 @@ async def crawl_and_save(
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
+    quiet: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
     Uses hash-based change detection: always fetches, but only saves files
@@ -424,10 +427,10 @@ async def crawl_and_save(
 
         if depth > 0:
             results = await crawl_recursive(
-                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress
+                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress, quiet=quiet
             )
         else:
-            result = await crawl_single(url)
+            result = await crawl_single(url, quiet=quiet)
             results = [result]
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))

@@ -1528,6 +1528,22 @@ class TestAddWithUrls:
         assert data["crawled"] == 1
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
+        """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("a.md")]
+        result = runner.invoke(app, ["--json", "add", "https://example.com"])
+        assert result.exit_code == 0
+        raw = result.output.strip()
+        # Must start with '{' — no [INIT]/[FETCH]/spinner text leaked to stdout
+        assert raw.startswith("{"), f"stdout has non-JSON prefix: {raw[:80]}"
+        data = json.loads(raw)
+        assert data["command"] == "add"
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     def test_add_mixed_urls_and_files(
         self, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc
@@ -1646,6 +1662,17 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == 5
         assert call_kwargs["max_pages"] == 20
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_json_mode_passes_quiet(self, mock_crawl, isolated_env):
+        """In JSON mode, quiet=True is passed to crawl_and_save."""
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        cfg.json_mode = True
+        _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["quiet"] is True
 
 
 class TestTopicsCommand:
