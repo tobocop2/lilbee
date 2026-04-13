@@ -1284,6 +1284,29 @@ class TestAskModelNotFound:
         assert "not found" in data["error"]
 
 
+class TestAskProviderError:
+    """ProviderError from the LLM backend must be caught, not dumped as a traceback."""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_human(self, mock_sync, mock_svc):
+        from lilbee.providers.base import ProviderError
+
+        mock_svc.searcher.ask_stream.side_effect = ProviderError("model 'ghost' not found")
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "ghost" in result.output
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_json(self, mock_sync, mock_svc):
+        from lilbee.providers.base import ProviderError
+
+        mock_svc.searcher.ask_raw.side_effect = ProviderError("model 'ghost' not found")
+        result = runner.invoke(app, ["--json", "ask", "hello"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "ghost" in data["error"]
+
+
 class TestBackendUnavailable:
     """CLI commands should show friendly errors when the backend is unreachable."""
 
