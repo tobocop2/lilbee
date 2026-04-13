@@ -7,11 +7,13 @@ classifies tokens as reasoning or response content.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*|<think>[\s\S]*$")
 
 
 @dataclass
@@ -123,6 +125,11 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
     final = parser.flush()
     if final and final.content:
         yield final
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove ``<think>...</think>`` blocks from a complete (non-streaming) string."""
+    return _THINK_BLOCK_RE.sub("", text)
 
 
 def _could_be_partial(tag: str, buf: str) -> bool:
