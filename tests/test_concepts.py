@@ -238,6 +238,18 @@ class TestEnsureSpacyModel:
             mock_cli.download.assert_called_once_with("en_core_web_sm")
             assert result is not None
 
+    def test_download_sysexit_raises_runtime_error(self):
+        mock_spacy = MagicMock()
+        mock_spacy.load.side_effect = OSError("not found")
+        mock_cli = MagicMock()
+        mock_cli.download.side_effect = SystemExit(1)
+        mock_spacy.cli = mock_cli
+        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
+            from lilbee.concepts import _ensure_spacy_model
+
+            with pytest.raises(RuntimeError, match="Failed to download spacy model"):
+                _ensure_spacy_model()
+
 
 class TestBuildFromChunks:
     @patch("lilbee.lock.write_lock")

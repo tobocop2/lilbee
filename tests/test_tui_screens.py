@@ -6226,6 +6226,19 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
             mock_sync.assert_called_once()
 
 
+async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
+    """_on_setup_complete hides chat-only banner after wizard configures embedding."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        # Simulate banner being visible (e.g. from /setup command while in chat-only mode)
+        app.screen._show_chat_only_banner()
+        assert app.screen.query_one("#chat-only-banner").display is True
+        with patch.object(app.screen, "_embedding_ready", return_value=True):
+            app.screen._on_setup_complete("done")
+            await _pilot.pause()
+            assert app.screen.query_one("#chat-only-banner").display is False
+
+
 async def test_chat_on_key_insert_mode_unfocused_input():
     """on_key in insert mode with unfocused input redirects printable chars."""
     app = ChatTestApp()

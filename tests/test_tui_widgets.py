@@ -2100,7 +2100,8 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value == "test-model"
+            # Bare name normalizes to name:latest via ensure_tag
+            assert chat_sel.value == "test-model:latest"
 
     async def test_on_embed_model_changed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -2184,6 +2185,36 @@ class TestSyncSelectPrepend:
         passed = sel.set_options.call_args_list[0][0][0]
         assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
         assert sel.value == "llama3:8b"
+
+    def test_bare_name_matches_latest_alias(self) -> None:
+        """A bare name like 'qwen3' normalizes to 'qwen3:latest' and matches the option."""
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        sel.value = "qwen3"
+        opts = [
+            ModelOption("Qwen3 0.6B", "qwen3:0.6b"),
+            ModelOption("Qwen3", "qwen3:latest"),
+        ]
+        _sync_select(sel, opts, default="qwen3")
+        # Should resolve to qwen3:latest, not create a broken fallback
+        assert sel.value == "qwen3:latest"
+        passed = sel.set_options.call_args_list[0][0][0]
+        # No fallback prepended since qwen3:latest is already in opts
+        assert len(passed) == 2
+        assert all(o.ref != "qwen3" for o in passed)
+
+    def test_bare_name_prepended_when_no_latest_alias(self) -> None:
+        """A bare name with no :latest match still prepends as fallback with the tag."""
+        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
+
+        sel = mock.MagicMock()
+        opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
+        _sync_select(sel, opts, default="llama3")
+        # Should normalize to llama3:latest and prepend that
+        assert sel.value == "llama3:latest"
+        passed = sel.set_options.call_args_list[0][0][0]
+        assert passed[0] == ModelOption("llama3:latest", "llama3:latest")
 
     def test_no_default_leaves_value_untouched(self) -> None:
         """When there's no default, don't assign a value."""
@@ -2832,23 +2863,23 @@ class TestModelBarPopulateBranches:
         """When scanned models match config, values are preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
+        cfg.chat_model = "test-model:7b"
+        cfg.embedding_model = "test-embed:v1"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [ModelOption("test-model", "test-model"), ModelOption("other", "other")],
-                [ModelOption("test-embed", "test-embed"), ModelOption("nomic", "nomic")],
+                [ModelOption("test-model:7b", "test-model:7b"), ModelOption("other", "other")],
+                [ModelOption("test-embed:v1", "test-embed:v1"), ModelOption("nomic", "nomic")],
             )
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
             embed_sel = app.query_one("#embed-model-select", Select)
-            assert chat_sel.value == "test-model"
-            assert embed_sel.value == "test-embed"
+            assert chat_sel.value == "test-model:7b"
+            assert embed_sel.value == "test-embed:v1"
 
     async def test_populate_empty_lists_uses_config_default(self) -> None:
         """When no models found, configured default from cfg is used."""
@@ -2865,7 +2896,8 @@ class TestModelBarPopulateBranches:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            assert chat_sel.value == "test-model"
+            # Bare name normalizes to name:latest via ensure_tag
+            assert chat_sel.value == "test-model:latest"
 
     async def test_populate_retains_matching_value(self) -> None:
         """When current value matches a scanned model, it's preserved."""
@@ -2932,9 +2964,9 @@ class TestModelBarPopulateBranches:
                 [ModelOption("Nomic Embed Text", "nomic:latest")],
             )
             await pilot.pause()
-            # Falls back to cfg.chat_model / cfg.embedding_model, not models[0]
-            assert chat_sel.value == "test-model"
-            assert embed_sel.value == "test-embed"
+            # Falls back to cfg values, normalized with :latest via ensure_tag
+            assert chat_sel.value == "test-model:latest"
+            assert embed_sel.value == "test-embed:latest"
 
     async def test_refresh_models(self) -> None:
         """Cover line 267: refresh_models calls _scan_models."""

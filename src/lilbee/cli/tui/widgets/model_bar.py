@@ -14,7 +14,7 @@ from textual.widgets import Label, Select
 from lilbee import settings
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
-from lilbee.models import ModelTask
+from lilbee.models import ModelTask, ensure_tag
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -113,8 +113,12 @@ def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Populate a model Select and set it to *default* (from cfg).
 
+    Normalizes *default* with :latest when no tag is present so that a
+    bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
+    instead of creating a broken fallback entry.
     Prepends *default* if it is not already in *opts*.
     """
+    default = ensure_tag(default)
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(default, default))
     sel.set_options(opts)

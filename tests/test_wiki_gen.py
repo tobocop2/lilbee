@@ -23,6 +23,7 @@ from lilbee.wiki.gen import (
     _parse_faithfulness_score,
     _resolve_citations,
     _resolve_multi_source_citations,
+    _truncate_chunks_to_budget,
     _verify_citations,
     generate_summary_page,
     generate_synthesis_pages,
@@ -81,6 +82,45 @@ class TestChunksToText:
         chunks = [_make_chunk("Code", line_start=10, line_end=20)]
         result = _chunks_to_text(chunks)
         assert "(lines 10-20)" in result
+
+
+class TestTruncateChunksToBudget:
+    def test_small_chunks_unchanged(self):
+        """Chunks that fit within budget are returned as-is."""
+        chunks = [_make_chunk("short text")]
+        result = _truncate_chunks_to_budget(chunks, cfg)
+        assert result == chunks
+
+    def test_truncates_when_exceeding_budget(self):
+        """Large chunk sets are truncated to fit the context window."""
+        cfg.num_ctx = 100  # 100 tokens * 0.75 * 4 chars = 300 chars budget
+        big_text = "x" * 200  # 200 chars each, only one fits in 300
+        chunks = [_make_chunk(big_text, chunk_index=i) for i in range(5)]
+        result = _truncate_chunks_to_budget(chunks, cfg)
+        assert len(result) == 1
+
+    def test_always_keeps_at_least_one_chunk(self):
+        """Even if the first chunk exceeds the budget, it is kept."""
+        cfg.num_ctx = 10  # tiny budget: 10 * 0.75 * 4 = 30 chars
+        huge_chunk = _make_chunk("x" * 10000)
+        result = _truncate_chunks_to_budget([huge_chunk], cfg)
+        assert len(result) == 1
+
+    def test_uses_default_context_when_num_ctx_none(self):
+        """Falls back to default context window when num_ctx is not set."""
+        cfg.num_ctx = None
+        # Default 8192 * 0.75 * 4 = 24576 chars budget
+        small_chunks = [_make_chunk("hello", chunk_index=i) for i in range(10)]
+        result = _truncate_chunks_to_budget(small_chunks, cfg)
+        assert len(result) == 10  # all fit easily
+
+    def test_logs_warning_on_truncation(self, caplog: pytest.LogCaptureFixture):
+        """A warning is logged when chunks are truncated."""
+        cfg.num_ctx = 100
+        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(5)]
+        with caplog.at_level("WARNING", logger="lilbee.wiki.gen"):
+            _truncate_chunks_to_budget(chunks, cfg)
+        assert "Truncated chunks from 5 to 1" in caplog.text
 
 
 class TestParseFaithfulnessScore:

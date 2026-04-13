@@ -223,8 +223,10 @@ class ChatScreen(Screen[None]):
         """Called when wizard completes or is skipped."""
         if result == "skipped":
             self._show_chat_only_banner()
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
+        elif self._embedding_ready():
+            self._hide_chat_only_banner()
+            if self._auto_sync:
+                self._run_sync()
         self._refresh_model_bar()
 
     def _show_chat_only_banner(self) -> None:
