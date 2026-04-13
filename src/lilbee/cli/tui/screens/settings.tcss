@@ -9,12 +9,15 @@ SettingsScreen {
     }
 
     .setting-group {
-        border: tall $secondary-muted;
+        border-left: thick $surface-lighten-2;
+        border-top: solid $surface-lighten-2;
+        border-right: solid $surface-lighten-2;
+        border-bottom: solid $surface-lighten-2;
         padding: 0 1;
         margin-bottom: 1;
 
         &:focus-within {
-            border: tall $secondary;
+            border-left: thick $primary;
         }
 
         &:last-child {
@@ -23,9 +26,13 @@ SettingsScreen {
     }
 
     .group-title {
-        color: $primary;
+        color: $text-muted;
         text-style: bold;
         padding: 0 0 1 0;
+    }
+
+    .setting-group:focus-within .group-title {
+        color: $primary;
     }
 
     .setting-row {
@@ -51,7 +58,7 @@ SettingsScreen {
     }
 
     Input, Select SelectCurrent, Checkbox {
-        border: tall black 20%;
+        border: tall $surface-lighten-2;
 
         &:focus {
             border: tall $primary;

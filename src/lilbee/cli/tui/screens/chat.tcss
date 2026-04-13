@@ -3,14 +3,19 @@
 }
 
 .user-message {
-    text-style: bold;
+    border-left: thick $primary;
     padding: 0 1;
     margin: 1 0 0 0;
     height: auto;
 }
 
 .assistant-message {
+    border-left: thick $success;
     padding: 0 1;
+    height: auto;
+}
+
+.speaker-label {
     height: auto;
 }
 
@@ -60,5 +65,5 @@ Markdown {
 }
 
 #chat-prompt-area:focus-within {
-    border: tall $secondary;
+    border: tall $primary;
 }

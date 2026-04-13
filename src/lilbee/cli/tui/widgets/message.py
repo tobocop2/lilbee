@@ -13,12 +13,26 @@ from lilbee.config import cfg
 # Minimum interval (seconds) between markdown widget updates during streaming
 _MD_UPDATE_INTERVAL = 0.1
 
+_SPEAKER_YOU = "[bold $primary]you[/]"
+_SPEAKER_LILBEE = "[bold $success]lilbee[/]"
 
-class UserMessage(Static):
+
+class UserMessage(Vertical):
     """A user's question in the chat log."""
 
+    DEFAULT_CSS = """
+    UserMessage {
+        height: auto;
+    }
+    """
+
     def __init__(self, text: str) -> None:
-        super().__init__(f"You: {text}", classes="user-message")
+        super().__init__(classes="user-message")
+        self._text = text
+
+    def compose(self) -> ComposeResult:
+        yield Static(_SPEAKER_YOU, classes="speaker-label")
+        yield Static(self._text, classes="message-content")
 
 
 class AssistantMessage(Vertical):
@@ -43,6 +57,7 @@ class AssistantMessage(Vertical):
         self._use_markdown: bool = cfg.markdown_rendering
 
     def compose(self) -> ComposeResult:
+        yield Static(_SPEAKER_LILBEE, classes="speaker-label")
         self._reasoning_static = Static("", classes="reasoning-text")
         self._reasoning_widget = Collapsible(
             self._reasoning_static,

@@ -7,6 +7,7 @@ from textual.content import Content
 
 PILL_LEFT = "▌"  # left half block
 PILL_RIGHT = "▐"  # right half block
+DOT_SEP = " \u00b7 "  # middle dot separator for inline dividers
 
 
 def pill(text: Content | str, background: str, foreground: str) -> Content:

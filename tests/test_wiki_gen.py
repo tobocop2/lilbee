@@ -415,6 +415,29 @@ class TestGenerateSummaryPage:
         store.delete_citations_for_wiki.assert_called_once()
         store.add_citations.assert_called_once()
 
+    def test_think_tags_stripped_from_wiki_output(self, tmp_path: Path):
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Python supports gradual typing.")
+        chunks = [_make_chunk("Python supports gradual typing.")]
+
+        wiki_text_with_think = (
+            "<think>\nLet me reason about this...\n</think>\n"
+            "# Doc Summary\n\n"
+            "> Python supports gradual typing.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Python supports gradual typing."'
+        )
+        provider = _mock_provider(wiki_text_with_think)
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is not None
+        content = result.read_text()
+        assert "<think>" not in content
+        assert "Let me reason" not in content
+        assert "# Doc Summary" in content
+
 
 class TestMakeSlug:
     def test_spaces_to_dashes(self):

@@ -284,47 +284,57 @@ def _worker_main(
     current_embed_model = ""
     current_vision_model = ""
 
-    while True:
-        try:
-            request = req_q.get()
-        except (EOFError, OSError):
-            break
+    try:
+        while True:
+            try:
+                request = req_q.get()
+            except (EOFError, OSError):
+                break
 
-        if isinstance(request, ShutdownRequest):
-            _close_model(embed_llm)
-            _close_model(vision_llm)
-            break
-
-        if isinstance(request, LoadModelRequest):
-            if request.model_type == "embed":
+            if isinstance(request, ShutdownRequest):
                 _close_model(embed_llm)
-                embed_llm = None
-                current_embed_model = ""
-            else:
                 _close_model(vision_llm)
-                vision_llm = None
-                current_vision_model = ""
-            continue
+                break
 
-        if isinstance(request, EmbedRequest):
-            model_name = request.model or config.embedding_model
-            if embed_llm is None or model_name != current_embed_model:
-                _close_model(embed_llm)
-                embed_llm = _load_embed_model(model_name)
-                current_embed_model = model_name
-            embed_resp = _handle_embed(embed_llm, request)
-            resp_q.put(embed_resp)
-            continue
+            if isinstance(request, LoadModelRequest):
+                if request.model_type == "embed":
+                    _close_model(embed_llm)
+                    embed_llm = None
+                    current_embed_model = ""
+                else:
+                    _close_model(vision_llm)
+                    vision_llm = None
+                    current_vision_model = ""
+                continue
 
-        if isinstance(request, VisionRequest):
-            model_name = request.model or config.ocr_model
-            if vision_llm is None or model_name != current_vision_model:
-                _close_model(vision_llm)
-                vision_llm = _load_vision_model(model_name)
-                current_vision_model = model_name
-            vision_resp = _handle_vision(vision_llm, request)
-            resp_q.put(vision_resp)
-            continue
+            if isinstance(request, EmbedRequest):
+                model_name = request.model or config.embedding_model
+                if embed_llm is None or model_name != current_embed_model:
+                    _close_model(embed_llm)
+                    embed_llm = _load_embed_model(model_name)
+                    current_embed_model = model_name
+                embed_resp = _handle_embed(embed_llm, request)
+                resp_q.put(embed_resp)
+                continue
+
+            if isinstance(request, VisionRequest):
+                model_name = request.model or config.ocr_model
+                if vision_llm is None or model_name != current_vision_model:
+                    _close_model(vision_llm)
+                    vision_llm = _load_vision_model(model_name)
+                    current_vision_model = model_name
+                vision_resp = _handle_vision(vision_llm, request)
+                resp_q.put(vision_resp)
+                continue
+    finally:
+        with contextlib.suppress(Exception):
+            req_q.close()
+        with contextlib.suppress(Exception):
+            req_q.join_thread()
+        with contextlib.suppress(Exception):
+            resp_q.close()
+        with contextlib.suppress(Exception):
+            resp_q.join_thread()
 
 
 def _close_model(model: Any) -> None:

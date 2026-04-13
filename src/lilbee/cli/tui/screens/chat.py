@@ -15,6 +15,7 @@ from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Select, Static
@@ -24,7 +25,7 @@ from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
-from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -59,16 +60,20 @@ _WIKI_STAGE_FRACTIONS: dict[str, float] = {
 
 
 class ChatStatusLine(Label):
-    """One-line status bar showing the current model as a pill badge."""
+    """One-line status bar showing current models as pill badges with dot separators."""
 
     model_name: var[str] = var("")
 
     def watch_model_name(self, name: str) -> None:
         """Re-render when model name changes."""
-        if name:
-            self.update(pill(name, "$primary", "$text"))
-        else:
+        if not name:
             self.update("")
+            return
+        parts: list[Content | tuple[str, str]] = [pill(name, "$primary", "$text")]
+        if cfg.embedding_model:
+            parts.append((DOT_SEP, "$text-muted"))
+            parts.append(pill(cfg.embedding_model, "$secondary", "$text"))
+        self.update(Content.assemble(*parts))
 
 
 class PromptArea(Vertical):
