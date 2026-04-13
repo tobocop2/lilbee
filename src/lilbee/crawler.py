@@ -11,9 +11,11 @@ import re
 import socket
 import threading
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from lilbee.config import cfg
@@ -287,23 +289,28 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
+@contextlib.asynccontextmanager
+async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
+    """Open an AsyncWebCrawler, suppressing stdout when quiet."""
+    from crawl4ai import AsyncWebCrawler
+
+    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+    with stdout_ctx:
+        async with AsyncWebCrawler(verbose=not quiet) as crawler:
+            yield crawler
+
+
 async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     """Fetch a single URL and return its markdown content."""
     validate_crawl_url(url)
-    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+    from crawl4ai import CrawlerRunConfig
 
     config = CrawlerRunConfig(
         page_timeout=cfg.crawl_timeout * 1000,  # ms
     )
-    # crawl4ai writes progress to stdout regardless of verbose flag;
-    # suppress it by redirecting stdout to devnull when quiet.
-    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     try:
-        with stdout_ctx:
-            async with AsyncWebCrawler(verbose=not quiet) as crawler:
-                result = await crawler.arun(url=url, config=config)
-        # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
-        # even when the main page has valid markdown. Trust the content, not the flag.
+        async with _open_crawler(quiet=quiet) as crawler:
+            result = await crawler.arun(url=url, config=config)
         markdown = (result.markdown or "").strip()
         if markdown:
             return CrawlResult(url=url, markdown=markdown, success=True)
@@ -330,7 +337,7 @@ async def crawl_recursive(
     Falls back to cfg defaults when max_depth/max_pages are 0.
     """
     validate_crawl_url(url)
-    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+    from crawl4ai import CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 
     depth = max_depth if max_depth > 0 else cfg.crawl_max_depth
@@ -346,30 +353,27 @@ async def crawl_recursive(
     )
 
     results: list[CrawlResult] = []
-    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     try:
-        with stdout_ctx:
-            async with AsyncWebCrawler(verbose=not quiet) as crawler:
-                crawl_results = await crawler.arun(url=url, config=config)
-        # arun with deep crawl returns a list
+        async with _open_crawler(quiet=quiet) as crawler:
+            crawl_results = await crawler.arun(url=url, config=config)
         if not isinstance(crawl_results, list):
             crawl_results = [crawl_results]
         for i, cr in enumerate(crawl_results):
-                if on_progress:
-                    on_progress(
-                        EventType.CRAWL_PAGE,
-                        CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
+            if on_progress:
+                on_progress(
+                    EventType.CRAWL_PAGE,
+                    CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
+                )
+            if cr.success:
+                results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+            else:
+                results.append(
+                    CrawlResult(
+                        url=cr.url,
+                        success=False,
+                        error=cr.error_message or "Unknown error",
                     )
-                if cr.success:
-                    results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
-                else:
-                    results.append(
-                        CrawlResult(
-                            url=cr.url,
-                            success=False,
-                            error=cr.error_message or "Unknown error",
-                        )
-                    )
+                )
     except Exception as exc:
         log.warning("Recursive crawl of %s failed: %s", url, exc)
         if not results:
