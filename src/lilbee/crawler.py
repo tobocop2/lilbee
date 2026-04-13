@@ -1,7 +1,9 @@
 """Web crawling — fetch pages as markdown and save to the documents directory."""
 
 import asyncio
+import contextlib
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -293,19 +295,23 @@ async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
     config = CrawlerRunConfig(
         page_timeout=cfg.crawl_timeout * 1000,  # ms
     )
+    # crawl4ai writes progress to stdout regardless of verbose flag;
+    # suppress it by redirecting stdout to devnull when quiet.
+    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     try:
-        async with AsyncWebCrawler(verbose=not quiet) as crawler:
-            result = await crawler.arun(url=url, config=config)
-            # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
-            # even when the main page has valid markdown. Trust the content, not the flag.
-            markdown = (result.markdown or "").strip()
-            if markdown:
-                return CrawlResult(url=url, markdown=markdown, success=True)
-            return CrawlResult(
-                url=url,
-                success=False,
-                error=result.error_message or "No content extracted",
-            )
+        with stdout_ctx:
+            async with AsyncWebCrawler(verbose=not quiet) as crawler:
+                result = await crawler.arun(url=url, config=config)
+        # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
+        # even when the main page has valid markdown. Trust the content, not the flag.
+        markdown = (result.markdown or "").strip()
+        if markdown:
+            return CrawlResult(url=url, markdown=markdown, success=True)
+        return CrawlResult(
+            url=url,
+            success=False,
+            error=result.error_message or "No content extracted",
+        )
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
@@ -340,9 +346,11 @@ async def crawl_recursive(
     )
 
     results: list[CrawlResult] = []
+    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     try:
-        async with AsyncWebCrawler(verbose=not quiet) as crawler:
-            crawl_results = await crawler.arun(url=url, config=config)
+        with stdout_ctx:
+            async with AsyncWebCrawler(verbose=not quiet) as crawler:
+                crawl_results = await crawler.arun(url=url, config=config)
             # arun with deep crawl returns a list
             if not isinstance(crawl_results, list):
                 crawl_results = [crawl_results]
