@@ -41,5 +41,25 @@ def chunk_text(
     )
     result = extract_bytes_sync(text.encode("utf-8"), mime_type, config=config)
     if result.chunks:
+        if heading_context:
+            return [_dedup_heading(c.content) for c in result.chunks]
         return [c.content for c in result.chunks]
     return []
+
+
+def _dedup_heading(text: str) -> str:
+    """Remove duplicate heading caused by kreuzberg's prepend_heading_context.
+
+    kreuzberg prepends a heading breadcrumb (e.g. ``# Top > ## Sub``) followed
+    by a blank line. When the chunk body starts with the same heading that ends
+    the breadcrumb, the heading appears twice. This strips the duplicate.
+    """
+    parts = text.split("\n\n", 2)
+    if len(parts) < 2:
+        return text
+    ctx = parts[0]
+    last_seg = ctx.rsplit(" > ", 1)[-1]
+    if parts[1].strip() == last_seg.strip():
+        rest = parts[2] if len(parts) > 2 else ""
+        return ctx + ("\n\n" + rest if rest else "")
+    return text
