@@ -191,7 +191,6 @@ class TestModelSwitchSafety:
             await pilot.pause()
             screen = app.screen
             screen.streaming = True
-            screen.action_cancel_stream = mock.MagicMock()
 
             bar = screen.query_one("#model-bar", ModelBar)
             bar._populating = False
@@ -202,13 +201,10 @@ class TestModelSwitchSafety:
             event.select = mock.MagicMock()
             event.select.id = "chat-model-select"
 
-            with (
-                mock.patch("lilbee.services.reset_services"),
-                mock.patch.object(bar, "_deferred_reset"),
-            ):
+            with mock.patch.object(screen, "_apply_model_change") as mock_apply:
                 bar._on_chat_model_changed(event)
 
-            screen.action_cancel_stream.assert_called_once()
+            mock_apply.assert_called_once()
 
 
 class TestViewTabsPresence:
@@ -2066,6 +2062,17 @@ class TestChatSlashCommands:
             app.screen._handle_slash("/model slash-test-model")
             await pilot.pause()
             assert "slash-test-model" in cfg.chat_model
+
+    async def test_cmd_model_cancels_stream_when_streaming(self, _mock_resolve):
+        """/model <name> cancels stream and resets services when streaming."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = True
+            with mock.patch.object(app.screen, "_apply_model_change") as mock_apply:
+                app.screen._handle_slash("/model stream-switch-model")
+                await pilot.pause()
+                mock_apply.assert_called()
 
     async def test_cmd_model_without_name(self, _mock_resolve):
         """/model with no args pushes catalog."""

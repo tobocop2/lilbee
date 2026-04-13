@@ -1411,6 +1411,63 @@ async def test_chat_cancel_stream_while_streaming():
         assert app.screen.streaming is False
 
 
+async def test_apply_model_change_cancels_stream_when_streaming():
+    """_apply_model_change cancels stream and defers service reset."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = True
+        with (
+            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "call_later") as mock_later,
+        ):
+            screen._apply_model_change()
+            mock_cancel.assert_called_once()
+            mock_later.assert_called_once_with(screen._deferred_service_reset)
+
+
+async def test_apply_model_change_resets_immediately_when_not_streaming():
+    """_apply_model_change resets services immediately when not streaming."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = False
+        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
+            screen._apply_model_change()
+            mock_reset.assert_called_once()
+
+
+async def test_deferred_service_reset_retries_while_workers_active():
+    """_deferred_service_reset retries via call_later when workers exist."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with (
+            patch.object(
+                type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
+            ),
+            patch.object(screen, "call_later") as mock_later,
+            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+        ):
+            screen._deferred_service_reset()
+            mock_later.assert_called_once_with(screen._deferred_service_reset)
+            mock_reset.assert_not_called()
+
+
+async def test_deferred_service_reset_resets_when_no_workers():
+    """_deferred_service_reset calls reset_services when workers drained."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        # Cancel background workers so the screen's worker manager is empty
+        for w in list(screen.workers):
+            w.cancel()
+        await pilot.pause()
+        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
+            screen._deferred_service_reset()
+            mock_reset.assert_called_once()
+
+
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
     """j/k scroll the chat log in normal mode."""
     app = ChatTestApp()
