@@ -15,6 +15,7 @@ from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Select, Static
@@ -57,17 +58,24 @@ _WIKI_STAGE_FRACTIONS: dict[str, float] = {
 }
 
 
+_DOT_SEP = " \u00b7 "  # middle dot separator
+
+
 class ChatStatusLine(Label):
-    """One-line status bar showing the current model as a pill badge."""
+    """One-line status bar showing current models as pill badges with dot separators."""
 
     model_name: var[str] = var("")
 
     def watch_model_name(self, name: str) -> None:
         """Re-render when model name changes."""
-        if name:
-            self.update(pill(name, "$primary", "$text"))
-        else:
+        if not name:
             self.update("")
+            return
+        parts: list[Content | tuple[str, str]] = [pill(name, "$primary", "$text")]
+        if cfg.embedding_model:
+            parts.append((_DOT_SEP, "$text-muted"))
+            parts.append(pill(cfg.embedding_model, "$secondary", "$text"))
+        self.update(Content.assemble(*parts))
 
 
 class PromptArea(Vertical):
