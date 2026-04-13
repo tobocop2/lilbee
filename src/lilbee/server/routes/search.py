@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from litestar import get, post
+from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import Parameter
 from litestar.response import Stream
 
@@ -24,17 +25,27 @@ async def search_route(
     top_k: int = Parameter(query="top_k", default=5, le=100),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
-    return await handlers.search(q, top_k=top_k)
+    try:
+        return await handlers.search(q, top_k=top_k)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @post("/api/ask")
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
-    return await handlers.ask(
-        question=data.question,
-        top_k=data.top_k,
-        options=data.options,
-    )
+    try:
+        return await handlers.ask(
+            question=data.question,
+            top_k=data.top_k,
+            options=data.options,
+        )
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @post("/api/ask/stream")
