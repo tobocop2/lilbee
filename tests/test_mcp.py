@@ -385,6 +385,13 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
+    def test_bare_model_normalized_after_init(self, tmp_path):
+        """Config validator normalizes bare model names (BEE-bhe)."""
+        cfg.chat_model = "qwen3"
+        assert cfg.chat_model == "qwen3:latest"
+        cfg.embedding_model = "nomic-embed-text"
+        assert cfg.embedding_model == "nomic-embed-text:latest"
+
 
 class TestAdd:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)

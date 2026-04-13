@@ -13,6 +13,7 @@ from lilbee.config import (
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
     Config,
+    cfg,
 )
 
 
@@ -33,8 +34,8 @@ class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3"
-            assert c.embedding_model == "nomic-embed-text"
+            assert c.chat_model == "qwen3:latest"
+            assert c.embedding_model == "nomic-embed-text:latest"
             assert c.embedding_dim == 768
             assert c.chunk_size == 512
             assert c.chunk_overlap == 100
@@ -67,12 +68,23 @@ class TestEnvVarOverrides:
     def test_chat_model_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "llama3"}):
             c = Config()
-            assert c.chat_model == "llama3"
+            assert c.chat_model == "llama3:latest"
+
+    def test_chat_model_override_tagged(self):
+        with mock.patch.dict(os.environ, {"LILBEE_CHAT_MODEL": "llama3:8b"}):
+            c = Config()
+            assert c.chat_model == "llama3:8b"
 
     def test_embedding_model_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": "mxbai-embed-large"}):
             c = Config()
-            assert c.embedding_model == "mxbai-embed-large"
+            assert c.embedding_model == "mxbai-embed-large:latest"
+
+    def test_model_tag_normalized_on_assignment(self):
+        cfg.chat_model = "qwen3"
+        assert cfg.chat_model == "qwen3:latest"
+        cfg.chat_model = "qwen3:0.6b"
+        assert cfg.chat_model == "qwen3:0.6b"
 
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
@@ -118,7 +130,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "my-saved-model"
+            assert c.chat_model == "my-saved-model:latest"
 
     def test_env_var_overrides_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -128,12 +140,12 @@ class TestTomlConfigFile:
         env["LILBEE_CHAT_MODEL"] = "env-model"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "env-model"
+            assert c.chat_model == "env-model:latest"
 
     def test_no_toml_uses_defaults(self, tmp_path):
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.chat_model == "qwen3"
+            assert c.chat_model == "qwen3:latest"
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -142,7 +154,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.chat_model == "qwen3"
+            assert c.chat_model == "qwen3:latest"
 
     def test_embedding_model_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -151,7 +163,7 @@ class TestTomlConfigFile:
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.embedding_model == "my-embed"
+            assert c.embedding_model == "my-embed:latest"
 
     def test_temperature_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
@@ -700,4 +712,4 @@ class TestPlainEnvSourceSkipsEmpty:
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-        assert c.chat_model == "qwen3"  # default, not empty
+        assert c.chat_model == "qwen3:latest"  # default, not empty

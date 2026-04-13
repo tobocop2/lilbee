@@ -1325,7 +1325,7 @@ class TestLlamaCppProviderMethods:
         ):
             result = provider._get_chat_llm()
 
-        mock_vis.assert_called_once_with("vision-model")
+        mock_vis.assert_called_once_with("vision-model:latest")
         assert result == mock_vis.return_value
 
     def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
