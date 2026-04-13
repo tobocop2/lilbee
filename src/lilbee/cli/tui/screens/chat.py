@@ -685,6 +685,7 @@ class ChatScreen(Screen[None]):
         svc = get_services()
         total = len(sources)
         generated = 0
+        last_error: str = ""
         try:
             for idx, source in enumerate(sources):
                 base_pct = int(idx * 100 / total)
@@ -698,8 +699,6 @@ class ChatScreen(Screen[None]):
                 chunks = svc.store.get_chunks_by_source(source)
                 if not chunks:
                     continue
-
-                last_error: str = ""
 
                 def _on_progress(
                     stage: str,

@@ -367,6 +367,31 @@ class TestGenerateSummaryPage:
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
 
+    def test_no_valid_citations_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage when no citations verify."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+
+        wiki_text = (
+            "# Bad\n\n"
+            "> Fabricated claim.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "This text is not in any chunk at all"'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "citation" in str(failed_events[0][1]["error"]).lower()
+
     def test_faithfulness_check_failure_uses_zero(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")

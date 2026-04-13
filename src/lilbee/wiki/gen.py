@@ -416,6 +416,7 @@ def _generate_page(
     verified = _verify_citations(citation_resolver(parsed_citations), chunks, label, config)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
+        _emit("failed", error="No valid citations found")
         return None
 
     _emit("faithfulness_check")
