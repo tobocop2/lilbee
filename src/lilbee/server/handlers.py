@@ -541,6 +541,11 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
         settings.update_values(cfg.data_root, to_persist)
     if to_delete:
         settings.delete_values(cfg.data_root, to_delete)
+    _API_KEY_FIELDS = {"openai_api_key", "anthropic_api_key", "gemini_api_key"}
+    if _API_KEY_FIELDS & set(updates):
+        from lilbee.providers.litellm_provider import inject_provider_keys
+
+        inject_provider_keys()
     reindex_required = bool(REINDEX_FIELDS & set(updates))
     return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
 

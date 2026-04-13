@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -358,6 +359,66 @@ def classify_remote_models(
                 name=name, task=task, family=family, parameter_size=param_size, provider=provider
             )
         )
+    return result
+
+
+# Mapping from litellm provider names to env vars and display labels.
+_API_PROVIDERS: tuple[tuple[str, str, str], ...] = (
+    ("openai", "OPENAI_API_KEY", "OpenAI"),
+    ("anthropic", "ANTHROPIC_API_KEY", "Anthropic"),
+    ("gemini", "GEMINI_API_KEY", "Gemini"),
+)
+
+# Config fields that also supply provider keys (checked after env vars).
+_CFG_KEY_FIELDS: dict[str, str] = {
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+    "gemini": "gemini_api_key",
+}
+
+
+def _has_provider_key(provider: str, env_var: str) -> bool:
+    """Return True if a usable API key exists for *provider*."""
+    if os.environ.get(env_var):
+        return True
+    cfg_field = _CFG_KEY_FIELDS.get(provider, "")
+    return bool(getattr(cfg, cfg_field, "")) if cfg_field else False
+
+
+def discover_api_models() -> dict[str, list[RemoteModel]]:
+    """Return frontier chat models grouped by provider.
+
+    Checks which provider API keys are available (env vars or config),
+    then queries ``litellm.models_by_provider`` for each. Only chat
+    models are returned. Returns an empty dict when litellm is not
+    installed or no keys are configured.
+    """
+    try:
+        import litellm
+    except ImportError:
+        return {}
+
+    result: dict[str, list[RemoteModel]] = {}
+    for provider, env_var, display_name in _API_PROVIDERS:
+        if not _has_provider_key(provider, env_var):
+            continue
+        models = litellm.models_by_provider.get(provider, set())
+        chat_models: list[RemoteModel] = []
+        for model_name in sorted(models):
+            info = litellm.model_cost.get(model_name, {})
+            if info.get("mode") != "chat":
+                continue
+            chat_models.append(
+                RemoteModel(
+                    name=model_name,
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider=display_name,
+                )
+            )
+        if chat_models:
+            result[display_name] = chat_models
     return result
 
 

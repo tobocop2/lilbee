@@ -65,6 +65,10 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
     session_manager.generate()
 
+    from lilbee.providers.litellm_provider import inject_provider_keys
+
+    inject_provider_keys()
+
     try:
         get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")

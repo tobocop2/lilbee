@@ -50,6 +50,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
 
     _collect_native_models(buckets, seen)
     _collect_remote_models(buckets, seen)
+    _collect_api_models(buckets, seen)
 
     return (
         sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
@@ -77,7 +78,7 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm) models to buckets."""
+    """Add remote (litellm/Ollama) models to buckets."""
     try:
         from lilbee.model_manager import classify_remote_models
 
@@ -85,11 +86,28 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
             if model.name in seen or _is_mmproj(model.name):
                 continue
             seen.add(model.name)
+            label = f"{model.name} ({model.provider})"
             buckets.get(model.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=model.name, ref=model.name)
+                ModelOption(label=label, ref=model.name)
             )
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
+
+
+def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket."""
+    try:
+        from lilbee.model_manager import discover_api_models
+
+        for provider_name, models in discover_api_models().items():
+            for model in models:
+                if model.name in seen:
+                    continue
+                seen.add(model.name)
+                label = f"{model.name} ({provider_name})"
+                buckets[ModelTask.CHAT].append(ModelOption(label=label, ref=model.name))
+    except Exception:
+        log.debug("Could not discover API models", exc_info=True)
 
 
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:

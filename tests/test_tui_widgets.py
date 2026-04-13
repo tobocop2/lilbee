@@ -534,6 +534,10 @@ class TestClassifyInstalledModels:
                 "lilbee.model_manager.classify_remote_models",
                 return_value=[],
             ),
+            mock.patch(
+                "lilbee.model_manager.discover_api_models",
+                return_value={},
+            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, embed = _classify_installed_models()
@@ -2226,6 +2230,105 @@ class TestCollectNativeModelsError:
             side_effect=RuntimeError("boom"),
         ):
             _collect_remote_models(buckets, seen)
+        assert buckets["chat"] == []
+
+    def test_collect_remote_models_adds_provider_label(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_remote_models
+        from lilbee.model_manager import RemoteModel
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.model_manager.classify_remote_models",
+            return_value=[
+                RemoteModel(
+                    name="llama3:8b",
+                    task="chat",
+                    family="llama",
+                    parameter_size="8B",
+                    provider="Ollama",
+                )
+            ],
+        ):
+            _collect_remote_models(buckets, seen)
+        assert len(buckets["chat"]) == 1
+        assert buckets["chat"][0].label == "llama3:8b (Ollama)"
+        assert buckets["chat"][0].ref == "llama3:8b"
+
+    def test_collect_api_models_adds_frontier_models(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_api_models
+        from lilbee.model_manager import RemoteModel
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.model_manager.discover_api_models",
+            return_value={
+                "OpenAI": [
+                    RemoteModel(
+                        name="gpt-4o",
+                        task="chat",
+                        family="",
+                        parameter_size="",
+                        provider="OpenAI",
+                    ),
+                ],
+            },
+        ):
+            _collect_api_models(buckets, seen)
+        assert len(buckets["chat"]) == 1
+        assert buckets["chat"][0].label == "gpt-4o (OpenAI)"
+        assert buckets["chat"][0].ref == "gpt-4o"
+
+    def test_collect_api_models_exception_suppressed(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_api_models
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = set()
+        with mock.patch(
+            "lilbee.model_manager.discover_api_models",
+            side_effect=RuntimeError("boom"),
+        ):
+            _collect_api_models(buckets, seen)
+        assert buckets["chat"] == []
+
+    def test_collect_api_models_skips_duplicates(self) -> None:
+        from lilbee.cli.tui.widgets.model_bar import _collect_api_models
+        from lilbee.model_manager import RemoteModel
+
+        buckets: dict[str, list[ModelOption]] = {
+            "chat": [],
+            "embedding": [],
+            "vision": [],
+        }
+        seen: set[str] = {"gpt-4o"}
+        with mock.patch(
+            "lilbee.model_manager.discover_api_models",
+            return_value={
+                "OpenAI": [
+                    RemoteModel(
+                        name="gpt-4o",
+                        task="chat",
+                        family="",
+                        parameter_size="",
+                        provider="OpenAI",
+                    ),
+                ],
+            },
+        ):
+            _collect_api_models(buckets, seen)
         assert buckets["chat"] == []
 
 

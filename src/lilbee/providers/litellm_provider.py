@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -22,14 +23,50 @@ log = logging.getLogger(__name__)
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
-# litellm routes local models via the ollama/ prefix. Any model without this
-# prefix is assumed to be an ollama-hosted model and gets the prefix added.
 _OLLAMA_PREFIX = "ollama/"
 
+_OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
-def _prefix_ollama(name: str) -> str:
-    """Prefix ``name`` with ``ollama/`` for litellm routing if not already prefixed."""
-    return name if name.startswith(_OLLAMA_PREFIX) else f"{_OLLAMA_PREFIX}{name}"
+# Mapping from lilbee config fields to provider env vars.
+# litellm reads these at call time for per-provider authentication.
+_PROVIDER_KEY_MAP: dict[str, str] = {
+    "openai_api_key": "OPENAI_API_KEY",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
+}
+
+
+def _is_ollama(base_url: str) -> bool:
+    """Return True if *base_url* points to an Ollama instance."""
+    url_lower = base_url.lower()
+    return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
+
+
+def _route_model(name: str, base_url: str) -> str:
+    """Add the ``ollama/`` prefix only when targeting an Ollama backend.
+
+    Models that already carry a provider prefix (e.g. ``openai/gpt-4o``)
+    are returned as-is regardless of the backend.
+    """
+    if "/" in name:
+        return name
+    if _is_ollama(base_url):
+        return f"{_OLLAMA_PREFIX}{name}"
+    return name
+
+
+def inject_provider_keys() -> None:
+    """Copy per-provider API keys from config into ``os.environ``.
+
+    litellm reads provider-specific env vars (``OPENAI_API_KEY``, etc.)
+    at call time. This bridges the gap between lilbee's config system
+    and litellm's env-var-based auth. Explicit env vars are never
+    overwritten so users can still override via their shell.
+    """
+    for cfg_field, env_var in _PROVIDER_KEY_MAP.items():
+        value = getattr(cfg, cfg_field, "")
+        if value and not os.environ.get(env_var):
+            os.environ[env_var] = value
 
 
 def litellm_available() -> bool:
@@ -55,12 +92,12 @@ class LiteLLMProvider(LLMProvider):
         self._api_key = api_key
 
     def _model_name(self, model: str | None = None) -> str:
-        """Prefix model name with ollama/ for litellm routing when needed."""
-        return _prefix_ollama(model or cfg.chat_model)
+        """Route model name for litellm, adding ollama/ prefix only when needed."""
+        return _route_model(model or cfg.chat_model, self._base_url)
 
     def _embed_model_name(self) -> str:
-        """Prefix embedding model with ollama/ for litellm routing when needed."""
-        return _prefix_ollama(cfg.embedding_model)
+        """Route embedding model name for litellm."""
+        return _route_model(cfg.embedding_model, self._base_url)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via litellm."""
@@ -110,7 +147,18 @@ class LiteLLMProvider(LLMProvider):
         return response.choices[0].message.content or ""
 
     def list_models(self) -> list[str]:
-        """List models via the /api/tags endpoint."""
+        """List models from the backend.
+
+        Uses the Ollama ``/api/tags`` endpoint when the URL looks like
+        Ollama, otherwise falls back to the OpenAI-compatible
+        ``/v1/models`` endpoint.
+        """
+        if _is_ollama(self._base_url):
+            return self._list_ollama_models()
+        return self._list_openai_models()
+
+    def _list_ollama_models(self) -> list[str]:
+        """List models via the Ollama /api/tags endpoint."""
         try:
             resp = httpx.get(f"{self._base_url}/api/tags", timeout=_HTTP_TIMEOUT)
             resp.raise_for_status()
@@ -118,6 +166,20 @@ class LiteLLMProvider(LLMProvider):
             return [m["name"] for m in data.get("models", [])]
         except httpx.HTTPError as exc:
             raise ProviderError(f"Cannot list models: {exc}", provider="litellm") from exc
+
+    def _list_openai_models(self) -> list[str]:
+        """List models via the OpenAI-compatible /v1/models endpoint."""
+        headers: dict[str, str] = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        try:
+            resp = httpx.get(f"{self._base_url}/v1/models", headers=headers, timeout=_HTTP_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+            return [m["id"] for m in data.get("data", [])]
+        except httpx.HTTPError:
+            log.debug("Failed to list models via /v1/models", exc_info=True)
+            return []
 
     def pull_model(self, model: str, *, on_progress: Callable[..., Any] | None = None) -> None:
         """Pull a model via the /api/pull endpoint."""
