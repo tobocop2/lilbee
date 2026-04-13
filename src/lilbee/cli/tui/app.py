@@ -181,8 +181,12 @@ class LilbeeApp(App[None]):
                 self.notify(msg.APP_CANCELLED)
                 return
         from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         screen = self.screen
+        if isinstance(screen, SetupWizard):
+            screen.action_cancel()
+            return
         if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
             return

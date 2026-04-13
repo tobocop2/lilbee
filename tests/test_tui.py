@@ -28,24 +28,12 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
-    """Patch out embedding model checks and background workers so ChatScreen mounts cleanly."""
+    """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
     with (
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
-        ),
-        mock.patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
-            return_value=None,
-        ),
-        mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen.on_show",
-            return_value=None,
-        ),
-        mock.patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
-            return_value=None,
         ),
         mock.patch(
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
@@ -92,12 +80,18 @@ class TestUserMessage:
         assert msg is not None
         assert "user-message" in msg.classes
 
+    def test_renders_speaker_label(self) -> None:
+        """UserMessage should have compose() that yields speaker label and content."""
+        msg = UserMessage("hello world")
+        children = list(msg.compose())
+        assert len(children) == 2
+
 
 class TestAssistantMessage:
     def test_compose_yields_widgets(self) -> None:
         msg = AssistantMessage()
         children = list(msg.compose())
-        assert len(children) == 3  # reasoning, markdown, citation
+        assert len(children) == 4  # speaker label, reasoning, markdown, citation
 
     def test_append_content(self) -> None:
         msg = AssistantMessage()

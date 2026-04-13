@@ -1,6 +1,6 @@
 """Tests for reasoning token filter — <think>...</think> tag detection."""
 
-from lilbee.reasoning import StreamToken, filter_reasoning
+from lilbee.reasoning import StreamToken, filter_reasoning, strip_reasoning
 
 
 def _collect(tokens: list[str], *, show: bool) -> list[StreamToken]:
@@ -160,3 +160,31 @@ class TestReasoningTruncation:
         result = _collect(tokens, show=True)
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "the answer" in response
+
+
+class TestStripReasoning:
+    def test_strips_think_block(self):
+        assert strip_reasoning("<think>internal</think>answer") == "answer"
+
+    def test_no_think_block(self):
+        assert strip_reasoning("plain text") == "plain text"
+
+    def test_multiple_blocks(self):
+        text = "<think>a</think>one<think>b</think>two"
+        assert strip_reasoning(text) == "onetwo"
+
+    def test_multiline_think(self):
+        text = "<think>\nline1\nline2\n</think>\nresult"
+        assert strip_reasoning(text) == "result"
+
+    def test_empty_string(self):
+        assert strip_reasoning("") == ""
+
+    def test_trailing_whitespace_after_tag_stripped(self):
+        assert strip_reasoning("<think>x</think>  answer") == "answer"
+
+    def test_unclosed_think_tag_stripped(self):
+        assert strip_reasoning("answer<think>truncated reasoning") == "answer"
+
+    def test_only_unclosed_think_tag(self):
+        assert strip_reasoning("<think>all reasoning no answer") == ""

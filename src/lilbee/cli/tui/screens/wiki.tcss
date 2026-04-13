@@ -17,6 +17,11 @@
     height: 1fr;
 }
 
+#wiki-page-list > .option-list--option-highlighted {
+    border-left: thick $primary;
+    background: $surface;
+}
+
 #wiki-main {
     width: 1fr;
 }

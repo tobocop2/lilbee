@@ -29,7 +29,7 @@
 
 .section-heading {
     text-style: bold;
-    color: $text-muted;
+    color: $primary;
     padding: 1 1 0 2;
     border-bottom: solid $surface-lighten-2;
 }
@@ -49,13 +49,13 @@ GridSelect {
     keyline: none;
 
     &.-highlight {
-        background: $panel;
+        background: $surface;
         border: tall $primary 30%;
     }
 
     &:focus * {
         &.-highlight {
-            background: $panel;
+            background: $surface;
             border: tall $primary;
         }
     }
@@ -75,6 +75,6 @@ GridSelect {
 }
 
 .browse-more-hf:hover {
-    background: $panel;
+    background: $surface;
     border: tall $primary;
 }

@@ -12,6 +12,7 @@ from textual.widget import Widget
 from textual.widgets import Label, Select
 
 from lilbee import settings
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
 from lilbee.services import reset_services
@@ -168,7 +169,7 @@ class ModelBar(Widget, can_focus=False):
     def _scan_models(self) -> None:
         """Scan installed models in background, then populate dropdowns."""
         chat, embed = _classify_installed_models()
-        self.app.call_from_thread(self._populate, chat, embed)
+        call_from_thread(self, self._populate, chat, embed)
 
     def _populate(
         self,
@@ -222,25 +223,10 @@ class ModelBar(Widget, can_focus=False):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen
-        if isinstance(screen, ChatScreen) and screen.streaming:
-            screen.action_cancel_stream()
-            self.app.call_later(self._deferred_reset)
+        if isinstance(screen, ChatScreen):
+            screen._apply_model_change()
         else:
-            self._reset_services()
-
-    def _deferred_reset(self) -> None:
-        """Reset services after workers have finished (avoids freeing in-use models)."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = self.app.screen
-        if isinstance(screen, ChatScreen) and screen.workers:
-            self.app.call_later(self._deferred_reset)
-            return
-        self._reset_services()
-
-    @staticmethod
-    def _reset_services() -> None:
-        reset_services()
+            reset_services()
 
     def refresh_models(self) -> None:
         """Re-scan models (called after downloads complete)."""

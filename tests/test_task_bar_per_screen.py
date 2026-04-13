@@ -64,14 +64,6 @@ def _patch_chat_setup():
             return_value=([], []),
         ),
         patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
-            return_value=None,
-        ),
-        patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.refresh_models",
-            return_value=None,
-        ),
-        patch(
             "lilbee.cli.tui.screens.catalog.CatalogScreen._fetch_remote_models",
             return_value=None,
         ),
@@ -101,18 +93,9 @@ class _ControllerApp(App[None]):
 
 
 def _chat_screen():
-    """Minimal screen that mirrors ChatScreen's TaskBar without ModelBar."""
-    from textual.screen import Screen
-    from textual.widgets import Footer
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
-    from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-    class _ChatStub(Screen[None]):
-        def compose(self):
-            yield TaskBar()
-            yield Footer()
-
-    return _ChatStub()
+    return ChatScreen()
 
 
 def _catalog_screen():

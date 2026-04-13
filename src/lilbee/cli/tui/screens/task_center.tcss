@@ -1,5 +1,6 @@
 #task-center-title {
     text-style: bold;
+    color: $primary;
     padding: 0 1;
     height: 1;
 }
@@ -13,4 +14,5 @@
     max-height: 5;
     padding: 0 1;
     border-top: solid $surface-lighten-2;
+    color: $text-muted;
 }

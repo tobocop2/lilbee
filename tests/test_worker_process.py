@@ -190,12 +190,13 @@ class TestWorkerMain:
         assert resp_q.empty()
 
     def test_embed_request_processed(self, config_snap: ConfigSnapshot) -> None:
-        ctx = get_context("spawn")
-        req_q: multiprocessing.Queue = ctx.Queue()
-        resp_q: multiprocessing.Queue = ctx.Queue()
-
-        req_q.put(EmbedRequest(texts=["hello"], model="test-embed", request_id=1))
-        req_q.put(ShutdownRequest())
+        requests = [
+            EmbedRequest(texts=["hello"], model="test-embed", request_id=1),
+            ShutdownRequest(),
+        ]
+        req_q = mock.MagicMock()
+        req_q.get.side_effect = requests
+        resp_q = mock.MagicMock()
 
         with (
             mock.patch(
@@ -209,17 +210,18 @@ class TestWorkerMain:
         ):
             _worker_main(req_q, resp_q, config_snap)
 
-        resp = resp_q.get(timeout=1)
-        assert isinstance(resp, EmbedResponse)
-        assert resp.vectors == [[1.0]]
+        put_arg = resp_q.put.call_args[0][0]
+        assert isinstance(put_arg, EmbedResponse)
+        assert put_arg.vectors == [[1.0]]
 
     def test_vision_request_processed(self, config_snap: ConfigSnapshot) -> None:
-        ctx = get_context("spawn")
-        req_q: multiprocessing.Queue = ctx.Queue()
-        resp_q: multiprocessing.Queue = ctx.Queue()
-
-        req_q.put(VisionRequest(png_bytes=b"img", model="test-vision", request_id=2))
-        req_q.put(ShutdownRequest())
+        requests = [
+            VisionRequest(png_bytes=b"img", model="test-vision", request_id=2),
+            ShutdownRequest(),
+        ]
+        req_q = mock.MagicMock()
+        req_q.get.side_effect = requests
+        resp_q = mock.MagicMock()
 
         with (
             mock.patch(
@@ -233,9 +235,9 @@ class TestWorkerMain:
         ):
             _worker_main(req_q, resp_q, config_snap)
 
-        resp = resp_q.get(timeout=1)
-        assert isinstance(resp, VisionResponse)
-        assert resp.text == "extracted"
+        put_arg = resp_q.put.call_args[0][0]
+        assert isinstance(put_arg, VisionResponse)
+        assert put_arg.text == "extracted"
 
     def test_load_model_request_clears_embed(self, config_snap: ConfigSnapshot) -> None:
         ctx = get_context("spawn")
@@ -339,6 +341,38 @@ class TestWorkerMain:
         resp_q = mock.MagicMock()
         _worker_main(req_q, resp_q, config_snap)
         # Should exit without raising
+
+    def test_queues_closed_after_shutdown(self, config_snap: ConfigSnapshot) -> None:
+        """Queues are explicitly closed and join_thread called on exit."""
+        req_q = mock.MagicMock()
+        req_q.get.return_value = ShutdownRequest()
+        resp_q = mock.MagicMock()
+        _worker_main(req_q, resp_q, config_snap)
+        req_q.close.assert_called_once()
+        req_q.join_thread.assert_called_once()
+        resp_q.close.assert_called_once()
+        resp_q.join_thread.assert_called_once()
+
+    def test_queues_closed_after_broken_pipe(self, config_snap: ConfigSnapshot) -> None:
+        """Queues are cleaned up even when exit is due to broken pipe."""
+        req_q = mock.MagicMock()
+        req_q.get.side_effect = EOFError("broken pipe")
+        resp_q = mock.MagicMock()
+        _worker_main(req_q, resp_q, config_snap)
+        req_q.close.assert_called_once()
+        resp_q.close.assert_called_once()
+
+    def test_queue_cleanup_suppresses_errors(self, config_snap: ConfigSnapshot) -> None:
+        """Exceptions during queue cleanup are suppressed."""
+        req_q = mock.MagicMock()
+        req_q.get.return_value = ShutdownRequest()
+        req_q.close.side_effect = OSError("already closed")
+        req_q.join_thread.side_effect = OSError("no thread")
+        resp_q = mock.MagicMock()
+        resp_q.close.side_effect = OSError("already closed")
+        resp_q.join_thread.side_effect = OSError("no thread")
+        _worker_main(req_q, resp_q, config_snap)
+        # Should not raise
 
 
 class TestWorkerProcessLifecycle:

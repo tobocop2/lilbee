@@ -30,6 +30,10 @@ def main() -> None:
     except BaseException:
         stop(handle)
         raise
+    else:
+        # Stop the splash BEFORE the TUI takes over the terminal so the
+        # subprocess's final writes don't land on Textual's alt-screen.
+        stop(handle)
 
     try:
         app()
@@ -37,5 +41,3 @@ def main() -> None:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()
         raise SystemExit(130) from None
-    finally:
-        stop(handle)

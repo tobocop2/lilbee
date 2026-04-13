@@ -456,14 +456,8 @@ async def list_models() -> ModelsResponse:
 async def _set_model(
     field: Literal["chat_model", "embedding_model"],
     model: str,
-    *,
-    normalize: bool = False,
 ) -> SetModelResponse:
     """Shared helper for switching a model field."""
-    if normalize:
-        from lilbee.models import ensure_tag
-
-        model = ensure_tag(model)
     setattr(cfg, field, model)
     settings.set_value(cfg.data_root, field, model)
     return SetModelResponse(model=model)
@@ -483,13 +477,13 @@ def _require_model_available(model: str) -> str:
 async def set_chat_model(model: str) -> SetModelResponse:
     """Switch active chat model. Validates the model exists before accepting."""
     normalized = _require_model_available(model)
-    return await _set_model("chat_model", normalized, normalize=False)
+    return await _set_model("chat_model", normalized)
 
 
 async def set_embedding_model(model: str) -> SetModelResponse:
     """Switch embedding model. Validates the model exists before accepting."""
     normalized = _require_model_available(model)
-    return await _set_model("embedding_model", normalized, normalize=False)
+    return await _set_model("embedding_model", normalized)
 
 
 def _validate_config_updates(updates: dict[str, Any]) -> None:
@@ -691,8 +685,14 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             payload = sse_event(SseEvent.PROGRESS, data)
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
+        def _on_bytes(downloaded: int, total: int) -> None:
+            if sse.cancel.is_set():
+                return
+            payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+
         try:
-            manager.pull(model, src, on_progress=_on_progress)
+            manager.pull(model, src, on_progress=_on_progress, on_bytes=_on_bytes)
         except Exception as exc:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
