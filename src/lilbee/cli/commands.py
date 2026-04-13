@@ -43,6 +43,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.config import cfg
 from lilbee.crawler import is_url
+from lilbee.providers.base import ProviderError
 from lilbee.services import get_services
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
@@ -442,7 +443,7 @@ def ask(
         for token in get_services().searcher.ask_stream(question):
             console.print(token.content, end="")
         console.print()
-    except RuntimeError as exc:
+    except (RuntimeError, ProviderError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
