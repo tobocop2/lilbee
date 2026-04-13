@@ -202,6 +202,17 @@ class TestReasoningTruncation:
         assert "final" in response
         assert "<th" in response  # flushed by final flush()
 
+    def test_drain_cap_prevents_infinite_post_truncation(self):
+        """Drain loop stops after _MAX_REASONING_CHARS even if model keeps generating."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 100)
+        # After truncation, model keeps generating reasoning (no closing tag)
+        post_tokens = ["y"] * (_MAX_REASONING_CHARS + 100)
+        tokens = [*f"<think>{long_think}", *post_tokens]
+        result = _collect(tokens, show=True)
+        assert any("truncated" in st.content for st in result)
+
 
 class TestStripReasoning:
     def test_strips_think_block(self):
