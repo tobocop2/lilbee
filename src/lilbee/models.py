@@ -247,13 +247,11 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None)
 
-        def _on_progress(data: dict) -> None:
-            total = data.get("total", 0) or 0
-            completed = data.get("completed", 0) or 0
+        def _on_bytes(downloaded: int, total: int) -> None:
             if total > 0:
-                progress.update(ptask, total=total, completed=completed)
+                progress.update(ptask, total=total, completed=downloaded)
 
-        manager.pull(model, ModelSource.NATIVE, on_progress=_on_progress)
+        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
     console.print(f"Model '{model}' ready.")
 
 

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from pydantic import BaseModel
@@ -605,14 +605,22 @@ def _sort_models(models: list[CatalogModel], sort: str) -> list[CatalogModel]:
     return sorted(models, key=key_fn, reverse=reverse)
 
 
+class CatalogIndex(NamedTuple):
+    """Case-insensitive lookup indexes for find_catalog_entry."""
+
+    by_ref: dict[str, CatalogModel]
+    by_name: dict[str, CatalogModel]
+    by_display: dict[str, CatalogModel]
+    by_hf_repo: dict[str, CatalogModel]
+
+
 @functools.cache
-def _build_catalog_index() -> tuple[
-    dict[str, CatalogModel], dict[str, CatalogModel], dict[str, CatalogModel]
-]:
+def _build_catalog_index() -> CatalogIndex:
     """Build case-insensitive lookup indexes for find_catalog_entry."""
     by_ref: dict[str, CatalogModel] = {}
     by_name: dict[str, CatalogModel] = {}
     by_display: dict[str, CatalogModel] = {}
+    by_hf_repo: dict[str, CatalogModel] = {}
     for m in FEATURED_ALL:
         ref_key = m.ref.lower()
         name_key = m.name.lower()
@@ -620,17 +628,18 @@ def _build_catalog_index() -> tuple[
         if name_key not in by_name or m.recommended:
             by_name[name_key] = m
         by_display.setdefault(m.display_name.lower(), m)
-    return by_ref, by_name, by_display
+        by_hf_repo.setdefault(m.hf_repo.lower(), m)
+    return CatalogIndex(by_ref, by_name, by_display, by_hf_repo)
 
 
 def find_catalog_entry(query: str) -> CatalogModel | None:
-    """Find a featured model by ref, name, or display name (case-insensitive).
+    """Find a featured model by ref, name, display name, or hf_repo (case-insensitive).
     Resolution order: exact ``name:tag`` → bare ``name`` (recommended variant)
-    → ``display_name``.
+    → ``display_name`` → ``hf_repo``.
     """
-    by_ref, by_name, by_display = _build_catalog_index()
+    idx = _build_catalog_index()
     q = query.lower()
-    return by_ref.get(q) or by_name.get(q) or by_display.get(q)
+    return idx.by_ref.get(q) or idx.by_name.get(q) or idx.by_display.get(q) or idx.by_hf_repo.get(q)
 
 
 def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
