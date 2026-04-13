@@ -2820,6 +2820,104 @@ class TestGridSelectExtra:
             await pilot.pause()
             assert grid.highlighted == 0
 
+    async def test_tab_next_advances_highlight(self) -> None:
+        """Tab advances the cursor within the grid."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 0
+            grid.action_tab_next()
+            assert grid.highlighted == 1
+
+    async def test_tab_next_escapes_at_last_card(self) -> None:
+        """Tab on the last card posts LeaveDown to escape the grid."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = len(grid.children) - 1
+            messages: list[object] = []
+            orig_post = grid.post_message
+            grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
+            grid.action_tab_next()
+            assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
+
+    async def test_tab_previous_retreats_highlight(self) -> None:
+        """Shift+Tab retreats the cursor within the grid."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 2
+            grid.action_tab_previous()
+            assert grid.highlighted == 1
+
+    async def test_tab_previous_escapes_at_first_card(self) -> None:
+        """Shift+Tab on the first card posts LeaveUp to escape the grid."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = 0
+            messages: list[object] = []
+            orig_post = grid.post_message
+            grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
+            grid.action_tab_previous()
+            assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
+
+    def test_tab_next_empty_grid_posts_leave_down(self) -> None:
+        """Tab on an empty grid posts LeaveDown."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect(min_column_width=20)
+        messages: list[object] = []
+        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
+        grid.action_tab_next()
+        assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
+
+    def test_tab_previous_empty_grid_posts_leave_up(self) -> None:
+        """Shift+Tab on an empty grid posts LeaveUp."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        grid = GridSelect(min_column_width=20)
+        messages: list[object] = []
+        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
+        grid.action_tab_previous()
+        assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
+
+    async def test_tab_next_initializes_highlight_when_none(self) -> None:
+        """Tab with no highlight initializes to 0."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_tab_next()
+            assert grid.highlighted == 0
+
+    async def test_tab_previous_initializes_highlight_when_none(self) -> None:
+        """Shift+Tab with no highlight initializes to last card."""
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = _GridApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            grid = app.query_one(GridSelect)
+            grid.highlighted = None
+            grid.action_tab_previous()
+            assert grid.highlighted == len(grid.children) - 1
+
 
 # ---------------------------------------------------------------------------
 # ModelCard: _build_status with positive downloads
