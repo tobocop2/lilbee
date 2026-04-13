@@ -28,6 +28,8 @@ class GridSelect(containers.ItemGrid, can_focus=True):
         Binding("left", "cursor_left", "Left", show=False),
         Binding("right", "cursor_right", "Right", show=False),
         Binding("enter", "select", "Select", show=False),
+        Binding("tab", "tab_next", "Tab Next", show=False),
+        Binding("shift+tab", "tab_previous", "Tab Previous", show=False),
     ]
 
     highlighted: reactive[int | None] = reactive(None)
@@ -193,3 +195,27 @@ class GridSelect(containers.ItemGrid, can_focus=True):
                 pass
             else:
                 self.post_message(self.Selected(self, widget))
+
+    def action_tab_next(self) -> None:
+        """Advance highlight linearly; escape grid when past the last card."""
+        if not self.children:
+            self.post_message(self.LeaveDown(self))
+            return
+        if self.highlighted is None:
+            self.highlighted = 0
+        elif self.highlighted >= len(self.children) - 1:
+            self.post_message(self.LeaveDown(self))
+        else:
+            self.highlighted += 1
+
+    def action_tab_previous(self) -> None:
+        """Retreat highlight linearly; escape grid when before the first card."""
+        if not self.children:
+            self.post_message(self.LeaveUp(self))
+            return
+        if self.highlighted is None:
+            self.highlighted = len(self.children) - 1
+        elif self.highlighted <= 0:
+            self.post_message(self.LeaveUp(self))
+        else:
+            self.highlighted -= 1
