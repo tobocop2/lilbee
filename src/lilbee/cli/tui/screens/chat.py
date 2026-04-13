@@ -510,6 +510,7 @@ class ChatScreen(Screen[None]):
             settings.set_value(cfg.data_root, "chat_model", tagged)
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=tagged))
+            self._apply_model_change()
             self._refresh_model_bar()
         else:
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -808,6 +809,21 @@ class ChatScreen(Screen[None]):
         inp = self.query_one("#chat-input", Input)
         if inp.has_focus:
             self.query_one("#chat-log", VerticalScroll).focus()
+
+    def _apply_model_change(self) -> None:
+        """Cancel active stream (if any) and reset services for the new model."""
+        if self.streaming:
+            self.action_cancel_stream()
+            self.call_later(self._deferred_service_reset)
+        else:
+            reset_services()
+
+    def _deferred_service_reset(self) -> None:
+        """Reset services once workers have drained."""
+        if self.workers:
+            self.call_later(self._deferred_service_reset)
+            return
+        reset_services()
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""

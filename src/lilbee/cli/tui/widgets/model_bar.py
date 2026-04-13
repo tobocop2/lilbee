@@ -223,25 +223,10 @@ class ModelBar(Widget, can_focus=False):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.app.screen
-        if isinstance(screen, ChatScreen) and screen.streaming:
-            screen.action_cancel_stream()
-            self.app.call_later(self._deferred_reset)
+        if isinstance(screen, ChatScreen):
+            screen._apply_model_change()
         else:
-            self._reset_services()
-
-    def _deferred_reset(self) -> None:
-        """Reset services after workers have finished (avoids freeing in-use models)."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = self.app.screen
-        if isinstance(screen, ChatScreen) and screen.workers:
-            self.app.call_later(self._deferred_reset)
-            return
-        self._reset_services()
-
-    @staticmethod
-    def _reset_services() -> None:
-        reset_services()
+            reset_services()
 
     def refresh_models(self) -> None:
         """Re-scan models (called after downloads complete)."""
