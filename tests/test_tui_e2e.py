@@ -152,10 +152,7 @@ class TestModelClassification:
                     seen.add(ref)
 
             mock_native.side_effect = fill_buckets
-            with (
-                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
-                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
-            ):
+            with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
                 chat, embed = _classify_installed_models()
 
         chat_refs = [o.ref for o in chat]
@@ -174,7 +171,6 @@ class TestModelClassification:
         with (
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models"),
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
-            mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
         ):
             chat, embed = _classify_installed_models()
 
