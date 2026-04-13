@@ -75,25 +75,6 @@ def _ensure_spacy_model() -> Any:
             ) from exc
 
 
-_nlp_cache: Any = None
-_nlp_failed: bool = False
-
-
-def _get_nlp() -> Any | None:
-    """Lazy-load and cache the spaCy model (used only by ConceptGraph)."""
-    global _nlp_cache, _nlp_failed
-    if _nlp_failed:
-        return None
-    if _nlp_cache is not None:
-        return _nlp_cache
-    try:
-        _nlp_cache = _ensure_spacy_model()
-        return _nlp_cache
-    except ImportError:
-        log.warning("Concept graph disabled: spaCy model unavailable")
-        _nlp_failed = True
-        return None
-
 
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
     """Extract deduplicated, filtered noun chunks from a spaCy doc."""
@@ -192,11 +173,19 @@ class ConceptGraph:
         self._config = config
         self._store = store
         self._nlp: Any = None
+        self._nlp_unavailable: bool = False
 
     def _ensure_nlp(self) -> Any | None:
         """Lazy-load and cache the spaCy model. Returns None if unavailable."""
+        if self._nlp_unavailable:
+            return None
         if self._nlp is None:
-            self._nlp = _get_nlp()
+            try:
+                self._nlp = _ensure_spacy_model()
+            except ImportError:
+                log.warning("Concept graph disabled: spaCy model unavailable")
+                self._nlp_unavailable = True
+                return None
         return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
@@ -440,6 +429,7 @@ class ConceptGraph:
     def reset_nlp_cache(self) -> None:
         """Clear the spaCy model cache. For testing only."""
         self._nlp = None
+        self._nlp_unavailable = False
 
 
 class ConceptGraphClusterer:

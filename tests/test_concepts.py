@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import lilbee.concepts as concepts_mod
 import lilbee.services as svc_mod
 from lilbee.concepts import ConceptGraph
 from lilbee.config import cfg
@@ -51,14 +50,10 @@ def mock_svc():
 
 @pytest.fixture(autouse=True)
 def reset_singletons(mock_svc):
-    """Reset ConceptGraph nlp cache and module-level globals between tests."""
+    """Reset ConceptGraph nlp cache between tests."""
     mock_svc.concepts.reset_nlp_cache()
-    concepts_mod._nlp_cache = None
-    concepts_mod._nlp_failed = False
     yield
     mock_svc.concepts.reset_nlp_cache()
-    concepts_mod._nlp_cache = None
-    concepts_mod._nlp_failed = False
 
 
 @pytest.fixture()
@@ -136,35 +131,35 @@ class TestConceptsAvailable:
 
 
 class TestExtractConcepts:
-    @patch("lilbee.concepts._get_nlp")
-    def test_basic_extraction(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp(
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_basic_extraction(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp(
             {"hello world": ["machine learning", "neural networks"]}
         )
         result = cg.extract_concepts("hello world")
         assert result == ["machine learning", "neural networks"]
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_deduplication(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["Concept", "concept", "Other"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_deduplication(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"text": ["Concept", "concept", "Other"]})
         result = cg.extract_concepts("text")
         assert result == ["concept", "other"]
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_max_cap(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_max_cap(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
         result = cg.extract_concepts("text", max_concepts=2)
         assert len(result) == 2
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_empty_input(self, mock_get_nlp, cg):
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_empty_input(self, mock_spacy, cg):
         result = cg.extract_concepts("")
         assert result == []
-        mock_get_nlp.assert_not_called()
+        mock_spacy.assert_not_called()
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_filters_short_concepts(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["a", "ok", "good concept"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_filters_short_concepts(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"text": ["a", "ok", "good concept"]})
         result = cg.extract_concepts("text")
         assert "a" not in result
         assert "ok" in result
@@ -172,9 +167,9 @@ class TestExtractConcepts:
 
 
 class TestExtractConceptsBatch:
-    @patch("lilbee.concepts._get_nlp")
-    def test_batch_extraction(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp(
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_batch_extraction(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp(
             {"doc1": ["concept a"], "doc2": ["concept b", "concept c"]}
         )
         result = cg.extract_concepts_batch(["doc1", "doc2"])
@@ -182,28 +177,28 @@ class TestExtractConceptsBatch:
         assert result[0] == ["concept a"]
         assert result[1] == ["concept b", "concept c"]
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_empty_input(self, mock_get_nlp, cg):
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_empty_input(self, mock_spacy, cg):
         result = cg.extract_concepts_batch([])
         assert result == []
-        mock_get_nlp.assert_not_called()
+        mock_spacy.assert_not_called()
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_batch_filters_short_concepts(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["a", "ok", "good"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_batch_filters_short_concepts(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"text": ["a", "ok", "good"]})
         result = cg.extract_concepts_batch(["text"])
         assert result == [["ok", "good"]]
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_batch_deduplicates(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["Alpha", "alpha", "Beta"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_batch_deduplicates(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"text": ["Alpha", "alpha", "Beta"]})
         result = cg.extract_concepts_batch(["text"])
         assert result == [["alpha", "beta"]]
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_batch_caps_at_max(self, mock_get_nlp, cg):
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_batch_caps_at_max(self, mock_spacy, cg):
         cfg.concept_max_per_chunk = 2
-        mock_get_nlp.return_value = _make_mock_nlp({"text": ["aa", "bb", "cc", "dd"]})
+        mock_spacy.return_value = _make_mock_nlp({"text": ["aa", "bb", "cc", "dd"]})
         result = cg.extract_concepts_batch(["text"])
         assert len(result[0]) == 2
 
@@ -256,52 +251,38 @@ class TestEnsureSpacyModel:
                 _ensure_spacy_model()
 
 
-class TestGetNlpFallback:
-    def test_returns_none_when_model_unavailable(self):
-        with patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model")):
-            from lilbee.concepts import _get_nlp
-
-            result = _get_nlp()
-            assert result is None
-            assert concepts_mod._nlp_failed is True
-
-    def test_caches_failure_state(self):
-        with patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model")) as m:
-            from lilbee.concepts import _get_nlp
-
-            _get_nlp()
-            _get_nlp()
-            # Only called once; second call uses cached failure
-            m.assert_called_once()
-
-    def test_caches_successful_load(self):
-        mock_nlp = MagicMock()
-        with patch("lilbee.concepts._ensure_spacy_model", return_value=mock_nlp) as m:
-            from lilbee.concepts import _get_nlp
-
-            result1 = _get_nlp()
-            result2 = _get_nlp()
-            m.assert_called_once()
-            assert result1 is mock_nlp
-            assert result2 is mock_nlp
-
-
 class TestGracefulDegradation:
-    def test_extract_concepts_returns_empty_when_nlp_unavailable(self, cg):
-        concepts_mod._nlp_failed = True
-        cg.reset_nlp_cache()
+    @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
+    def test_ensure_nlp_returns_none_on_failure(self, mock_spacy, cg):
+        assert cg._ensure_nlp() is None
+
+    @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
+    def test_caches_failure_state(self, mock_spacy, cg):
+        cg._ensure_nlp()
+        cg._ensure_nlp()
+        mock_spacy.assert_called_once()
+
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_caches_successful_load(self, mock_spacy, cg):
+        mock_nlp = MagicMock()
+        mock_spacy.return_value = mock_nlp
+        assert cg._ensure_nlp() is mock_nlp
+        assert cg._ensure_nlp() is mock_nlp
+        mock_spacy.assert_called_once()
+
+    @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
+    def test_extract_concepts_returns_empty(self, mock_spacy, cg):
         assert cg.extract_concepts("some text about python") == []
 
-    def test_extract_concepts_batch_returns_empty_lists_when_nlp_unavailable(self, cg):
-        concepts_mod._nlp_failed = True
-        cg.reset_nlp_cache()
+    @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
+    def test_extract_concepts_batch_returns_empty_lists(self, mock_spacy, cg):
         result = cg.extract_concepts_batch(["text one", "text two"])
         assert result == [[], []]
 
-    def test_expand_query_returns_empty_when_nlp_unavailable(self, cg):
-        concepts_mod._nlp_failed = True
-        cg.reset_nlp_cache()
+    @patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model"))
+    def test_expand_query_returns_empty(self, mock_spacy, cg):
         assert cg.expand_query("python frameworks") == []
+
 
 class TestBuildFromChunks:
     @patch("lilbee.lock.write_lock")
@@ -360,9 +341,9 @@ class TestBoostResults:
 
 
 class TestExpandQuery:
-    @patch("lilbee.concepts._get_nlp")
-    def test_expand_query(self, mock_get_nlp, cg, mock_svc):
-        mock_get_nlp.return_value = _make_mock_nlp({"python frameworks": ["python"]})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_expand_query(self, mock_spacy, cg, mock_svc):
+        mock_spacy.return_value = _make_mock_nlp({"python frameworks": ["python"]})
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"source": "python", "target": "django", "weight": 1.0},
@@ -373,9 +354,9 @@ class TestExpandQuery:
         assert "django" in related
         assert "flask" in related
 
-    @patch("lilbee.concepts._get_nlp")
-    def test_expand_query_no_concepts(self, mock_get_nlp, cg):
-        mock_get_nlp.return_value = _make_mock_nlp({"???": []})
+    @patch("lilbee.concepts._ensure_spacy_model")
+    def test_expand_query_no_concepts(self, mock_spacy, cg):
+        mock_spacy.return_value = _make_mock_nlp({"???": []})
         assert cg.expand_query("???") == []
 
 
