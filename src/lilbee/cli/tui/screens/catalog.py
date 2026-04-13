@@ -518,14 +518,9 @@ class CatalogScreen(Screen[None]):
 
     def _safe_call(self, fn: Any, *args: Any, **kwargs: Any) -> None:
         """Call fn via call_from_thread, suppressing errors if app context is gone."""
-        try:
-            self.app.call_from_thread(fn, *args, **kwargs)
-        except Exception:
-            log.debug(
-                "_safe_call failed for %s",
-                fn.__name__ if hasattr(fn, "__name__") else fn,
-                exc_info=True,
-            )
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
+        call_from_thread(self, fn, *args, **kwargs)
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp

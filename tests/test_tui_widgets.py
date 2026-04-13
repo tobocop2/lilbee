@@ -2426,9 +2426,140 @@ class TestTaskBarAdditional:
             await pilot.pause()
 
 
-# ---------------------------------------------------------------------------
-# GridSelect additional coverage — highlight_first, highlight_last, cursor moves
-# ---------------------------------------------------------------------------
+class TestTaskBarIndeterminate:
+    """Tests for indeterminate progress bar rendering (BEE-65f) and
+    redundant ProgressBar update avoidance (BEE-jmj, BEE-73k).
+    """
+
+    async def test_add_task_indeterminate_creates_indeterminate_task(self) -> None:
+        """Tasks created with indeterminate=True start in indeterminate mode."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync", indeterminate=True)
+            task = bar.queue.get_task(task_id)
+            assert task is not None
+            assert task.indeterminate is True
+
+    async def test_enqueue_indeterminate_flag(self) -> None:
+        """TaskQueue.enqueue passes indeterminate to the Task."""
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        tid = q.enqueue(lambda: None, "Add", "add", indeterminate=True)
+        task = q.get_task(tid)
+        assert task is not None
+        assert task.indeterminate is True
+
+    async def test_indeterminate_renders_pulsing_bar(self) -> None:
+        """An indeterminate active task renders ProgressBar with total=None."""
+        from textual.widgets import ProgressBar as PB
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Sync", "sync", indeterminate=True)
+            bar.queue.advance()
+            bar._refresh_display()
+            # Wait for the panel to compose its children
+            await pilot.pause()
+            # Re-render now that children are mounted
+            bar._refresh_display()
+            await pilot.pause()
+            panel = bar._panels[task_id]
+            pb = panel.query_one(PB)
+            assert pb.total is None
+
+    async def test_progress_bar_not_updated_when_unchanged(self) -> None:
+        """Redundant ProgressBar.update calls are skipped when state matches."""
+        from textual.widgets import ProgressBar as PB
+
+        from lilbee.cli.tui.task_queue import Task, TaskStatus
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Panel children are now composed. Re-render to populate tracking state.
+            bar._refresh_display()
+            await pilot.pause()
+
+            panel = bar._panels[task_id]
+            pb = panel.query_one(PB)
+            assert panel._last_progress == 0
+            assert panel._last_indeterminate is False
+
+            # Same state renders should not touch the progress bar
+            original_update = pb.update
+            call_count = 0
+
+            def counting_update(**kwargs: object) -> None:
+                nonlocal call_count
+                call_count += 1
+                original_update(**kwargs)
+
+            pb.update = counting_update  # type: ignore[assignment]
+
+            task = Task(
+                task_id=task_id,
+                fn=lambda: None,
+                name="Download",
+                task_type="download",
+                status=TaskStatus.ACTIVE,
+                progress=0,
+            )
+            bar._render_task_panel(task_id, task)
+            assert call_count == 0, "Should skip ProgressBar.update when state unchanged"
+
+    async def test_progress_bar_updated_when_progress_changes(self) -> None:
+        """ProgressBar.update is called when task progress changes."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            task_id = bar.add_task("Download", "download")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            # Panel children are now composed. Re-render to populate tracking state.
+            bar._refresh_display()
+            await pilot.pause()
+
+            panel = bar._panels[task_id]
+            assert panel._last_progress == 0
+
+            # Now change progress and verify the bar updates
+            bar.update_task(task_id, 50, "halfway")
+            bar._refresh_display()
+            await pilot.pause()
+            assert panel._last_progress == 50
+
+    async def test_controller_add_task_indeterminate(self) -> None:
+        """TaskBarController.add_task passes indeterminate through to queue."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            controller = app.task_bar
+            assert isinstance(controller, TaskBarController)
+            task_id = controller.add_task("Sync", "sync", indeterminate=True)
+            task = controller.queue.get_task(task_id)
+            assert task is not None
+            assert task.indeterminate is True
 
 
 class TestGridSelectExtra:
@@ -2669,8 +2800,8 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             assert bar.display is True
 
-    async def test_after_model_change_with_streaming_chat(self) -> None:
-        """Cancel stream and defer reset when chat screen is streaming."""
+    async def test_after_model_change_with_chat_screen(self) -> None:
+        """Delegate to ChatScreen._apply_model_change when on a chat screen."""
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
@@ -2681,23 +2812,14 @@ class TestModelBarPopulateBranches:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             mock_screen = mock.MagicMock(spec=ChatScreen)
-            mock_screen.streaming = True
-            mock_screen.workers = []
-            with (
-                mock.patch.object(
-                    type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
-                ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
+            with mock.patch.object(
+                type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
             ):
                 bar._after_model_change()
-                mock_screen.action_cancel_stream.assert_called_once()
-                mock_reset.assert_not_called()
-                await pilot.pause()
-                await pilot.pause()
-                mock_reset.assert_called_once()
+                mock_screen._apply_model_change.assert_called_once()
 
-    async def test_after_model_change_no_streaming(self) -> None:
-        """Reset services immediately when not streaming."""
+    async def test_after_model_change_no_chat_screen(self) -> None:
+        """Reset services directly when not on a chat screen."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
         cfg.chat_model = "test-model"
@@ -2709,32 +2831,6 @@ class TestModelBarPopulateBranches:
             with mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset:
                 bar._after_model_change()
             mock_reset.assert_called_once()
-
-    async def test_deferred_reset_waits_for_workers(self) -> None:
-        """_deferred_reset retries when workers are still running."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-        from lilbee.cli.tui.widgets.model_bar import ModelBar
-
-        cfg.chat_model = "test-model"
-        cfg.embedding_model = "test-embed"
-        app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(ModelBar)
-            mock_screen = mock.MagicMock(spec=ChatScreen)
-            mock_screen.workers = [mock.MagicMock()]
-            with (
-                mock.patch.object(
-                    type(app), "screen", new_callable=mock.PropertyMock, return_value=mock_screen
-                ),
-                mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services") as mock_reset,
-            ):
-                bar._deferred_reset()
-                mock_reset.assert_not_called()
-                mock_screen.workers = []
-                await pilot.pause()
-                await pilot.pause()
-                mock_reset.assert_called_once()
 
 
 class TestModelBarCfgSourceOfTruth:

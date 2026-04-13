@@ -96,9 +96,15 @@ def move_up_and_clear(n: int) -> bytes:
     return ((MOVE_UP + CLEAR_LINE) * n).encode()
 
 
-def clear_screen() -> bytes:
-    """Full terminal reset for clean handoff to TUI."""
-    return b"\033[2J\033[H\033[?25h"
+def clear_screen(frame_height: int) -> bytes:
+    """Erase the splash frame area and restore the cursor to the top.
+
+    Uses line-by-line clear (move-up + erase) instead of ``\\033[2J\\033[H``
+    so the subprocess never writes a cursor-home escape. A cursor-home
+    would land on the Textual alt-screen if the TUI starts before the
+    subprocess has finished, leaving a stuck cursor artifact at (0,0).
+    """
+    return move_up_and_clear(frame_height) + SHOW_CURSOR.encode()
 
 
 def _read_eof(pipe_fd: int) -> bool:
@@ -183,7 +189,7 @@ def animation_loop(pipe_fd: int) -> None:
         pass
     finally:
         with contextlib.suppress(OSError):
-            os.write(fd, clear_screen())
+            os.write(fd, clear_screen(frame_height))
 
 
 def main() -> None:

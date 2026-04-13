@@ -75,26 +75,90 @@ class TestStartStop:
 
 
 class TestDismiss:
-    def test_dismiss_no_env_var(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            dismiss()  # should not raise
+    def test_dismiss_no_env_var_no_handle(self) -> None:
+        import lilbee.splash as splash_mod
+
+        original = splash_mod._active_handle
+        splash_mod._active_handle = None
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                dismiss()  # should not raise
+        finally:
+            splash_mod._active_handle = original
 
     def test_dismiss_closes_fd_and_clears_env(self) -> None:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
         os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        dismiss()
-        assert _SPLASH_FD_ENV not in os.environ
-        with pytest.raises(OSError):
-            os.close(write_fd)  # already closed
+        import lilbee.splash as splash_mod
+
+        original = splash_mod._active_handle
+        splash_mod._active_handle = None
+        try:
+            dismiss()
+            assert _SPLASH_FD_ENV not in os.environ
+            with pytest.raises(OSError):
+                os.close(write_fd)  # already closed
+        finally:
+            splash_mod._active_handle = original
 
     def test_dismiss_tolerates_already_closed_fd(self) -> None:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
         os.close(write_fd)
         os.environ[_SPLASH_FD_ENV] = str(write_fd)
-        dismiss()  # should not raise
-        assert _SPLASH_FD_ENV not in os.environ
+        import lilbee.splash as splash_mod
+
+        original = splash_mod._active_handle
+        splash_mod._active_handle = None
+        try:
+            dismiss()  # should not raise
+            assert _SPLASH_FD_ENV not in os.environ
+        finally:
+            splash_mod._active_handle = original
+
+    def test_dismiss_waits_for_process_and_clears_handle(self) -> None:
+        """dismiss() waits for the subprocess and clears _active_handle
+        so atexit does not re-run stop() while Textual owns the terminal.
+        """
+        import lilbee.splash as splash_mod
+
+        original = splash_mod._active_handle
+        try:
+            with patch("lilbee.splash._should_skip", return_value=False):
+                handle = start()
+                assert handle is not None
+                splash_mod._active_handle = handle
+                os.environ[_SPLASH_FD_ENV] = str(handle.write_fd)
+
+                dismiss()
+
+                assert splash_mod._active_handle is None
+                assert handle.process.poll() is not None  # exited
+        finally:
+            splash_mod._active_handle = original
+            os.environ.pop(_SPLASH_FD_ENV, None)
+
+    def test_dismiss_kills_on_timeout(self) -> None:
+        """dismiss() kills the subprocess when it doesn't exit within timeout."""
+        import subprocess
+        from unittest.mock import MagicMock
+
+        import lilbee.splash as splash_mod
+        from lilbee.splash import SplashHandle
+
+        original = splash_mod._active_handle
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 3), None]
+        handle = SplashHandle(process=mock_proc, write_fd=-1)
+        splash_mod._active_handle = handle
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                dismiss()
+            mock_proc.kill.assert_called_once()
+            assert splash_mod._active_handle is None
+        finally:
+            splash_mod._active_handle = original
 
 
 class TestLogoFrames:
@@ -168,12 +232,14 @@ class TestRenderFrame:
 
 
 class TestClearScreen:
-    def test_contains_escape_codes(self) -> None:
-        result = clear_screen()
+    def test_uses_line_erase_not_cursor_home(self) -> None:
+        result = clear_screen(5)
         text = result.decode()
-        assert "\033[2J" in text
-        assert "\033[H" in text
-        assert "\033[?25h" in text
+        assert "\033[A" in text  # move-up
+        assert "\033[2K" in text  # clear-line
+        assert "\033[?25h" in text  # cursor restore
+        assert "\033[2J" not in text  # no full-screen clear
+        assert "\033[H" not in text  # no cursor home
 
 
 class TestMoveUpAndClear:
