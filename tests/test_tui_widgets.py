@@ -1541,6 +1541,43 @@ class TestLilbeeAppViewTabs:
             bar = app.screen.query_one(ViewTabs)
             assert bar.active_view == "Chat"
 
+    async def test_view_tabs_uses_pill_for_active(self) -> None:
+        """Active tab should render as a pill with half-block characters."""
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.status_bar import ViewTabs
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            app.screen.query_one(ViewTabs)  # verify ViewTabs is mounted
+            static = app.screen.query_one("#view-tabs-content")
+            rendered = str(static._Static__content)  # type: ignore[attr-defined]
+            assert "\u258c" in rendered  # left half-block from pill
+            assert "\u2590" in rendered  # right half-block from pill
+
+    async def test_view_tabs_dot_separators(self) -> None:
+        """Inactive tabs should be separated by dot characters."""
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            while not isinstance(app.screen, ChatScreen):
+                app.pop_screen()
+                await pilot.pause()
+            static = app.screen.query_one("#view-tabs-content")
+            rendered = str(static._Static__content)  # type: ignore[attr-defined]
+            assert "\u00b7" in rendered  # middle dot separator
+
 
 class TestPill:
     def test_pill_from_string(self) -> None:

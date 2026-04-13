@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.pill import pill
 
-_MODE_STYLES: dict[str, str] = {
-    msg.MODE_NORMAL: "bold white on dark_blue",
-    msg.MODE_INSERT: "bold white on dark_green",
+_MODE_COLORS: dict[str, str] = {
+    msg.MODE_NORMAL: "$primary",
+    msg.MODE_INSERT: "$success",
 }
 
-_DEFAULT_MODE_STYLE = "bold white on dark_red"
+_DEFAULT_MODE_COLOR = "$error"
+
+_DOT_SEP = " \u00b7 "  # middle dot separator
 
 
 class ViewTabs(Widget):
@@ -48,13 +52,30 @@ class ViewTabs(Widget):
         self._refresh()
 
     def _refresh(self) -> None:
-        parts: list[str] = []
-        if self.mode_text:
-            style = _MODE_STYLES.get(self.mode_text, _DEFAULT_MODE_STYLE)
-            parts.append(f"[{style}] {self.mode_text} [/] ")
+        if not self.is_mounted:
+            return
+        _Part = Content | str | tuple[str, str]
+        parts: list[_Part] = []
+
+        # Build tab strip
+        tab_parts: list[_Part] = []
         for name in msg.get_nav_views():
             if name == self.active_view:
-                parts.append(f"[bold reverse] {name} [/]")
+                tab_parts.append(pill(f" {name} ", "$primary", "$text"))
             else:
-                parts.append(f" [dim]{name}[/] ")
-        self.query_one("#view-tabs-content", Static).update("".join(parts))
+                tab_parts.append((f" {name} ", "dim"))
+        # Join with dot separators
+        joined: list[_Part] = []
+        for i, part in enumerate(tab_parts):
+            if i > 0:
+                joined.append((_DOT_SEP, "$text-muted"))
+            joined.append(part)
+        parts.extend(joined)
+
+        # Mode pill (right-aligned)
+        if self.mode_text:
+            color = _MODE_COLORS.get(self.mode_text, _DEFAULT_MODE_COLOR)
+            parts.append("  ")
+            parts.append(pill(f" {self.mode_text} ", color, "$text"))
+
+        self.query_one("#view-tabs-content", Static).update(Content.assemble(*parts))
