@@ -588,6 +588,9 @@ class Searcher:
                         yield st
             except (ConnectionError, OSError) as exc:
                 yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+            finally:
+                if hasattr(raw, "close"):
+                    raw.close()
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history)
@@ -609,5 +612,8 @@ class Searcher:
                     yield st
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+        finally:
+            if hasattr(raw_stream, "close"):
+                raw_stream.close()
         citations = deduplicate_sources(results)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)

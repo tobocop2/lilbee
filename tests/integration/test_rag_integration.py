@@ -411,6 +411,12 @@ class TestStructuredQueries:
 class TestAskStream:
     """Tests for ask_stream() with real LLM streaming."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_provider(self):
+        """Reset the provider between tests to release any held model locks."""
+        yield
+        reset_provider()
+
     def test_stream_yields_tokens(self, rag_pipeline):
         """ask_stream() yields StreamToken objects with content."""
         from lilbee.reasoning import StreamToken
