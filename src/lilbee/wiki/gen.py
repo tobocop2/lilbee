@@ -287,7 +287,7 @@ def _check_faithfulness(
     try:
         response = provider.chat(messages, stream=False)
         return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
-    except (ConnectionError, OSError, RuntimeError) as exc:
+    except Exception as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
         return 0.0
 
@@ -402,17 +402,21 @@ def _generate_page(
     try:
         response = provider.chat(messages, stream=False)
         wiki_text = strip_reasoning(cast(str, response)).strip()
-    except (ConnectionError, OSError, RuntimeError) as exc:
+    except Exception as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
+        _emit("failed", error=str(exc))
         return None
 
     if not wiki_text:
+        log.warning("LLM returned empty response for wiki page %s", label)
+        _emit("failed", error="Model returned empty response")
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
     verified = _verify_citations(citation_resolver(parsed_citations), chunks, label, config)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
+        _emit("failed", error="No valid citations found")
         return None
 
     _emit("faithfulness_check")
