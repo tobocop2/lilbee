@@ -650,6 +650,7 @@ class TestModelsPull:
         assert any('"total": 1000' in e for e in non_empty)
 
     async def test_yields_progress_events_litellm(self):
+        """Litellm pulls use on_progress (dict), not on_bytes (int, int)."""
         mock_manager = MagicMock()
 
         def fake_pull(model, source, *, on_progress=None, on_bytes=None):
