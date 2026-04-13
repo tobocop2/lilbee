@@ -152,7 +152,10 @@ class TestModelClassification:
                     seen.add(ref)
 
             mock_native.side_effect = fill_buckets
-            with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
+            with (
+                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
+            ):
                 chat, embed = _classify_installed_models()
 
         chat_refs = [o.ref for o in chat]
@@ -171,6 +174,7 @@ class TestModelClassification:
         with (
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models"),
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
+            mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
         ):
             chat, embed = _classify_installed_models()
 
@@ -1112,6 +1116,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
+                await pilot.pause()
 
                 all_cards = app.screen.query(ModelCard)
                 initial_count = len(all_cards)
@@ -1119,6 +1124,7 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
+                await pilot.pause()
                 await pilot.pause()
 
                 all_cards_after = app.screen.query(ModelCard)
