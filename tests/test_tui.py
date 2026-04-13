@@ -28,7 +28,7 @@ def _isolated_cfg(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
-    """Patch out embedding model checks and background workers so ChatScreen mounts cleanly."""
+    """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
     with (
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         mock.patch(
