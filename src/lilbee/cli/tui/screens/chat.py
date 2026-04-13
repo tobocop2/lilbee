@@ -699,12 +699,18 @@ class ChatScreen(Screen[None]):
                 if not chunks:
                     continue
 
+                last_error: str = ""
+
                 def _on_progress(
                     stage: str,
                     _data: dict[str, object],
                     source_name: str = source,
                     source_idx: int = idx,
                 ) -> None:
+                    nonlocal last_error
+                    if stage == "failed":
+                        last_error = str(_data.get("error", "Unknown error"))
+                        return
                     fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
                     pct = int((source_idx + fraction) * 100 / total)
                     call_from_thread(
@@ -729,7 +735,8 @@ class ChatScreen(Screen[None]):
                 )
                 call_from_thread(self, self._refresh_wiki_screen)
             else:
-                call_from_thread(self, task_bar.fail_task, task_id, "No pages generated")
+                fail_reason = last_error or "No pages generated"
+                call_from_thread(self, task_bar.fail_task, task_id, fail_reason)
                 call_from_thread(
                     self,
                     self.notify,

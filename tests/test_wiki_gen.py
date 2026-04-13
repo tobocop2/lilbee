@@ -397,6 +397,93 @@ class TestGenerateSummaryPage:
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
 
+    def test_provider_error_returns_none(self, tmp_path: Path):
+        """ProviderError from chat() is caught and returns None."""
+        from lilbee.providers.base import ProviderError
+
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = ProviderError("model not found", provider="litellm")
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is None
+
+    def test_unexpected_exception_returns_none(self, tmp_path: Path):
+        """Unexpected exceptions (ValueError, KeyError, etc.) are caught."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = ValueError("context window exceeded")
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is None
+
+    def test_llm_failure_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage with error on LLM failure."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("GPU OOM")
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "GPU OOM" in str(failed_events[0][1]["error"])
+
+    def test_empty_response_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage when model returns empty."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = _mock_provider("   ")
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "empty" in str(failed_events[0][1]["error"]).lower()
+
+    def test_faithfulness_provider_error_uses_zero(self, tmp_path: Path):
+        """ProviderError during faithfulness check returns score 0.0."""
+        from lilbee.providers.base import ProviderError
+
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+
+        wiki_text = (
+            "# Test\n\n"
+            "> Content.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Content"'
+        )
+        provider = MagicMock()
+        provider.chat.side_effect = [
+            wiki_text,
+            ProviderError("timeout", provider="litellm"),
+        ]
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is not None
+        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
+
     def test_inference_citations_pass_verification(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content here.")
