@@ -2824,6 +2824,17 @@ async def test_chat_on_setup_complete_skipped_shows_banner():
         assert banner.display is True
 
 
+async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
+    """Skipping wizard does not show banner when embedding model is already configured."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_embedding_ready", return_value=True):
+            app.screen._on_setup_complete("skipped")
+            await _pilot.pause()
+            banner = app.screen.query_one("#chat-only-banner")
+            assert banner.display is False
+
+
 async def test_chat_on_setup_complete_success():
     """Cover _on_setup_complete with successful setup."""
     app = ChatTestApp()
