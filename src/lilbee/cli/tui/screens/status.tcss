@@ -8,6 +8,11 @@ Collapsible {
     padding: 0 1;
 }
 
+Collapsible > CollapsibleTitle {
+    color: $primary;
+    text-style: bold;
+}
+
 #config-info, #arch-info, #storage-info {
     padding: 1 1;
     height: auto;

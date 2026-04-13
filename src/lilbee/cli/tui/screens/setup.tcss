@@ -75,8 +75,8 @@ ModelCard {
 }
 
 ModelCard.-selected {
-    border-left: thick $success;
-    background: $success 10%;
+    border-left: thick $primary;
+    background: $primary 10%;
 }
 
 GridSelect:focus ModelCard.-highlight {
@@ -85,12 +85,12 @@ GridSelect:focus ModelCard.-highlight {
 }
 
 GridSelect:focus ModelCard.-highlight.-selected {
-    border-left: thick $success;
+    border-left: thick $primary;
 }
 
 .section-heading {
     text-style: bold;
-    color: $text-muted;
+    color: $primary;
     padding: 1 1 0 2;
 }
 
