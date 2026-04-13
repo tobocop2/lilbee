@@ -88,7 +88,10 @@ pythonpath = [".", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
-markers = ["slow: integration tests that download models or take >10s"]
+markers = [
+    "slow: integration tests that download models or take >10s",
+    "real_model_classify: opt out of the global _classify_installed_models mock",
+]
 
 [tool.coverage.run]
 source = ["lilbee"]

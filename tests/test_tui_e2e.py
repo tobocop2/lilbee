@@ -118,6 +118,7 @@ class TestEmbeddingAvailable:
         assert embedder.embedding_available() is False
 
 
+@pytest.mark.real_model_classify
 class TestModelClassification:
     def test_mmproj_filtered_out(self):
         from lilbee.cli.tui.widgets.model_bar import _is_mmproj

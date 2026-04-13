@@ -396,6 +396,7 @@ class TestIsMmproj:
         assert _is_mmproj("qwen3:8b") is False
 
 
+@pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
