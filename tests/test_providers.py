@@ -2199,3 +2199,126 @@ class TestLiteLLMListModelsRouting:
 
         headers = mock_get.call_args[1].get("headers", {})
         assert headers.get("Authorization") == "Bearer sk-secret"
+
+
+class TestNeedsApiBase:
+    def test_ollama_prefixed_model_needs_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import _needs_api_base
+
+        assert _needs_api_base("ollama/qwen3:8b") is True
+
+    def test_bare_model_needs_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import _needs_api_base
+
+        assert _needs_api_base("qwen3:8b") is True
+
+    def test_openai_prefixed_model_skips_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import _needs_api_base
+
+        assert _needs_api_base("openai/gpt-4o") is False
+
+    def test_anthropic_prefixed_model_skips_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import _needs_api_base
+
+        assert _needs_api_base("anthropic/claude-sonnet-4-6") is False
+
+    def test_gemini_prefixed_model_skips_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import _needs_api_base
+
+        assert _needs_api_base("gemini/gemini-pro") is False
+
+
+class TestChatApiBaseRouting:
+    """Verify that chat() omits api_base for non-Ollama provider-prefixed models."""
+
+    def _make_fake_litellm(self) -> mock.MagicMock:
+        fake = mock.MagicMock()
+        resp = mock.MagicMock()
+        resp.choices = [mock.MagicMock()]
+        resp.choices[0].message.content = "hello"
+        fake.completion.return_value = resp
+        return fake
+
+    def test_ollama_model_passes_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        fake = self._make_fake_litellm()
+
+        with mock.patch.dict("sys.modules", {"litellm": fake}):
+            provider.chat([{"role": "user", "content": "hi"}], model="qwen3:0.6b")
+
+        call_kwargs = fake.completion.call_args[1]
+        assert call_kwargs["api_base"] == "http://localhost:11434"
+        assert call_kwargs["model"] == "ollama/qwen3:0.6b"
+
+    def test_frontier_model_omits_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        fake = self._make_fake_litellm()
+
+        with mock.patch.dict("sys.modules", {"litellm": fake}):
+            provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
+
+        call_kwargs = fake.completion.call_args[1]
+        assert "api_base" not in call_kwargs
+        assert call_kwargs["model"] == "openai/gpt-4o"
+
+    def test_anthropic_model_omits_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        fake = self._make_fake_litellm()
+
+        with mock.patch.dict("sys.modules", {"litellm": fake}):
+            provider.chat([{"role": "user", "content": "hi"}], model="anthropic/claude-sonnet-4-6")
+
+        call_kwargs = fake.completion.call_args[1]
+        assert "api_base" not in call_kwargs
+
+    def test_chat_calls_inject_provider_keys(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        fake = self._make_fake_litellm()
+
+        with (
+            mock.patch.dict("sys.modules", {"litellm": fake}),
+            mock.patch("lilbee.providers.litellm_provider.inject_provider_keys") as mock_inject,
+        ):
+            provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
+
+        mock_inject.assert_called_once()
+
+
+class TestEmbedApiBaseRouting:
+    """Verify that embed() omits api_base for non-Ollama provider-prefixed models."""
+
+    def test_ollama_embed_passes_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        cfg.embedding_model = "nomic-embed-text"
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+
+        with mock.patch.dict("sys.modules", {"litellm": fake}):
+            provider.embed(["hello"])
+
+        call_kwargs = fake.embedding.call_args[1]
+        assert call_kwargs["api_base"] == "http://localhost:11434"
+
+    def test_prefixed_embed_omits_api_base(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        cfg.embedding_model = "openai/text-embedding-3-small"
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+
+        with mock.patch.dict("sys.modules", {"litellm": fake}):
+            provider.embed(["hello"])
+
+        call_kwargs = fake.embedding.call_args[1]
+        assert "api_base" not in call_kwargs
