@@ -569,6 +569,8 @@ def rm_cmd(
     data = remove_model_data(ref, source=src)
     if cfg.json_mode:
         json_output(data.model_dump())
+        if not data.deleted:
+            raise typer.Exit(1)
         return
     if not data.deleted:
         console.print(f"[{theme.WARNING}]Not found: {ref}[/{theme.WARNING}]")

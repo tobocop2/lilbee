@@ -177,6 +177,7 @@ class LlamaCppProvider(LLMProvider):
                 filtered = filter_options(options)
                 if "num_predict" in filtered:
                     filtered["max_tokens"] = filtered.pop("num_predict")
+                filtered.pop("num_ctx", None)  # model-load param, not per-call
                 kwargs.update(filtered)
             response = llm.create_chat_completion(messages=messages, stream=stream, **kwargs)
             if stream:
