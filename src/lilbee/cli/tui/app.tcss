@@ -9,11 +9,11 @@ TabbedContent > ContentSwitcher {
 }
 
 Footer {
-    background: transparent;
+    background: $surface;
 }
 
 Footer > .footer-key--key {
-    color: $text;
+    color: $primary;
     background: transparent;
     padding: 0 1;
 }

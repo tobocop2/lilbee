@@ -82,6 +82,8 @@ def mock_svc():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
+
     with (
         patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
         patch(
@@ -92,9 +94,7 @@ def _patch_chat_setup():
             "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
             return_value=([], []),
         ),
-        patch(
-            "lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount",
-        ),
+        patch.object(ModelBar, "_scan_models"),
     ):
         yield
 

@@ -5,7 +5,7 @@ ModelCard {
     pointer: pointer;
 
     &:hover {
-        background: $panel;
+        background: $surface;
     }
 
     #card-header {
@@ -34,12 +34,12 @@ ModelCard {
     }
 
     #card-info {
-        text-style: dim;
+        color: $text-muted;
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }
 
     #card-status {
-        text-style: dim;
+        color: $text-muted;
     }
 }

@@ -83,12 +83,18 @@ class TestUserMessage:
         assert msg is not None
         assert "user-message" in msg.classes
 
+    def test_renders_speaker_label(self) -> None:
+        """UserMessage should have compose() that yields speaker label and content."""
+        msg = UserMessage("hello world")
+        children = list(msg.compose())
+        assert len(children) == 2
+
 
 class TestAssistantMessage:
     def test_compose_yields_widgets(self) -> None:
         msg = AssistantMessage()
         children = list(msg.compose())
-        assert len(children) == 3  # reasoning, markdown, citation
+        assert len(children) == 4  # speaker label, reasoning, markdown, citation
 
     def test_append_content(self) -> None:
         msg = AssistantMessage()

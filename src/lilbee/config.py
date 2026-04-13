@@ -413,7 +413,7 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.platform import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.platform import default_data_dir, find_local_root
 
         if not isinstance(data, dict):  # pragma: no cover
             return data
@@ -435,7 +435,7 @@ class Config(BaseSettings):
         if data.get("lancedb_dir") in (None, _UNSET):
             data["lancedb_dir"] = root / "data" / "lancedb"
         if data.get("models_dir") in (None, _UNSET):
-            data["models_dir"] = canonical_models_dir()
+            data["models_dir"] = root / "models"
 
         if "LILBEE_LITELLM_BASE_URL" not in os.environ:
             ollama_host = os.environ.get("OLLAMA_HOST")
