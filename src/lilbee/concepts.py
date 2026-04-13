@@ -65,7 +65,10 @@ def _ensure_spacy_model() -> Any:
         log.info("Downloading spaCy model '%s'...", model_name)
         from spacy.cli import download
 
-        download(model_name)
+        try:
+            download(model_name)
+        except SystemExit as exc:
+            raise RuntimeError(f"Failed to download spacy model {model_name}: {exc}") from exc
         return spacy.load(model_name)
 
 
