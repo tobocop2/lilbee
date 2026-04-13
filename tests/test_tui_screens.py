@@ -5141,6 +5141,112 @@ async def test_setup_wizard_partial_download():
                     await pilot.pause()
 
 
+async def test_setup_wizard_download_cancel():
+    """Setting _cancel_event aborts the download loop via _DownloadCancelled."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            download_started = False
+
+            def fake_download(model, on_progress=None):
+                nonlocal download_started
+                download_started = True
+                # Simulate progress callbacks; the cancel event is set before
+                # the first callback so _on_download_progress raises.
+                if on_progress:
+                    on_progress(100, 1000)
+                return MagicMock(stem="cancelled-model")
+
+            # Populate at least one model so the for-loop body executes
+            screen._download_models = [MagicMock(ref="chat:model", display_name="Test Model")]
+            screen._cancel_event.set()
+            with (
+                patch(
+                    "lilbee.cli.tui.screens.setup.download_model",
+                    side_effect=fake_download,
+                ),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+            # Download should not have started because the loop checks the
+            # event before each model.
+            assert not download_started
+
+
+async def test_setup_wizard_cancel_event_raises_in_progress_callback():
+    """_on_download_progress raises _DownloadCancelled when cancel event is set."""
+    from lilbee.cli.tui.screens.setup import SetupWizard, _DownloadCancelled
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            screen._cancel_event.set()
+            from lilbee.catalog import DownloadProgress
+
+            with pytest.raises(_DownloadCancelled):
+                screen._on_download_progress(
+                    lambda fn, *a: fn(*a),
+                    "test:ref",
+                    DownloadProgress(percent=50, detail="50%", is_cache_hit=False),
+                )
+
+
+async def test_setup_wizard_download_cancel_mid_download():
+    """Cancel event set during download triggers _DownloadCancelled in the loop."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            def fake_download(model, on_progress=None):
+                # Set cancel during download; the progress callback will raise
+                screen._cancel_event.set()
+                if on_progress:
+                    on_progress(100, 1000)
+                return MagicMock(stem="model")
+
+            screen._download_models = [MagicMock(ref="chat:model", display_name="Test Model")]
+            with (
+                patch(
+                    "lilbee.cli.tui.screens.setup.download_model",
+                    side_effect=fake_download,
+                ),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+
+
+async def test_wizard_action_cancel_sets_event():
+    """action_cancel sets the cancel event so download threads abort."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            assert not screen._cancel_event.is_set()
+            screen.action_cancel()
+            assert screen._cancel_event.is_set()
+
+
 async def test_setup_wizard_single_model_download_error():
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -6393,6 +6499,25 @@ async def test_app_action_quit_when_streaming():
         with patch.object(screen, "action_cancel_stream") as mock_cancel:
             await app.action_quit()
             mock_cancel.assert_called_once()
+
+
+async def test_app_action_quit_routes_to_wizard_cancel():
+    """action_quit cancels the wizard instead of exiting when wizard is active."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Push a wizard on top
+        wizard = SetupWizard()
+        with _patch_setup_scan(), _patch_setup_ram(16.0):
+            app.push_screen(wizard)
+            await pilot.pause()
+            assert isinstance(app.screen, SetupWizard)
+            assert not wizard._cancel_event.is_set()
+            await app.action_quit()
+            assert wizard._cancel_event.is_set()
 
 
 async def test_app_action_quit_double_force_exits():

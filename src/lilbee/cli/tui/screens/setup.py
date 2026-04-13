@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from functools import partial
 from typing import ClassVar, NamedTuple
@@ -37,6 +38,10 @@ from lilbee.models import ModelTask, get_system_ram_gb
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
+
+
+class _DownloadCancelled(Exception):
+    """Raised inside a download progress callback to abort hf_hub_download."""
 
 
 def _scan_installed_models() -> tuple[list[str], list[str]]:
@@ -135,6 +140,7 @@ class SetupWizard(Screen[str | None]):
         self._recommended_embed: CatalogModel | None = None
         self._download_models: list[CatalogModel] = []
         self._download_rows: dict[str, _DownloadRow] = {}
+        self._cancel_event = threading.Event()
 
     @property
     def _selected_chat(self) -> str | None:
@@ -336,14 +342,16 @@ class SetupWizard(Screen[str | None]):
             self._download_rows[model.ref] = _DownloadRow(model.display_name, label, bar)
 
     @work(thread=True)
-    def _run_downloads(self) -> None:
+    def _run_downloads(self) -> None:  # pragma: no cover
         """Download all selected models in a background thread."""
-        self._download_loop(partial(call_from_thread, self))  # pragma: no cover
+        self._download_loop(partial(call_from_thread, self))
 
     def _on_download_progress(
         self, notify: Callable[..., None], model_ref: str, p: DownloadProgress
     ) -> None:
         """Handle a single download progress update for the given model."""
+        if self._cancel_event.is_set():
+            raise _DownloadCancelled
         notify(self._update_row, model_ref, p.percent, p.detail)
 
     def _handle_download_error(
@@ -367,6 +375,8 @@ class SetupWizard(Screen[str | None]):
         """Download all selected models sequentially."""
         notify(self._mount_download_rows)
         for idx, model in enumerate(self._download_models, 1):
+            if self._cancel_event.is_set():
+                return
             is_first = idx == 1
             notify(self._update_row, model.ref, 0, msg.SETUP_DOWNLOAD_STARTING)
 
@@ -376,6 +386,9 @@ class SetupWizard(Screen[str | None]):
             callback = make_download_callback(_progress)
             try:
                 download_model(model, on_progress=callback)
+            except _DownloadCancelled:
+                log.info("Download cancelled for %s", model.ref)
+                return
             except Exception as exc:
                 self._handle_download_error(notify, exc, model, is_first=is_first)
                 return
@@ -428,4 +441,5 @@ class SetupWizard(Screen[str | None]):
         self._save_and_dismiss("skipped")
 
     def action_cancel(self) -> None:
+        self._cancel_event.set()
         self.dismiss("skipped")
