@@ -46,6 +46,7 @@ def rag_pipeline(tmp_path_factory):
         (docs_dir / name).write_text(content)
 
     cfg.llm_provider = "llama-cpp"
+    cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
     cfg.data_root = tmp
@@ -106,6 +107,7 @@ def wiki_pipeline(tmp_path_factory):
         (docs_dir / name).write_text(content)
 
     cfg.llm_provider = "llama-cpp"
+    cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
     cfg.data_root = tmp
