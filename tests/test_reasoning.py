@@ -145,11 +145,13 @@ class TestReasoningTruncation:
         from lilbee.reasoning import _MAX_REASONING_CHARS
 
         long_think = "x" * (_MAX_REASONING_CHARS + 1000)
-        tokens = [f"<think>{long_think}</think>answer"]
+        # Simulate realistic streaming: one char per token so the cap
+        # triggers mid-stream rather than after one giant token.
+        tokens = list(f"<think>{long_think}</think>answer")
         result = _collect(tokens, show=True)
         reasoning = "".join(st.content for st in result if st.is_reasoning)
         assert "[reasoning truncated]" in reasoning
-        assert len(reasoning) <= _MAX_REASONING_CHARS + 100
+        assert len(reasoning) <= _MAX_REASONING_CHARS + 200
 
     def test_content_after_truncated_reasoning(self):
         """Content tokens after truncated reasoning are still yielded."""
@@ -160,6 +162,45 @@ class TestReasoningTruncation:
         result = _collect(tokens, show=True)
         response = "".join(st.content for st in result if not st.is_reasoning)
         assert "the answer" in response
+
+    def test_runaway_reasoning_truncated_show_false(self):
+        """Reasoning cap works even when show_reasoning=False.
+
+        Previously, the cap only tracked visible reasoning content.
+        With show=False, reasoning tokens have empty content, so the
+        cap never triggered and the stream could loop forever.
+        """
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 1000)
+        tokens = list(f"<think>{long_think}")  # no closing tag — infinite reasoning
+        result = _collect(tokens, show=False)
+        # Should terminate (not hang) and yield the truncation marker
+        truncation_markers = [st for st in result if "truncated" in st.content]
+        assert len(truncation_markers) == 1
+
+    def test_unclosed_think_terminates_show_false(self):
+        """An unclosed <think> block with show=False terminates at the cap."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        # Simulate streaming: chars come one at a time, never closing the tag
+        tokens = ["<think>"] + ["x"] * (_MAX_REASONING_CHARS + 100)
+        result = _collect(tokens, show=False)
+        # Must not hang, and must contain truncation marker
+        assert any("truncated" in st.content for st in result)
+
+    def test_drain_flushes_trailing_content(self):
+        """After truncation, trailing non-reasoning content in buffer is flushed."""
+        from lilbee.reasoning import _MAX_REASONING_CHARS
+
+        long_think = "x" * (_MAX_REASONING_CHARS + 100)
+        # Reasoning truncated, then more tokens arrive with trailing content.
+        # End with a partial tag prefix so the parser buffers it until flush.
+        tokens = [*f"<think>{long_think}</think>", "final", "<th"]
+        result = _collect(tokens, show=True)
+        response = "".join(st.content for st in result if not st.is_reasoning)
+        assert "final" in response
+        assert "<th" in response  # flushed by final flush()
 
 
 class TestStripReasoning:

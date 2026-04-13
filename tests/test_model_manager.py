@@ -831,7 +831,10 @@ class TestHasProviderKey:
 
 
 class TestDiscoverApiModels:
-    def test_returns_empty_when_litellm_not_installed(self) -> None:
+    def test_returns_empty_when_litellm_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         with mock.patch.dict("sys.modules", {"litellm": None}):
             result = discover_api_models()
         assert result == {}
