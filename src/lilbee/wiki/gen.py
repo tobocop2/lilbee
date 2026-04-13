@@ -19,6 +19,7 @@ from lilbee.clustering import SourceClusterer
 from lilbee.config import Config, cfg
 from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
+from lilbee.reasoning import strip_reasoning
 from lilbee.store import CitationRecord, SearchChunk, Store
 from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
@@ -241,7 +242,7 @@ def _check_faithfulness(
     messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
     try:
         response = provider.chat(messages, stream=False)
-        return _parse_faithfulness_score(cast(str, response))
+        return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
     except (ConnectionError, OSError, RuntimeError) as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
         return 0.0
@@ -356,7 +357,7 @@ def _generate_page(
     _emit("generating", source=label)
     try:
         response = provider.chat(messages, stream=False)
-        wiki_text = cast(str, response).strip()
+        wiki_text = strip_reasoning(cast(str, response)).strip()
     except (ConnectionError, OSError, RuntimeError) as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
         return None
