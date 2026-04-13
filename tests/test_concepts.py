@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import lilbee.concepts as concepts_mod
 import lilbee.services as svc_mod
 from lilbee.concepts import ConceptGraph
 from lilbee.config import cfg
@@ -50,10 +51,14 @@ def mock_svc():
 
 @pytest.fixture(autouse=True)
 def reset_singletons(mock_svc):
-    """Reset ConceptGraph nlp cache between tests."""
+    """Reset ConceptGraph nlp cache and module-level globals between tests."""
     mock_svc.concepts.reset_nlp_cache()
+    concepts_mod._nlp_cache = None
+    concepts_mod._nlp_failed = False
     yield
     mock_svc.concepts.reset_nlp_cache()
+    concepts_mod._nlp_cache = None
+    concepts_mod._nlp_failed = False
 
 
 @pytest.fixture()
@@ -238,7 +243,7 @@ class TestEnsureSpacyModel:
             mock_cli.download.assert_called_once_with("en_core_web_sm")
             assert result is not None
 
-    def test_download_sysexit_raises_runtime_error(self):
+    def test_raises_import_error_when_download_fails(self):
         mock_spacy = MagicMock()
         mock_spacy.load.side_effect = OSError("not found")
         mock_cli = MagicMock()
@@ -247,9 +252,56 @@ class TestEnsureSpacyModel:
         with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": mock_cli}):
             from lilbee.concepts import _ensure_spacy_model
 
-            with pytest.raises(RuntimeError, match="Failed to download spacy model"):
+            with pytest.raises(ImportError, match="auto-download failed"):
                 _ensure_spacy_model()
 
+
+class TestGetNlpFallback:
+    def test_returns_none_when_model_unavailable(self):
+        with patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model")):
+            from lilbee.concepts import _get_nlp
+
+            result = _get_nlp()
+            assert result is None
+            assert concepts_mod._nlp_failed is True
+
+    def test_caches_failure_state(self):
+        with patch("lilbee.concepts._ensure_spacy_model", side_effect=ImportError("no model")) as m:
+            from lilbee.concepts import _get_nlp
+
+            _get_nlp()
+            _get_nlp()
+            # Only called once; second call uses cached failure
+            m.assert_called_once()
+
+    def test_caches_successful_load(self):
+        mock_nlp = MagicMock()
+        with patch("lilbee.concepts._ensure_spacy_model", return_value=mock_nlp) as m:
+            from lilbee.concepts import _get_nlp
+
+            result1 = _get_nlp()
+            result2 = _get_nlp()
+            m.assert_called_once()
+            assert result1 is mock_nlp
+            assert result2 is mock_nlp
+
+
+class TestGracefulDegradation:
+    def test_extract_concepts_returns_empty_when_nlp_unavailable(self, cg):
+        concepts_mod._nlp_failed = True
+        cg.reset_nlp_cache()
+        assert cg.extract_concepts("some text about python") == []
+
+    def test_extract_concepts_batch_returns_empty_lists_when_nlp_unavailable(self, cg):
+        concepts_mod._nlp_failed = True
+        cg.reset_nlp_cache()
+        result = cg.extract_concepts_batch(["text one", "text two"])
+        assert result == [[], []]
+
+    def test_expand_query_returns_empty_when_nlp_unavailable(self, cg):
+        concepts_mod._nlp_failed = True
+        cg.reset_nlp_cache()
+        assert cg.expand_query("python frameworks") == []
 
 class TestBuildFromChunks:
     @patch("lilbee.lock.write_lock")
