@@ -55,11 +55,20 @@ def test_move_up_and_clear():
 
 
 def test_clear_screen():
+    """clear_screen erases the splash frame without cursor-home.
+
+    Uses move-up-and-clear instead of ``\\033[2J\\033[H`` so the subprocess
+    never writes a cursor-home escape into Textual's alt-screen.
+    Restores cursor visibility so non-TUI exits leave the terminal clean.
+    """
     from lilbee._splash_runner import clear_screen
 
-    result = clear_screen()
-    assert b"\033[2J" in result
-    assert b"\033[?25h" in result
+    result = clear_screen(5)
+    assert b"\033[A" in result  # move-up sequences
+    assert b"\033[2K" in result  # clear-line sequences
+    assert b"\033[?25h" in result  # cursor restore
+    assert b"\033[2J" not in result  # no full-screen clear
+    assert b"\033[H" not in result  # no cursor home
 
 
 def test_pipe_closed_returns_true_on_eof():

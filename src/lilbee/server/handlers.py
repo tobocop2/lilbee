@@ -685,8 +685,14 @@ async def models_pull(model: str, *, source: str = "native") -> AsyncGenerator[s
             payload = sse_event(SseEvent.PROGRESS, data)
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
 
+        def _on_bytes(downloaded: int, total: int) -> None:
+            if sse.cancel.is_set():
+                return
+            payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+
         try:
-            manager.pull(model, src, on_progress=_on_progress)
+            manager.pull(model, src, on_progress=_on_progress, on_bytes=_on_bytes)
         except Exception as exc:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
