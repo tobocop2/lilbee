@@ -376,8 +376,20 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     then queries ``litellm.models_by_provider`` for each. Only chat
     models are returned. Returns an empty dict when litellm is not
     installed or no keys are configured.
+
+    Short-circuits before importing litellm when no keys are present,
+    avoiding the expensive import on CI or headless environments.
     """
     from lilbee.providers.litellm_provider import PROVIDER_KEYS
+
+    # Check for any configured key before paying the litellm import cost.
+    active = [
+        (prov, cfg_f, env, label)
+        for prov, cfg_f, env, label in PROVIDER_KEYS
+        if _has_provider_key(prov, cfg_f, env)
+    ]
+    if not active:
+        return {}
 
     try:
         import litellm
@@ -385,9 +397,7 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
         return {}
 
     result: dict[str, list[RemoteModel]] = {}
-    for provider, cfg_field, env_var, display_name in PROVIDER_KEYS:
-        if not _has_provider_key(provider, cfg_field, env_var):
-            continue
+    for provider, _cfg_field, _env_var, display_name in active:
         models = litellm.models_by_provider.get(provider, set())
         chat_models: list[RemoteModel] = []
         for model_name in sorted(models):
