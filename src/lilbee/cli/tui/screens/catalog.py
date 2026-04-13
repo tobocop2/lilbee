@@ -55,7 +55,7 @@ _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 
-COLUMNS = ("Name", "Task", "Params", "Size", "Quant", "Downloads")
+COLUMNS = ("Name", "Task", "Backend", "Params", "Size", "Quant", "Downloads")
 
 
 _GRID_PAGE_ROWS = 3
@@ -388,6 +388,7 @@ class CatalogScreen(Screen[None]):
             table.add_row(
                 row_display_name(row),
                 row.task,
+                row.backend or "--",
                 row.params,
                 row.size,
                 row.quant,

@@ -127,6 +127,8 @@ class SetupWizard(Screen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "app.focus_next", "Next", show=False),
+        Binding("shift+tab", "app.focus_previous", "Prev", show=False),
     ]
 
     def __init__(self) -> None:

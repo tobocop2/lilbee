@@ -57,6 +57,8 @@ class ModelCard(containers.VerticalGroup):
             if row.featured:
                 yield widgets.Label(pill("pick", "$warning", "$text"), id="card-pick")
             yield widgets.Label(pill(row.task, bg, "$text"), id="card-task")
+            if row.backend:
+                yield widgets.Label(pill(row.backend, "$accent", "$text"), id="card-backend")
         specs = _build_specs(row.params, row.quant, row.size)
         yield widgets.Label(specs, id="card-info")
         status = _build_status(row)
