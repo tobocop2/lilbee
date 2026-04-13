@@ -7282,6 +7282,42 @@ async def test_chat_cmd_wiki_generate_failure_fails_task():
         assert "boom" in fail_spy.call_args[0][1]
 
 
+async def test_chat_cmd_wiki_generate_progress_failed_stage():
+    """/wiki generate handles stage='failed' from the progress callback."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        fake_store = MagicMock()
+        fake_store.get_sources.return_value = [{"filename": "a.txt"}]
+        fake_store.get_chunks_by_source.return_value = [MagicMock()]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+
+        def _gen_with_failure(source, chunks, provider, store, on_progress=None):
+            if on_progress:
+                on_progress("failed", {"error": "faithfulness too low"})
+            return None
+
+        task_bar = app.task_bar
+        fail_spy = MagicMock(wraps=task_bar.fail_task)
+        with (
+            patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch(
+                "lilbee.wiki.gen.generate_summary_page",
+                side_effect=_gen_with_failure,
+            ),
+            patch.object(task_bar, "fail_task", fail_spy),
+        ):
+            mock_cfg.wiki = True
+            app.screen._cmd_wiki("generate")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        fail_spy.assert_called_once()
+        assert "faithfulness" in fail_spy.call_args[0][1]
+
+
 async def test_chat_cmd_wiki_generate_none_produced_fails_task():
     """/wiki generate fails the task when all sources return None (no pages generated)."""
     app = ChatTestApp()

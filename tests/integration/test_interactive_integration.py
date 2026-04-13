@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
 from lilbee.config import cfg
+from lilbee.platform import canonical_models_dir
 from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
@@ -133,6 +134,7 @@ def _embedding_model_entry():
 @pytest.fixture(scope="module")
 def real_models():
     """Download real models once per module. Cached in ~/.lilbee/models/."""
+    cfg.models_dir = canonical_models_dir()
     chat_entry = _chat_model_entry()
     embed_entry = _embedding_model_entry()
 
@@ -157,6 +159,7 @@ def isolated_env(tmp_path, real_models):
     cfg.data_root = tmp_path
 
     cfg.llm_provider = "llama-cpp"
+    cfg.models_dir = canonical_models_dir()
     cfg.chat_model = _chat_model_entry().ref
     cfg.embedding_model = _embedding_model_entry().ref
     cfg.embedding_dim = 768
