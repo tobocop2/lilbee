@@ -29,6 +29,7 @@ class TableRow:
     sort_downloads: int
     sort_size: float
     ref: str = ""
+    backend: str = ""
     variant: ModelVariant | None = None
     family: ModelFamily | None = None
     catalog_model: CatalogModel | None = None
@@ -131,6 +132,7 @@ def remote_to_row(rm: RemoteModel) -> TableRow:
         sort_downloads=0,
         sort_size=0.0,
         ref=rm.name,
+        backend=rm.provider.lower(),
         remote_model=rm,
     )
 
@@ -156,6 +158,7 @@ def row_display_name(row: TableRow) -> str:
 SORT_KEYS = {
     "Name": lambda r: r.name.lower(),
     "Task": lambda r: r.task,
+    "Backend": lambda r: r.backend.lower(),
     "Params": lambda r: _param_sort_value(r.params),
     "Size": lambda r: r.sort_size,
     "Quant": lambda r: r.quant,
@@ -178,4 +181,5 @@ def matches_search(row: TableRow, search: str) -> bool:
         or search in row.task.lower()
         or search in row.params.lower()
         or search in row.quant.lower()
+        or search in row.backend.lower()
     )
