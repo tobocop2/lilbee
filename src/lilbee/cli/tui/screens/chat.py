@@ -25,7 +25,7 @@ from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import build_dispatch_dict
-from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.pill import DOT_SEP, pill
 from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -58,9 +58,6 @@ _WIKI_STAGE_FRACTIONS: dict[str, float] = {
 }
 
 
-_DOT_SEP = " \u00b7 "  # middle dot separator
-
-
 class ChatStatusLine(Label):
     """One-line status bar showing current models as pill badges with dot separators."""
 
@@ -73,7 +70,7 @@ class ChatStatusLine(Label):
             return
         parts: list[Content | tuple[str, str]] = [pill(name, "$primary", "$text")]
         if cfg.embedding_model:
-            parts.append((_DOT_SEP, "$text-muted"))
+            parts.append((DOT_SEP, "$text-muted"))
             parts.append(pill(cfg.embedding_model, "$secondary", "$text"))
         self.update(Content.assemble(*parts))
 

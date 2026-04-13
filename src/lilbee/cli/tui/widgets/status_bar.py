@@ -9,7 +9,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.pill import DOT_SEP, pill
 
 _MODE_COLORS: dict[str, str] = {
     msg.MODE_NORMAL: "$primary",
@@ -17,8 +17,6 @@ _MODE_COLORS: dict[str, str] = {
 }
 
 _DEFAULT_MODE_COLOR = "$error"
-
-_DOT_SEP = " \u00b7 "  # middle dot separator
 
 
 class ViewTabs(Widget):
@@ -54,21 +52,20 @@ class ViewTabs(Widget):
     def _refresh(self) -> None:
         if not self.is_mounted:
             return
-        _Part = Content | str | tuple[str, str]
-        parts: list[_Part] = []
+        parts: list[Content | str | tuple[str, str]] = []
 
         # Build tab strip
-        tab_parts: list[_Part] = []
+        tab_parts: list[Content | str | tuple[str, str]] = []
         for name in msg.get_nav_views():
             if name == self.active_view:
                 tab_parts.append(pill(f" {name} ", "$primary", "$text"))
             else:
                 tab_parts.append((f" {name} ", "dim"))
         # Join with dot separators
-        joined: list[_Part] = []
+        joined: list[Content | str | tuple[str, str]] = []
         for i, part in enumerate(tab_parts):
             if i > 0:
-                joined.append((_DOT_SEP, "$text-muted"))
+                joined.append((DOT_SEP, "$text-muted"))
             joined.append(part)
         parts.extend(joined)
 

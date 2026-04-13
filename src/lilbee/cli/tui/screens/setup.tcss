@@ -81,7 +81,7 @@ ModelCard.-selected {
 
 GridSelect:focus ModelCard.-highlight {
     border: tall $primary;
-    background: $panel;
+    background: $surface;
 }
 
 GridSelect:focus ModelCard.-highlight.-selected {
