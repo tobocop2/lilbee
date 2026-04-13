@@ -4345,7 +4345,7 @@ async def test_chat_refresh_status_line():
         from lilbee.cli.tui.screens.chat import ChatStatusLine
 
         status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status.model_name == "my-model"
+        assert status.model_name == "my-model:latest"
 
 
 async def test_settings_group_titles_present():

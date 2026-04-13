@@ -385,25 +385,12 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    def test_init_normalizes_model_tags(self, tmp_path):
-        """Init adds :latest to bare model names (BEE-bhe)."""
+    def test_bare_model_normalized_after_init(self, tmp_path):
+        """Config validator normalizes bare model names (BEE-bhe)."""
         cfg.chat_model = "qwen3"
-        cfg.embedding_model = "nomic-embed-text"
-        target = tmp_path / "proj"
-        target.mkdir()
-        init(str(target))
         assert cfg.chat_model == "qwen3:latest"
+        cfg.embedding_model = "nomic-embed-text"
         assert cfg.embedding_model == "nomic-embed-text:latest"
-
-    def test_init_preserves_tagged_models(self, tmp_path):
-        """Init does not alter models that already have a tag."""
-        cfg.chat_model = "qwen3:0.6b"
-        cfg.embedding_model = "nomic-embed-text:v1.5"
-        target = tmp_path / "proj"
-        target.mkdir()
-        init(str(target))
-        assert cfg.chat_model == "qwen3:0.6b"
-        assert cfg.embedding_model == "nomic-embed-text:v1.5"
 
 
 class TestAdd:

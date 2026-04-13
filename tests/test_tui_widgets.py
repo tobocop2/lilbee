@@ -2123,7 +2123,7 @@ class TestModelBarAdditional:
             ):
                 embed_sel.value = "new-embed"
                 await pilot.pause()
-            assert cfg.embedding_model == "new-embed"
+            assert cfg.embedding_model == "new-embed:latest"
 
     async def test_populate_embed_model_in_scanned(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar

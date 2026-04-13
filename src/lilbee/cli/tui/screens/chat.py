@@ -528,13 +528,10 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            from lilbee.models import ensure_tag
-
-            tagged = ensure_tag(args)
-            cfg.chat_model = tagged
-            settings.set_value(cfg.data_root, "chat_model", tagged)
+            cfg.chat_model = args
+            settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
             self.app.title = f"lilbee -- {cfg.chat_model}"
-            self.notify(msg.CMD_MODEL_SET.format(name=tagged))
+            self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
             self._refresh_model_bar()
         else:

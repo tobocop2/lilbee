@@ -886,7 +886,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/set chat_model new-test-model")
             await pilot.pause()
-            assert cfg.chat_model == "new-test-model"
+            assert cfg.chat_model == "new-test-model:latest"
 
     async def test_slash_command_set_unknown_key(self, _mock_resolve):
         """/set nonexistent_key warns."""

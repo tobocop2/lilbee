@@ -109,8 +109,8 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text", min_length=1)
+    chat_model: str = Field(default="qwen3:latest", min_length=1)
+    embedding_model: str = Field(default="nomic-embed-text:latest", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
@@ -395,6 +395,16 @@ class Config(BaseSettings):
             if stripped in ("false", "0", "no"):
                 return False
         return bool(v)
+
+    @field_validator("chat_model", "embedding_model", mode="after")
+    @classmethod
+    def _normalize_model_tag(cls, v: str) -> str:
+        """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest)."""
+        if not v or ":" in v:
+            return v
+        from lilbee.registry import DEFAULT_TAG
+
+        return f"{v}:{DEFAULT_TAG}"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

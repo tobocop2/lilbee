@@ -217,12 +217,6 @@ def init(path: str = "") -> dict[str, Any]:
     cfg.lancedb_dir = root / "data" / "lancedb"
     reset_services()
 
-    # Normalize bare model names (e.g. "qwen3" -> "qwen3:latest")
-    from lilbee.models import ensure_tag
-
-    cfg.chat_model = ensure_tag(cfg.chat_model)
-    cfg.embedding_model = ensure_tag(cfg.embedding_model)
-
     return {"command": "init", "path": str(root), "created": created}
 
 

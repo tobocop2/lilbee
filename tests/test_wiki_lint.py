@@ -248,12 +248,12 @@ class TestParseFrontmatter:
 
 class TestLintModelChanged:
     def test_same_model_no_issue(self):
-        text = "---\ngenerated_by: test-model\n---\n\n# Doc\n"
+        text = f"---\ngenerated_by: {cfg.chat_model}\n---\n\n# Doc\n"
         result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is None
 
     def test_different_model_flags_issue(self):
-        text = "---\ngenerated_by: old-model\n---\n\n# Doc\n"
+        text = "---\ngenerated_by: old-model:latest\n---\n\n# Doc\n"
         result = _lint_model_changed("wiki/summaries/doc.md", text, cfg)
         assert result is not None
         assert result.severity == IssueSeverity.WARNING
