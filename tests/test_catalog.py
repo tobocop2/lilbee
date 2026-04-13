@@ -551,6 +551,16 @@ class TestFindCatalogEntry:
             assert result.recommended is False
         catalog._build_catalog_index.cache_clear()  # restore for other tests
 
+    def test_match_by_hf_repo(self) -> None:
+        result = find_catalog_entry("Qwen/Qwen3-8B-GGUF")
+        assert result is not None
+        assert result.hf_repo == "Qwen/Qwen3-8B-GGUF"
+
+    def test_match_by_hf_repo_case_insensitive(self) -> None:
+        result = find_catalog_entry("qwen/qwen3-8b-gguf")
+        assert result is not None
+        assert result.hf_repo == "Qwen/Qwen3-8B-GGUF"
+
     def test_not_found(self) -> None:
         result = find_catalog_entry("Nonexistent Model")
         assert result is None

@@ -232,9 +232,9 @@ class TestPullWithProgress:
     def test_calls_manager_pull(self, mock_get_manager):
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None):
-            if on_progress:
-                on_progress({"total": 100, "completed": 100})
+        def fake_pull(model, source, *, on_bytes=None):
+            if on_bytes:
+                on_bytes(100, 100)
             return None
 
         mock_manager.pull.side_effect = fake_pull
@@ -246,9 +246,9 @@ class TestPullWithProgress:
     def test_handles_zero_total(self, mock_get_manager):
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None):
-            if on_progress:
-                on_progress({"total": 0, "completed": 0})
+        def fake_pull(model, source, *, on_bytes=None):
+            if on_bytes:
+                on_bytes(0, 0)
             return None
 
         mock_manager.pull.side_effect = fake_pull

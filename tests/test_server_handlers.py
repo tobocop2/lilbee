@@ -633,10 +633,26 @@ class TestModelsInstalled:
 
 
 class TestModelsPull:
-    async def test_yields_progress_events(self):
+    async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_progress=None):
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+            if on_bytes:
+                on_bytes(500, 1000)
+                on_bytes(1000, 1000)
+            return None
+
+        mock_manager.pull.side_effect = fake_pull
+        with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
+            events = [e async for e in handlers.models_pull("test", source="native")]
+        non_empty = [e for e in events if e]
+        assert any('"current": 500' in e for e in non_empty)
+        assert any('"total": 1000' in e for e in non_empty)
+
+    async def test_yields_progress_events_litellm(self):
+        mock_manager = MagicMock()
+
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
             if on_progress:
                 on_progress({"status": "downloading"})
                 on_progress({"status": "success"})
@@ -644,7 +660,7 @@ class TestModelsPull:
 
         mock_manager.pull.side_effect = fake_pull
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
-            events = [e async for e in handlers.models_pull("test", source="native")]
+            events = [e async for e in handlers.models_pull("test", source="litellm")]
         non_empty = [e for e in events if e]
         assert any("downloading" in e for e in non_empty)
         assert any("success" in e for e in non_empty)
@@ -664,19 +680,19 @@ class TestModelsPull:
         barrier = threading.Event()
         mock_manager = MagicMock()
 
-        def blocking_pull(model, source, *, on_progress=None):
-            if on_progress:
-                on_progress({"status": "downloading"})
+        def blocking_pull(model, source, *, on_progress=None, on_bytes=None):
+            if on_bytes:
+                on_bytes(100, 1000)
             barrier.wait(timeout=2)
-            if on_progress:
-                on_progress({"status": "done"})
+            if on_bytes:
+                on_bytes(1000, 1000)
 
         mock_manager.pull.side_effect = blocking_pull
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
         with patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager):
             gen = handlers.models_pull("test", source="native")
             async for event in gen:
-                if event and "downloading" in event:
+                if event and "current" in event:
                     await gen.aclose()
                     barrier.set()
                     break
@@ -1165,10 +1181,10 @@ class TestModelPullProgressCancel:
         mock_manager = MagicMock()
         progress_called = threading.Event()
 
-        def fake_pull(model, source, *, on_progress=None):
-            if on_progress:
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+            if on_bytes:
                 # All progress calls should see cancel already set
-                on_progress({"status": "should_be_suppressed"})
+                on_bytes(500, 1000)
                 progress_called.set()
 
         mock_manager.pull.side_effect = fake_pull
@@ -1191,5 +1207,38 @@ class TestModelPullProgressCancel:
             # Wait for the pull thread to complete
             await asyncio.sleep(0.2)
 
-        assert progress_called.is_set()  # Pull did call on_progress
+        assert progress_called.is_set()  # Pull did call on_bytes
+        assert not any("current" in e for e in events if e)
+
+    async def test_cancel_during_litellm_pull_skips_progress(self):
+        """When cancel is set before litellm pull starts, on_progress returns early."""
+        import threading
+
+        mock_manager = MagicMock()
+        progress_called = threading.Event()
+
+        def fake_pull(model, source, *, on_progress=None, on_bytes=None):
+            if on_progress:
+                on_progress({"status": "should_be_suppressed"})
+                progress_called.set()
+
+        mock_manager.pull.side_effect = fake_pull
+
+        original_init = handlers.SseStream.__init__
+
+        def patched_init(self):
+            original_init(self)
+            self.cancel.set()
+
+        with (
+            patch("lilbee.server.handlers.get_model_manager", return_value=mock_manager),
+            patch.object(handlers.SseStream, "__init__", patched_init),
+        ):
+            gen = handlers.models_pull("test", source="litellm")
+            events = []
+            async for event in gen:
+                events.append(event)
+            await asyncio.sleep(0.2)
+
+        assert progress_called.is_set()
         assert not any("should_be_suppressed" in e for e in events if e)

@@ -476,17 +476,15 @@ class TestConfigProvider:
             assert c.litellm_base_url == "http://myhost:11434"
             assert c.llm_api_key == "sk-key"
 
-    def test_models_dir_is_canonical(self, tmp_path: Path) -> None:
-        """models_dir uses canonical system path, not per-project data_root."""
+    def test_models_dir_derives_from_data_root(self, tmp_path: Path) -> None:
+        """models_dir derives from data_root so LILBEE_DATA controls it."""
         import os
-
-        from lilbee.platform import canonical_models_dir
 
         with mock.patch.dict(os.environ, {"LILBEE_DATA": str(tmp_path / "test-lilbee")}):
             from lilbee.config import Config
 
             c = Config()
-            assert c.models_dir == canonical_models_dir()
+            assert c.models_dir == tmp_path / "test-lilbee" / "models"
 
 
 # ---------------------------------------------------------------------------
