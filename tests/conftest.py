@@ -46,15 +46,14 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 
 @pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
-    """Prevent ModelBar._scan_models from spawning background threads.
+    """Prevent ModelBar._scan_models from doing real work in tests.
 
     ModelBar.on_mount calls _scan_models which is @work(thread=True).
-    The spawned thread can outlive the Textual app's run_test() context,
-    accumulating across 3400+ tests and blocking xdist process teardown.
+    The real function does registry scans, HTTP calls, and litellm imports.
+    Mocking it to return empty results makes the worker thread complete
+    instantly, avoiding both thread accumulation and per-test join overhead.
 
-    We mock _classify_installed_models (the heavy function inside the
-    worker) rather than _scan_models itself, so the method body stays
-    covered but no real I/O or litellm imports happen.
+    Tests that need real classification use @pytest.mark.real_model_classify.
     """
     if "real_model_classify" not in {m.name for m in request.node.iter_markers()}:
         monkeypatch.setattr(
@@ -65,10 +64,7 @@ def _suppress_model_scan(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Wait for Textual worker threads to finish after each test.
-
-    Safety net for any remaining threads not prevented by _suppress_model_scan.
-    """
+    """Safety net: join any Textual worker threads that outlive the test."""
     before = set(threading.enumerate())
     yield
     for thread in threading.enumerate():
