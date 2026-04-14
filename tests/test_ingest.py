@@ -1278,6 +1278,25 @@ class TestIngestMarkdownEdgeCases:
         assert result == []
 
 
+class TestStripYamlFrontmatter:
+    def test_no_frontmatter(self):
+        from lilbee.ingest import _strip_yaml_frontmatter
+
+        assert _strip_yaml_frontmatter("hello world") == "hello world"
+
+    def test_strips_frontmatter(self):
+        from lilbee.ingest import _strip_yaml_frontmatter
+
+        text = "---\ntitle: Test\n---\nbody text"
+        assert _strip_yaml_frontmatter(text) == "body text"
+
+    def test_unclosed_frontmatter_returns_original(self):
+        from lilbee.ingest import _strip_yaml_frontmatter
+
+        text = "---\ntitle: Test\nno closing delimiter"
+        assert _strip_yaml_frontmatter(text) == text
+
+
 class TestIngestDocumentEdgeCases:
     async def test_empty_extraction_returns_empty(self, isolated_env):
         """Structured formats now go through kreuzberg — empty result yields no chunks."""
