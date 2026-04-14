@@ -2580,8 +2580,12 @@ class TestTaskBarAdditional:
 
             thread = threading.Thread(target=worker)
             thread.start()
-            thread.join(timeout=2)
-            await pilot.pause()
+            # Poll instead of fixed timeout to handle slow CI runners.
+            for _ in range(20):
+                await pilot.pause()
+                if called.is_set():
+                    break
+            thread.join(timeout=5)
             assert called.is_set()
 
     async def test_render_task_panel_queued_status(self) -> None:
