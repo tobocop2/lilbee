@@ -27,6 +27,20 @@ _OLLAMA_PREFIX = "ollama/"
 
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
+
+def _needs_api_base(routed_model: str) -> bool:
+    """Return True if litellm needs an explicit ``api_base`` for this model.
+
+    Models with a non-Ollama provider prefix (e.g. ``openai/gpt-4o``,
+    ``anthropic/claude-3``) should NOT get ``api_base`` because litellm
+    auto-routes them to the correct provider endpoint. Passing ``api_base``
+    would override that routing and send the request to the wrong backend.
+    """
+    if "/" not in routed_model:
+        return True
+    return routed_model.startswith(_OLLAMA_PREFIX)
+
+
 # Single source of truth for per-provider API key configuration.
 # Maps (litellm_provider_name, config_field, env_var, display_label).
 # Used by inject_provider_keys(), discover_api_models(), and config update handler.
@@ -108,12 +122,16 @@ class LiteLLMProvider(LLMProvider):
         import litellm
 
         try:
-            response = litellm.embedding(
-                model=self._embed_model_name(),
-                input=texts,
-                api_base=self._base_url,
-                api_key=self._api_key or None,
-            )
+            routed = self._embed_model_name()
+            embed_kwargs: dict[str, Any] = {
+                "model": routed,
+                "input": texts,
+            }
+            if _needs_api_base(routed):
+                embed_kwargs["api_base"] = self._base_url
+            if self._api_key:
+                embed_kwargs["api_key"] = self._api_key
+            response = litellm.embedding(**embed_kwargs)
             return [item["embedding"] for item in response["data"]]
         except Exception as exc:
             raise ProviderError(f"Embedding failed: {exc}", provider="litellm") from exc
@@ -129,13 +147,16 @@ class LiteLLMProvider(LLMProvider):
         """Chat completion via litellm."""
         import litellm
 
+        inject_provider_keys()
         formatted = _format_messages(messages)
+        routed = self._model_name(model)
         kwargs: dict[str, Any] = {
-            "model": self._model_name(model),
+            "model": routed,
             "messages": formatted,
             "stream": stream,
-            "api_base": self._base_url,
         }
+        if _needs_api_base(routed):
+            kwargs["api_base"] = self._base_url
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if options:
