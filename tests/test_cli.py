@@ -356,6 +356,12 @@ class TestChat:
         assert "error" in data
         assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
 
+    def test_json_mode_suppresses_litellm_without_litellm(self) -> None:
+        """When litellm is not installed, the ImportError is silently caught."""
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
+
 
 class TestApplyOverrides:
     def test_data_dir_override(self, tmp_path):
@@ -757,6 +763,12 @@ class TestSearch:
         result = runner.invoke(app, ["search", ""])
         assert result.exit_code == 1
         assert "empty" in result.output.lower()
+
+    def test_search_human_provider_error(self, mock_svc):
+        mock_svc.searcher.search.side_effect = RuntimeError("connection refused")
+        result = runner.invoke(app, ["search", "test"])
+        assert result.exit_code == 1
+        assert "connection refused" in result.output
 
 
 # ---------------------------------------------------------------------------
