@@ -244,6 +244,15 @@ jobs:
           & C:\ollama\ollama.exe pull qwen3:0.6b
           & C:\ollama\ollama.exe pull nomic-embed-text
 
+      - name: Pre-download GGUF models
+        run: |
+          for i in 1 2 3; do
+            uv run lilbee model pull nomic-embed-text:v1.5 && \
+            uv run lilbee model pull qwen3:0.6b && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+
       - name: Run integration tests
         run: make test-integration
         env:
