@@ -245,6 +245,7 @@ jobs:
           & C:\ollama\ollama.exe pull nomic-embed-text
 
       - name: Pre-download GGUF models
+        shell: bash
         run: |
           for i in 1 2 3; do
             uv run lilbee model pull nomic-embed-text:v1.5 && \
