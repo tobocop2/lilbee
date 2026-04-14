@@ -8025,18 +8025,23 @@ async def test_task_bar_indeterminate_renders_total_none():
         task_id = app.task_bar.add_task("indet", "add")
         app.task_bar.queue.advance("add")
         app.task_bar.update_task(task_id, 0, "working", indeterminate=True)
-        # Panel compose + the spinner tick need a few frames to settle.
-        for _ in range(5):
+        # Wait until the ProgressBar exists and reflects indeterminate mode.
+        # The render loop may need several frames on slow CI runners.
+        bar = app.screen.query_one("#tbar", TaskBar)
+        pb = None
+        for _ in range(30):
             await _pilot.pause()
+            pbs = bar.query(ProgressBar)
+            if pbs:
+                pb = pbs.first()
+                if pb.total is None:
+                    break
 
         task = app.task_bar.queue.get_task(task_id)
         assert task is not None
         assert task.indeterminate is True
         assert task.status == TaskStatus.ACTIVE
-
-        bar = app.screen.query_one("#tbar", TaskBar)
-        pb = bar.query_one(ProgressBar)
-        # total=None is Textual's indeterminate mode
+        assert pb is not None, "ProgressBar never appeared"
         assert pb.total is None
 
         # Completing flips indeterminate off and drives the bar to 100
