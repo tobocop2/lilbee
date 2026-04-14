@@ -10,24 +10,24 @@ from lilbee.config import cfg
 from lilbee.crawl_task import clear_tasks
 from lilbee.ingest import SyncResult
 from lilbee.mcp import (
-    add,
     clean,
-    crawl,
-    crawl_status,
-    init,
-    list_documents,
+    lilbee_add,
+    lilbee_crawl,
+    lilbee_crawl_status,
+    lilbee_init,
+    lilbee_list_documents,
+    lilbee_remove,
+    lilbee_reset,
+    lilbee_search,
+    lilbee_status,
+    lilbee_sync,
+    lilbee_wiki_citations,
+    lilbee_wiki_lint,
+    lilbee_wiki_list,
+    lilbee_wiki_prune,
+    lilbee_wiki_read,
+    lilbee_wiki_status,
     main,
-    remove,
-    reset,
-    search,
-    status,
-    sync,
-    wiki_citations,
-    wiki_lint,
-    wiki_list,
-    wiki_prune,
-    wiki_read,
-    wiki_status,
 )
 from lilbee.store import SearchChunk
 
@@ -109,8 +109,8 @@ class TestClean:
         assert result["distance"] == 0.42
 
 
-class TestSearch:
-    def test_returns_cleaned_results(self, mock_svc):
+class TestLilbeeSearch:
+    def test_returnscleaned_results(self, mock_svc):
         mock_svc.searcher.search.return_value = [
             SearchChunk(
                 source="doc.pdf",
@@ -125,7 +125,7 @@ class TestSearch:
                 distance=0.3,
             ),
         ]
-        results = search("test query", top_k=3)
+        results = lilbee_search("test query", top_k=3)
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
@@ -133,81 +133,12 @@ class TestSearch:
 
     def test_empty_results(self, mock_svc):
         mock_svc.searcher.search.return_value = []
-        assert search("nothing") == []
-
-    def test_empty_query_returns_error(self, mock_svc):
-        result = search("", top_k=3)
-        assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
-
-    def test_whitespace_query_returns_error(self, mock_svc):
-        result = search("   ", top_k=3)
-        assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
-
-    def test_embedding_failure_returns_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("embed failed")
-        result = search("test", top_k=3)
-        assert "error" in result
-        assert "embed failed" in result["error"]
-
-    def test_filters_irrelevant_results(self, mock_svc):
-        """Results with distance > max_distance are excluded."""
-        cfg.max_distance = 0.8
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="good.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="relevant",
-                chunk_index=0,
-                vector=[0.1],
-                distance=0.5,
-            ),
-            SearchChunk(
-                source="bad.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="irrelevant",
-                chunk_index=0,
-                vector=[0.1],
-                distance=0.95,
-            ),
-        ]
-        results = search("test")
-        assert len(results) == 1
-        assert results[0]["source"] == "good.md"
-
-    def test_keeps_hybrid_results_without_distance(self, mock_svc):
-        """Hybrid/RRF results with distance=None are not filtered."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="hybrid.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="hybrid result",
-                chunk_index=0,
-                vector=[0.1],
-                distance=None,
-            ),
-        ]
-        results = search("test")
-        assert len(results) == 1
-        assert results[0]["source"] == "hybrid.md"
+        assert lilbee_search("nothing") == []
 
 
-class TestStatus:
+class TestLilbeeStatus:
     def test_empty_status(self, mock_svc):
-        result = status()
+        result = lilbee_status()
         assert "config" in result
         assert result["sources"] == []
         assert result["total_chunks"] == 0
@@ -221,26 +152,26 @@ class TestStatus:
                 "ingested_at": "2026-01-01T00:00:00",
             }
         ]
-        result = status()
+        result = lilbee_status()
         assert len(result["sources"]) == 1
         assert result["sources"][0]["filename"] == "test.pdf"
         assert result["total_chunks"] == 10
 
     def test_status_includes_enable_ocr_when_set(self):
         cfg.enable_ocr = True
-        result = status()
+        result = lilbee_status()
         assert result["config"]["enable_ocr"] is True
 
     def test_status_enable_ocr_none_by_default(self):
         cfg.enable_ocr = None
-        result = status()
+        result = lilbee_status()
         assert result["config"]["enable_ocr"] is None
 
 
-class TestSync:
+class TestLilbeeSync:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_empty(self, mock_sync):
-        result = await sync()
+        result = await lilbee_sync()
         assert result["added"] == []
         assert result["unchanged"] == 0
 
@@ -251,16 +182,16 @@ class TestSync:
     )
     async def test_sync_with_file(self, mock_sync):
         (cfg.documents_dir / "test.txt").write_text("Hello world content.")
-        result = await sync()
+        result = await lilbee_sync()
         assert "test.txt" in result["added"]
 
 
-class TestRemove:
+class TestLilbeeRemove:
     def test_removes_known_file(self, mock_svc):
         from lilbee.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
-        result = remove(["a.md"])
+        result = lilbee_remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
 
@@ -270,14 +201,14 @@ class TestRemove:
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
         )
-        result = remove(["missing.md"])
+        result = lilbee_remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
     def test_delete_files_removes_from_disk(self, mock_svc):
         from lilbee.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
-        result = remove(["a.md"], delete_files=True)
+        result = lilbee_remove(["a.md"], delete_files=True)
         assert result["removed"] == ["a.md"]
 
     def test_delete_files_path_traversal_skipped(self, mock_svc):
@@ -288,39 +219,30 @@ class TestRemove:
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[traversal_name], not_found=[]
         )
-        result = remove([traversal_name], delete_files=True)
+        result = lilbee_remove([traversal_name], delete_files=True)
         assert result["removed"] == [traversal_name]
 
 
-class TestListDocuments:
+class TestLilbeeListDocuments:
     def test_returns_documents(self, mock_svc):
         mock_svc.store.get_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
-        result = list_documents()
+        result = lilbee_list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
 
     def test_empty(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
-        result = list_documents()
+        result = lilbee_list_documents()
         assert result["total"] == 0
 
 
-class TestReset:
-    def test_reset_requires_confirm(self):
-        result = reset()
-        assert "error" in result
-        assert "confirm" in result["error"]
-
-    def test_reset_confirm_false(self):
-        result = reset(confirm=False)
-        assert "error" in result
-
+class TestLilbeeReset:
     def test_reset_clears_everything(self):
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         (cfg.documents_dir / "doc.txt").write_text("content")
         (cfg.data_dir / "db_file").write_text("data")
 
-        result = reset(confirm=True)
+        result = lilbee_reset()
         assert result["command"] == "reset"
         assert result["deleted_docs"] == 1
         assert result["deleted_data"] == 1
@@ -328,18 +250,17 @@ class TestReset:
         assert list(cfg.data_dir.iterdir()) == []
 
     def test_reset_empty_dirs(self):
-        result = reset(confirm=True)
+        result = lilbee_reset()
         assert result["command"] == "reset"
         assert result["deleted_docs"] == 0
         assert result["deleted_data"] == 0
 
 
-class TestInit:
+class TestLilbeeInit:
     def test_init_creates_structure(self, tmp_path):
-        target = tmp_path / "project"
-        target.mkdir()
-        result = init(str(target))
-        root = target / ".lilbee"
+        with mock.patch("pathlib.Path.home", return_value=tmp_path.parent):
+            result = lilbee_init(str(tmp_path))
+        root = tmp_path / ".lilbee"
         assert result["command"] == "init"
         assert result["created"] is True
         assert root.is_dir()
@@ -349,57 +270,32 @@ class TestInit:
 
     def test_init_already_exists(self, tmp_path):
         (tmp_path / ".lilbee").mkdir()
-        result = init(str(tmp_path))
+        with mock.patch("pathlib.Path.home", return_value=tmp_path.parent):
+            result = lilbee_init(str(tmp_path))
         assert result["created"] is False
 
     def test_init_default_cwd(self, tmp_path):
-        with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
-            result = init()
+        with (
+            mock.patch("pathlib.Path.cwd", return_value=tmp_path),
+            mock.patch("pathlib.Path.home", return_value=tmp_path.parent),
+        ):
+            result = lilbee_init()
         assert result["created"] is True
         assert (tmp_path / ".lilbee" / "documents").is_dir()
 
-    def test_init_no_home_dir_restriction(self, tmp_path):
-        """Init works outside home directory (BEE-o2e)."""
-        target = tmp_path / "anywhere"
-        target.mkdir()
-        result = init(str(target))
-        assert result["created"] is True
-        assert (target / ".lilbee").is_dir()
-
-    def test_init_switches_config(self, tmp_path):
-        """After init, cfg points to the new project KB (BEE-xlu)."""
-        target = tmp_path / "myproject"
-        target.mkdir()
-        init(str(target))
-        root = target / ".lilbee"
-        assert cfg.documents_dir == root / "documents"
-        assert cfg.data_dir == root / "data"
-        assert cfg.lancedb_dir == root / "data" / "lancedb"
-        assert cfg.data_root == target
-
-    def test_init_existing_also_switches_config(self, tmp_path):
-        """Init on existing .lilbee/ still switches config context."""
-        root = tmp_path / ".lilbee"
-        root.mkdir()
-        init(str(tmp_path))
-        assert cfg.documents_dir == root / "documents"
-        assert cfg.data_root == tmp_path
-
-    def test_bare_model_normalized_after_init(self, tmp_path):
-        """Config validator normalizes bare model names (BEE-bhe)."""
-        cfg.chat_model = "qwen3"
-        assert cfg.chat_model == "qwen3:latest"
-        cfg.embedding_model = "nomic-embed-text"
-        assert cfg.embedding_model == "nomic-embed-text:latest"
+    def test_init_outside_home_rejected(self, tmp_path):
+        with mock.patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+            result = lilbee_init(str(tmp_path))
+        assert "error" in result
 
 
-class TestAdd:
+class TestLilbeeAdd:
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, mock_sync, tmp_path):
         src = tmp_path / "test.txt"
         src.write_text("hello world")
 
-        result = await add([str(src)])
+        result = await lilbee_add([str(src)])
 
         assert result["command"] == "add"
         assert "test.txt" in result["copied"]
@@ -410,16 +306,10 @@ class TestAdd:
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_path(self, mock_sync, tmp_path):
-        result = await add(["/no/such/path.txt"])
+        result = await lilbee_add(["/no/such/path.txt"])
 
         assert "/no/such/path.txt" in result["errors"]
         assert result["copied"] == []
-
-    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_nonexistent_has_warning(self, mock_sync):
-        """Nonexistent paths produce a warning field (BEE-dlj)."""
-        result = await add(["/no/such/path.txt"])
-        assert "warning" in result
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
@@ -427,7 +317,7 @@ class TestAdd:
         src = tmp_path / "exist.txt"
         src.write_text("new")
 
-        result = await add([str(src)])
+        result = await lilbee_add([str(src)])
 
         assert "exist.txt" in result["skipped"]
         assert result["copied"] == []
@@ -439,7 +329,7 @@ class TestAdd:
         src = tmp_path / "exist.txt"
         src.write_text("new")
 
-        result = await add([str(src)], force=True)
+        result = await lilbee_add([str(src)], force=True)
 
         assert "exist.txt" in result["copied"]
         assert result["skipped"] == []
@@ -451,7 +341,7 @@ class TestAdd:
         src_dir.mkdir()
         (src_dir / "a.txt").write_text("a")
 
-        result = await add([str(src_dir)])
+        result = await lilbee_add([str(src_dir)])
 
         assert "mydir" in result["copied"]
         assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
@@ -462,7 +352,7 @@ class TestAdd:
         src.write_bytes(b"%PDF-fake")
         original_ocr = cfg.enable_ocr
 
-        await add([str(src)], enable_ocr=True)
+        await lilbee_add([str(src)], enable_ocr=True)
 
         # enable_ocr should be restored after the call
         assert cfg.enable_ocr == original_ocr
@@ -474,29 +364,17 @@ class TestAdd:
         original_ocr = cfg.enable_ocr
 
         with pytest.raises(RuntimeError, match="boom"):
-            await add([str(src)], enable_ocr=True)
+            await lilbee_add([str(src)], enable_ocr=True)
 
         assert cfg.enable_ocr == original_ocr
 
     @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, mock_sync):
-        result = await add([])
+        result = await lilbee_add([])
 
         assert result["copied"] == []
         assert result["skipped"] == []
         assert result["errors"] == []
-
-    @mock.patch(
-        "lilbee.ingest.sync",
-        new_callable=AsyncMock,
-        return_value=SyncResult(failed=["bad.md"]),
-    )
-    async def test_add_sync_failures_has_warning(self, mock_sync, tmp_path):
-        """Sync failures produce a warning field (BEE-wmn)."""
-        src = tmp_path / "bad.md"
-        src.write_text("content")
-        result = await add([str(src)])
-        assert "warning" in result
 
 
 class TestMain:
@@ -506,11 +384,11 @@ class TestMain:
         mock_mcp.run.assert_called_once()
 
 
-class TestAddWithUrls:
+class TestLilbeeAddWithUrls:
     async def test_add_url_without_crawler(self, isolated_env):
         """Adding URLs when crawl4ai not installed returns error."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
-            result = await add(paths=["https://example.com"])
+            result = await lilbee_add(paths=["https://example.com"])
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
@@ -522,7 +400,7 @@ class TestAddWithUrls:
         from pathlib import Path
 
         mock_crawl.return_value = [Path(str(isolated_env / "documents" / "_web" / "page.md"))]
-        result = await add(paths=["https://example.com"])
+        result = await lilbee_add(paths=["https://example.com"])
         assert result["crawled"] == 1
         mock_crawl.assert_awaited_once()
 
@@ -532,7 +410,7 @@ class TestAddWithUrls:
     async def test_add_mixed_urls_and_paths(self, mock_crawl, mock_sync, _mock_avail, isolated_env):
         """Mixed URLs and paths: URLs crawled, nonexistent paths reported."""
         mock_crawl.return_value = []
-        result = await add(paths=["https://example.com", "/nonexistent"])
+        result = await lilbee_add(paths=["https://example.com", "/nonexistent"])
         assert result["crawled"] == 0
         assert "/nonexistent" in result["errors"]
 
@@ -543,7 +421,7 @@ class TestAddWithUrls:
         mock_crawl.return_value = []
         old_ocr = cfg.enable_ocr
         with mock.patch("lilbee.crawler.crawler_available", return_value=True):
-            await add(paths=["https://example.com"], enable_ocr=True)
+            await lilbee_add(paths=["https://example.com"], enable_ocr=True)
         assert cfg.enable_ocr == old_ocr
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
@@ -554,17 +432,17 @@ class TestAddWithUrls:
             "lilbee.crawler.socket.getaddrinfo",
             return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
         ):
-            result = await add(paths=["http://evil.test/steal"])
+            result = await lilbee_add(paths=["http://evil.test/steal"])
         assert result["crawled"] == 0
         assert any("evil.test" in e for e in result["errors"])
 
 
-class TestCrawl:
+class TestLilbeeCrawl:
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp.start_crawl", return_value="abc123")
     def test_returns_task_id(self, mock_start, _mock_avail, isolated_env):
         """Non-blocking crawl returns a task_id immediately."""
-        result = crawl(url="https://example.com")
+        result = lilbee_crawl(url="https://example.com")
         assert result["status"] == "started"
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
@@ -574,24 +452,24 @@ class TestCrawl:
     @mock.patch("lilbee.mcp.start_crawl", return_value="def456")
     def test_passes_depth_and_max_pages(self, mock_start, _mock_avail, isolated_env):
         """Depth and max_pages are forwarded to start_crawl."""
-        result = crawl(url="https://example.com", depth=2, max_pages=10)
+        result = lilbee_crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
         mock_start.assert_called_once_with("https://example.com", depth=2, max_pages=10)
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     def test_rejects_invalid_url(self, _mock_avail):
-        result = crawl(url="ftp://bad.com")
+        result = lilbee_crawl(url="ftp://bad.com")
         assert "error" in result
 
     def test_crawler_not_installed(self):
         """Returns error when crawl4ai is not installed."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
-            result = crawl(url="https://example.com")
+            result = lilbee_crawl(url="https://example.com")
             assert "error" in result
             assert "pip install" in result["error"].lower()
 
 
-class TestCrawlStatus:
+class TestLilbeeCrawlStatus:
     @mock.patch("lilbee.mcp.get_task")
     def test_returns_task_state(self, mock_get_task, isolated_env):
         """Status returns current task state."""
@@ -605,19 +483,19 @@ class TestCrawlStatus:
             status=TaskStatus.RUNNING,
             pages_crawled=3,
         )
-        result = crawl_status("abc123")
-        assert result["url"] == "https://example.com"
-        assert result["status"] == "running"
-        assert result["pages_crawled"] == 3
+        status = lilbee_crawl_status("abc123")
+        assert status["url"] == "https://example.com"
+        assert status["status"] == "running"
+        assert status["pages_crawled"] == 3
 
     def test_not_found(self):
         """Unknown task_id returns an error."""
         clear_tasks()
-        result = crawl_status("nonexistent")
+        result = lilbee_crawl_status("nonexistent")
         assert "error" in result
 
 
-class TestWikiLint:
+class TestLilbeeWikiLint:
     def test_lint_all_pages(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
@@ -626,7 +504,7 @@ class TestWikiLint:
         wiki_dir.mkdir(parents=True)
         (wiki_dir / "doc.md").write_text("Unmarked claim.\n")
         mock_svc.store.get_citations_for_wiki.return_value = []
-        result = wiki_lint()
+        result = lilbee_wiki_lint()
         assert result["command"] == "wiki_lint"
         assert result["total"] >= 1
 
@@ -643,17 +521,17 @@ class TestWikiLint:
             "[^src1]: doc.md, lines 1-5\n"
         )
         mock_svc.store.get_citations_for_wiki.return_value = []
-        result = wiki_lint(wiki_source="wiki/summaries/doc.md")
+        result = lilbee_wiki_lint(wiki_source="wiki/summaries/doc.md")
         assert result["total"] == 0
 
     def test_lint_no_wiki_dir(self, mock_svc, tmp_path):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
-        result = wiki_lint()
+        result = lilbee_wiki_lint()
         assert result["total"] == 0
 
 
-class TestWikiCitations:
+class TestLilbeeWikiCitations:
     def test_returns_citations(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = [
             {
@@ -671,23 +549,23 @@ class TestWikiCitations:
                 "created_at": "2026-01-01",
             }
         ]
-        result = wiki_citations("wiki/summaries/doc.md")
+        result = lilbee_wiki_citations("wiki/summaries/doc.md")
         assert result["command"] == "wiki_citations"
         assert result["total"] == 1
         assert result["citations"][0]["citation_key"] == "src1"
 
     def test_no_citations(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = []
-        result = wiki_citations("wiki/summaries/missing.md")
+        result = lilbee_wiki_citations("wiki/summaries/missing.md")
         assert result["total"] == 0
 
 
-class TestWikiStatus:
+class TestLilbeeWikiStatus:
     def test_no_wiki_dir(self, tmp_path, mock_svc):
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
         cfg.wiki = True
-        result = wiki_status()
+        result = lilbee_wiki_status()
         assert result["wiki_enabled"] is True
         assert result["pages"] == 0
 
@@ -700,7 +578,7 @@ class TestWikiStatus:
         (tmp_path / "wiki" / "drafts").mkdir(parents=True)
         (tmp_path / "wiki" / "drafts" / "b.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
-        result = wiki_status()
+        result = lilbee_wiki_status()
         assert result["summaries"] == 1
         assert result["drafts"] == 1
         assert result["pages"] == 2
@@ -710,17 +588,17 @@ class TestWikiPrune:
     def test_prune_no_pages(self, mock_svc, tmp_path):
         cfg.wiki_dir = "wiki"
         cfg.wiki = True
-        result = wiki_prune()
+        result = lilbee_wiki_prune()
         assert result["command"] == "wiki_prune"
         assert result["archived"] == 0
         assert result["flagged"] == 0
         assert result["records"] == []
 
 
-class TestWikiList:
+class TestLilbeeWikiList:
     def test_wiki_disabled(self):
         cfg.wiki = False
-        result = wiki_list()
+        result = lilbee_wiki_list()
         assert "error" in result
         assert result["error"] == "wiki not enabled"
 
@@ -728,7 +606,7 @@ class TestWikiList:
         cfg.wiki = True
         cfg.data_root = isolated_env
         cfg.wiki_dir = "wiki"
-        result = wiki_list()
+        result = lilbee_wiki_list()
         assert result["command"] == "wiki_list"
         assert result["pages"] == []
         assert result["total"] == 0
@@ -746,17 +624,17 @@ class TestWikiList:
         synthesis = wiki_root / "synthesis"
         synthesis.mkdir(parents=True)
         (synthesis / "typing.md").write_text("# Typing\n", encoding="utf-8")
-        result = wiki_list()
+        result = lilbee_wiki_list()
         assert result["total"] == 2
         slugs = {p["slug"] for p in result["pages"]}
         assert "summaries/doc-a" in slugs
         assert "synthesis/typing" in slugs
 
 
-class TestWikiRead:
+class TestLilbeeWikiRead:
     def test_wiki_disabled(self):
         cfg.wiki = False
-        result = wiki_read("summaries/test")
+        result = lilbee_wiki_read("summaries/test")
         assert "error" in result
         assert result["error"] == "wiki not enabled"
 
@@ -770,7 +648,7 @@ class TestWikiRead:
         (summaries / "my-doc.md").write_text(
             "---\ntitle: My Doc\nsources: [a.txt]\n---\n# My Doc\nBody.\n", encoding="utf-8"
         )
-        result = wiki_read("summaries/my-doc")
+        result = lilbee_wiki_read("summaries/my-doc")
         assert result["command"] == "wiki_read"
         assert result["slug"] == "summaries/my-doc"
         assert result["title"] == "My Doc"
@@ -781,7 +659,7 @@ class TestWikiRead:
         cfg.wiki = True
         cfg.data_root = isolated_env
         cfg.wiki_dir = "wiki"
-        result = wiki_read("summaries/nope")
+        result = lilbee_wiki_read("summaries/nope")
         assert "error" in result
         assert "not found" in result["error"]
 
@@ -789,7 +667,7 @@ class TestWikiRead:
         cfg.wiki = True
         cfg.data_root = isolated_env
         cfg.wiki_dir = "wiki"
-        result = wiki_read("../../etc/passwd")
+        result = lilbee_wiki_read("../../etc/passwd")
         assert "error" in result
 
 

@@ -27,17 +27,13 @@ _OLLAMA_PREFIX = "ollama/"
 
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
-# Single source of truth for per-provider API key configuration.
-# Maps (litellm_provider_name, config_field, env_var, display_label).
-# Used by inject_provider_keys(), discover_api_models(), and config update handler.
-PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
-    ("openai", "openai_api_key", "OPENAI_API_KEY", "OpenAI"),
-    ("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic"),
-    ("gemini", "gemini_api_key", "GEMINI_API_KEY", "Gemini"),
-)
-
-# Derived set of config field names (for checking which updates touch API keys).
-API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
+# Mapping from lilbee config fields to provider env vars.
+# litellm reads these at call time for per-provider authentication.
+_PROVIDER_KEY_MAP: dict[str, str] = {
+    "openai_api_key": "OPENAI_API_KEY",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
+}
 
 
 def _is_ollama(base_url: str) -> bool:
@@ -67,7 +63,7 @@ def inject_provider_keys() -> None:
     and litellm's env-var-based auth. Explicit env vars are never
     overwritten so users can still override via their shell.
     """
-    for _, cfg_field, env_var, _ in PROVIDER_KEYS:
+    for cfg_field, env_var in _PROVIDER_KEY_MAP.items():
         value = getattr(cfg, cfg_field, "")
         if value and not os.environ.get(env_var):
             os.environ[env_var] = value

@@ -1,9 +1,7 @@
 """Web crawling — fetch pages as markdown and save to the documents directory."""
 
 import asyncio
-import contextlib
 import hashlib
-import io
 import ipaddress
 import json
 import logging
@@ -11,11 +9,9 @@ import re
 import socket
 import threading
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 from lilbee.config import cfg
@@ -289,36 +285,27 @@ def update_metadata(results: list[CrawlResult]) -> None:
     save_crawl_metadata(meta)
 
 
-@contextlib.asynccontextmanager
-async def _open_crawler(*, quiet: bool = False) -> AsyncIterator[Any]:
-    """Open an AsyncWebCrawler, suppressing stdout when quiet."""
-    from crawl4ai import AsyncWebCrawler
-
-    stdout_ctx = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
-    with stdout_ctx:
-        async with AsyncWebCrawler(verbose=not quiet) as crawler:
-            yield crawler
-
-
-async def crawl_single(url: str, *, quiet: bool = False) -> CrawlResult:
+async def crawl_single(url: str) -> CrawlResult:
     """Fetch a single URL and return its markdown content."""
     validate_crawl_url(url)
-    from crawl4ai import CrawlerRunConfig
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
 
     config = CrawlerRunConfig(
         page_timeout=cfg.crawl_timeout * 1000,  # ms
     )
     try:
-        async with _open_crawler(quiet=quiet) as crawler:
+        async with AsyncWebCrawler() as crawler:
             result = await crawler.arun(url=url, config=config)
-        markdown = (result.markdown or "").strip()
-        if markdown:
-            return CrawlResult(url=url, markdown=markdown, success=True)
-        return CrawlResult(
-            url=url,
-            success=False,
-            error=result.error_message or "No content extracted",
-        )
+            # crawl4ai may set success=False for sub-resource failures (e.g. favicon 404)
+            # even when the main page has valid markdown. Trust the content, not the flag.
+            markdown = (result.markdown or "").strip()
+            if markdown:
+                return CrawlResult(url=url, markdown=markdown, success=True)
+            return CrawlResult(
+                url=url,
+                success=False,
+                error=result.error_message or "No content extracted",
+            )
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
         return CrawlResult(url=url, success=False, error=str(exc))
@@ -329,15 +316,13 @@ async def crawl_recursive(
     max_depth: int = 0,
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
-    *,
-    quiet: bool = False,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, returning results for all pages.
     Uses crawl4ai's deep crawl strategy for link discovery.
     Falls back to cfg defaults when max_depth/max_pages are 0.
     """
     validate_crawl_url(url)
-    from crawl4ai import CrawlerRunConfig
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
     from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
 
     depth = max_depth if max_depth > 0 else cfg.crawl_max_depth
@@ -354,26 +339,27 @@ async def crawl_recursive(
 
     results: list[CrawlResult] = []
     try:
-        async with _open_crawler(quiet=quiet) as crawler:
+        async with AsyncWebCrawler() as crawler:
             crawl_results = await crawler.arun(url=url, config=config)
-        if not isinstance(crawl_results, list):
-            crawl_results = [crawl_results]
-        for i, cr in enumerate(crawl_results):
-            if on_progress:
-                on_progress(
-                    EventType.CRAWL_PAGE,
-                    CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
-                )
-            if cr.success:
-                results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
-            else:
-                results.append(
-                    CrawlResult(
-                        url=cr.url,
-                        success=False,
-                        error=cr.error_message or "Unknown error",
+            # arun with deep crawl returns a list
+            if not isinstance(crawl_results, list):
+                crawl_results = [crawl_results]
+            for i, cr in enumerate(crawl_results):
+                if on_progress:
+                    on_progress(
+                        EventType.CRAWL_PAGE,
+                        CrawlPageEvent(url=cr.url, current=i + 1, total=len(crawl_results)),
                     )
-                )
+                if cr.success:
+                    results.append(CrawlResult(url=cr.url, markdown=cr.markdown or ""))
+                else:
+                    results.append(
+                        CrawlResult(
+                            url=cr.url,
+                            success=False,
+                            error=cr.error_message or "Unknown error",
+                        )
+                    )
     except Exception as exc:
         log.warning("Recursive crawl of %s failed: %s", url, exc)
         if not results:
@@ -421,7 +407,6 @@ async def crawl_and_save(
     max_pages: int = 0,
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
-    quiet: bool = False,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
     Uses hash-based change detection: always fetches, but only saves files
@@ -439,10 +424,10 @@ async def crawl_and_save(
 
         if depth > 0:
             results = await crawl_recursive(
-                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress, quiet=quiet
+                url, max_depth=depth, max_pages=max_pages, on_progress=on_progress
             )
         else:
-            result = await crawl_single(url, quiet=quiet)
+            result = await crawl_single(url)
             results = [result]
             if on_progress:
                 on_progress(EventType.CRAWL_PAGE, CrawlPageEvent(url=url, current=1, total=1))

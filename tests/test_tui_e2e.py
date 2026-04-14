@@ -118,7 +118,6 @@ class TestEmbeddingAvailable:
         assert embedder.embedding_available() is False
 
 
-@pytest.mark.real_model_classify
 class TestModelClassification:
     def test_mmproj_filtered_out(self):
         from lilbee.cli.tui.widgets.model_bar import _is_mmproj
@@ -886,7 +885,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/set chat_model new-test-model")
             await pilot.pause()
-            assert cfg.chat_model == "new-test-model:latest"
+            assert cfg.chat_model == "new-test-model"
 
     async def test_slash_command_set_unknown_key(self, _mock_resolve):
         """/set nonexistent_key warns."""

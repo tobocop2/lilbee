@@ -1325,7 +1325,7 @@ class TestLlamaCppProviderMethods:
         ):
             result = provider._get_chat_llm()
 
-        mock_vis.assert_called_once_with("vision-model:latest")
+        mock_vis.assert_called_once_with("vision-model")
         assert result == mock_vis.return_value
 
     def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
@@ -1433,25 +1433,6 @@ class TestLlamaCppProviderMethods:
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 100
         assert "num_predict" not in call_kwargs
-
-    def test_chat_strips_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
-        """chat() strips num_ctx since it is a model-load param, not per-call."""
-        provider = _make_provider_no_thread()
-
-        mock_llm = mock.MagicMock()
-        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
-
-        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
-            result = provider.chat(
-                [{"role": "user", "content": "hi"}],
-                stream=False,
-                options={"temperature": 0.7, "num_ctx": 2048},
-            )
-
-        assert result == "ok"
-        call_kwargs = mock_llm.create_chat_completion.call_args[1]
-        assert call_kwargs["temperature"] == 0.7
-        assert "num_ctx" not in call_kwargs
 
     def test_chat_non_stream_no_options(self, mock_llama_cpp: mock.MagicMock) -> None:
         """chat() without options passes no extra kwargs."""

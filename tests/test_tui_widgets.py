@@ -396,7 +396,6 @@ class TestIsMmproj:
         assert _is_mmproj("qwen3:8b") is False
 
 
-@pytest.mark.real_model_classify
 class TestClassifyInstalledModels:
     def test_native_models_classified_by_task(self, tmp_path) -> None:
         from lilbee.cli.tui.widgets.model_bar import _classify_installed_models
@@ -2100,8 +2099,7 @@ class TestModelBarAdditional:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            # Bare name normalizes to name:latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
+            assert chat_sel.value == "test-model"
 
     async def test_on_embed_model_changed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -2123,7 +2121,7 @@ class TestModelBarAdditional:
             ):
                 embed_sel.value = "new-embed"
                 await pilot.pause()
-            assert cfg.embedding_model == "new-embed:latest"
+            assert cfg.embedding_model == "new-embed"
 
     async def test_populate_embed_model_in_scanned(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ModelBar
@@ -2185,36 +2183,6 @@ class TestSyncSelectPrepend:
         passed = sel.set_options.call_args_list[0][0][0]
         assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
         assert sel.value == "llama3:8b"
-
-    def test_bare_name_matches_latest_alias(self) -> None:
-        """A bare name like 'qwen3' normalizes to 'qwen3:latest' and matches the option."""
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        sel.value = "qwen3"
-        opts = [
-            ModelOption("Qwen3 0.6B", "qwen3:0.6b"),
-            ModelOption("Qwen3", "qwen3:latest"),
-        ]
-        _sync_select(sel, opts, default="qwen3")
-        # Should resolve to qwen3:latest, not create a broken fallback
-        assert sel.value == "qwen3:latest"
-        passed = sel.set_options.call_args_list[0][0][0]
-        # No fallback prepended since qwen3:latest is already in opts
-        assert len(passed) == 2
-        assert all(o.ref != "qwen3" for o in passed)
-
-    def test_bare_name_prepended_when_no_latest_alias(self) -> None:
-        """A bare name with no :latest match still prepends as fallback with the tag."""
-        from lilbee.cli.tui.widgets.model_bar import ModelOption, _sync_select
-
-        sel = mock.MagicMock()
-        opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
-        _sync_select(sel, opts, default="llama3")
-        # Should normalize to llama3:latest and prepend that
-        assert sel.value == "llama3:latest"
-        passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:latest", "llama3:latest")
 
     def test_no_default_leaves_value_untouched(self) -> None:
         """When there's no default, don't assign a value."""
@@ -2820,104 +2788,6 @@ class TestGridSelectExtra:
             await pilot.pause()
             assert grid.highlighted == 0
 
-    async def test_tab_next_advances_highlight(self) -> None:
-        """Tab advances the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 0
-            grid.action_tab_next()
-            assert grid.highlighted == 1
-
-    async def test_tab_next_escapes_at_last_card(self) -> None:
-        """Tab on the last card posts LeaveDown to escape the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = len(grid.children) - 1
-            messages: list[object] = []
-            orig_post = grid.post_message
-            grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
-            grid.action_tab_next()
-            assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
-
-    async def test_tab_previous_retreats_highlight(self) -> None:
-        """Shift+Tab retreats the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 2
-            grid.action_tab_previous()
-            assert grid.highlighted == 1
-
-    async def test_tab_previous_escapes_at_first_card(self) -> None:
-        """Shift+Tab on the first card posts LeaveUp to escape the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 0
-            messages: list[object] = []
-            orig_post = grid.post_message
-            grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
-            grid.action_tab_previous()
-            assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
-
-    def test_tab_next_empty_grid_posts_leave_down(self) -> None:
-        """Tab on an empty grid posts LeaveDown."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        grid = GridSelect(min_column_width=20)
-        messages: list[object] = []
-        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
-        grid.action_tab_next()
-        assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
-
-    def test_tab_previous_empty_grid_posts_leave_up(self) -> None:
-        """Shift+Tab on an empty grid posts LeaveUp."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        grid = GridSelect(min_column_width=20)
-        messages: list[object] = []
-        grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
-        grid.action_tab_previous()
-        assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
-
-    async def test_tab_next_initializes_highlight_when_none(self) -> None:
-        """Tab with no highlight initializes to 0."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_next()
-            assert grid.highlighted == 0
-
-    async def test_tab_previous_initializes_highlight_when_none(self) -> None:
-        """Shift+Tab with no highlight initializes to last card."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_previous()
-            assert grid.highlighted == len(grid.children) - 1
-
 
 # ---------------------------------------------------------------------------
 # ModelCard: _build_status with positive downloads
@@ -2961,23 +2831,23 @@ class TestModelBarPopulateBranches:
         """When scanned models match config, values are preserved."""
         from lilbee.cli.tui.widgets.model_bar import ModelBar
 
-        cfg.chat_model = "test-model:7b"
-        cfg.embedding_model = "test-embed:v1"
+        cfg.chat_model = "test-model"
+        cfg.embedding_model = "test-embed"
         app = _ModelBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(ModelBar)
             bar._populate(
-                [ModelOption("test-model:7b", "test-model:7b"), ModelOption("other", "other")],
-                [ModelOption("test-embed:v1", "test-embed:v1"), ModelOption("nomic", "nomic")],
+                [ModelOption("test-model", "test-model"), ModelOption("other", "other")],
+                [ModelOption("test-embed", "test-embed"), ModelOption("nomic", "nomic")],
             )
             await pilot.pause()
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
             embed_sel = app.query_one("#embed-model-select", Select)
-            assert chat_sel.value == "test-model:7b"
-            assert embed_sel.value == "test-embed:v1"
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
 
     async def test_populate_empty_lists_uses_config_default(self) -> None:
         """When no models found, configured default from cfg is used."""
@@ -2994,8 +2864,7 @@ class TestModelBarPopulateBranches:
             from textual.widgets import Select
 
             chat_sel = app.query_one("#chat-model-select", Select)
-            # Bare name normalizes to name:latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
+            assert chat_sel.value == "test-model"
 
     async def test_populate_retains_matching_value(self) -> None:
         """When current value matches a scanned model, it's preserved."""
@@ -3062,9 +2931,9 @@ class TestModelBarPopulateBranches:
                 [ModelOption("Nomic Embed Text", "nomic:latest")],
             )
             await pilot.pause()
-            # Falls back to cfg values, normalized with :latest via ensure_tag
-            assert chat_sel.value == "test-model:latest"
-            assert embed_sel.value == "test-embed:latest"
+            # Falls back to cfg.chat_model / cfg.embedding_model, not models[0]
+            assert chat_sel.value == "test-model"
+            assert embed_sel.value == "test-embed"
 
     async def test_refresh_models(self) -> None:
         """Cover line 267: refresh_models calls _scan_models."""

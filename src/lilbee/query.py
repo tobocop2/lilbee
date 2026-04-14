@@ -20,7 +20,6 @@ from typing_extensions import TypedDict
 from lilbee.config import Config, cfg
 from lilbee.embedder import Embedder
 from lilbee.providers.base import LLMProvider
-from lilbee.reasoning import strip_reasoning
 from lilbee.store import CitationRecord, SearchChunk, Store, cosine_sim
 
 log = logging.getLogger(__name__)
@@ -537,9 +536,8 @@ class Searcher:
             messages = self._direct_messages(question, history)
             provider_messages = self._messages_for_provider(messages)
             opts = options if options is not None else self._config.generation_options()
-            raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
-            clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-            return AskResult(answer=self._NO_EMBED_WARNING + clean, sources=[])
+            answer = self._provider.chat(provider_messages, options=opts or None)
+            return AskResult(answer=self._NO_EMBED_WARNING + str(answer or ""), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
             return AskResult(
@@ -549,9 +547,8 @@ class Searcher:
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
-        clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results)
+        answer = self._provider.chat(provider_messages, options=opts or None)
+        return AskResult(answer=str(answer) or "", sources=results)
 
     def ask(
         self,
@@ -591,9 +588,6 @@ class Searcher:
                         yield st
             except (ConnectionError, OSError) as exc:
                 yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
-            finally:
-                if hasattr(raw, "close"):
-                    raw.close()
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history)
@@ -615,8 +609,5 @@ class Searcher:
                     yield st
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
-        finally:
-            if hasattr(raw_stream, "close"):
-                raw_stream.close()
         citations = deduplicate_sources(results)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)

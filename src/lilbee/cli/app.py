@@ -11,6 +11,7 @@ from rich.console import Console
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
+from lilbee.models import ensure_tag
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -95,7 +96,7 @@ def apply_overrides(
             _apply_data_root(Path(data_env))
 
     if model is not None:
-        cfg.chat_model = model
+        cfg.chat_model = ensure_tag(model)
     if temperature is not None:
         cfg.temperature = temperature
     if top_p is not None:

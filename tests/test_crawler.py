@@ -463,20 +463,6 @@ class TestCrawlSingle:
         assert not result.success
         assert "timeout" in result.error
 
-    async def test_quiet_passes_verbose_false(self):
-        """quiet=True passes verbose=False to AsyncWebCrawler."""
-        mock_result = _make_crawl4ai_result()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
-            await crawl_single("https://example.com", quiet=True)
-        mock_crawler_cls.assert_called_once_with(verbose=False)
-
 
 class TestCrawlRecursive:
     def _setup_crawl4ai(self, mock_instance):
@@ -575,20 +561,6 @@ class TestCrawlRecursive:
         with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
 
-    async def test_quiet_passes_verbose_false(self):
-        """quiet=True passes verbose=False to AsyncWebCrawler."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        modules = self._setup_crawl4ai(mock_instance)
-        modules["crawl4ai"].AsyncWebCrawler = mock_crawler_cls
-
-        with patch.dict("sys.modules", modules):
-            await crawl_recursive("https://example.com", max_depth=1, quiet=True)
-        mock_crawler_cls.assert_called_once_with(verbose=False)
-
 
 class TestCrawlAndSave:
     @patch("lilbee.crawler.crawl_single")
@@ -606,21 +578,6 @@ class TestCrawlAndSave:
         ]
         paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert len(paths) == 2
-
-    @patch("lilbee.crawler.crawl_single")
-    async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
-        """quiet=True is forwarded to crawl_single."""
-        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
-        await crawl_and_save("https://example.com", quiet=True)
-        mock_crawl_single.assert_awaited_once_with("https://example.com", quiet=True)
-
-    @patch("lilbee.crawler.crawl_recursive")
-    async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
-        """quiet=True is forwarded to crawl_recursive."""
-        mock_crawl_recursive.return_value = []
-        await crawl_and_save("https://example.com", depth=2, quiet=True)
-        call_kwargs = mock_crawl_recursive.call_args[1]
-        assert call_kwargs["quiet"] is True
 
     @patch("lilbee.crawler.crawl_single")
     async def test_single_page_with_progress(self, mock_crawl_single, isolated_env):

@@ -183,29 +183,3 @@ class TestRunServer:
         # Dir was created, port file cleaned up after shutdown
         assert cfg.data_dir.exists()
         assert not (cfg.data_dir / "server.port").exists()
-
-    @mock.patch("atexit.register")
-    def test_registers_atexit_cleanup(self, mock_atexit):
-        """Port file cleanup is registered via atexit for SIGTERM resilience."""
-        from lilbee.cli.commands import _run_server
-
-        sock = mock.MagicMock()
-        sock.getsockname.return_value = ("127.0.0.1", 11111)
-
-        fake_server_obj = mock.MagicMock()
-        fake_server_obj.servers = [mock.MagicMock(sockets=[sock])]
-        fake_server_obj.startup = mock.AsyncMock()
-        fake_server_obj.main_loop = mock.AsyncMock()
-        fake_server_obj.shutdown = mock.AsyncMock()
-
-        fake_config = mock.MagicMock()
-
-        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
-
-        mock_atexit.assert_called_once()
-        cleanup_fn = mock_atexit.call_args[0][0]
-        # Write a port file and verify the cleanup function removes it
-        port_path = cfg.data_dir / "server.port"
-        port_path.write_text("11111")
-        cleanup_fn()
-        assert not port_path.exists()

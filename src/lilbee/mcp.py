@@ -13,7 +13,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from lilbee.config import cfg
 from lilbee.crawl_task import get_task, start_crawl
 from lilbee.crawler import is_url, require_valid_crawl_url
-from lilbee.services import get_services, reset_services
+from lilbee.security import validate_path_within
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
     from lilbee.store import SearchChunk
@@ -24,22 +25,16 @@ mcp = FastMCP("lilbee", instructions="Local RAG knowledge base. Search indexed d
 
 
 @mcp.tool()
-def search(query: str, top_k: int = 5) -> list[dict[str, Any]] | dict[str, Any]:
+def lilbee_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Search the knowledge base for relevant document chunks.
-    Returns chunks sorted by relevance. No LLM call -- uses pre-computed embeddings.
+    Returns chunks sorted by relevance. No LLM call — uses pre-computed embeddings.
     """
-    if not query or not query.strip():
-        return {"error": "query must not be empty"}
-    try:
-        results = get_services().searcher.search(query, top_k=top_k)
-        results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
-        return [clean(r) for r in results]
-    except Exception as exc:
-        return {"error": str(exc)}
+    results = get_services().searcher.search(query, top_k=top_k)
+    return [clean(r) for r in results]
 
 
 @mcp.tool()
-def status() -> dict[str, Any]:
+def lilbee_status() -> dict[str, Any]:
     """Show indexed documents, configuration, and chunk counts."""
     sources = get_services().store.get_sources()
     return {
@@ -59,15 +54,15 @@ def status() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def sync() -> dict[str, Any]:
+async def lilbee_sync() -> dict[str, Any]:
     """Sync documents directory with the vector store."""
-    from lilbee.ingest import sync as run_sync
+    from lilbee.ingest import sync
 
-    return (await run_sync(quiet=True)).model_dump()
+    return (await sync(quiet=True)).model_dump()
 
 
 @mcp.tool()
-async def add(
+async def lilbee_add(
     paths: list[str],
     force: bool = False,
     enable_ocr: bool | None = None,
@@ -87,7 +82,7 @@ async def add(
             the configured default for this invocation only.
     """
     from lilbee.cli.helpers import copy_files
-    from lilbee.ingest import sync as run_sync
+    from lilbee.ingest import sync
 
     errors: list[str] = []
     valid: list[Path] = []
@@ -125,9 +120,9 @@ async def add(
     from lilbee.cli.helpers import temporary_ocr_config
 
     with temporary_ocr_config(enable_ocr, ocr_timeout):
-        sync_result = (await run_sync(quiet=True)).model_dump()
+        sync_result = (await sync(quiet=True)).model_dump()
 
-    result: dict[str, Any] = {
+    return {
         "command": "add",
         "copied": copy_result.copied,
         "skipped": copy_result.skipped,
@@ -135,20 +130,17 @@ async def add(
         "errors": errors,
         "sync": sync_result,
     }
-    if errors or sync_result.get("failed"):
-        result["warning"] = "some files could not be processed"
-    return result
 
 
 @mcp.tool()
-def crawl(
+def lilbee_crawl(
     url: str,
     depth: int = 0,
     max_pages: int = 50,
 ) -> dict[str, Any]:
     """Crawl a web page and add it to the knowledge base (non-blocking).
     Launches the crawl as a background task and returns immediately with a
-    task_id. Use crawl_status(task_id) to poll progress.
+    task_id. Use lilbee_crawl_status(task_id) to poll progress.
 
     Args:
         url: The URL to crawl (must start with http:// or https://).
@@ -169,13 +161,13 @@ def crawl(
 
 
 @mcp.tool()
-def crawl_status(task_id: str) -> dict[str, Any]:
+def lilbee_crawl_status(task_id: str) -> dict[str, Any]:
     """Check the status of a running crawl task.
     Returns the current state including status, pages crawled, and any error.
-    Use this to poll after crawl returns a task_id.
+    Use this to poll after lilbee_crawl returns a task_id.
 
     Args:
-        task_id: The task ID returned by crawl.
+        task_id: The task ID returned by lilbee_crawl.
     """
     task = get_task(task_id)
     if task is None:
@@ -193,38 +185,31 @@ def crawl_status(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def init(path: str = "") -> dict[str, Any]:
+def lilbee_init(path: str = "") -> dict[str, Any]:
     """Initialize a local .lilbee/ knowledge base in a directory.
     Creates .lilbee/ with documents/, data/, and .gitignore.
     If path is empty, uses the current working directory.
-    Also switches the MCP session to use this knowledge base for
-    subsequent tool calls.
     """
     base = Path(path) if path else Path.cwd()
+    try:
+        validate_path_within(base, Path.home())
+    except ValueError:
+        return {"error": "Path must be within your home directory"}
     root = base / ".lilbee"
+    if root.is_dir():
+        return {"command": "init", "path": str(root), "created": False}
 
-    created = False
-    if not root.is_dir():
-        (root / "documents").mkdir(parents=True)
-        (root / "data").mkdir(parents=True)
-        (root / ".gitignore").write_text("data/\n")
-        created = True
-
-    # Switch MCP session to this project's KB
-    cfg.data_root = base
-    cfg.documents_dir = root / "documents"
-    cfg.data_dir = root / "data"
-    cfg.lancedb_dir = root / "data" / "lancedb"
-    reset_services()
-
-    return {"command": "init", "path": str(root), "created": created}
+    (root / "documents").mkdir(parents=True)
+    (root / "data").mkdir(parents=True)
+    (root / ".gitignore").write_text("data/\n")
+    return {"command": "init", "path": str(root), "created": True}
 
 
 @mcp.tool()
-def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
+def lilbee_remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
     """Remove documents from the knowledge base by source name.
     Args:
-        names: Source filenames to remove (as shown by status).
+        names: Source filenames to remove (as shown by lilbee_status).
         delete_files: Also delete the physical files from the documents directory.
     """
     result = get_services().store.remove_documents(
@@ -234,7 +219,7 @@ def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_documents() -> dict[str, Any]:
+def lilbee_list_documents() -> dict[str, Any]:
     """List all indexed documents with their chunk counts."""
     sources = get_services().store.get_sources()
     return {
@@ -246,20 +231,17 @@ def list_documents() -> dict[str, Any]:
 
 
 @mcp.tool()
-def reset(confirm: bool = False) -> dict[str, Any]:
+def lilbee_reset() -> dict[str, Any]:
     """Delete all documents and data (full factory reset).
     WARNING: This permanently removes all indexed documents and vector data.
-    Pass confirm=true to proceed.
     """
-    if not confirm:
-        return {"error": "pass confirm=true to confirm deletion"}
     from lilbee.cli import perform_reset
 
     return perform_reset().model_dump()
 
 
 @mcp.tool()
-def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
+def lilbee_wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages for citation staleness, missing sources, and unmarked claims.
     If wiki_source is provided, lint only that page. Otherwise, lint all wiki pages.
 
@@ -282,7 +264,7 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
-def wiki_citations(wiki_source: str) -> dict[str, Any]:
+def lilbee_wiki_citations(wiki_source: str) -> dict[str, Any]:
     """Get all citations for a wiki page.
     Args:
         wiki_source: Wiki page path, e.g. "wiki/summaries/doc.md".
@@ -297,7 +279,7 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def wiki_status() -> dict[str, Any]:
+def lilbee_wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
     from lilbee.wiki.shared import DRAFTS_SUBDIR, SUMMARIES_SUBDIR
@@ -323,7 +305,7 @@ def wiki_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-def wiki_list() -> dict[str, Any]:
+def lilbee_wiki_list() -> dict[str, Any]:
     """List all wiki pages (summaries and concepts) with metadata.
     Returns page slugs, titles, types, source counts, and creation dates.
     """
@@ -343,7 +325,7 @@ def wiki_list() -> dict[str, Any]:
 
 
 @mcp.tool()
-def wiki_read(slug: str) -> dict[str, Any]:
+def lilbee_wiki_read(slug: str) -> dict[str, Any]:
     """Read a wiki page's content and frontmatter by slug.
     Args:
         slug: Page slug like "summaries/my-doc" or "concepts/typing".
@@ -362,7 +344,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def wiki_prune() -> dict[str, Any]:
+def lilbee_wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages.
     Archives pages whose sources are all deleted or whose concept cluster
     dropped below 3 live sources. Flags pages with >50% stale citations
@@ -380,7 +362,7 @@ def wiki_prune() -> dict[str, Any]:
 
 
 @mcp.tool()
-def model_list(source: str = "", task: str = "") -> dict[str, Any]:
+def lilbee_model_list(source: str = "", task: str = "") -> dict[str, Any]:
     """List installed models across native and litellm sources.
 
     Args:
@@ -398,7 +380,7 @@ def model_list(source: str = "", task: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
-def model_show(model: str) -> dict[str, Any]:
+def lilbee_model_show(model: str) -> dict[str, Any]:
     """Show catalog and installed metadata for a model ref (e.g. 'qwen3:0.6b')."""
     from lilbee.cli.model import show_model_data
     from lilbee.model_manager import ModelNotFoundError
@@ -422,7 +404,7 @@ def _log_progress_failure(future: concurrent.futures.Future[None]) -> None:
 
 
 @mcp.tool()
-async def model_pull(
+async def lilbee_model_pull(
     model: str,
     source: str = "native",
     ctx: Context | None = None,
@@ -461,7 +443,7 @@ async def model_pull(
 
 
 @mcp.tool()
-def model_rm(model: str, source: str = "") -> dict[str, Any]:
+def lilbee_model_rm(model: str, source: str = "") -> dict[str, Any]:
     """Remove an installed model.
 
     Args:

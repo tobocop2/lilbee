@@ -29,11 +29,10 @@ from lilbee.cli.app import (
     top_p_option,
 )
 from lilbee.cli.helpers import (
-    CopyResult,
     add_paths,
     auto_sync,
     clean_result,
-    copy_files,
+    copy_paths,
     gather_status,
     get_version,
     json_output,
@@ -191,17 +190,8 @@ def _crawl_urls_blocking(
     effective_depth = depth if depth is not None else (cfg.crawl_max_depth if crawl else 0)
     effective_pages = max_pages if max_pages is not None else cfg.crawl_max_pages
 
-    from rich.console import Console as RichConsole
-
-    err_console = RichConsole(stderr=True)
     all_paths: list[Path] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        transient=True,
-        console=err_console,
-        disable=cfg.json_mode,
-    ) as progress:
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as progress:
         for url in urls:
             ptask = progress.add_task(f"Crawling {url}...", total=None)
 
@@ -222,7 +212,6 @@ def _crawl_urls_blocking(
                     depth=effective_depth,
                     max_pages=effective_pages,
                     on_progress=_make_callback(),
-                    quiet=cfg.json_mode,
                 )
             )
             all_paths.extend(paths)
@@ -280,15 +269,14 @@ def add(
         if cfg.json_mode:
             from lilbee.ingest import sync
 
-            copy_result = CopyResult()
+            copied: list[str] = []
             if file_paths:
-                copy_result = copy_files(file_paths, force=force)
+                copied = copy_paths(file_paths, console, force=force)
             result = asyncio.run(sync(quiet=True))
             json_output(
                 {
                     "command": "add",
-                    "copied": copy_result.copied,
-                    "skipped": copy_result.skipped,
+                    "copied": copied,
                     "crawled": len(crawled_paths),
                     "sync": sync_result_to_json(result),
                 }
@@ -382,8 +370,6 @@ def remove(
         if result.not_found:
             payload["not_found"] = result.not_found
         json_output(payload)
-        if not result.removed and result.not_found:
-            raise SystemExit(1)
         return
 
     for name in result.removed:
@@ -572,13 +558,7 @@ def _port_file() -> Path:
 
 async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> None:
     """Start uvicorn, write port file, and clean up on shutdown."""
-    import atexit
-
     port_path = _port_file()
-
-    def _cleanup_port_file() -> None:
-        port_path.unlink(missing_ok=True)
-
     if not config.loaded:
         config.load()
     server.lifespan = config.lifespan_class(config)
@@ -589,7 +569,6 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             actual_port = sock.getsockname()[1]
             port_path.parent.mkdir(parents=True, exist_ok=True)
             port_path.write_text(str(actual_port))
-            atexit.register(_cleanup_port_file)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:

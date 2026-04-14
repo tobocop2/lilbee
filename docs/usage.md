@@ -316,7 +316,7 @@ lilbee add https://docs.example.com --depth 2
 lilbee add https://docs.example.com https://wiki.example.com
 ```
 
-Also available via MCP (`crawl`), REST API (`POST /api/crawl`), and TUI (`/crawl`).
+Also available via MCP (`lilbee_crawl`), REST API (`POST /api/crawl`), and TUI (`/crawl`).
 
 **Configuration:**
 

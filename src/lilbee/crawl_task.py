@@ -92,20 +92,13 @@ async def run_crawl(task: CrawlTask) -> None:
         )
         task.status = TaskStatus.DONE
         task.pages_crawled = task.pages_crawled or len(paths)
-        task.finished_at = now_iso()
         log.info("Crawl complete: %s → %d files", task.url, len(paths))
-        try:
-            from lilbee.ingest import sync
-
-            await sync(quiet=True)
-        except Exception:
-            log.warning("Post-crawl sync failed for %s", task.url, exc_info=True)
     except Exception as exc:
         task.status = TaskStatus.FAILED
         task.error = str(exc)
-        task.finished_at = now_iso()
         log.warning("Crawl failed: %s — %s", task.url, exc)
     finally:
+        task.finished_at = now_iso()
         task._async_task = None
 
 

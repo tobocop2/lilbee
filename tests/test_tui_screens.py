@@ -2824,17 +2824,6 @@ async def test_chat_on_setup_complete_skipped_shows_banner():
         assert banner.display is True
 
 
-async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
-    """Skipping wizard does not show banner when embedding model is already configured."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_embedding_ready", return_value=True):
-            app.screen._on_setup_complete("skipped")
-            await _pilot.pause()
-            banner = app.screen.query_one("#chat-only-banner")
-            assert banner.display is False
-
-
 async def test_chat_on_setup_complete_success():
     """Cover _on_setup_complete with successful setup."""
     app = ChatTestApp()
@@ -4356,7 +4345,7 @@ async def test_chat_refresh_status_line():
         from lilbee.cli.tui.screens.chat import ChatStatusLine
 
         status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status.model_name == "my-model:latest"
+        assert status.model_name == "my-model"
 
 
 async def test_settings_group_titles_present():
@@ -5662,55 +5651,6 @@ async def test_setup_wizard_grid_leave_up_walks_focus_backward():
             assert app.focused is not None
 
 
-async def test_setup_wizard_tab_escapes_grid_to_install_button():
-    """Tab from the last card in the last grid reaches the Install & Go button."""
-    from lilbee.cli.tui.screens.setup import SetupWizard
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            grids = list(screen.query(GridSelect))
-            assert grids, "expected at least one GridSelect in the wizard"
-            last_grid = grids[-1]
-            last_grid.focus()
-            last_grid.highlight_last()
-            await pilot.pause()
-            assert app.focused is last_grid
-            await pilot.press("tab")
-            await pilot.pause()
-            focused = app.focused
-            assert focused is not last_grid
-            assert focused is not None
-
-
-async def test_setup_wizard_shift_tab_escapes_grid_backward():
-    """Shift+Tab from the first card in a grid walks focus backward."""
-    from lilbee.cli.tui.screens.setup import SetupWizard
-    from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            grids = list(screen.query(GridSelect))
-            assert len(grids) >= 2, "expected multiple GridSelects in the wizard"
-            second_grid = grids[1]
-            second_grid.focus()
-            second_grid.highlight_first()
-            await pilot.pause()
-            assert app.focused is second_grid
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert app.focused is not second_grid
-            assert app.focused is not None
-
-
 async def test_setup_wizard_on_download_progress():
     """_on_download_progress updates progress bar and status."""
     from lilbee.cli.tui.screens.setup import SetupWizard
@@ -6284,19 +6224,6 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
         ):
             app.screen._on_setup_complete("completed")
             mock_sync.assert_called_once()
-
-
-async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
-    """_on_setup_complete hides chat-only banner after wizard configures embedding."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        # Simulate banner being visible (e.g. from /setup command while in chat-only mode)
-        app.screen._show_chat_only_banner()
-        assert app.screen.query_one("#chat-only-banner").display is True
-        with patch.object(app.screen, "_embedding_ready", return_value=True):
-            app.screen._on_setup_complete("done")
-            await _pilot.pause()
-            assert app.screen.query_one("#chat-only-banner").display is False
 
 
 async def test_chat_on_key_insert_mode_unfocused_input():

@@ -1,6 +1,6 @@
 """Tests for crawl task management."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -104,9 +104,8 @@ class TestMakeProgressUpdater:
 
 
 class TestRunCrawl:
-    @patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
     @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
-    async def test_success(self, mock_crawl, mock_sync):
+    async def test_success(self, mock_crawl):
         from pathlib import Path
 
         mock_crawl.return_value = [Path("a.md"), Path("b.md")]
@@ -127,47 +126,6 @@ class TestRunCrawl:
         assert task.status == TaskStatus.FAILED
         assert "network error" in task.error
         assert task.finished_at != ""
-
-    @patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=MagicMock())
-    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
-    async def test_sync_called_after_crawl(self, mock_crawl, mock_sync):
-        """Auto-sync is triggered after a successful crawl (BEE-7ic)."""
-        from pathlib import Path
-
-        mock_crawl.return_value = [Path("a.md")]
-        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
-        await run_crawl(task)
-        assert task.status == TaskStatus.DONE
-        mock_sync.assert_awaited_once_with(quiet=True)
-
-    @patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
-    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
-    async def test_sync_failure_does_not_fail_crawl(self, mock_crawl, mock_sync):
-        """Sync failure after crawl is logged but doesn't mark task as failed."""
-        from pathlib import Path
-
-        mock_crawl.return_value = [Path("a.md")]
-        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
-        await run_crawl(task)
-        assert task.status == TaskStatus.DONE
-        assert task.error is None
-
-    @patch("lilbee.crawl_task.crawl_and_save", new_callable=AsyncMock)
-    async def test_finished_at_set_before_sync(self, mock_crawl):
-        """finished_at is set before sync runs, not after (BEE-ays)."""
-        from pathlib import Path
-
-        captured_finished_at: list[str] = []
-
-        async def spy_sync(*, quiet: bool = False) -> MagicMock:
-            captured_finished_at.append(task.finished_at)
-            return MagicMock()
-
-        mock_crawl.return_value = [Path("a.md")]
-        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
-        with patch("lilbee.ingest.sync", new_callable=AsyncMock, side_effect=spy_sync):
-            await run_crawl(task)
-        assert captured_finished_at[0] != "", "finished_at must be set before sync starts"
 
 
 class TestTaskRegistry:

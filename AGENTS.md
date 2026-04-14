@@ -174,14 +174,14 @@ An MCP server is configured in `.claude/settings.json` for this project. Tools a
 
 | Tool | Description |
 |------|-------------|
-| `search(query, top_k)` | Search for relevant chunks |
-| `status()` | Show indexed docs and config |
-| `sync()` | Sync documents to vector store |
-| `add(paths, force, vision_model)` | Add files/dirs and sync |
-| `init(path)` | Initialize a local `.lilbee/` knowledge base |
-| `reset(confirm)` | Delete all documents and data (factory reset, requires confirm=true) |
+| `lilbee_search(query, top_k)` | Search for relevant chunks |
+| `lilbee_status()` | Show indexed docs and config |
+| `lilbee_sync()` | Sync documents to vector store |
+| `lilbee_add(paths, force, vision_model)` | Add files/dirs and sync |
+| `lilbee_init(path)` | Initialize a local `.lilbee/` knowledge base |
+| `lilbee_reset()` | Delete all documents and data (factory reset) |
 
-Prefer `search` -- it returns pre-embedded chunks without calling the LLM at query time.
+Prefer `lilbee_search` — it returns pre-embedded chunks without calling the LLM at query time.
 
 ### JSON CLI (fallback)
 

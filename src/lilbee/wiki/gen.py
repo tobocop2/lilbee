@@ -39,50 +39,6 @@ WikiProgressCallback = Callable[[str, dict[str, object]], None]
 
 _MAX_DIFF_PREVIEW_LINES = 20  # lines of unified diff shown in drift warnings
 
-# Conservative default context window when num_ctx is not configured.
-# Most modern models support at least 8192 tokens.
-_DEFAULT_CONTEXT_WINDOW = 8192
-
-# Fraction of context window reserved for chunks. The remainder leaves
-# room for the system/user prompt template and generation output.
-_CONTEXT_BUDGET_FRACTION = 0.75
-
-# Approximate characters per token for budget estimation. 4 chars/token
-# is a widely used heuristic for English text.
-_CHARS_PER_TOKEN = 4
-
-
-def _truncate_chunks_to_budget(
-    chunks: list[SearchChunk],
-    config: Config,
-) -> list[SearchChunk]:
-    """Drop trailing chunks so the total text fits within the model's context budget.
-
-    Uses a chars/4 heuristic for token estimation. Returns the original list
-    unchanged when all chunks fit.
-    """
-    context_window = config.num_ctx or _DEFAULT_CONTEXT_WINDOW
-    budget_tokens = int(context_window * _CONTEXT_BUDGET_FRACTION)
-    budget_chars = budget_tokens * _CHARS_PER_TOKEN
-
-    total_chars = 0
-    kept: list[SearchChunk] = []
-    for chunk in chunks:
-        chunk_chars = len(chunk.chunk)
-        if total_chars + chunk_chars > budget_chars and kept:
-            break
-        kept.append(chunk)
-        total_chars += chunk_chars
-
-    if len(kept) < len(chunks):
-        log.warning(
-            "Truncated chunks from %d to %d to fit context window (%d tokens)",
-            len(chunks),
-            len(kept),
-            context_window,
-        )
-    return kept
-
 
 def _chunks_to_text(chunks: list[SearchChunk]) -> str:
     """Format chunks as numbered text blocks for the LLM prompt."""
@@ -287,7 +243,7 @@ def _check_faithfulness(
     try:
         response = provider.chat(messages, stream=False)
         return _parse_faithfulness_score(strip_reasoning(cast(str, response)))
-    except Exception as exc:
+    except (ConnectionError, OSError, RuntimeError) as exc:
         log.warning("Faithfulness check failed for %s: %s", label, exc)
         return 0.0
 
@@ -402,21 +358,17 @@ def _generate_page(
     try:
         response = provider.chat(messages, stream=False)
         wiki_text = strip_reasoning(cast(str, response)).strip()
-    except Exception as exc:
+    except (ConnectionError, OSError, RuntimeError) as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
-        _emit("failed", error=str(exc))
         return None
 
     if not wiki_text:
-        log.warning("LLM returned empty response for wiki page %s", label)
-        _emit("failed", error="Model returned empty response")
         return None
 
     parsed_citations = parse_wiki_citations(wiki_text)
     verified = _verify_citations(citation_resolver(parsed_citations), chunks, label, config)
     if not verified:
         log.warning("No valid citations for %s, skipping", label)
-        _emit("failed", error="No valid citations found")
         return None
 
     _emit("faithfulness_check")
@@ -470,7 +422,6 @@ def generate_summary_page(
         log.warning("No chunks for source %s, skipping wiki generation", source_name)
         return None
 
-    chunks = _truncate_chunks_to_budget(chunks, config)
     chunks_text = _chunks_to_text(chunks)
     template = config.wiki_summary_prompt
     prompt = template.format(source_name=source_name, chunks_text=chunks_text)
@@ -580,7 +531,6 @@ def _generate_synthesis_page(
         log.warning("No chunks for synthesis topic %r, skipping", topic)
         return None
 
-    all_chunks = _truncate_chunks_to_budget(all_chunks, config)
     chunks_text = _chunks_to_text(all_chunks)
     source_list = "\n".join(f"- {name}" for name in sorted(source_names))
     template = config.wiki_synthesis_prompt
