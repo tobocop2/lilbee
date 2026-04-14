@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 _DONE_FLASH_SECONDS = 1.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_INTERVAL = 0.1
-_MAX_VISIBLE_PANELS = 5
+_MAX_VISIBLE_PANELS = 2
 
 
 class _TaskPanel(Static):
@@ -45,7 +45,7 @@ class _TaskPanel(Static):
     DEFAULT_CSS = """
     _TaskPanel {
         height: auto;
-        max-height: 3;
+        max-height: 2;
         padding: 0 1;
     }
     _TaskPanel .task-panel-label {
@@ -159,7 +159,7 @@ class TaskBar(Static):
     TaskBar {
         dock: bottom;
         height: auto;
-        max-height: 20;
+        max-height: 8;
         padding: 0;
     }
     TaskBar .task-queued-label {

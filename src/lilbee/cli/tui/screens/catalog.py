@@ -15,7 +15,7 @@ from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
-from textual.worker import Worker, WorkerState
+from textual.worker import Worker, WorkerState, get_current_worker
 
 from lilbee.catalog import (
     CatalogModel,
@@ -373,6 +373,16 @@ class CatalogScreen(Screen[None]):
             self._hf_fetched = True
             self._fetch_all_hf_models()
 
+    @on(GridSelect.LeaveDown)
+    def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
+        """Move focus to the next GridSelect or focusable widget."""
+        self.focus_next()
+
+    @on(GridSelect.LeaveUp)
+    def _on_grid_leave_up(self, event: GridSelect.LeaveUp) -> None:
+        """Move focus to the previous GridSelect or focusable widget."""
+        self.focus_previous()
+
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
         """Handle model selection from the grid view."""
@@ -501,8 +511,11 @@ class CatalogScreen(Screen[None]):
         """Download a model in a background thread, reporting to TaskBar."""
         from lilbee.catalog import download_model
 
+        worker = get_current_worker()
         try:
             download_model(model, on_progress=self._make_progress_callback(task_id, bar))
+            if worker.is_cancelled:
+                return
             self._safe_call(bar.complete_task, task_id)
             self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
         except PermissionError:

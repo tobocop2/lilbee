@@ -214,6 +214,7 @@ class TestFetchHfModels:
         assert len(models) == 2
         assert models[0].name == "model-7b-gguf"
         assert models[0].hf_repo == "user/model-7b-gguf"
+        assert models[0].display_name == "model 7b"
         assert models[0].downloads == 5000
         assert models[0].featured is False
         assert models[0].task == "chat"

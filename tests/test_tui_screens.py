@@ -5909,6 +5909,46 @@ async def test_catalog_nav_actions_forward_to_grid_in_grid_view():
             screen.action_jump_bottom()
 
 
+async def test_catalog_grid_leave_down_focuses_next():
+    """GridSelect.LeaveDown moves focus to the next focusable widget."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(GridSelect))
+            if grids:
+                grids[0].focus()
+                await pilot.pause()
+                grids[0].post_message(GridSelect.LeaveDown(grids[0]))
+                await pilot.pause()
+                assert screen.focused is not grids[0]
+
+
+async def test_catalog_grid_leave_up_focuses_previous():
+    """GridSelect.LeaveUp moves focus to the previous focusable widget."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            grids = list(screen.query(GridSelect))
+            assert grids, "Expected at least one GridSelect"
+            grids[0].focus()
+            await pilot.pause()
+            grids[0].post_message(GridSelect.LeaveUp(grids[0]))
+            await pilot.pause()
+            assert screen.focused is not grids[0]
+
+
 async def test_catalog_select_variant_row():
     """_select_row with a variant row triggers _install_variant."""
     from lilbee.catalog import ModelFamily, ModelVariant
@@ -6256,6 +6296,31 @@ async def test_catalog_run_download_generic_error():
                 while screen.workers:
                     await _pilot.pause()
                 mock_bar.fail_task.assert_called_once()
+
+
+async def test_catalog_run_download_cancelled():
+    """_run_download exits early when worker is cancelled."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            m = _make_catalog_model(name="cancel-model")
+            mock_bar = MagicMock()
+
+            def _dl_and_cancel(*a, **kw):
+                for w in screen.workers:
+                    w.cancel()
+
+            with patch("lilbee.catalog.download_model", side_effect=_dl_and_cancel):
+                screen._run_download(m, "task-1", mock_bar)
+                await _pilot.pause()
+                while screen.workers:
+                    await _pilot.pause()
+                mock_bar.complete_task.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -7156,6 +7221,40 @@ async def test_chat_cmd_wiki_generate_runs_background(tmp_path):
 
         add_task_spy.assert_called_once()
         assert generated_for == ["a.txt", "b.txt"]
+
+
+async def test_chat_cmd_wiki_generate_cancelled(tmp_path):
+    """/wiki generate stops early when worker is cancelled."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        fake_store = MagicMock()
+        fake_store.get_sources.return_value = [
+            {"filename": "a.txt"},
+            {"filename": "b.txt"},
+        ]
+        fake_store.get_chunks_by_source.return_value = [MagicMock()]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+        generated_for: list[str] = []
+
+        def _fake_generate(source, chunks, provider, store, on_progress=None):
+            generated_for.append(source)
+            for w in app.screen.workers:
+                w.cancel()
+            return tmp_path / f"{source}.md"
+
+        with (
+            patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.wiki.gen.generate_summary_page", side_effect=_fake_generate),
+        ):
+            mock_cfg.wiki = True
+            app.screen._cmd_wiki("generate")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        assert len(generated_for) == 1
 
 
 async def test_chat_cmd_wiki_get_sources_raises_notifies_empty():
