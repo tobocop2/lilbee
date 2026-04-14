@@ -2318,7 +2318,7 @@ class TestCollectNativeModelsError:
             _collect_api_models(buckets, seen)
         assert len(buckets["chat"]) == 1
         assert buckets["chat"][0].label == "gpt-4o (OpenAI)"
-        assert buckets["chat"][0].ref == "gpt-4o"
+        assert buckets["chat"][0].ref == "openai/gpt-4o"
 
     def test_collect_api_models_exception_suppressed(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
@@ -2345,7 +2345,7 @@ class TestCollectNativeModelsError:
             "embedding": [],
             "vision": [],
         }
-        seen: set[str] = {"gpt-4o"}
+        seen: set[str] = {"openai/gpt-4o"}
         with mock.patch(
             "lilbee.model_manager.discover_api_models",
             return_value={

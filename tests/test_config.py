@@ -86,6 +86,11 @@ class TestEnvVarOverrides:
         cfg.chat_model = "qwen3:0.6b"
         assert cfg.chat_model == "qwen3:0.6b"
 
+    def test_normalize_model_tag_empty_string_passthrough(self):
+        """The validator's empty-string guard returns immediately."""
+        result = Config._normalize_model_tag("")
+        assert result == ""
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()
