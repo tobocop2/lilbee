@@ -399,12 +399,22 @@ class Config(BaseSettings):
     @field_validator("chat_model", "embedding_model", mode="after")
     @classmethod
     def _normalize_model_tag(cls, v: str) -> str:
-        """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest)."""
-        if not v or ":" in v:
-            return v
-        from lilbee.registry import DEFAULT_TAG
+        """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest).
 
-        return f"{v}:{DEFAULT_TAG}"
+        API-prefixed models (openai/, anthropic/, gemini/) are left as-is
+        since they don't use tags. Ollama-prefixed models keep their prefix
+        for routing.
+        """
+        if not v:
+            return v
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref(v)
+        if ref.is_api:
+            return v
+        if ref.provider == "ollama":
+            return f"ollama/{ref.name}"
+        return ref.name
 
     @field_validator("cors_origins", mode="before")
     @classmethod

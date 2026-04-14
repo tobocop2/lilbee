@@ -16,29 +16,15 @@ from typing import Any
 import httpx
 
 from lilbee.config import cfg
-from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.model_ref import parse_model_ref, translate_options
 
 log = logging.getLogger(__name__)
 
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
-_OLLAMA_PREFIX = "ollama/"
-
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
-
-
-def _needs_api_base(routed_model: str) -> bool:
-    """Return True if litellm needs an explicit ``api_base`` for this model.
-
-    Models with a non-Ollama provider prefix (e.g. ``openai/gpt-4o``,
-    ``anthropic/claude-3``) should NOT get ``api_base`` because litellm
-    auto-routes them to the correct provider endpoint. Passing ``api_base``
-    would override that routing and send the request to the wrong backend.
-    """
-    if "/" not in routed_model:
-        return True
-    return routed_model.startswith(_OLLAMA_PREFIX)
 
 
 # Single source of truth for per-provider API key configuration.
@@ -58,19 +44,6 @@ def _is_ollama(base_url: str) -> bool:
     """Return True if *base_url* points to an Ollama instance."""
     url_lower = base_url.lower()
     return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
-
-
-def _route_model(name: str, base_url: str) -> str:
-    """Add the ``ollama/`` prefix only when targeting an Ollama backend.
-
-    Models that already carry a provider prefix (e.g. ``openai/gpt-4o``)
-    are returned as-is regardless of the backend.
-    """
-    if "/" in name:
-        return name
-    if _is_ollama(base_url):
-        return f"{_OLLAMA_PREFIX}{name}"
-    return name
 
 
 def inject_provider_keys() -> None:
@@ -110,24 +83,35 @@ class LiteLLMProvider(LLMProvider):
         self._api_key = api_key
 
     def _model_name(self, model: str | None = None) -> str:
-        """Route model name for litellm, adding ollama/ prefix only when needed."""
-        return _route_model(model or cfg.chat_model, self._base_url)
+        """Route model name for litellm via parse_model_ref."""
+        ref = parse_model_ref(model or cfg.chat_model)
+        if ref.is_api:
+            return ref.for_litellm()
+        if _is_ollama(self._base_url):
+            return f"ollama/{ref.name}"
+        return ref.name
 
     def _embed_model_name(self) -> str:
         """Route embedding model name for litellm."""
-        return _route_model(cfg.embedding_model, self._base_url)
+        ref = parse_model_ref(cfg.embedding_model)
+        if ref.is_api:
+            return ref.for_litellm()
+        if _is_ollama(self._base_url):
+            return f"ollama/{ref.name}"
+        return ref.name
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via litellm."""
         import litellm
 
         try:
+            ref = parse_model_ref(cfg.embedding_model)
             routed = self._embed_model_name()
             embed_kwargs: dict[str, Any] = {
                 "model": routed,
                 "input": texts,
             }
-            if _needs_api_base(routed):
+            if ref.needs_api_base:
                 embed_kwargs["api_base"] = self._base_url
             if self._api_key:
                 embed_kwargs["api_key"] = self._api_key
@@ -148,6 +132,7 @@ class LiteLLMProvider(LLMProvider):
         import litellm
 
         inject_provider_keys()
+        ref = parse_model_ref(model or cfg.chat_model)
         formatted = _format_messages(messages)
         routed = self._model_name(model)
         kwargs: dict[str, Any] = {
@@ -155,12 +140,12 @@ class LiteLLMProvider(LLMProvider):
             "messages": formatted,
             "stream": stream,
         }
-        if _needs_api_base(routed):
+        if ref.needs_api_base:
             kwargs["api_base"] = self._base_url
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if options:
-            kwargs.update(filter_options(options))
+            kwargs.update(translate_options(options, ref))
 
         try:
             response = litellm.completion(**kwargs)

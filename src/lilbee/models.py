@@ -37,12 +37,21 @@ MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 
 def ensure_tag(name: str) -> str:
-    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``)."""
-    from lilbee.registry import DEFAULT_TAG
+    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``).
 
-    if not name or ":" in name:
+    API-prefixed models (openai/, anthropic/, gemini/) are returned as-is
+    since they don't use tags.
+    """
+    if not name:
         return name
-    return f"{name}:{DEFAULT_TAG}"
+    from lilbee.providers.model_ref import parse_model_ref
+
+    ref = parse_model_ref(name)
+    if ref.is_api:
+        return name
+    if ref.provider == "ollama":
+        return f"ollama/{ref.name}"
+    return ref.name
 
 
 @dataclass(frozen=True)

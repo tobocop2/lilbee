@@ -8,6 +8,7 @@ from typing import Any
 
 from lilbee.config import cfg
 from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,10 @@ class RoutingProvider(LLMProvider):
         return self._get_llama_cpp()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return self._provider().embed(texts)
+        ref = parse_model_ref(cfg.embedding_model)
+        if ref.is_api or ref.provider == "ollama":
+            return self._get_litellm().embed(texts)
+        return self._get_llama_cpp().embed(texts)
 
     def chat(
         self,
@@ -72,7 +76,10 @@ class RoutingProvider(LLMProvider):
         options: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> str | Iterator[str]:
-        return self._provider().chat(messages, stream=stream, options=options, model=model)
+        ref = parse_model_ref(model or cfg.chat_model)
+        if ref.is_api or ref.provider == "ollama":
+            return self._get_litellm().chat(messages, stream=stream, options=options, model=model)
+        return self._get_llama_cpp().chat(messages, stream=stream, options=options, model=model)
 
     def list_models(self) -> list[str]:
         """Return models from the active provider."""
