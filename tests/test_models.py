@@ -391,3 +391,12 @@ class TestEnsureTag:
 
     def test_namespaced_model_with_tag(self) -> None:
         assert models.ensure_tag("maternion/LightOnOCR-2:latest") == "maternion/LightOnOCR-2:latest"
+
+    def test_api_model_returned_as_is(self) -> None:
+        assert models.ensure_tag("openai/gpt-4o") == "openai/gpt-4o"
+
+    def test_ollama_model_preserves_prefix(self) -> None:
+        assert models.ensure_tag("ollama/qwen3") == "ollama/qwen3:latest"
+
+    def test_ollama_model_with_tag(self) -> None:
+        assert models.ensure_tag("ollama/qwen3:8b") == "ollama/qwen3:8b"

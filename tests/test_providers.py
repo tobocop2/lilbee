@@ -511,50 +511,57 @@ class TestRoutingProvider:
         self._to_shutdown.append(rp)
         return rp
 
-    def test_routes_chat_to_litellm_when_available(self) -> None:
+    def test_routes_chat_to_litellm_for_api_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "hello"
         rp._litellm = mock_litellm
-        rp._use_litellm = True
 
-        cfg.chat_model = "qwen3:8b"
-        result = rp.chat([{"role": "user", "content": "hi"}])
+        result = rp.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert result == "hello"
         mock_litellm.chat.assert_called_once()
 
-    def test_routes_chat_to_llama_cpp_when_litellm_unavailable(self) -> None:
+    def test_routes_chat_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
-        rp._use_litellm = False
+        mock_litellm = mock.MagicMock()
+        mock_litellm.chat.return_value = "hello"
+        rp._litellm = mock_litellm
+
+        result = rp.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:8b")
+        assert result == "hello"
+        mock_litellm.chat.assert_called_once()
+
+    def test_routes_chat_to_llama_cpp_for_local_model(self) -> None:
+        rp = self._make_provider()
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "local"
         rp._llama_cpp = mock_llama
 
-        cfg.chat_model = "local-model.gguf"
+        cfg.chat_model = "local-model:latest"
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "local"
         mock_llama.chat.assert_called_once()
 
-    def test_routes_embed_to_litellm_when_available(self) -> None:
+    def test_routes_embed_to_litellm_for_ollama_model(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.embed.return_value = [[0.1, 0.2]]
         rp._litellm = mock_litellm
-        rp._use_litellm = True
 
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
         result = rp.embed(["test"])
         assert result == [[0.1, 0.2]]
         mock_litellm.embed.assert_called_once()
 
-    def test_routes_embed_to_llama_cpp_when_litellm_unavailable(self) -> None:
+    def test_routes_embed_to_llama_cpp_for_local_model(self) -> None:
         rp = self._make_provider()
-        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.embed.return_value = [[0.3, 0.4]]
         rp._llama_cpp = mock_llama
 
+        cfg.embedding_model = "nomic-embed-text:latest"
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
@@ -569,15 +576,14 @@ class TestRoutingProvider:
         result = rp.list_models()
         assert result == ["local.gguf"]
 
-    def test_litellm_unreachable_falls_back_to_llama_cpp(self) -> None:
+    def test_local_model_uses_llama_cpp_directly(self) -> None:
         rp = self._make_provider()
-        rp._use_litellm = False
 
         mock_llama = mock.MagicMock()
         mock_llama.chat.return_value = "fallback"
         rp._llama_cpp = mock_llama
 
-        cfg.chat_model = "local.gguf"
+        cfg.chat_model = "local-model:latest"
         result = rp.chat([{"role": "user", "content": "hi"}])
         assert result == "fallback"
 
@@ -619,17 +625,16 @@ class TestRoutingProvider:
         with pytest.raises(ProviderError, match="no pull-capable backend"):
             rp.pull_model("bad-model")
 
-    def test_chat_with_explicit_model_override(self) -> None:
+    def test_chat_with_explicit_api_model_override(self) -> None:
         rp = self._make_provider()
         mock_litellm = mock.MagicMock()
         mock_litellm.chat.return_value = "saw it"
         rp._litellm = mock_litellm
-        rp._use_litellm = True
 
-        cfg.chat_model = "local.gguf"
+        cfg.chat_model = "local-model:latest"
         result = rp.chat(
             [{"role": "user", "content": "describe"}],
-            model="vision:7b",
+            model="openai/gpt-4o",
         )
         assert result == "saw it"
         mock_litellm.chat.assert_called_once()
@@ -2090,25 +2095,31 @@ class TestIsOllama:
 
 
 class TestRouteModel:
-    def test_ollama_url_adds_prefix(self) -> None:
-        from lilbee.providers.litellm_provider import _route_model
+    """Tests for LiteLLMProvider._model_name which routes via parse_model_ref."""
 
-        assert _route_model("qwen3:8b", "http://localhost:11434") == "ollama/qwen3:8b"
+    def test_ollama_url_adds_prefix(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        assert provider._model_name("qwen3:8b") == "ollama/qwen3:8b"
 
     def test_non_ollama_url_no_prefix(self) -> None:
-        from lilbee.providers.litellm_provider import _route_model
+        from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        assert _route_model("gpt-4o", "https://api.openai.com") == "gpt-4o"
+        provider = LiteLLMProvider(base_url="https://api.openai.com")
+        assert provider._model_name("gpt-4o") == "gpt-4o:latest"
 
     def test_already_prefixed_passes_through(self) -> None:
-        from lilbee.providers.litellm_provider import _route_model
+        from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        assert _route_model("openai/gpt-4o", "http://localhost:11434") == "openai/gpt-4o"
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        assert provider._model_name("openai/gpt-4o") == "openai/gpt-4o"
 
     def test_provider_prefixed_on_non_ollama(self) -> None:
-        from lilbee.providers.litellm_provider import _route_model
+        from lilbee.providers.litellm_provider import LiteLLMProvider
 
-        assert _route_model("anthropic/claude-sonnet-4-6", "https://api.anthropic.com") == (
+        provider = LiteLLMProvider(base_url="https://api.anthropic.com")
+        assert provider._model_name("anthropic/claude-sonnet-4-6") == (
             "anthropic/claude-sonnet-4-6"
         )
 
@@ -2203,29 +2214,29 @@ class TestLiteLLMListModelsRouting:
 
 class TestNeedsApiBase:
     def test_ollama_prefixed_model_needs_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import _needs_api_base
+        from lilbee.providers.model_ref import parse_model_ref
 
-        assert _needs_api_base("ollama/qwen3:8b") is True
+        assert parse_model_ref("ollama/qwen3:8b").needs_api_base is True
 
     def test_bare_model_needs_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import _needs_api_base
+        from lilbee.providers.model_ref import parse_model_ref
 
-        assert _needs_api_base("qwen3:8b") is True
+        assert parse_model_ref("qwen3:8b").needs_api_base is True
 
     def test_openai_prefixed_model_skips_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import _needs_api_base
+        from lilbee.providers.model_ref import parse_model_ref
 
-        assert _needs_api_base("openai/gpt-4o") is False
+        assert parse_model_ref("openai/gpt-4o").needs_api_base is False
 
     def test_anthropic_prefixed_model_skips_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import _needs_api_base
+        from lilbee.providers.model_ref import parse_model_ref
 
-        assert _needs_api_base("anthropic/claude-sonnet-4-6") is False
+        assert parse_model_ref("anthropic/claude-sonnet-4-6").needs_api_base is False
 
     def test_gemini_prefixed_model_skips_api_base(self) -> None:
-        from lilbee.providers.litellm_provider import _needs_api_base
+        from lilbee.providers.model_ref import parse_model_ref
 
-        assert _needs_api_base("gemini/gemini-pro") is False
+        assert parse_model_ref("gemini/gemini-pro").needs_api_base is False
 
 
 class TestChatApiBaseRouting:

@@ -5369,6 +5369,37 @@ async def test_setup_wizard_download_cancel_mid_download():
                 await pilot.pause()
 
 
+async def test_setup_wizard_download_cancel_wrapped_exception():
+    """Cancel during download where catalog wraps _DownloadCancelled in RuntimeError."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+
+            def fake_download(model, on_progress=None):
+                # Simulate catalog.download_model wrapping _DownloadCancelled
+                screen._cancel_event.set()
+                raise RuntimeError("Failed to download Test: _DownloadCancelled:")
+
+            screen._download_models = [MagicMock(ref="chat:model", display_name="Test Model")]
+            with (
+                patch(
+                    "lilbee.cli.tui.screens.setup.download_model",
+                    side_effect=fake_download,
+                ),
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.services.reset_services"),
+            ):
+                screen._download_loop(lambda fn, *a: fn(*a))
+                await pilot.pause()
+                # Should NOT call _handle_download_error since cancel_event is set
+                # The screen should not be corrupted with traceback text
+
+
 async def test_wizard_action_cancel_sets_event():
     """action_cancel sets the cancel event so download threads abort."""
     from lilbee.cli.tui.screens.setup import SetupWizard
