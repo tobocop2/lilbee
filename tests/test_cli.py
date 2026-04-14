@@ -345,10 +345,31 @@ class TestAddPathsBackground:
 
 class TestChat:
     def test_chat_non_tty_exits_with_error(self) -> None:
-        """CliRunner is non-TTY, so chat should exit with error."""
         result = runner.invoke(app, ["chat"])
         assert result.exit_code == 1
         assert "terminal" in result.output.lower()
+
+    def test_chat_json_returns_json_error(self) -> None:
+        result = runner.invoke(app, ["--json", "chat"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
+
+    def test_json_mode_suppresses_litellm_debug(self) -> None:
+        """--json sets litellm.suppress_debug_info when litellm is installed."""
+        fake_litellm = mock.MagicMock()
+        fake_litellm.suppress_debug_info = False
+        with mock.patch.dict("sys.modules", {"litellm": fake_litellm}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
+            assert fake_litellm.suppress_debug_info is True
+
+    def test_json_mode_suppresses_litellm_without_litellm(self) -> None:
+        """When litellm is not installed, the ImportError is silently caught."""
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
 
 
 class TestApplyOverrides:
@@ -732,6 +753,31 @@ class TestSearch:
         data = json.loads(result.output.strip())
         assert "relevance_score" in data["results"][0]
         assert "distance" not in data["results"][0]
+
+    def test_search_json_empty_query_error(self, mock_svc):
+        result = runner.invoke(app, ["--json", "search", ""])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        mock_svc.searcher.search.assert_not_called()
+
+    def test_search_json_provider_error(self, mock_svc):
+        mock_svc.searcher.search.side_effect = RuntimeError("provider down")
+        result = runner.invoke(app, ["--json", "search", "test"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "provider down" in data["error"]
+
+    def test_search_human_empty_query_error(self, mock_svc):
+        result = runner.invoke(app, ["search", ""])
+        assert result.exit_code == 1
+        assert "empty" in result.output.lower()
+
+    def test_search_human_provider_error(self, mock_svc):
+        mock_svc.searcher.search.side_effect = RuntimeError("connection refused")
+        result = runner.invoke(app, ["search", "test"])
+        assert result.exit_code == 1
+        assert "connection refused" in result.output
 
 
 # ---------------------------------------------------------------------------

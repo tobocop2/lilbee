@@ -154,6 +154,13 @@ def _default(
     install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
+    if cfg.json_mode:
+        try:
+            import litellm
+
+            litellm.suppress_debug_info = True
+        except ImportError:
+            pass
     if ctx.invoked_subcommand is None:
         apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
         if cfg.json_mode:
