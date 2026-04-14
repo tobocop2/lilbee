@@ -402,9 +402,7 @@ class Config(BaseSettings):
         """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest)."""
         if not v or ":" in v:
             return v
-        from lilbee.registry import DEFAULT_TAG
-
-        return f"{v}:{DEFAULT_TAG}"
+        return f"{v}:latest"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
