@@ -80,7 +80,21 @@ def search(
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
+    if not query or not query.strip():
+        if cfg.json_mode:
+            json_output({"error": "query must not be empty"})
+            raise SystemExit(1)
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] query must not be empty")
+        raise SystemExit(1)
+
+    try:
+        results = get_services().searcher.search(query, top_k=top_k or cfg.top_k)
+    except Exception as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        raise SystemExit(1) from None
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -421,13 +435,18 @@ def ask(
         seed=seed,
     )
 
-    from lilbee.models import ensure_chat_model
-
-    ensure_chat_model()
-    get_services().embedder.validate_model()
-    auto_sync(console)
-
     try:
+        from lilbee.models import ensure_chat_model
+
+        ensure_chat_model()
+        get_services().embedder.validate_model()
+        if cfg.json_mode:
+            from rich.console import Console as _QuietConsole
+
+            auto_sync(_QuietConsole(quiet=True))
+        else:
+            auto_sync(console)
+
         if cfg.json_mode:
             result = get_services().searcher.ask_raw(question)
             json_output(
@@ -476,6 +495,9 @@ def chat(
         seed=seed,
     )
 
+    if cfg.json_mode:
+        json_output({"error": "Chat requires a terminal, not --json"})
+        raise SystemExit(1)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Chat requires a terminal.")
         raise SystemExit(1)

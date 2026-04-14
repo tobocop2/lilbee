@@ -423,6 +423,9 @@ def _parse_source_or_bad_param(value: str | None) -> ModelSource | None:
     try:
         return ModelSource.parse(value)
     except ValueError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
         raise typer.BadParameter(str(exc)) from exc
 
 

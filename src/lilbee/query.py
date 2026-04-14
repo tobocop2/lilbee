@@ -356,7 +356,7 @@ class Searcher:
             for concept in self._concept_query_expansion(question):
                 llm_variants.append((concept, self._embedder.embed(concept)))
             return llm_variants
-        except (ConnectionError, OSError, RuntimeError) as exc:
+        except Exception as exc:
             log.warning("Query expansion disabled for this call: %s", exc, exc_info=True)
             return []
 

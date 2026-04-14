@@ -240,6 +240,13 @@ class TestListCmd:
         assert result.exit_code != 0
         assert "bogus" in result.output
 
+    def test_invalid_source_json_returns_error(self, fake_manager):
+        result = runner.invoke(app, ["--json", "model", "list", "--source", "bogus"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "bogus" in data["error"]
+
 
 class TestShowModelData:
     def test_catalog_and_installed_merged(self, fake_manager, native_manifests):
