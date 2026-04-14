@@ -234,38 +234,9 @@ class Greeter:
             path.unlink()
 
 
-class TestDedupHeading:
-    def test_dedup_single_heading(self):
-        from lilbee.chunk import _dedup_heading
-
-        text = "# Heading\n\n# Heading"
-        assert _dedup_heading(text) == "# Heading"
-
-    def test_dedup_breadcrumb(self):
-        from lilbee.chunk import _dedup_heading
-
-        text = "# Top > ## Sub\n\n## Sub"
-        assert _dedup_heading(text) == "# Top > ## Sub"
-
-    def test_dedup_with_body(self):
-        from lilbee.chunk import _dedup_heading
-
-        text = "# Heading\n\n# Heading\n\nBody content here."
-        assert _dedup_heading(text) == "# Heading\n\nBody content here."
-
-    def test_no_dedup_when_different(self):
-        from lilbee.chunk import _dedup_heading
-
-        text = "# Heading\n\nSome body text."
-        assert _dedup_heading(text) == text
-
-    def test_no_dedup_single_part(self):
-        from lilbee.chunk import _dedup_heading
-
-        assert _dedup_heading("no heading here") == "no heading here"
-
-    def test_heading_context_chunks_no_duplicate(self):
-        """Integration: chunk_text with heading_context strips duplicates."""
+class TestHeadingContextNoDuplicate:
+    def test_heading_context_no_duplicate(self):
+        """kreuzberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
         md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
         chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
         for c in chunks:
