@@ -118,6 +118,7 @@ class TestEmbeddingAvailable:
         assert embedder.embedding_available() is False
 
 
+@pytest.mark.real_model_classify
 class TestModelClassification:
     def test_mmproj_filtered_out(self):
         from lilbee.cli.tui.widgets.model_bar import _is_mmproj
@@ -152,7 +153,10 @@ class TestModelClassification:
                     seen.add(ref)
 
             mock_native.side_effect = fill_buckets
-            with mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"):
+            with (
+                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
+                mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
+            ):
                 chat, embed = _classify_installed_models()
 
         chat_refs = [o.ref for o in chat]
@@ -171,6 +175,7 @@ class TestModelClassification:
         with (
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_native_models"),
             mock.patch("lilbee.cli.tui.widgets.model_bar._collect_remote_models"),
+            mock.patch("lilbee.cli.tui.widgets.model_bar._collect_api_models"),
         ):
             chat, embed = _classify_installed_models()
 
@@ -881,7 +886,7 @@ class TestChatInteractions:
             await pilot.pause()
             app.screen._handle_slash("/set chat_model new-test-model")
             await pilot.pause()
-            assert cfg.chat_model == "new-test-model"
+            assert cfg.chat_model == "new-test-model:latest"
 
     async def test_slash_command_set_unknown_key(self, _mock_resolve):
         """/set nonexistent_key warns."""
@@ -1112,6 +1117,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
+                await pilot.pause()
 
                 all_cards = app.screen.query(ModelCard)
                 initial_count = len(all_cards)
@@ -1119,6 +1125,7 @@ class TestCatalogInteractions:
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
+                await pilot.pause()
                 await pilot.pause()
 
                 all_cards_after = app.screen.query(ModelCard)

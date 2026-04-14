@@ -166,21 +166,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/lilbee/models
-          key: gguf-models-Linux-v3
+          key: gguf-models-Linux-v4
 
       - name: Cache GGUF models (macOS)
         if: runner.os == 'macOS'
         uses: actions/cache@v4
         with:
           path: ~/Library/Application Support/lilbee/models
-          key: gguf-models-macOS-v3
+          key: gguf-models-macOS-v4
 
       - name: Cache GGUF models (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\lilbee\models
-          key: gguf-models-Windows-v3
+          key: gguf-models-Windows-v4
 
       - name: Cache HuggingFace models
         uses: actions/cache@v4

@@ -484,6 +484,12 @@ class TestRmCmd:
         assert parsed.deleted is True
         assert parsed.freed_gb == 5.0
 
+    def test_json_not_found_exits_1(self, fake_manager, native_manifests):
+        result = runner.invoke(app, ["--json", "model", "rm", "ghost:1.0"])
+        assert result.exit_code == 1
+        parsed = RemoveResult.model_validate_json(result.output)
+        assert parsed.deleted is False
+
     def test_invalid_source(self, fake_manager):
         result = runner.invoke(app, ["model", "rm", "--yes", "qwen3:0.6b", "--source", "bad"])
         assert result.exit_code != 0

@@ -9,8 +9,11 @@ import pytest
 from lilbee.model_manager import (
     ModelManager,
     ModelSource,
+    ModelTask,
     RemoteModel,
+    _has_provider_key,
     detect_provider,
+    discover_api_models,
     get_model_manager,
     reset_model_manager,
 )
@@ -801,3 +804,131 @@ class TestIsVisionCapable:
             reset_vision_cache()
             is_vision_capable("llava:7b")
             assert mock_provider.get_capabilities.call_count == 2
+
+
+class TestHasProviderKey:
+    def test_env_var_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        assert _has_provider_key("openai", "openai_api_key", "OPENAI_API_KEY") is True
+
+    def test_env_var_absent_config_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.config import cfg
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.openai_api_key = "sk-from-config"
+        assert _has_provider_key("openai", "openai_api_key", "OPENAI_API_KEY") is True
+
+    def test_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.config import cfg
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        cfg.anthropic_api_key = ""
+        assert _has_provider_key("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY") is False
+
+    def test_unknown_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SOME_KEY", raising=False)
+        assert _has_provider_key("unknown", "nonexistent_field", "SOME_KEY") is False
+
+
+class TestDiscoverApiModels:
+    def test_returns_empty_when_litellm_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            result = discover_api_models()
+        assert result == {}
+
+    def test_returns_models_for_configured_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_litellm = mock.MagicMock()
+        mock_litellm.models_by_provider = {
+            "openai": {"gpt-4o", "gpt-4o-mini", "dall-e-3"},
+        }
+        mock_litellm.model_cost = {
+            "gpt-4o": {"mode": "chat"},
+            "gpt-4o-mini": {"mode": "chat"},
+            "dall-e-3": {"mode": "image_generation"},
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from lilbee.config import cfg
+
+        cfg.anthropic_api_key = ""
+        cfg.gemini_api_key = ""
+
+        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            result = discover_api_models()
+
+        assert "OpenAI" in result
+        names = [m.name for m in result["OpenAI"]]
+        assert "gpt-4o" in names
+        assert "gpt-4o-mini" in names
+        assert "dall-e-3" not in names
+
+    def test_skips_providers_without_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_litellm = mock.MagicMock()
+        mock_litellm.models_by_provider = {
+            "openai": {"gpt-4o"},
+            "anthropic": {"claude-sonnet-4-6"},
+        }
+        mock_litellm.model_cost = {
+            "gpt-4o": {"mode": "chat"},
+            "claude-sonnet-4-6": {"mode": "chat"},
+        }
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from lilbee.config import cfg
+
+        cfg.openai_api_key = ""
+        cfg.anthropic_api_key = ""
+        cfg.gemini_api_key = ""
+
+        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            result = discover_api_models()
+
+        assert result == {}
+
+    def test_multiple_providers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_litellm = mock.MagicMock()
+        mock_litellm.models_by_provider = {
+            "openai": {"gpt-4o"},
+            "anthropic": {"claude-sonnet-4-6"},
+        }
+        mock_litellm.model_cost = {
+            "gpt-4o": {"mode": "chat"},
+            "claude-sonnet-4-6": {"mode": "chat"},
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from lilbee.config import cfg
+
+        cfg.gemini_api_key = ""
+
+        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            result = discover_api_models()
+
+        assert "OpenAI" in result
+        assert "Anthropic" in result
+        assert all(m.task == ModelTask.CHAT for models in result.values() for m in models)
+
+    def test_remote_model_has_correct_provider_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_litellm = mock.MagicMock()
+        mock_litellm.models_by_provider = {"anthropic": {"claude-sonnet-4-6"}}
+        mock_litellm.model_cost = {"claude-sonnet-4-6": {"mode": "chat"}}
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from lilbee.config import cfg
+
+        cfg.openai_api_key = ""
+        cfg.gemini_api_key = ""
+
+        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+            result = discover_api_models()
+
+        model = result["Anthropic"][0]
+        assert model.provider == "Anthropic"
+        assert model.name == "claude-sonnet-4-6"

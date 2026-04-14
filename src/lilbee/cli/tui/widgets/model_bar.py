@@ -14,7 +14,7 @@ from textual.widgets import Label, Select
 from lilbee import settings
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
-from lilbee.models import ModelTask
+from lilbee.models import ModelTask, ensure_tag
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ def _classify_installed_models() -> tuple[list[ModelOption], list[ModelOption]]:
 
     _collect_native_models(buckets, seen)
     _collect_remote_models(buckets, seen)
+    _collect_api_models(buckets, seen)
 
     return (
         sorted(buckets[ModelTask.CHAT], key=lambda o: o.ref),
@@ -77,7 +78,7 @@ def _collect_native_models(buckets: dict[str, list[ModelOption]], seen: set[str]
 
 
 def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
-    """Add remote (litellm) models to buckets."""
+    """Add remote (litellm/Ollama) models to buckets."""
     try:
         from lilbee.model_manager import classify_remote_models
 
@@ -85,18 +86,39 @@ def _collect_remote_models(buckets: dict[str, list[ModelOption]], seen: set[str]
             if model.name in seen or _is_mmproj(model.name):
                 continue
             seen.add(model.name)
+            label = f"{model.name} ({model.provider})"
             buckets.get(model.task, buckets[ModelTask.CHAT]).append(
-                ModelOption(label=model.name, ref=model.name)
+                ModelOption(label=label, ref=model.name)
             )
     except Exception:
         log.debug("Could not classify remote models", exc_info=True)
 
 
+def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -> None:
+    """Add frontier API models (OpenAI, Anthropic, Gemini) to chat bucket."""
+    try:
+        from lilbee.model_manager import discover_api_models
+
+        for provider_name, models in discover_api_models().items():
+            for model in models:
+                if model.name in seen:
+                    continue
+                seen.add(model.name)
+                label = f"{model.name} ({provider_name})"
+                buckets[ModelTask.CHAT].append(ModelOption(label=label, ref=model.name))
+    except Exception:
+        log.debug("Could not discover API models", exc_info=True)
+
+
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Populate a model Select and set it to *default* (from cfg).
 
+    Normalizes *default* with :latest when no tag is present so that a
+    bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
+    instead of creating a broken fallback entry.
     Prepends *default* if it is not already in *opts*.
     """
+    default = ensure_tag(default)
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(default, default))
     sel.set_options(opts)

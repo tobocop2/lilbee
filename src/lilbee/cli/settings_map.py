@@ -171,4 +171,22 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Wiki",
         help_text="Mutual-kNN neighborhood size for the clusterer (0 = auto)",
     ),
+    "openai_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="OpenAI API key (enables frontier models in chat picker)",
+    ),
+    "anthropic_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="Anthropic API key (enables frontier models in chat picker)",
+    ),
+    "gemini_api_key": SettingDef(
+        str,
+        nullable=False,
+        group="API-Keys",
+        help_text="Google Gemini API key (enables frontier models in chat picker)",
+    ),
 }

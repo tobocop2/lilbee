@@ -52,6 +52,26 @@ min_ram_gb = 32.0
 description = "Extra large — best quality"
 
 [[chat]]
+name = "gemma4"
+tag = "e2b"
+display_name = "Gemma 4 E2B"
+hf_repo = "unsloth/gemma-4-E2B-it-GGUF"
+gguf_filename = "gemma-4-E2B-it-Q4_K_M.gguf"
+size_gb = 3.1
+min_ram_gb = 4.0
+description = "Small multimodal — text, image, audio, video"
+
+[[chat]]
+name = "gemma4"
+tag = "e4b"
+display_name = "Gemma 4 E4B"
+hf_repo = "ggml-org/gemma-4-E4B-it-GGUF"
+gguf_filename = "gemma-4-E4B-it-Q4_K_M.gguf"
+size_gb = 5.3
+min_ram_gb = 8.0
+description = "Medium multimodal — strong general purpose"
+
+[[chat]]
 name = "smollm2"
 tag = "135m"
 display_name = "SmolLM2 135M"

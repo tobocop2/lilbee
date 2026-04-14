@@ -59,7 +59,9 @@ class TestChatFlow:
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            cfg.chat_model = next(m for m in FEATURED_CHAT if m.name == "smollm2").ref
+            cfg.chat_model = next(
+                m for m in FEATURED_CHAT if m.name == "qwen3" and m.tag == "0.6b"
+            ).ref
             reset_services()
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "What engine does the Thunderbolt X500 have?"

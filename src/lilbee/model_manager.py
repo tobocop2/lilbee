@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -358,6 +359,62 @@ def classify_remote_models(
                 name=name, task=task, family=family, parameter_size=param_size, provider=provider
             )
         )
+    return result
+
+
+def _has_provider_key(provider_name: str, cfg_field: str, env_var: str) -> bool:
+    """Return True if a usable API key exists for *provider_name*."""
+    if os.environ.get(env_var):
+        return True
+    return bool(getattr(cfg, cfg_field, ""))
+
+
+def discover_api_models() -> dict[str, list[RemoteModel]]:
+    """Return frontier chat models grouped by provider.
+
+    Checks which provider API keys are available (env vars or config),
+    then queries ``litellm.models_by_provider`` for each. Only chat
+    models are returned. Returns an empty dict when litellm is not
+    installed or no keys are configured.
+
+    Short-circuits before importing litellm when no keys are present,
+    avoiding the expensive import on CI or headless environments.
+    """
+    from lilbee.providers.litellm_provider import PROVIDER_KEYS
+
+    # Check for any configured key before paying the litellm import cost.
+    active = [
+        (prov, cfg_f, env, label)
+        for prov, cfg_f, env, label in PROVIDER_KEYS
+        if _has_provider_key(prov, cfg_f, env)
+    ]
+    if not active:
+        return {}
+
+    try:
+        import litellm
+    except ImportError:
+        return {}
+
+    result: dict[str, list[RemoteModel]] = {}
+    for provider, _cfg_field, _env_var, display_name in active:
+        models = litellm.models_by_provider.get(provider, set())
+        chat_models: list[RemoteModel] = []
+        for model_name in sorted(models):
+            info = litellm.model_cost.get(model_name, {})
+            if info.get("mode") != "chat":
+                continue
+            chat_models.append(
+                RemoteModel(
+                    name=model_name,
+                    task=ModelTask.CHAT,
+                    family="",
+                    parameter_size="",
+                    provider=display_name,
+                )
+            )
+        if chat_models:
+            result[display_name] = chat_models
     return result
 
 

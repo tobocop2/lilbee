@@ -192,21 +192,41 @@ class ChatScreen(Screen[None]):
         return False
 
     def _embedding_ready(self) -> bool:
-        """Quick check if embedding model exists (no network calls)."""
+        """Quick check if embedding model exists (no network calls).
+
+        Checks both the provider model list and the native registry path
+        resolution so litellm/Ollama-backed models are detected too.
+        """
+        model = cfg.embedding_model
+        if not model:
+            return False
+        # Provider list check (covers litellm / Ollama backends)
+        try:
+            from lilbee.services import get_services
+
+            available = get_services().provider.list_models()
+            model_base = model.split(":")[0].lower().replace(" ", "-")
+            if any(model_base in m.lower().replace(" ", "-") for m in available):
+                return True
+        except Exception:
+            pass
+        # Native registry path check (covers llama-cpp managed models)
         try:
             from lilbee.providers.llama_cpp_provider import resolve_model_path
 
-            resolve_model_path(cfg.embedding_model)
+            resolve_model_path(model)
             return True
         except Exception:
             return False
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if result == "skipped":
+        if result == "skipped" and not self._embedding_ready():
             self._show_chat_only_banner()
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
+        elif self._embedding_ready():
+            self._hide_chat_only_banner()
+            if self._auto_sync:
+                self._run_sync()
         self._refresh_model_bar()
 
     def _show_chat_only_banner(self) -> None:
@@ -508,13 +528,10 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            from lilbee.models import ensure_tag
-
-            tagged = ensure_tag(args)
-            cfg.chat_model = tagged
-            settings.set_value(cfg.data_root, "chat_model", tagged)
+            cfg.chat_model = args
+            settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
             self.app.title = f"lilbee -- {cfg.chat_model}"
-            self.notify(msg.CMD_MODEL_SET.format(name=tagged))
+            self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
             self._refresh_model_bar()
         else:
@@ -665,6 +682,7 @@ class ChatScreen(Screen[None]):
         svc = get_services()
         total = len(sources)
         generated = 0
+        last_error: str = ""
         try:
             for idx, source in enumerate(sources):
                 base_pct = int(idx * 100 / total)
@@ -685,6 +703,10 @@ class ChatScreen(Screen[None]):
                     source_name: str = source,
                     source_idx: int = idx,
                 ) -> None:
+                    nonlocal last_error
+                    if stage == "failed":
+                        last_error = str(_data.get("error", "Unknown error"))
+                        return
                     fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
                     pct = int((source_idx + fraction) * 100 / total)
                     call_from_thread(
@@ -700,11 +722,23 @@ class ChatScreen(Screen[None]):
                 )
                 if result is not None:
                     generated += 1
-            call_from_thread(self, task_bar.complete_task, task_id)
-            call_from_thread(
-                self, self.notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
-            )
-            call_from_thread(self, self._refresh_wiki_screen)
+            if generated > 0:
+                call_from_thread(self, task_bar.complete_task, task_id)
+                call_from_thread(
+                    self,
+                    self.notify,
+                    msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
+                )
+                call_from_thread(self, self._refresh_wiki_screen)
+            else:
+                fail_reason = last_error or "No pages generated"
+                call_from_thread(self, task_bar.fail_task, task_id, fail_reason)
+                call_from_thread(
+                    self,
+                    self.notify,
+                    msg.CMD_WIKI_NONE_GENERATED.format(total=total),
+                    severity="warning",
+                )
         except Exception as exc:
             log.warning("Wiki generation failed", exc_info=True)
             call_from_thread(self, task_bar.fail_task, task_id, str(exc))

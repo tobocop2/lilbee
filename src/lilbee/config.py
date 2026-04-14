@@ -109,8 +109,8 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text", min_length=1)
+    chat_model: str = Field(default="qwen3:latest", min_length=1)
+    embedding_model: str = Field(default="nomic-embed-text:latest", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
@@ -143,6 +143,9 @@ class Config(BaseSettings):
     llm_provider: str = ConfigField(default="auto", writable=True)
     litellm_base_url: str = ConfigField(default="http://localhost:11434", writable=True)
     llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
+    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
 
     # Retrieval quality knobs — defaults chosen from academic research and grantflow
     # and academic literature (see docs/superpowers/specs/2026-03-22-feature-parity-design.md)
@@ -392,6 +395,16 @@ class Config(BaseSettings):
             if stripped in ("false", "0", "no"):
                 return False
         return bool(v)
+
+    @field_validator("chat_model", "embedding_model", mode="after")
+    @classmethod
+    def _normalize_model_tag(cls, v: str) -> str:
+        """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest)."""
+        if not v or ":" in v:
+            return v
+        from lilbee.registry import DEFAULT_TAG
+
+        return f"{v}:{DEFAULT_TAG}"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

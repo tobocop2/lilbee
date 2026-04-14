@@ -23,6 +23,7 @@ from lilbee.wiki.gen import (
     _parse_faithfulness_score,
     _resolve_citations,
     _resolve_multi_source_citations,
+    _truncate_chunks_to_budget,
     _verify_citations,
     generate_summary_page,
     generate_synthesis_pages,
@@ -81,6 +82,45 @@ class TestChunksToText:
         chunks = [_make_chunk("Code", line_start=10, line_end=20)]
         result = _chunks_to_text(chunks)
         assert "(lines 10-20)" in result
+
+
+class TestTruncateChunksToBudget:
+    def test_small_chunks_unchanged(self):
+        """Chunks that fit within budget are returned as-is."""
+        chunks = [_make_chunk("short text")]
+        result = _truncate_chunks_to_budget(chunks, cfg)
+        assert result == chunks
+
+    def test_truncates_when_exceeding_budget(self):
+        """Large chunk sets are truncated to fit the context window."""
+        cfg.num_ctx = 100  # 100 tokens * 0.75 * 4 chars = 300 chars budget
+        big_text = "x" * 200  # 200 chars each, only one fits in 300
+        chunks = [_make_chunk(big_text, chunk_index=i) for i in range(5)]
+        result = _truncate_chunks_to_budget(chunks, cfg)
+        assert len(result) == 1
+
+    def test_always_keeps_at_least_one_chunk(self):
+        """Even if the first chunk exceeds the budget, it is kept."""
+        cfg.num_ctx = 10  # tiny budget: 10 * 0.75 * 4 = 30 chars
+        huge_chunk = _make_chunk("x" * 10000)
+        result = _truncate_chunks_to_budget([huge_chunk], cfg)
+        assert len(result) == 1
+
+    def test_uses_default_context_when_num_ctx_none(self):
+        """Falls back to default context window when num_ctx is not set."""
+        cfg.num_ctx = None
+        # Default 8192 * 0.75 * 4 = 24576 chars budget
+        small_chunks = [_make_chunk("hello", chunk_index=i) for i in range(10)]
+        result = _truncate_chunks_to_budget(small_chunks, cfg)
+        assert len(result) == 10  # all fit easily
+
+    def test_logs_warning_on_truncation(self, caplog: pytest.LogCaptureFixture):
+        """A warning is logged when chunks are truncated."""
+        cfg.num_ctx = 100
+        chunks = [_make_chunk("x" * 200, chunk_index=i) for i in range(5)]
+        with caplog.at_level("WARNING", logger="lilbee.wiki.gen"):
+            _truncate_chunks_to_budget(chunks, cfg)
+        assert "Truncated chunks from 5 to 1" in caplog.text
 
 
 class TestParseFaithfulnessScore:
@@ -327,6 +367,31 @@ class TestGenerateSummaryPage:
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
 
+    def test_no_valid_citations_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage when no citations verify."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+
+        wiki_text = (
+            "# Bad\n\n"
+            "> Fabricated claim.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "This text is not in any chunk at all"'
+        )
+        provider = _mock_provider(wiki_text)
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "citation" in str(failed_events[0][1]["error"]).lower()
+
     def test_faithfulness_check_failure_uses_zero(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"
         source.write_text("Content")
@@ -356,6 +421,93 @@ class TestGenerateSummaryPage:
 
         result = generate_summary_page("doc.md", chunks, provider, store)
         assert result is None
+
+    def test_provider_error_returns_none(self, tmp_path: Path):
+        """ProviderError from chat() is caught and returns None."""
+        from lilbee.providers.base import ProviderError
+
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = ProviderError("model not found", provider="litellm")
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is None
+
+    def test_unexpected_exception_returns_none(self, tmp_path: Path):
+        """Unexpected exceptions (ValueError, KeyError, etc.) are caught."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = ValueError("context window exceeded")
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is None
+
+    def test_llm_failure_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage with error on LLM failure."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("GPU OOM")
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "GPU OOM" in str(failed_events[0][1]["error"])
+
+    def test_empty_response_emits_failed_progress(self, tmp_path: Path):
+        """Progress callback receives 'failed' stage when model returns empty."""
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+        provider = _mock_provider("   ")
+        store = _mock_store()
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def on_progress(stage: str, data: dict[str, object]) -> None:
+            events.append((stage, data))
+
+        generate_summary_page("doc.md", chunks, provider, store, on_progress=on_progress)
+        failed_events = [(s, d) for s, d in events if s == "failed"]
+        assert len(failed_events) == 1
+        assert "empty" in str(failed_events[0][1]["error"]).lower()
+
+    def test_faithfulness_provider_error_uses_zero(self, tmp_path: Path):
+        """ProviderError during faithfulness check returns score 0.0."""
+        from lilbee.providers.base import ProviderError
+
+        source = tmp_path / "documents" / "doc.md"
+        source.write_text("Content")
+        chunks = [_make_chunk("Content")]
+
+        wiki_text = (
+            "# Test\n\n"
+            "> Content.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            '[^src1]: doc.md, excerpt: "Content"'
+        )
+        provider = MagicMock()
+        provider.chat.side_effect = [
+            wiki_text,
+            ProviderError("timeout", provider="litellm"),
+        ]
+        store = _mock_store()
+
+        result = generate_summary_page("doc.md", chunks, provider, store)
+        assert result is not None
+        assert "drafts" in str(result)  # score=0.0 < threshold=0.7
 
     def test_inference_citations_pass_verification(self, tmp_path: Path):
         source = tmp_path / "documents" / "doc.md"

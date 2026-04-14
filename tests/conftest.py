@@ -13,6 +13,7 @@ from lilbee.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
+
 def pytest_configure(config: pytest.Config) -> None:
     """Suppress asyncio event loop teardown noise from Textual worker threads."""
     config.addinivalue_line(
@@ -44,18 +45,26 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _drain_textual_threads():
-    """Wait for Textual worker threads to finish after each test.
+def _suppress_model_scan(request, monkeypatch):
+    """Prevent ModelBar._scan_models from doing real work in tests.
 
-    Textual's @work(thread=True) runs work via loop.run_in_executor, which
-    spawns threads named "asyncio_N". These threads may outlive the app's
-    run_test() context manager. When pytest-xdist tears down its gateway
-    worker process, lingering threads hold the GIL during join(), causing
-    the process to freeze indefinitely.
+    ModelBar.on_mount calls _scan_models which is @work(thread=True).
+    The real function does registry scans, HTTP calls, and litellm imports.
+    Mocking it to return empty results makes the worker thread complete
+    instantly, avoiding both thread accumulation and per-test join overhead.
 
-    This fixture records threads before the test, then joins any new threads
-    afterward with a short timeout.
+    Tests that need real classification use @pytest.mark.real_model_classify.
     """
+    if "real_model_classify" not in {m.name for m in request.node.iter_markers()}:
+        monkeypatch.setattr(
+            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
+            lambda: ([], []),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _drain_textual_threads():
+    """Safety net: join any Textual worker threads that outlive the test."""
     before = set(threading.enumerate())
     yield
     for thread in threading.enumerate():

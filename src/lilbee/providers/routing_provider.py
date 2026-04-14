@@ -34,7 +34,7 @@ class RoutingProvider(LLMProvider):
         if self._litellm is None:
             from lilbee.providers.litellm_provider import LiteLLMProvider
 
-            self._litellm = LiteLLMProvider(base_url=cfg.litellm_base_url)
+            self._litellm = LiteLLMProvider(base_url=cfg.litellm_base_url, api_key=cfg.llm_api_key)
         return self._litellm
 
     def _should_use_litellm(self) -> bool:

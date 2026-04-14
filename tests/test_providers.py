@@ -1325,7 +1325,7 @@ class TestLlamaCppProviderMethods:
         ):
             result = provider._get_chat_llm()
 
-        mock_vis.assert_called_once_with("vision-model")
+        mock_vis.assert_called_once_with("vision-model:latest")
         assert result == mock_vis.return_value
 
     def test_get_chat_llm_with_override_model(self, mock_llama_cpp: mock.MagicMock) -> None:
@@ -1433,6 +1433,25 @@ class TestLlamaCppProviderMethods:
         assert call_kwargs["temperature"] == 0.5
         assert call_kwargs["max_tokens"] == 100
         assert "num_predict" not in call_kwargs
+
+    def test_chat_strips_num_ctx(self, mock_llama_cpp: mock.MagicMock) -> None:
+        """chat() strips num_ctx since it is a model-load param, not per-call."""
+        provider = _make_provider_no_thread()
+
+        mock_llm = mock.MagicMock()
+        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "ok"}}]}
+
+        with mock.patch.object(provider, "_get_chat_llm", return_value=mock_llm):
+            result = provider.chat(
+                [{"role": "user", "content": "hi"}],
+                stream=False,
+                options={"temperature": 0.7, "num_ctx": 2048},
+            )
+
+        assert result == "ok"
+        call_kwargs = mock_llm.create_chat_completion.call_args[1]
+        assert call_kwargs["temperature"] == 0.7
+        assert "num_ctx" not in call_kwargs
 
     def test_chat_non_stream_no_options(self, mock_llama_cpp: mock.MagicMock) -> None:
         """chat() without options passes no extra kwargs."""
@@ -2041,3 +2060,142 @@ class TestReadMmprojProjectorTypePartial:
 
         result = read_mmproj_projector_type(f)
         assert result == "resampler"
+
+
+class TestIsOllama:
+    def test_localhost_default_port(self) -> None:
+        from lilbee.providers.litellm_provider import _is_ollama
+
+        assert _is_ollama("http://localhost:11434") is True
+
+    def test_127_default_port(self) -> None:
+        from lilbee.providers.litellm_provider import _is_ollama
+
+        assert _is_ollama("http://127.0.0.1:11434") is True
+
+    def test_ollama_in_url(self) -> None:
+        from lilbee.providers.litellm_provider import _is_ollama
+
+        assert _is_ollama("https://ollama.example.com") is True
+
+    def test_openai_url(self) -> None:
+        from lilbee.providers.litellm_provider import _is_ollama
+
+        assert _is_ollama("https://api.openai.com") is False
+
+    def test_custom_url(self) -> None:
+        from lilbee.providers.litellm_provider import _is_ollama
+
+        assert _is_ollama("http://myserver:8080") is False
+
+
+class TestRouteModel:
+    def test_ollama_url_adds_prefix(self) -> None:
+        from lilbee.providers.litellm_provider import _route_model
+
+        assert _route_model("qwen3:8b", "http://localhost:11434") == "ollama/qwen3:8b"
+
+    def test_non_ollama_url_no_prefix(self) -> None:
+        from lilbee.providers.litellm_provider import _route_model
+
+        assert _route_model("gpt-4o", "https://api.openai.com") == "gpt-4o"
+
+    def test_already_prefixed_passes_through(self) -> None:
+        from lilbee.providers.litellm_provider import _route_model
+
+        assert _route_model("openai/gpt-4o", "http://localhost:11434") == "openai/gpt-4o"
+
+    def test_provider_prefixed_on_non_ollama(self) -> None:
+        from lilbee.providers.litellm_provider import _route_model
+
+        assert _route_model("anthropic/claude-sonnet-4-6", "https://api.anthropic.com") == (
+            "anthropic/claude-sonnet-4-6"
+        )
+
+
+class TestInjectProviderKeys:
+    def test_injects_keys_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.litellm_provider import inject_provider_keys
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        cfg.openai_api_key = "sk-test-openai"
+        cfg.anthropic_api_key = "sk-test-anthropic"
+        cfg.gemini_api_key = ""
+
+        inject_provider_keys()
+
+        import os
+
+        assert os.environ.get("OPENAI_API_KEY") == "sk-test-openai"
+        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-test-anthropic"
+        assert os.environ.get("GEMINI_API_KEY") is None
+
+    def test_does_not_override_existing_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.litellm_provider import inject_provider_keys
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-existing")
+        cfg.openai_api_key = "sk-from-config"
+
+        inject_provider_keys()
+
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "sk-existing"
+
+
+class TestLiteLLMListModelsRouting:
+    def test_ollama_url_uses_api_tags(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="http://localhost:11434")
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"models": [{"name": "llama3:8b"}]}
+        mock_resp.raise_for_status = mock.MagicMock()
+
+        with mock.patch("httpx.get", return_value=mock_resp) as mock_get:
+            result = provider.list_models()
+
+        mock_get.assert_called_once()
+        assert "api/tags" in mock_get.call_args[0][0]
+        assert result == ["llama3:8b"]
+
+    def test_non_ollama_url_uses_v1_models(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="https://api.openai.com", api_key="sk-test")
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}
+        mock_resp.raise_for_status = mock.MagicMock()
+
+        with mock.patch("httpx.get", return_value=mock_resp) as mock_get:
+            result = provider.list_models()
+
+        mock_get.assert_called_once()
+        assert "v1/models" in mock_get.call_args[0][0]
+        assert result == ["gpt-4o", "gpt-4o-mini"]
+
+    def test_non_ollama_returns_empty_on_error(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="https://api.openai.com")
+
+        with mock.patch("httpx.get", side_effect=httpx.ConnectError("refused")):
+            result = provider.list_models()
+
+        assert result == []
+
+    def test_v1_models_sends_auth_header(self) -> None:
+        from lilbee.providers.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(base_url="https://api.openai.com", api_key="sk-secret")
+        mock_resp = mock.MagicMock()
+        mock_resp.json.return_value = {"data": []}
+        mock_resp.raise_for_status = mock.MagicMock()
+
+        with mock.patch("httpx.get", return_value=mock_resp) as mock_get:
+            provider.list_models()
+
+        headers = mock_get.call_args[1].get("headers", {})
+        assert headers.get("Authorization") == "Bearer sk-secret"

@@ -30,11 +30,16 @@ from lilbee.cli.tui.screens.catalog_utils import (
     row_display_name,
     variant_to_row,
 )
+from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 from lilbee.services import set_services
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
+
+# Save a reference to the real _embedding_ready before the autouse fixture
+# replaces it with a mock.  Tests that need the real implementation call this.
+_real_embedding_ready = _ChatScreen._embedding_ready
 
 
 @pytest.fixture(autouse=True)
@@ -125,8 +130,11 @@ def _make_remote_model(
     task: str = "chat",
     family: str = "llama",
     parameter_size: str = "7B",
+    provider: str = "Remote",
 ) -> RemoteModel:
-    return RemoteModel(name=name, task=task, family=family, parameter_size=parameter_size)
+    return RemoteModel(
+        name=name, task=task, family=family, parameter_size=parameter_size, provider=provider
+    )
 
 
 class TestParseParamLabel:
@@ -347,6 +355,64 @@ class TestRemoteToRow:
         rm = _make_remote_model(parameter_size="")
         row = remote_to_row(rm)
         assert row.params == "--"
+
+    def test_backend_from_provider(self):
+        rm = RemoteModel(
+            name="qwen:latest", task="chat", family="qwen", parameter_size="7B", provider="Ollama"
+        )
+        row = remote_to_row(rm)
+        assert row.backend == "ollama"
+
+
+class TestBackendField:
+    """Verify the backend field is set correctly across all row builders.
+
+    Native (llama-cpp) models have backend="" because they are managed by
+    lilbee itself. Only externally-managed models (ollama, litellm) show
+    a backend pill so users know lilbee cannot install/delete them.
+    """
+
+    def test_catalog_to_row_backend_empty(self):
+        row = catalog_to_row(_make_catalog_model(), installed=False)
+        assert row.backend == ""
+
+    def test_variant_to_row_backend_empty(self):
+        from lilbee.catalog import ModelFamily, ModelVariant
+
+        variant = ModelVariant(
+            hf_repo="org/qwen3-0.6b-GGUF",
+            filename="qwen3-0.6b.Q4_K_M.gguf",
+            param_count="0.6B",
+            tag="0.6b",
+            quant="Q4_K_M",
+            size_mb=400,
+            recommended=False,
+        )
+        family = ModelFamily(
+            slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
+        )
+        row = variant_to_row(variant, family, installed=False)
+        assert row.backend == ""
+
+    def test_installed_name_to_row_backend_empty(self):
+        from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+        row = _installed_name_to_row("qwen3:8b", "chat")
+        assert row.backend == ""
+
+    def test_remote_to_row_backend_from_provider(self):
+        rm = _make_remote_model()
+        row = remote_to_row(rm)
+        assert row.backend == "remote"
+
+    def test_matches_search_by_backend(self):
+        rm = _make_remote_model(provider="ollama")
+        row = remote_to_row(rm)
+        assert matches_search(row, "ollama") is True
+
+    def test_matches_search_backend_no_match(self):
+        row = catalog_to_row(_make_catalog_model(), installed=False)
+        assert matches_search(row, "ollama") is False
 
 
 class SettingsTestApp(App[None]):
@@ -2758,6 +2824,17 @@ async def test_chat_on_setup_complete_skipped_shows_banner():
         assert banner.display is True
 
 
+async def test_chat_on_setup_complete_skipped_no_banner_when_embedding_ready():
+    """Skipping wizard does not show banner when embedding model is already configured."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "_embedding_ready", return_value=True):
+            app.screen._on_setup_complete("skipped")
+            await _pilot.pause()
+            banner = app.screen.query_one("#chat-only-banner")
+            assert banner.display is False
+
+
 async def test_chat_on_setup_complete_success():
     """Cover _on_setup_complete with successful setup."""
     app = ChatTestApp()
@@ -4279,7 +4356,7 @@ async def test_chat_refresh_status_line():
         from lilbee.cli.tui.screens.chat import ChatStatusLine
 
         status = app.screen.query_one("#chat-status-line", ChatStatusLine)
-        assert status.model_name == "my-model"
+        assert status.model_name == "my-model:latest"
 
 
 async def test_settings_group_titles_present():
@@ -5585,6 +5662,55 @@ async def test_setup_wizard_grid_leave_up_walks_focus_backward():
             assert app.focused is not None
 
 
+async def test_setup_wizard_tab_escapes_grid_to_install_button():
+    """Tab from the last card in the last grid reaches the Install & Go button."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert grids, "expected at least one GridSelect in the wizard"
+            last_grid = grids[-1]
+            last_grid.focus()
+            last_grid.highlight_last()
+            await pilot.pause()
+            assert app.focused is last_grid
+            await pilot.press("tab")
+            await pilot.pause()
+            focused = app.focused
+            assert focused is not last_grid
+            assert focused is not None
+
+
+async def test_setup_wizard_shift_tab_escapes_grid_backward():
+    """Shift+Tab from the first card in a grid walks focus backward."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            grids = list(screen.query(GridSelect))
+            assert len(grids) >= 2, "expected multiple GridSelects in the wizard"
+            second_grid = grids[1]
+            second_grid.focus()
+            second_grid.highlight_first()
+            await pilot.pause()
+            assert app.focused is second_grid
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is not second_grid
+            assert app.focused is not None
+
+
 async def test_setup_wizard_on_download_progress():
     """_on_download_progress updates progress bar and status."""
     from lilbee.cli.tui.screens.setup import SetupWizard
@@ -6158,6 +6284,19 @@ async def test_chat_on_setup_complete_completed_with_auto_sync():
         ):
             app.screen._on_setup_complete("completed")
             mock_sync.assert_called_once()
+
+
+async def test_chat_on_setup_complete_hides_banner_when_embedding_ready():
+    """_on_setup_complete hides chat-only banner after wizard configures embedding."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        # Simulate banner being visible (e.g. from /setup command while in chat-only mode)
+        app.screen._show_chat_only_banner()
+        assert app.screen.query_one("#chat-only-banner").display is True
+        with patch.object(app.screen, "_embedding_ready", return_value=True):
+            app.screen._on_setup_complete("done")
+            await _pilot.pause()
+            assert app.screen.query_one("#chat-only-banner").display is False
 
 
 async def test_chat_on_key_insert_mode_unfocused_input():
@@ -7141,6 +7280,76 @@ async def test_chat_cmd_wiki_generate_failure_fails_task():
 
         fail_spy.assert_called_once()
         assert "boom" in fail_spy.call_args[0][1]
+
+
+async def test_chat_cmd_wiki_generate_none_produced_fails_task():
+    """/wiki generate fails the task when all sources return None (no pages generated)."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        fake_store = MagicMock()
+        fake_store.get_sources.return_value = [{"filename": "a.txt"}]
+        fake_store.get_chunks_by_source.return_value = [MagicMock()]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+
+        task_bar = app.task_bar
+        fail_spy = MagicMock(wraps=task_bar.fail_task)
+        with (
+            patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.wiki.gen.generate_summary_page", return_value=None),
+            patch.object(task_bar, "fail_task", fail_spy),
+            patch.object(app.screen, "notify"),
+        ):
+            mock_cfg.wiki = True
+            app.screen._cmd_wiki("generate")
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        fail_spy.assert_called_once()
+        assert "No pages generated" in fail_spy.call_args[0][1]
+
+
+def test_chat_embedding_ready_true_via_provider_list(mock_svc):
+    """_embedding_ready returns True when provider list_models contains the model.
+
+    Uses _real_embedding_ready (saved before autouse fixture mocks the method).
+    The mock_svc autouse fixture injects a Services singleton; we configure its
+    provider.list_models to return a model that matches the embedding config.
+    """
+    mock_svc.provider.list_models.return_value = ["nomic-embed-text:latest"]
+    cfg.embedding_model = "nomic-embed-text"
+    sentinel = object()
+    with patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        side_effect=FileNotFoundError("not found"),
+    ):
+        assert _real_embedding_ready(sentinel) is True
+
+
+def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
+    """_embedding_ready returns True via resolve_model_path when provider raises.
+
+    When provider.list_models raises, the method falls through to the native
+    registry path check. If resolve_model_path succeeds, it returns True.
+    """
+    mock_svc.provider.list_models.side_effect = RuntimeError("no provider")
+    cfg.embedding_model = "nomic-embed-text"
+    sentinel = object()
+    with patch(
+        "lilbee.providers.llama_cpp_provider.resolve_model_path",
+        return_value="/fake/path/to/model.gguf",
+    ):
+        assert _real_embedding_ready(sentinel) is True
+
+
+def test_chat_embedding_ready_false_when_no_model():
+    """_embedding_ready returns False when no embedding model is configured."""
+    sentinel = object()
+    with patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg:
+        mock_cfg.embedding_model = ""
+        assert _real_embedding_ready(sentinel) is False
 
 
 async def test_chat_auto_sync_on_mount_runs_sync():
