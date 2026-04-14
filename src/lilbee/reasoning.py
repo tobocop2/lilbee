@@ -121,13 +121,15 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
         if final and final.content:
             yield final
         return
-    # Drain remaining tokens after truncation, but cap to prevent hanging
-    # on a model stuck in a reasoning loop. The cap is generous enough to
-    # capture any real response content that follows a closed </think> tag.
+    # Drain a small number of tokens after truncation to capture any
+    # response content that follows a closed </think> tag. Keep the cap
+    # low: each token pull triggers a model inference step, so a large
+    # cap hangs on slow CI runners.
+    _DRAIN_CAP = 512
     drain_chars = 0
     for token in tokens:
         drain_chars += len(token)
-        if drain_chars > _MAX_REASONING_CHARS:
+        if drain_chars > _DRAIN_CAP:
             break
         for st in parser.feed(token):
             if st.content and not st.is_reasoning:
