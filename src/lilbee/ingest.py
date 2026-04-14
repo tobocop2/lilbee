@@ -64,17 +64,6 @@ class FileToProcess(NamedTuple):
 _MIN_MEANINGFUL_CHARS = 50
 
 
-def _strip_yaml_frontmatter(text: str) -> str:
-    """Remove YAML frontmatter delimited by ``---`` at the start."""
-    if not text.startswith("---"):
-        return text
-    lines = text.splitlines()
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            return "\n".join(lines[i + 1 :])
-    return text
-
-
 def _has_meaningful_text(result: Any) -> bool:
     """Check if extraction produced meaningful text."""
     chunks = getattr(result, "chunks", None)
@@ -481,12 +470,7 @@ async def ingest_markdown(
     if not raw_text.strip():
         return []
 
-    # Strip YAML frontmatter so metadata isn't indexed as document content.
-    body = _strip_yaml_frontmatter(raw_text)
-    if not body.strip():
-        return []
-
-    texts = chunk_text(body, mime_type="text/markdown", heading_context=True)
+    texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
     if not texts:
         return []
 

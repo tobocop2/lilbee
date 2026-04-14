@@ -1269,32 +1269,13 @@ class TestIngestMarkdownEdgeCases:
             result = await ingest_markdown(md, "blank.md")
         assert result == []
 
-    async def test_frontmatter_only_returns_empty(self, isolated_env):
+    async def test_frontmatter_only_produces_chunks(self, isolated_env):
         from lilbee.ingest import ingest_markdown
 
         md = isolated_env / "fm_only.md"
         md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
         result = await ingest_markdown(md, "fm_only.md")
-        assert result == []
-
-
-class TestStripYamlFrontmatter:
-    def test_no_frontmatter(self):
-        from lilbee.ingest import _strip_yaml_frontmatter
-
-        assert _strip_yaml_frontmatter("hello world") == "hello world"
-
-    def test_strips_frontmatter(self):
-        from lilbee.ingest import _strip_yaml_frontmatter
-
-        text = "---\ntitle: Test\n---\nbody text"
-        assert _strip_yaml_frontmatter(text) == "body text"
-
-    def test_unclosed_frontmatter_returns_original(self):
-        from lilbee.ingest import _strip_yaml_frontmatter
-
-        text = "---\ntitle: Test\nno closing delimiter"
-        assert _strip_yaml_frontmatter(text) == text
+        assert len(result) > 0, "Frontmatter content should be indexed"
 
 
 class TestIngestDocumentEdgeCases:
