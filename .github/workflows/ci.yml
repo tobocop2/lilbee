@@ -75,7 +75,7 @@ jobs:
       - name: Run unit tests with coverage
         run: |
           if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.python-version }}" = "3.11" ]; then
-            make test-ci-serial
+            make test-ci-few-workers
           else
             make test-ci
           fi
