@@ -370,6 +370,11 @@ class TestCorsOriginsConfig:
             c = Config()
             assert c.cors_origins == []
 
+    def test_cors_origins_list_passthrough(self) -> None:
+        """List values pass through the validator unchanged."""
+        cfg.cors_origins = ["https://a.com", "https://b.com"]
+        assert cfg.cors_origins == ["https://a.com", "https://b.com"]
+
 
 class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_default_matches_obsidian_desktop(self, tmp_path) -> None:

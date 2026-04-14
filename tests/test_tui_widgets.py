@@ -2321,6 +2321,7 @@ class TestCollectNativeModelsError:
         assert buckets["chat"][0].ref == "openai/gpt-4o"
 
     def test_collect_api_models_exception_suppressed(self) -> None:
+        import lilbee.model_manager as mm
         from lilbee.cli.tui.widgets.model_bar import _collect_api_models
 
         buckets: dict[str, list[ModelOption]] = {
@@ -2329,11 +2330,12 @@ class TestCollectNativeModelsError:
             "vision": [],
         }
         seen: set[str] = set()
-        with mock.patch(
-            "lilbee.model_manager.discover_api_models",
-            side_effect=RuntimeError("boom"),
-        ):
+        original = mm.discover_api_models
+        mm.discover_api_models = mock.Mock(side_effect=RuntimeError("boom"))
+        try:
             _collect_api_models(buckets, seen)
+        finally:
+            mm.discover_api_models = original
         assert buckets["chat"] == []
 
     def test_collect_api_models_skips_duplicates(self) -> None:
@@ -3097,6 +3099,7 @@ class TestModelBarPopulateBranches:
             ):
                 bar._after_model_change()
                 mock_screen._apply_model_change.assert_called_once()
+                mock_screen._refresh_status_line.assert_called_once()
 
     async def test_after_model_change_no_chat_screen(self) -> None:
         """Reset services directly when not on a chat screen."""

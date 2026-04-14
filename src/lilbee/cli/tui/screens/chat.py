@@ -20,6 +20,10 @@ from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Select, Static
 
+# Cancellation check for @work(thread=True) workers. Import at module level
+# since it's used in multiple methods.
+from textual.worker import get_current_worker as _get_worker
+
 from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
@@ -437,6 +441,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
+        worker = _get_worker()
         task_bar = self._task_bar
         call_from_thread(self, task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
@@ -460,13 +465,15 @@ class ChatScreen(Screen[None]):
                 self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
             )
         except Exception as exc:
-            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
-            call_from_thread(
-                self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
-            )
+            if not worker.is_cancelled:
+                call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+                call_from_thread(
+                    self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
+                )
             return
 
-        call_from_thread(self, self._run_sync)
+        if not worker.is_cancelled:
+            call_from_thread(self, self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -678,6 +685,7 @@ class ChatScreen(Screen[None]):
         """Generate wiki pages for each source in a background thread."""
         from lilbee.wiki.gen import generate_summary_page
 
+        worker = _get_worker()
         task_bar = self._task_bar
         svc = get_services()
         total = len(sources)
@@ -685,6 +693,8 @@ class ChatScreen(Screen[None]):
         last_error: str = ""
         try:
             for idx, source in enumerate(sources):
+                if worker.is_cancelled:
+                    break
                 base_pct = int(idx * 100 / total)
                 call_from_thread(
                     self,
@@ -771,6 +781,7 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
+        worker = _get_worker()
         response_parts: list[str] = []
         sources: list[str] = []
         last_scroll = 0.0
@@ -780,6 +791,8 @@ class ChatScreen(Screen[None]):
                 history_snapshot = self._history[:-1]
             stream = get_services().searcher.ask_stream(question, history=history_snapshot)
             for token in stream:
+                if worker.is_cancelled:
+                    break
                 try:
                     if token.is_reasoning:
                         call_from_thread(self, widget.append_reasoning, token.content)
@@ -886,13 +899,7 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_sync_worker(self, task_id: str) -> None:
-        """Run background document sync in a Textual worker thread.
-        Architecture: @work(thread=True) runs this method in a daemon thread,
-        keeping the Textual event loop free for UI updates. Progress is reported
-        back to the main thread via app.call_from_thread(). The asyncio.run()
-        call creates a fresh event loop because Textual workers are plain threads,
-        not coroutines on the app's async loop.
-        """
+        """Run background document sync in a Textual worker thread."""
         import asyncio
 
         self._sync_active = True

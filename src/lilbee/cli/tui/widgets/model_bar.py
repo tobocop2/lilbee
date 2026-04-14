@@ -253,6 +253,7 @@ class ModelBar(Widget, can_focus=False):
         screen = self.app.screen
         if isinstance(screen, ChatScreen):
             screen._apply_model_change()
+            screen._refresh_status_line()
         else:
             reset_services()
 

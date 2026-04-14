@@ -446,7 +446,7 @@ def _fetch_hf_models(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=repo_name,
+                display_name=clean_display_name(repo_id),
                 hf_repo=repo_id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
