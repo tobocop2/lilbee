@@ -54,6 +54,7 @@ def rag_pipeline(tmp_path_factory):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
+    cfg.max_tokens = 512  # keep inference fast on slow CI runners
 
     reset_provider()
     reset_model_manager()
@@ -115,6 +116,7 @@ def wiki_pipeline(tmp_path_factory):
     cfg.query_expansion_count = 0
     cfg.concept_graph = False
     cfg.hyde = False
+    cfg.max_tokens = 512
     cfg.wiki = True
     cfg.wiki_dir = "wiki"
     (tmp / "wiki").mkdir(parents=True, exist_ok=True)

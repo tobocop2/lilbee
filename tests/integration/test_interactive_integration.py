@@ -167,6 +167,7 @@ def isolated_env(tmp_path, real_models):
     cfg.concept_graph = False
     cfg.query_expansion_count = 0
     cfg.hyde = False
+    cfg.max_tokens = 512
     cfg.chunk_size = 128
     cfg.chunk_overlap = 20
     cfg.max_embed_chars = 500
