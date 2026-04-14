@@ -935,6 +935,41 @@ class TestLockedStreamIterator:
         assert lock.acquire(blocking=False)
         lock.release()
 
+    def test_close_drains_remaining_tokens(self) -> None:
+        """close() exhausts the underlying iterator before releasing the lock."""
+        import threading
+
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        lock = threading.Lock()
+        lock.acquire()
+        chunks = [
+            {"choices": [{"delta": {"content": "a"}}]},
+            {"choices": [{"delta": {"content": "b"}}]},
+        ]
+        it = _LockedStreamIterator(iter(chunks), lock)
+        # Don't consume any tokens, just close
+        it.close()
+        assert lock.acquire(blocking=False)
+        lock.release()
+
+    def test_close_handles_drain_exception(self) -> None:
+        """close() releases lock even if draining the iterator raises."""
+        import threading
+
+        from lilbee.providers.llama_cpp_provider import _LockedStreamIterator
+
+        def _exploding():
+            yield {"choices": [{"delta": {"content": "a"}}]}
+            raise RuntimeError("boom")
+
+        lock = threading.Lock()
+        lock.acquire()
+        it = _LockedStreamIterator(_exploding(), lock)
+        it.close()  # should not raise
+        assert lock.acquire(blocking=False)
+        lock.release()
+
 
 class TestSkipGgufValue:
     def test_string_type(self) -> None:
