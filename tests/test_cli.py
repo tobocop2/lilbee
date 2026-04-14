@@ -356,6 +356,15 @@ class TestChat:
         assert "error" in data
         assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
 
+    def test_json_mode_suppresses_litellm_debug(self) -> None:
+        """--json sets litellm.suppress_debug_info when litellm is installed."""
+        fake_litellm = mock.MagicMock()
+        fake_litellm.suppress_debug_info = False
+        with mock.patch.dict("sys.modules", {"litellm": fake_litellm}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
+            assert fake_litellm.suppress_debug_info is True
+
     def test_json_mode_suppresses_litellm_without_litellm(self) -> None:
         """When litellm is not installed, the ImportError is silently caught."""
         with mock.patch.dict("sys.modules", {"litellm": None}):
