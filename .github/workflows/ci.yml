@@ -73,7 +73,13 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Run unit tests with coverage
-        run: make test-ci
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.python-version }}" = "3.11" ]; then
+            make test-ci-serial
+          else
+            make test-ci
+          fi
+        shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 

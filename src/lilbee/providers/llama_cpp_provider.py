@@ -271,8 +271,20 @@ class _LockedStreamIterator:
             self._lock.release()
 
     def close(self) -> None:
-        """Explicitly release the lock if the stream is abandoned early."""
-        self._release()
+        """Exhaust the underlying C iterator, then release the lock.
+
+        Simply releasing the lock without finishing inference leaves the
+        llama-cpp model in an inconsistent state. The next streaming call
+        would hang because the C runtime is still processing the previous
+        request. Draining the iterator ensures inference completes cleanly.
+        """
+        if not self._released:
+            try:
+                for _ in self._response:
+                    pass
+            except Exception:
+                pass
+            self._release()
 
     def __del__(self) -> None:  # pragma: no cover
         self._release()
