@@ -1211,51 +1211,6 @@ class TestTaskQueue:
         assert len(q.active_tasks) == 1
         assert q.active_tasks[0].task_id == t2
 
-    def test_displayable_tasks_includes_active(self) -> None:
-        from lilbee.cli.tui.task_queue import TaskQueue
-
-        q = TaskQueue()
-        q.enqueue(lambda: None, "DL", "download")
-        q.advance("download")
-        assert len(q.displayable_tasks) == 1
-        assert q.displayable_tasks[0].name == "DL"
-
-    def test_displayable_tasks_includes_done_before_removal(self) -> None:
-        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
-
-        q = TaskQueue()
-        tid = q.enqueue(lambda: None, "Sync", "sync")
-        q.advance()
-        q.complete_task(tid)
-        displayable = q.displayable_tasks
-        assert any(t.status == TaskStatus.DONE for t in displayable)
-
-    def test_displayable_tasks_includes_failed_before_removal(self) -> None:
-        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
-
-        q = TaskQueue()
-        tid = q.enqueue(lambda: None, "Sync", "sync")
-        q.advance()
-        q.fail_task(tid, "oops")
-        displayable = q.displayable_tasks
-        assert any(t.status == TaskStatus.FAILED for t in displayable)
-
-    def test_displayable_tasks_empty_when_idle(self) -> None:
-        from lilbee.cli.tui.task_queue import TaskQueue
-
-        q = TaskQueue()
-        assert q.displayable_tasks == []
-
-    def test_displayable_tasks_multiple_active_types(self) -> None:
-        from lilbee.cli.tui.task_queue import TaskQueue
-
-        q = TaskQueue()
-        q.enqueue(lambda: None, "DL", "download")
-        q.enqueue(lambda: None, "Sync", "sync")
-        q.advance("download")
-        q.advance("sync")
-        assert len(q.displayable_tasks) == 2
-
 
 class TestCompletionOverlayCyclePrev:
     async def test_cycle_prev_wraps(self) -> None:

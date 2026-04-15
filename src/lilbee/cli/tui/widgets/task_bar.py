@@ -76,18 +76,18 @@ class TaskBarController:
     def complete_task(self, task_id: str) -> None:
         """Mark a task done; keep it visible for a brief flash, then remove."""
         self.queue.complete_task(task_id)
-        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id, "complete"))
+        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id))
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark a task as failed; flash, then remove."""
         self.queue.fail_task(task_id, detail)
-        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id, "fail"))
+        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id))
 
     def cancel_task(self, task_id: str) -> None:
         self.queue.cancel(task_id)
-        self._dismiss(task_id, "cancel")
+        self._dismiss(task_id)
 
-    def _dismiss(self, task_id: str, reason: str) -> None:
+    def _dismiss(self, task_id: str) -> None:
         task = self.queue.get_task(task_id)
         task_type = task.task_type if task else None
         self.queue.remove_task(task_id)
@@ -223,8 +223,6 @@ class TaskBar(Static):
         summary = " | ".join(parts)
         label_text = f" {summary}  press t for Task Center"
 
-        try:
+        with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
-        except Exception:
-            pass
