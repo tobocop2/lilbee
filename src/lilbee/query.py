@@ -148,12 +148,15 @@ def filter_results(
 
     Hybrid results (relevance_score set) are checked against min_relevance_score.
     Vector results (distance set) are checked against max_distance.
-    Results with neither score pass through.
+    Results with neither score pass through. When both scores are present,
+    relevance_score takes priority (hybrid results use RRF scoring, not
+    cosine distance). Pass max_distance=0 to disable distance filtering.
     """
     if max_distance <= 0 and min_relevance_score <= 0:
         return results
     filtered: list[SearchChunk] = []
     for r in results:
+        # Hybrid results: check relevance_score (takes priority over distance)
         if r.relevance_score is not None:
             if min_relevance_score > 0 and r.relevance_score < min_relevance_score:
                 continue
@@ -710,6 +713,9 @@ class Searcher:
         finally:
             if hasattr(raw_stream, "close"):
                 raw_stream.close()
+        # Note: LLM-generated citation blocks in streamed tokens cannot be
+        # retroactively stripped. The system prompt discourages them; this
+        # only filters the code-appended Sources block to cited chunks.
         full_answer = "".join(answer_parts)
         cited = _extract_cited_indices(full_answer)
         used = [results[i - 1] for i in sorted(cited) if 1 <= i <= len(results)]
