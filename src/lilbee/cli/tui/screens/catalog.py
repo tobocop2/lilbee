@@ -199,6 +199,7 @@ class CatalogScreen(Screen[None]):
         """Fetch one page of HF models for all task types (runs in worker thread)."""
         all_models: list[CatalogModel] = []
         seen_repos: set[str] = set()
+        any_has_more = False
         for task in _ALL_TASKS:
             result = get_catalog(
                 task=task,
@@ -206,11 +207,13 @@ class CatalogScreen(Screen[None]):
                 limit=_HF_PAGE_SIZE,
                 offset=self._hf_offset,
             )
+            if result.has_more:
+                any_has_more = True
             for m in result.models:
                 if not m.featured and m.hf_repo not in seen_repos:
                     seen_repos.add(m.hf_repo)
                     all_models.append(m)
-        self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
+        self._hf_has_more = any_has_more
         return all_models
 
     @work(thread=True, name=_WORKER_FETCH_HF)

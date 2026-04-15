@@ -559,6 +559,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
 
         assert result.total == 1
+        assert result.has_more is False
         assert len(result.models) == 1
         m = result.models[0]
         assert m.name == "qwen3"
@@ -625,6 +626,17 @@ class TestModelsCatalog:
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=0, limit=20, offset=0, models=[], has_more=True
+        )
+        mock_svc.provider.list_models.return_value = []
+        result = await handlers.models_catalog()
+        assert result.has_more is True
 
 
 class TestModelsInstalled:
