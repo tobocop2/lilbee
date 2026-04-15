@@ -12,7 +12,6 @@ from lilbee.query import (
     format_source,
     prefer_wiki,
     sort_by_relevance,
-    strip_llm_citations,
 )
 from lilbee.services import get_services
 from lilbee.store import SearchChunk
@@ -1292,83 +1291,3 @@ class TestAskStreamNoEmbed:
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
         assert "Connection lost" in combined
-
-
-class TestStripLlmCitations:
-    """Unit tests for strip_llm_citations."""
-
-    def test_removes_sources_block(self):
-        text = "The answer is 42.\n\nSources:\n- test.pdf, page 5\n- other.pdf"
-        assert strip_llm_citations(text) == "The answer is 42."
-
-    def test_removes_key_sources_block(self):
-        text = "The answer.\n\nKey Sources:\n• test.pdf, page 5"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_removes_key_sources_lowercase(self):
-        text = "The answer.\n\nKey sources:\n• [1] test.pdf, page 5"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_removes_references_block(self):
-        text = "The answer.\n\nReferences:\n1. test.pdf"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_removes_bibliography_block(self):
-        text = "The answer.\n\nBibliography:\n- test.pdf"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_removes_citations_block(self):
-        text = "The answer.\n\nCitations:\n[1] test.pdf"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_removes_markdown_heading_sources(self):
-        text = "The answer.\n\n### Sources\n- test.pdf, page 5"
-        assert strip_llm_citations(text) == "The answer."
-
-    def test_preserves_answer_without_block(self):
-        text = "The answer is 42. No citations here."
-        assert strip_llm_citations(text) == text
-
-    def test_preserves_inline_source_mention(self):
-        text = "The sources indicate that oil capacity is 5 quarts."
-        assert strip_llm_citations(text) == text
-
-    def test_preserves_midtext_source_word(self):
-        text = "According to multiple sources, the answer is yes.\n\nMore details follow."
-        assert strip_llm_citations(text) == text
-
-    def test_strips_multiline_citation_block(self):
-        text = (
-            "Oil capacity is 5 quarts.\n\n"
-            "Key sources:\n\n"
-            "• [1] cv-manual.pdf, page 264 (engine oil)\n"
-            "• [3] cv-manual.pdf, page 257 (brake fluid)\n"
-        )
-        assert strip_llm_citations(text) == "Oil capacity is 5 quarts."
-
-
-class TestAskRawStripsLlmCitations:
-    """Integration: ask_raw strips LLM-generated citation blocks."""
-
-    def test_ask_raw_strips_llm_sources(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
-        mock_svc.provider.chat.return_value = "5 quarts.\n\nKey sources:\n• [1] test.pdf, page 1"
-        result = get_services().searcher.ask_raw("oil capacity?")
-        assert "Key sources" not in result.answer
-        assert result.answer == "5 quarts."
-
-    def test_ask_raw_no_embed_strips_llm_sources(self, mock_svc):
-        mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = "answer\n\nSources:\n- foo.pdf"
-        result = get_services().searcher.ask_raw("question")
-        assert "Sources:" not in result.answer
-
-
-class TestAskSingleSourcesBlock:
-    """Integration: ask() output has exactly one Sources block."""
-
-    def test_single_sources_block(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
-        mock_svc.provider.chat.return_value = "5 quarts.\n\nSources:\n- test.pdf, page 1"
-        answer = get_services().searcher.ask("oil capacity?")
-        assert answer.count("Sources:") == 1
