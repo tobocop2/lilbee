@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -33,6 +34,7 @@ class ResetResult(BaseModel):
     command: str = "reset"
     deleted_docs: int
     deleted_data: int
+    skipped: list[str] = []
     documents_dir: str
     data_dir: str
 
@@ -222,30 +224,34 @@ def add_paths(
 
 def perform_reset() -> ResetResult:
     """Delete all documents and data. Returns summary of what was deleted."""
+    log = logging.getLogger(__name__)
     deleted_docs = 0
     deleted_data = 0
+    skipped: list[str] = []
 
-    if cfg.documents_dir.exists():
-        for item in list(cfg.documents_dir.iterdir()):
-            validate_path_within(item, cfg.documents_dir)
-            if item.is_dir():
-                shutil.rmtree(item)
+    for base_dir, counter_name in [(cfg.documents_dir, "docs"), (cfg.data_dir, "data")]:
+        if not base_dir.exists():
+            continue
+        for item in list(base_dir.iterdir()):
+            validate_path_within(item, base_dir)
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            except OSError as exc:
+                log.warning("Could not delete %s: %s", item, exc)
+                skipped.append(str(item))
+                continue
+            if counter_name == "docs":
+                deleted_docs += 1
             else:
-                item.unlink()
-            deleted_docs += 1
-
-    if cfg.data_dir.exists():
-        for item in list(cfg.data_dir.iterdir()):
-            validate_path_within(item, cfg.data_dir)
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-            deleted_data += 1
+                deleted_data += 1
 
     return ResetResult(
         deleted_docs=deleted_docs,
         deleted_data=deleted_data,
+        skipped=skipped,
         documents_dir=str(cfg.documents_dir),
         data_dir=str(cfg.data_dir),
     )
