@@ -339,6 +339,18 @@ class TestBoostResults:
         boosted = cg.boost_results([], ["python"])
         assert boosted == []
 
+    def test_boost_respects_floor(self, cg, mock_svc):
+        """Concept boost cannot reduce distance below concept_boost_floor."""
+        results = [_make_result(distance=0.1, chunk_index=0)]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            {"concept": "python"},
+            {"concept": "ml"},
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python", "ml"])
+        assert boosted[0].distance >= cfg.concept_boost_floor
+
 
 class TestExpandQuery:
     @patch("lilbee.concepts._ensure_spacy_model")

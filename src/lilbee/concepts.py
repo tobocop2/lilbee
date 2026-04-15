@@ -273,7 +273,7 @@ class ConceptGraph:
                 if r.relevance_score is not None:
                     r.relevance_score = r.relevance_score + boost
                 elif r.distance is not None:
-                    r.distance = max(0.0, r.distance - boost)
+                    r.distance = max(self._config.concept_boost_floor, r.distance - boost)
             boosted.append(r)
         return boosted
 

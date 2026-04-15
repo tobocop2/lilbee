@@ -6,12 +6,16 @@ import lilbee.services as svc_mod
 from lilbee.config import cfg
 from lilbee.query import (
     Searcher,
+    _extract_cited_indices,
     _format_citation,
+    _relevance_weight,
     build_context,
     deduplicate_sources,
+    filter_results,
     format_source,
     prefer_wiki,
     sort_by_relevance,
+    strip_llm_citations,
 )
 from lilbee.services import get_services
 from lilbee.store import SearchChunk
@@ -1291,3 +1295,168 @@ class TestAskStreamNoEmbed:
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
         assert "Connection lost" in combined
+
+
+class TestFilterResults:
+    def test_drops_high_distance(self):
+        results = [
+            _make_result(source="close.pdf", distance=0.3),
+            _make_result(source="far.pdf", distance=0.95, chunk_index=1),
+        ]
+        filtered = filter_results(results, max_distance=0.9)
+        assert len(filtered) == 1
+        assert filtered[0].source == "close.pdf"
+
+    def test_drops_low_relevance_score(self):
+        results = [
+            _make_result(source="good.pdf", distance=None, relevance_score=0.8),
+            _make_result(source="bad.pdf", distance=None, relevance_score=0.01, chunk_index=1),
+        ]
+        filtered = filter_results(results, max_distance=0.9, min_relevance_score=0.05)
+        assert len(filtered) == 1
+        assert filtered[0].source == "good.pdf"
+
+    def test_passes_results_with_neither_score(self):
+        r = _make_result(distance=None, relevance_score=None)
+        filtered = filter_results([r], max_distance=0.9, min_relevance_score=0.1)
+        assert len(filtered) == 1
+
+    def test_disabled_when_zero(self):
+        results = [_make_result(distance=2.0)]
+        filtered = filter_results(results, max_distance=0, min_relevance_score=0)
+        assert len(filtered) == 1
+
+    def test_keeps_results_at_threshold(self):
+        r = _make_result(distance=0.9)
+        filtered = filter_results([r], max_distance=0.9)
+        assert len(filtered) == 1
+
+
+class TestRelevanceWeight:
+    def test_distance_based(self):
+        r = _make_result(distance=0.3, relevance_score=None)
+        assert _relevance_weight(r) == pytest.approx(0.7)
+
+    def test_relevance_score_based(self):
+        r = _make_result(distance=None, relevance_score=0.8)
+        assert _relevance_weight(r) == pytest.approx(0.8)
+
+    def test_neither_returns_default(self):
+        r = _make_result(distance=None, relevance_score=None)
+        assert _relevance_weight(r) == pytest.approx(0.5)
+
+    def test_relevance_score_takes_priority(self):
+        r = _make_result(distance=0.3, relevance_score=0.9)
+        assert _relevance_weight(r) == pytest.approx(0.9)
+
+    def test_clamps_high_relevance(self):
+        r = _make_result(distance=None, relevance_score=1.5)
+        assert _relevance_weight(r) == pytest.approx(1.0)
+
+    def test_clamps_negative_distance(self):
+        r = _make_result(distance=1.5, relevance_score=None)
+        assert _relevance_weight(r) == pytest.approx(0.0)
+
+
+class TestStripLlmCitations:
+    def test_removes_sources_block(self):
+        text = "The answer is 42.\n\nSources:\n- test.pdf, page 5"
+        assert strip_llm_citations(text) == "The answer is 42."
+
+    def test_removes_key_sources_block(self):
+        text = "The answer.\n\nKey Sources:\n- test.pdf"
+        assert strip_llm_citations(text) == "The answer."
+
+    def test_removes_key_sources_lowercase(self):
+        text = "The answer.\n\nKey sources:\n- [1] test.pdf"
+        assert strip_llm_citations(text) == "The answer."
+
+    def test_removes_references_block(self):
+        text = "The answer.\n\nReferences:\n1. test.pdf"
+        assert strip_llm_citations(text) == "The answer."
+
+    def test_removes_markdown_heading_sources(self):
+        text = "The answer.\n\n### Sources\n- test.pdf"
+        assert strip_llm_citations(text) == "The answer."
+
+    def test_preserves_answer_without_block(self):
+        text = "The answer is 42."
+        assert strip_llm_citations(text) == text
+
+    def test_preserves_inline_source_mention(self):
+        text = "The sources indicate that oil capacity is 5 quarts."
+        assert strip_llm_citations(text) == text
+
+
+class TestExtractCitedIndices:
+    def test_extracts_multiple(self):
+        assert _extract_cited_indices("See [1] and [3].") == {1, 3}
+
+    def test_no_citations(self):
+        assert _extract_cited_indices("The answer is yes.") == set()
+
+    def test_deduplicates(self):
+        assert _extract_cited_indices("[1] and [1] again.") == {1}
+
+
+class TestAskCitesOnlyUsedSources:
+    def test_ask_cites_only_referenced(self, mock_svc):
+        r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
+        r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
+        mock_svc.store.search.return_value = [r1, r2]
+        mock_svc.provider.chat.return_value = "Oil is 5 quarts [1]."
+        answer = get_services().searcher.ask("oil capacity?")
+        assert "used.pdf" in answer
+        assert "unused.pdf" not in answer
+
+    def test_ask_falls_back_to_all_sources_when_no_refs(self, mock_svc):
+        r1 = _make_result(source="a.pdf", chunk="oil info", chunk_index=0)
+        mock_svc.store.search.return_value = [r1]
+        mock_svc.provider.chat.return_value = "Oil is 5 quarts."
+        answer = get_services().searcher.ask("oil capacity?")
+        assert "a.pdf" in answer
+
+    def test_ask_strips_llm_citation_block(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(chunk="oil info")]
+        mock_svc.provider.chat.return_value = "5 quarts [1].\n\nKey sources:\n- [1] test.pdf"
+        answer = get_services().searcher.ask("oil capacity?")
+        assert "Key sources" not in answer
+        assert answer.count("Sources:") == 1
+
+
+class TestAskStreamCitesOnlyUsedSources:
+    def test_stream_cites_only_referenced(self, mock_svc):
+        r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
+        r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
+        mock_svc.store.search.return_value = [r1, r2]
+        mock_svc.provider.chat.return_value = iter(["Oil is 5 quarts ", "[1]."])
+        tokens = list(get_services().searcher.ask_stream("oil capacity?"))
+        combined = "".join(st.content for st in tokens)
+        assert "used.pdf" in combined
+        assert "unused.pdf" not in combined
+
+    def test_stream_falls_back_when_no_refs(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(source="a.pdf", chunk="oil")]
+        mock_svc.provider.chat.return_value = iter(["Oil is 5 quarts."])
+        tokens = list(get_services().searcher.ask_stream("oil?"))
+        combined = "".join(st.content for st in tokens)
+        assert "a.pdf" in combined
+
+
+class TestBuildRagContextFilters:
+    def test_filters_high_distance_results(self, mock_svc):
+        close = _make_result(source="close.pdf", distance=0.3, chunk="relevant")
+        far = _make_result(source="far.pdf", distance=0.95, chunk="irrelevant", chunk_index=1)
+        mock_svc.store.search.return_value = [close, far]
+        result = get_services().searcher.build_rag_context("question")
+        assert result is not None
+        results, _ = result
+        sources = [r.source for r in results]
+        assert "close.pdf" in sources
+        assert "far.pdf" not in sources
+
+    def test_returns_none_when_all_filtered(self, mock_svc):
+        far = _make_result(source="far.pdf", distance=0.95, chunk="irrelevant")
+        mock_svc.store.search.return_value = [far]
+        result = get_services().searcher.build_rag_context("question")
+        assert result is None
