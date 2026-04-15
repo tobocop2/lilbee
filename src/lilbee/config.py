@@ -71,10 +71,12 @@ CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context — if it doesn't contain enough information, "
-    "say so rather than guessing. Be specific: quote relevant passages, cite file "
-    "paths, and prefer exact values over approximations. For code, prefer working "
-    "examples over abstract explanations. Keep responses concise unless asked to "
-    "elaborate."
+    "say so rather than guessing. Be specific: quote relevant passages and "
+    "reference context chunks by number (e.g. [1], [2]) inline. Prefer exact "
+    "values over approximations. For code, prefer working examples over abstract "
+    "explanations. Keep responses concise unless asked to elaborate. "
+    "Do NOT add a sources, references, or bibliography section at the end. "
+    "Citations are handled separately."
 )
 
 # Default regex for the CORS allow-origin filter. Covers:

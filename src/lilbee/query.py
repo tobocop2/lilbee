@@ -103,6 +103,19 @@ CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
+# Matches trailing LLM-generated citation blocks like "Key sources:", "Sources:",
+# "References:", "Bibliography:", "Citations:" (with optional markdown heading).
+_LLM_CITATION_BLOCK_RE = re.compile(
+    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n.*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def strip_llm_citations(text: str) -> str:
+    """Remove LLM-generated trailing citation blocks from answer text."""
+    return _LLM_CITATION_BLOCK_RE.sub("", text).rstrip()
+
+
 def _format_citation(citation: CitationRecord) -> str:
     """Format a single citation record as an indented attribution line."""
     if citation["page_start"] or citation["page_end"]:
@@ -555,6 +568,7 @@ class Searcher:
             opts = options if options is not None else self._config.generation_options()
             raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
             clean = raw if self._config.show_reasoning else strip_reasoning(raw)
+            clean = strip_llm_citations(clean)
             return AskResult(answer=self._NO_EMBED_WARNING + clean, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history)
         if rag is None:
@@ -567,6 +581,7 @@ class Searcher:
         opts = options if options is not None else self._config.generation_options()
         raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
+        clean = strip_llm_citations(clean)
         return AskResult(answer=clean, sources=results)
 
     def ask(
