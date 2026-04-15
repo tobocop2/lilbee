@@ -101,6 +101,12 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.chunk_size == 256
 
+    def test_chunk_size_below_minimum_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            cfg.chunk_size = 5
+
     def test_chunk_overlap_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_CHUNK_OVERLAP": "50"}):
             c = Config()
