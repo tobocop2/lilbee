@@ -122,8 +122,11 @@ out of the box. Set appropriate timeouts and max connections.
 
 
 def _chat_model_entry():
-    """Return the Qwen3 0.6B catalog entry (smallest available)."""
-    return FEATURED_CHAT[0]
+    """Return the chat model catalog entry based on env var or default."""
+    from tests.integration.conftest import _CI_CHAT_MODEL
+
+    name, tag = _CI_CHAT_MODEL.split(":")
+    return next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
 
 
 def _embedding_model_entry():

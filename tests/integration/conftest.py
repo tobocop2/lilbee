@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
 from lilbee.config import cfg
 from lilbee.platform import canonical_models_dir
+
+# macOS CI runners use CPU-only inference (no Metal GPU passthrough).
+# smollm2 (135M) is fast enough; qwen3:0.6b is too slow.
+_CI_CHAT_MODEL = os.environ.get("LILBEE_TEST_CHAT_MODEL", "qwen3:0.6b")
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
@@ -63,7 +68,8 @@ def rag_pipeline(tmp_path_factory):
     download_model(embed_entry)
     cfg.embedding_model = embed_entry.ref
 
-    chat_entry = next(m for m in FEATURED_CHAT if m.name == "qwen3" and m.tag == "0.6b")
+    name, tag = _CI_CHAT_MODEL.split(":")
+    chat_entry = next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 
@@ -128,7 +134,8 @@ def wiki_pipeline(tmp_path_factory):
     download_model(embed_entry)
     cfg.embedding_model = embed_entry.ref
 
-    chat_entry = next(m for m in FEATURED_CHAT if m.name == "qwen3" and m.tag == "0.6b")
+    name, tag = _CI_CHAT_MODEL.split(":")
+    chat_entry = next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
     download_model(chat_entry)
     cfg.chat_model = chat_entry.ref
 
