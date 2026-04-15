@@ -372,11 +372,11 @@ class TestBackendField:
     a backend pill so users know lilbee cannot install/delete them.
     """
 
-    def test_catalog_to_row_backend_empty(self):
+    def test_catalog_to_row_backend_native(self):
         row = catalog_to_row(_make_catalog_model(), installed=False)
-        assert row.backend == ""
+        assert row.backend == "native"
 
-    def test_variant_to_row_backend_empty(self):
+    def test_variant_to_row_backend_native(self):
         from lilbee.catalog import ModelFamily, ModelVariant
 
         variant = ModelVariant(
@@ -392,7 +392,7 @@ class TestBackendField:
             slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
         )
         row = variant_to_row(variant, family, installed=False)
-        assert row.backend == ""
+        assert row.backend == "native"
 
     def test_installed_name_to_row_backend_empty(self):
         from lilbee.cli.tui.screens.setup import _installed_name_to_row

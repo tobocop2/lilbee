@@ -1308,7 +1308,7 @@ class TestSetupWizard:
         assert card.row is row
         assert card.row.featured is True
         assert card.row.task == "chat"
-        assert card.row.backend == ""
+        assert card.row.backend == "native"
 
     def test_pick_recommended_picks_largest_fitting_not_first(self) -> None:
         """Default pick is the biggest-size-gb model whose min_ram_gb fits."""
