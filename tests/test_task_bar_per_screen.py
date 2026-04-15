@@ -208,6 +208,42 @@ async def test_task_bar_state_shared_across_screens() -> None:
         assert catalog_bar.queue.active_task.name == "Background sync"
 
 
+async def test_action_open_tasks_switches_to_task_center() -> None:
+    """Pressing 't' (action_open_tasks) should navigate to the Task Center."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.action_open_tasks()
+        await pilot.pause()
+        assert isinstance(app.screen, TaskCenter)
+
+
+async def test_task_center_queue_change_from_worker_thread() -> None:
+    """Queue changes from a worker thread should call_from_thread safely."""
+    import threading
+
+    app = _ControllerApp(_task_center_screen)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.task_bar.add_task("Background work", "sync")
+        app.task_bar.queue.advance()
+        # Simulate a queue change from a worker thread
+        done = threading.Event()
+
+        def worker():
+            app.task_bar.queue.update_task(app.task_bar.queue.active_task.task_id, 50, "halfway")
+            done.set()
+
+        t = threading.Thread(target=worker)
+        t.start()
+        done.wait(timeout=5)
+        t.join(timeout=5)
+        await pilot.pause()
+
+
 async def test_task_bar_auto_hides_when_queue_drains() -> None:
     """When all tasks finish, every screen's TaskBar should hide again."""
     app = _ControllerApp(_chat_screen)

@@ -19,7 +19,7 @@ import contextlib
 import logging
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
 from textual.widgets import Label, Static
@@ -45,7 +45,7 @@ class TaskBarController:
     so every ``TaskBar`` widget sees the same state.
     """
 
-    def __init__(self, app: App[object]) -> None:
+    def __init__(self, app: App[Any]) -> None:
         self.app = app
         self.queue = TaskQueue()
 
@@ -228,4 +228,3 @@ class TaskBar(Static):
             label.update(label_text)
         except Exception:
             pass
-
