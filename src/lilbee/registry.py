@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -78,10 +78,17 @@ class ModelRef:
 
 @dataclass
 class ModelManifest:
-    """Manifest for an installed model version."""
+    """Manifest for an installed model version.
 
-    name: str  # family slug: "qwen3", "nomic-embed-text"
-    tag: str  # variant: "0.6b", "v1.5", "latest"
+    Each manifest has a canonical ``name:tag`` identity plus optional aliases.
+    Aliases let users refer to the same model by multiple names (e.g. a
+    repo-derived name and a short featured name). ``resolve()`` and
+    ``is_installed()`` check both canonical names and aliases.
+    ``list_installed()`` returns only canonical entries.
+    """
+
+    name: str  # canonical family slug: "qwen3", "nomic-embed-text"
+    tag: str  # canonical variant: "0.6b", "v1.5", "latest"
     size_bytes: int
     task: str  # "chat", "embedding", or "vision" — use TaskType constants
     source_repo: str  # HuggingFace repo
@@ -89,6 +96,7 @@ class ModelManifest:
     downloaded_at: str  # ISO 8601 timestamp
     blob: str = ""  # SHA-256 hash (filename in blobs/), set by install()
     display_name: str = ""  # human-readable label: "Qwen3 0.6B"
+    aliases: list[str] = field(default_factory=list)
 
 
 def _coerce_ref(ref: str | ModelRef) -> ModelRef:
@@ -121,10 +129,13 @@ class ModelRegistry:
 
     def resolve(self, ref: str | ModelRef) -> Path:
         """Resolve model name to file path in HF cache.
+        Checks canonical names first, then aliases.
         Raises ``KeyError`` if the model is not installed.
         """
         r = _coerce_ref(ref)
         manifest = self._read_manifest(r)
+        if manifest is None:
+            manifest = self._find_by_alias(str(r))
         if manifest is None:
             raise KeyError(f"Model {r} not installed")
 
@@ -171,7 +182,12 @@ class ModelRegistry:
             blobs_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, blob_path)
 
-        # Write manifest
+        # Absorb aliases from any conflicting manifest that references the same blob.
+        merged_aliases = list(manifest.aliases)
+        self._absorb_conflicting_aliases(
+            manifest.source_repo, manifest.source_filename, ref, merged_aliases
+        )
+
         updated = ModelManifest(
             name=manifest.name,
             tag=manifest.tag,
@@ -182,6 +198,7 @@ class ModelRegistry:
             downloaded_at=manifest.downloaded_at,
             blob=digest,
             display_name=manifest.display_name,
+            aliases=merged_aliases,
         )
         self._write_manifest(ref, updated)
         return blob_path
@@ -203,6 +220,7 @@ class ModelRegistry:
             downloaded_at=manifest.downloaded_at,
             blob=manifest.blob,
             display_name=manifest.display_name,
+            aliases=manifest.aliases,
         )
         self._write_manifest(ModelRef(name=ref.name, tag=DEFAULT_TAG), latest)
 
@@ -307,11 +325,60 @@ class ModelRegistry:
                 Path(tmp_path).unlink(missing_ok=True)
             raise
 
+    def _find_by_alias(self, alias: str) -> ModelManifest | None:
+        """Search all manifests for one that lists *alias* in its aliases."""
+        if not self._manifests_dir.exists():
+            return None
+        for name_dir in self._manifests_dir.iterdir():
+            if not name_dir.is_dir():
+                continue
+            for tag_file in name_dir.glob("*.json"):
+                manifest = self._load_manifest_file(tag_file)
+                if manifest is not None and alias in manifest.aliases:
+                    return manifest
+        return None
+
+    def _absorb_conflicting_aliases(
+        self,
+        source_repo: str,
+        source_filename: str,
+        keep: ModelRef,
+        aliases: list[str],
+    ) -> None:
+        """Find manifests with the same source and absorb them as aliases.
+
+        Deletes the conflicting manifest file and adds its ``name:tag`` to
+        the *aliases* list so the old name still resolves.
+        """
+        if not self._manifests_dir.exists():
+            return
+        keep_dir = self._manifests_dir / keep.name
+        for name_dir in list(self._manifests_dir.iterdir()):
+            if not name_dir.is_dir() or name_dir == keep_dir:
+                continue
+            for tag_file in list(name_dir.glob("*.json")):
+                manifest = self._load_manifest_file(tag_file)
+                if manifest is None:
+                    continue
+                if (
+                    manifest.source_repo != source_repo
+                    or manifest.source_filename != source_filename
+                ):
+                    continue
+                old_ref = f"{manifest.name}:{manifest.tag}"
+                if old_ref not in aliases:
+                    aliases.append(old_ref)
+                log.info("Absorbed %s as alias of %s", old_ref, keep)
+                tag_file.unlink()
+            if name_dir.exists() and not any(name_dir.iterdir()):
+                name_dir.rmdir()
+
     def _load_manifest_file(self, path: Path) -> ModelManifest | None:
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text())
+            data.setdefault("aliases", [])  # backwards compat with old manifests
             return ModelManifest(**data)
         except (json.JSONDecodeError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
