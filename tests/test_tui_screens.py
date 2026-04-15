@@ -8563,6 +8563,51 @@ async def test_wiki_regenerate_selected_page():
         assert mock_bg.call_args[0][0] == ["test.txt"]
 
 
+async def test_wiki_regenerate_selected_page_not_found():
+    """action_regenerate with a selected page whose source isn't indexed shows error."""
+    from textual.widgets import OptionList
+    from textual.widgets.option_list import Option
+
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def __init__(self):
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+            self.task_bar = TaskBarController(self)
+
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        option_list = app.screen.query_one("#wiki-page-list", OptionList)
+        option_list.clear_options()
+        option_list.add_option(Option("test page", id="summaries/test"))
+        option_list.focus()
+        await pilot.pause()
+        option_list.action_cursor_down()
+        await pilot.pause()
+        mock_page = MagicMock()
+        mock_page.frontmatter = {"sources": ["gone.txt"]}
+        with (
+            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
+            patch("lilbee.wiki.browse.read_page", return_value=mock_page),
+            patch(
+                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                return_value=None,
+            ),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            mock_cfg.wiki = True
+            app.screen.action_regenerate()
+            await pilot.pause()
+        mock_notify.assert_called_once()
+        assert "Source not found" in mock_notify.call_args[0][0]
+
+
 async def test_wiki_run_wiki_background():
     """WikiScreen._run_wiki_background delegates to run_wiki_generation."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
