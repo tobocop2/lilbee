@@ -583,7 +583,7 @@ class ChatScreen(Screen[None]):
     def _cmd_reset(self, args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-        def _on_confirm(confirmed: bool) -> None:
+        def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
             from lilbee.cli.helpers import perform_reset
