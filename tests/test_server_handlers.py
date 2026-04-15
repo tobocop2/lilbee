@@ -839,6 +839,15 @@ class TestUpdateConfig:
         with pytest.raises(ValidationError):
             await handlers.update_config({"chunk_size": "not_a_number"})
 
+    async def test_chunk_size_below_minimum_rejected(self):
+        with pytest.raises(ValueError, match="chunk_size must be >= 64"):
+            await handlers.update_config({"chunk_size": 5})
+
+    async def test_chunk_size_at_minimum_accepted(self, tmp_path):
+        result = await handlers.update_config({"chunk_size": 64})
+        assert result.updated == ["chunk_size"]
+        assert cfg.chunk_size == 64
+
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
         result = await handlers.update_config({"llm_api_key": "sk-test123"})
