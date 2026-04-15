@@ -110,6 +110,16 @@ def find_unmarked_claims(markdown: str) -> list[str]:
     return unmarked
 
 
+def strip_citation_block(markdown: str) -> str:
+    """Remove the auto-generated citation block (separator + comment + footnotes) from markdown."""
+    block_start = _find_citation_block_start(markdown)
+    if block_start is None:
+        return markdown
+    lines = markdown.splitlines()
+    body_end = _body_end_before_citations(lines, block_start)
+    return "\n".join(lines[:body_end]).rstrip() + "\n"
+
+
 def _find_citation_block_start(markdown: str) -> int | None:
     """Return the 0-based line index where the citation block begins, or None."""
     lines = markdown.splitlines()
@@ -119,6 +129,14 @@ def _find_citation_block_start(markdown: str) -> int | None:
     return None
 
 
+def _body_end_before_citations(lines: list[str], block_start: int) -> int:
+    """Return the line index to truncate at, stripping the --- separator if present."""
+    body_end = block_start
+    if body_end > 0 and lines[body_end - 1].strip() == _CITATION_BLOCK_SEP:
+        body_end -= 1
+    return body_end
+
+
 def _extract_body(markdown: str) -> str:
     """Return markdown body: strip YAML frontmatter and citation block."""
     text = _strip_frontmatter(markdown)
@@ -126,10 +144,7 @@ def _extract_body(markdown: str) -> str:
     if block_start is None:
         return text
     lines = text.splitlines()
-    # Also strip the --- separator line immediately before the comment
-    body_end = block_start
-    if body_end > 0 and lines[body_end - 1].strip() == _CITATION_BLOCK_SEP:
-        body_end -= 1
+    body_end = _body_end_before_citations(lines, block_start)
     return "\n".join(lines[:body_end])
 
 
@@ -167,6 +182,8 @@ def _format_source_ref(rec: CitationRecord) -> str:
             ref += f", pages {rec['page_start']}-{rec['page_end']}"
     elif has_line or has_line_end:
         ref += f", lines {rec['line_start']}-{rec['line_end']}"
+    if rec["excerpt"]:
+        ref += f', excerpt: "{rec["excerpt"]}"'
     return ref
 
 

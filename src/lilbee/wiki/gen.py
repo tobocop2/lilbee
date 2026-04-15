@@ -21,7 +21,12 @@ from lilbee.ingest import file_hash
 from lilbee.providers.base import LLMProvider
 from lilbee.reasoning import strip_reasoning
 from lilbee.store import CitationRecord, SearchChunk, Store
-from lilbee.wiki.citation import ParsedCitation, parse_wiki_citations, render_citation_block
+from lilbee.wiki.citation import (
+    ParsedCitation,
+    parse_wiki_citations,
+    render_citation_block,
+    strip_citation_block,
+)
 from lilbee.wiki.index import append_wiki_log, update_wiki_index
 from lilbee.wiki.shared import (
     DRAFTS_SUBDIR,
@@ -426,6 +431,7 @@ def _generate_page(
     if subdir == DRAFTS_SUBDIR:
         log.info("Wiki page %s scored %.2f (< %.2f), sending to drafts", label, score, threshold)
 
+    wiki_text = strip_citation_block(wiki_text)
     frontmatter = _build_frontmatter(config, source_names, score)
     citation_block = render_citation_block(verified)
     full_content = _assemble_content(frontmatter, wiki_text, citation_block)
