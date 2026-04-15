@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
+from huggingface_hub import ModelInfo
+from huggingface_hub.hf_api import RepoSibling
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
@@ -147,38 +149,14 @@ class _ProgressTracker:
 
 
 class _HfGgufMeta(BaseModel):
-    """GGUF metadata returned by the HF API when expand=gguf is requested."""
+    """GGUF metadata returned by the HF API when expand=gguf is requested.
+
+    ModelInfo.gguf is typed as ``dict | None`` upstream, so we validate it ourselves.
+    """
 
     total: int = 0
     architecture: str = ""
     context_length: int = 0
-
-
-class _HfSibling(BaseModel):
-    """A single file entry in the HF API siblings array."""
-
-    rfilename: str = ""
-    size: int = 0
-
-
-class _HfCardData(BaseModel):
-    """Card metadata from the HF API cardData field."""
-
-    description: str = ""
-
-
-class _HfModelItem(BaseModel):
-    """A single model entry from the HF /api/models listing response."""
-
-    model_config = {"extra": "ignore"}
-
-    id: str = ""
-    downloads: int = 0
-    description: str = ""
-    pipeline_tag: str = ""
-    siblings: list[_HfSibling] = []
-    gguf: _HfGgufMeta | None = None
-    cardData: _HfCardData | None = None
 
 
 class DownloadConfig(BaseModel):
@@ -193,6 +171,10 @@ class DownloadConfig(BaseModel):
 
 
 _DEFAULT_TIMEOUT = 30.0
+
+# Fields to request from the HF listing API via ?expand=.
+# Without expand, the default response omits siblings, cardData, and gguf.
+_HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"]
 
 
 @dataclass(frozen=True)
@@ -460,16 +442,16 @@ def _fetch_hf_models(
         if cached and now - cached[0] < _HF_CACHE_TTL:
             return cached[1]
 
-    params: dict[str, str | int | list[str]] = {
-        "pipeline_tag": pipeline_tag,
-        "search": "GGUF",
-        "sort": sort,
-        "limit": limit,
-        "skip": offset,
-        "expand": ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"],
-    }
+    params = httpx.QueryParams(
+        pipeline_tag=pipeline_tag,
+        search="GGUF",
+        sort=sort,
+        limit=limit,
+        skip=offset,
+        expand=_HF_EXPAND_FIELDS,
+    )
     if library:
-        params["library"] = library
+        params = params.add("library", library)
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
         if resp.status_code >= 400:
@@ -484,17 +466,17 @@ def _fetch_hf_models(
 
     models: list[CatalogModel] = []
     for raw in data:
-        item = _HfModelItem.model_validate(raw)
-        if not item.id:
+        if not raw.get("id"):
             continue
-        card_desc = item.cardData.description if item.cardData else ""
-        model_desc = item.description or card_desc
-        gguf_total = item.gguf.total if item.gguf else 0
-        if gguf_total > 0:
-            size_gb = round(gguf_total / (1024**3), 1)
+        item = ModelInfo(**raw)
+        card_desc = item.card_data.get("description", "") if item.card_data else ""
+        model_desc = card_desc
+        gguf_meta = _HfGgufMeta(**(item.gguf or {}))
+        if gguf_meta.total > 0:
+            size_gb = round(gguf_meta.total / (1024**3), 1)
         else:
-            size_gb = _estimate_size_from_siblings(item.siblings)
-        task = _pipeline_to_task(item.pipeline_tag)
+            size_gb = _estimate_size_from_siblings(item.siblings or [])
+        task = _pipeline_to_task(item.pipeline_tag or "")
         repo_name = item.id.split("/")[-1]
         slug = repo_name.lower().replace(" ", "-")
         models.append(
@@ -508,7 +490,7 @@ def _fetch_hf_models(
                 min_ram_gb=max(2.0, size_gb * 1.5),
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
-                downloads=item.downloads,
+                downloads=item.downloads or 0,
                 task=task,
             )
         )
@@ -521,17 +503,17 @@ def _fetch_hf_models(
     return page
 
 
-def _has_gguf_siblings(siblings: list[_HfSibling]) -> bool:
+def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
     """Return True if the sibling list contains at least one .gguf file."""
     return any(s.rfilename.endswith(".gguf") for s in siblings)
 
 
-def _estimate_size_from_siblings(siblings: list[_HfSibling]) -> float:
+def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
     """Estimate model size in GB from the largest GGUF file in siblings."""
     max_bytes = 0
     for sib in siblings:
         if sib.rfilename.endswith(".gguf"):
-            max_bytes = max(max_bytes, sib.size)
+            max_bytes = max(max_bytes, sib.size or 0)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
     return 0.0  # unknown — display as "?" in UI

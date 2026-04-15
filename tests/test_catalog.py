@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from huggingface_hub.hf_api import RepoSibling
 
 from lilbee import catalog
 from lilbee.catalog import (
@@ -21,7 +22,6 @@ from lilbee.catalog import (
     ModelVariant,
     _hf_token,
     _HfPage,
-    _HfSibling,
     clean_display_name,
     download_model,
     enrich_catalog,
@@ -174,11 +174,11 @@ class TestFeaturedModels:
 
 class TestHasGgufSiblings:
     def test_returns_true_when_gguf_present(self) -> None:
-        siblings = [_HfSibling(rfilename="model-Q4_K_M.gguf"), _HfSibling(rfilename="README.md")]
+        siblings = [RepoSibling(rfilename="model-Q4_K_M.gguf"), RepoSibling(rfilename="README.md")]
         assert catalog._has_gguf_siblings(siblings) is True
 
     def test_returns_false_when_no_gguf(self) -> None:
-        siblings = [_HfSibling(rfilename="model.bin"), _HfSibling(rfilename="config.json")]
+        siblings = [RepoSibling(rfilename="model.bin"), RepoSibling(rfilename="config.json")]
         assert catalog._has_gguf_siblings(siblings) is False
 
     def test_returns_false_for_empty_list(self) -> None:
@@ -188,14 +188,14 @@ class TestHasGgufSiblings:
 class TestEstimateSizeFromSiblings:
     def test_returns_size_from_largest_gguf(self) -> None:
         siblings = [
-            _HfSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
-            _HfSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
+            RepoSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
+            RepoSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
         ]
         result = catalog._estimate_size_from_siblings(siblings)
         assert result == round(7_000_000_000 / (1024**3), 1)
 
     def test_returns_zero_when_no_size(self) -> None:
-        siblings = [_HfSibling(rfilename="model.gguf", size=0)]
+        siblings = [RepoSibling(rfilename="model.gguf", size=0)]
         assert catalog._estimate_size_from_siblings(siblings) == 0.0
 
     def test_returns_zero_for_empty_list(self) -> None:
@@ -325,7 +325,7 @@ class TestFetchHfModels:
             {
                 "id": "user/test",
                 "downloads": 0,
-                "description": "A" * 200,
+                "cardData": {"description": "A" * 200},
                 "siblings": [{"rfilename": "model.gguf"}],
             }
         ]
@@ -333,7 +333,7 @@ class TestFetchHfModels:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         page = catalog._fetch_hf_models()
         models = page.models
-        assert len(models[0].description) <= 120
+        assert len(models[0].description) == 120
 
     def test_uses_pipeline_tag_for_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [
