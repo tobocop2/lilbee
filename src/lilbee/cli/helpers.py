@@ -222,31 +222,32 @@ def add_paths(
     con.print(result)
 
 
+def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
+    """Delete all items in *base_dir*, appending undeletable paths to *skipped*."""
+    log = logging.getLogger(__name__)
+    deleted = 0
+    if not base_dir.exists():
+        return deleted
+    for item in list(base_dir.iterdir()):
+        validate_path_within(item, base_dir)
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        except OSError as exc:
+            log.warning("Could not delete %s: %s", item, exc)
+            skipped.append(str(item))
+            continue
+        deleted += 1
+    return deleted
+
+
 def perform_reset() -> ResetResult:
     """Delete all documents and data. Returns summary of what was deleted."""
-    log = logging.getLogger(__name__)
-    deleted_docs = 0
-    deleted_data = 0
     skipped: list[str] = []
-
-    for base_dir, counter_name in [(cfg.documents_dir, "docs"), (cfg.data_dir, "data")]:
-        if not base_dir.exists():
-            continue
-        for item in list(base_dir.iterdir()):
-            validate_path_within(item, base_dir)
-            try:
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
-            except OSError as exc:
-                log.warning("Could not delete %s: %s", item, exc)
-                skipped.append(str(item))
-                continue
-            if counter_name == "docs":
-                deleted_docs += 1
-            else:
-                deleted_data += 1
+    deleted_docs = _clear_dir(cfg.documents_dir, skipped)
+    deleted_data = _clear_dir(cfg.data_dir, skipped)
 
     return ResetResult(
         deleted_docs=deleted_docs,
