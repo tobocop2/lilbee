@@ -7209,10 +7209,12 @@ async def test_chat_cmd_wiki_no_sources_notifies():
         fake_svc = MagicMock(store=fake_store)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             mock_notify.assert_called_once()
             assert "No indexed documents" in mock_notify.call_args[0][0]
@@ -7228,10 +7230,12 @@ async def test_chat_cmd_wiki_unknown_source_notifies():
         fake_svc = MagicMock(store=fake_store)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate missing.txt")
             mock_notify.assert_called_once()
             assert "Source not found" in mock_notify.call_args[0][0]
@@ -7261,11 +7265,13 @@ async def test_chat_cmd_wiki_generate_runs_background(tmp_path):
         add_task_spy = MagicMock(wraps=task_bar.add_task)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch("lilbee.wiki.gen.generate_summary_page", side_effect=_fake_generate),
             patch.object(task_bar, "add_task", add_task_spy),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7297,10 +7303,12 @@ async def test_chat_cmd_wiki_generate_cancelled(tmp_path):
 
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch("lilbee.wiki.gen.generate_summary_page", side_effect=_fake_generate),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7319,10 +7327,12 @@ async def test_chat_cmd_wiki_get_sources_raises_notifies_empty():
         fake_svc = MagicMock(store=fake_store)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             mock_notify.assert_called_once()
             assert "No indexed documents" in mock_notify.call_args[0][0]
@@ -7348,10 +7358,12 @@ async def test_chat_cmd_wiki_generate_single_source(tmp_path):
 
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch("lilbee.wiki.gen.generate_summary_page", side_effect=_fake_generate),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate b.txt")
             await _pilot.pause()
             while app.screen.workers:
@@ -7373,10 +7385,12 @@ async def test_chat_cmd_wiki_skips_sources_with_no_chunks():
         gen_spy = MagicMock()
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch("lilbee.wiki.gen.generate_summary_page", new=gen_spy),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7416,7 +7430,8 @@ async def test_chat_cmd_wiki_generate_failure_fails_task():
         fail_spy = MagicMock(wraps=task_bar.fail_task)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch(
                 "lilbee.wiki.gen.generate_summary_page",
                 side_effect=RuntimeError("boom"),
@@ -7424,6 +7439,7 @@ async def test_chat_cmd_wiki_generate_failure_fails_task():
             patch.object(task_bar, "fail_task", fail_spy),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7452,7 +7468,8 @@ async def test_chat_cmd_wiki_generate_progress_failed_stage():
         fail_spy = MagicMock(wraps=task_bar.fail_task)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch(
                 "lilbee.wiki.gen.generate_summary_page",
                 side_effect=_gen_with_failure,
@@ -7460,6 +7477,7 @@ async def test_chat_cmd_wiki_generate_progress_failed_stage():
             patch.object(task_bar, "fail_task", fail_spy),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7483,12 +7501,14 @@ async def test_chat_cmd_wiki_generate_none_produced_fails_task():
         fail_spy = MagicMock(wraps=task_bar.fail_task)
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.chat.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
             patch("lilbee.wiki.gen.generate_summary_page", return_value=None),
             patch.object(task_bar, "fail_task", fail_spy),
             patch.object(app.screen, "notify"),
         ):
             mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
             app.screen._cmd_wiki("generate")
             await _pilot.pause()
             while app.screen.workers:
@@ -7643,17 +7663,17 @@ async def test_catalog_select_row_out_of_range():
                 mock_sel.assert_not_called()
 
 
-async def test_chat_cmd_crawl_no_args():
-    """_cmd_crawl with empty args notifies usage."""
+async def test_chat_cmd_crawl_no_args_opens_dialog():
+    """_cmd_crawl with empty args opens the crawl dialog."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         with (
             patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch.object(app.screen, "notify") as mock_notify,
+            patch.object(app.screen, "_open_crawl_dialog") as mock_dialog,
         ):
             app.screen._cmd_crawl("")
-            mock_notify.assert_called()
+            mock_dialog.assert_called_once()
 
 
 def test_chat_embedding_ready_real_code_false():
@@ -8185,3 +8205,418 @@ async def test_task_bar_indeterminate_flag_propagated():
 
         bar = app.screen.query_one("#tbar", TaskBar)
         assert bar.display is True
+
+
+# ---------------------------------------------------------------------------
+# wiki_worker.resolve_wiki_targets
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_wiki_targets_disabled():
+    """Returns None when wiki is disabled."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    with patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg:
+        mock_cfg.wiki = False
+        assert resolve_wiki_targets() is None
+
+
+def test_resolve_wiki_targets_all():
+    """Returns all source names when no specific source requested."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    fake_store = MagicMock()
+    fake_store.get_sources.return_value = [
+        {"filename": "a.txt"},
+        {"filename": "b.txt"},
+    ]
+    fake_svc = MagicMock(store=fake_store)
+    with (
+        patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg,
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+    ):
+        mock_cfg.wiki = True
+        result = resolve_wiki_targets()
+    assert result == ["a.txt", "b.txt"]
+
+
+def test_resolve_wiki_targets_specific():
+    """Returns only the requested source when it exists."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    fake_store = MagicMock()
+    fake_store.get_sources.return_value = [
+        {"filename": "a.txt"},
+        {"filename": "b.txt"},
+    ]
+    fake_svc = MagicMock(store=fake_store)
+    with (
+        patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg,
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+    ):
+        mock_cfg.wiki = True
+        result = resolve_wiki_targets("b.txt")
+    assert result == ["b.txt"]
+
+
+def test_resolve_wiki_targets_unknown():
+    """Returns None for an unknown source name."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    fake_store = MagicMock()
+    fake_store.get_sources.return_value = [{"filename": "a.txt"}]
+    fake_svc = MagicMock(store=fake_store)
+    with (
+        patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg,
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+    ):
+        mock_cfg.wiki = True
+        assert resolve_wiki_targets("missing.txt") is None
+
+
+def test_resolve_wiki_targets_empty_sources():
+    """Returns None when no sources are indexed."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    fake_store = MagicMock()
+    fake_store.get_sources.return_value = []
+    fake_svc = MagicMock(store=fake_store)
+    with (
+        patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg,
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+    ):
+        mock_cfg.wiki = True
+        assert resolve_wiki_targets() is None
+
+
+def test_resolve_wiki_targets_get_sources_error():
+    """Returns None when get_sources raises."""
+    from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+    fake_store = MagicMock()
+    fake_store.get_sources.side_effect = RuntimeError("db gone")
+    fake_svc = MagicMock(store=fake_store)
+    with (
+        patch("lilbee.cli.tui.wiki_worker.cfg") as mock_cfg,
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+    ):
+        mock_cfg.wiki = True
+        assert resolve_wiki_targets() is None
+
+
+# ---------------------------------------------------------------------------
+# WikiScreen.action_regenerate
+# ---------------------------------------------------------------------------
+
+
+async def test_wiki_screen_regenerate_disabled():
+    """Regenerate notifies when wiki is disabled."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            mock_cfg.wiki = False
+            app.screen.action_regenerate()
+            mock_notify.assert_called_once()
+
+
+async def test_wiki_screen_regenerate_no_sources():
+    """Regenerate notifies when no indexed sources found."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
+            patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
+            patch(
+                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                return_value=None,
+            ),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            mock_cfg.wiki = True
+            mock_worker_cfg.wiki = True
+            app.screen.action_regenerate()
+            mock_notify.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TaskBar detail text in display
+# ---------------------------------------------------------------------------
+
+
+async def test_task_bar_shows_detail_text():
+    """TaskBar renders detail text alongside progress percentage."""
+    from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
+
+    class _Harness(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.task_bar = TaskBarController(self)
+
+        def compose(self) -> ComposeResult:
+            yield TaskBar(id="tbar")
+
+    app = _Harness()
+    async with app.run_test(size=(120, 10)) as _pilot:
+        task_id = app.task_bar.add_task("Crawl test", "crawl")
+        app.task_bar.queue.advance("crawl")
+        app.task_bar.update_task(task_id, 45, "[12/30]: https://example.com")
+        await _pilot.pause()
+        bar = app.screen.query_one("#tbar", TaskBar)
+        bar._refresh_display()
+        from textual.widgets import Label
+
+        label = bar.query_one("#task-status-label", Label)
+        text = str(label.render())
+        assert "45%" in text
+        assert "[12/30]" in text
+
+
+# ---------------------------------------------------------------------------
+# ChatScreen._open_crawl_dialog
+# ---------------------------------------------------------------------------
+
+
+async def test_chat_open_crawl_dialog():
+    """_open_crawl_dialog pushes CrawlDialog modal."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True):
+            app.screen._cmd_crawl("")
+            await _pilot.pause()
+            from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
+
+            assert isinstance(app.screen, CrawlDialog)
+
+
+async def test_chat_start_crawl_from_dialog():
+    """_start_crawl enqueues task and runs background crawl."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        task_bar = app.task_bar
+        add_spy = MagicMock(wraps=task_bar.add_task)
+        with (
+            patch.object(task_bar, "add_task", add_spy),
+            patch.object(app.screen, "_run_crawl_background"),
+            patch.object(app.screen, "notify"),
+        ):
+            app.screen._start_crawl("https://example.com", 1, 25)
+        add_spy.assert_called_once()
+
+
+async def test_chat_crawl_dialog_callback_triggers_start():
+    """CrawlDialog callback calls _start_crawl with the result params."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(app.screen, "_start_crawl") as mock_start,
+        ):
+            app.screen._cmd_crawl("")
+            await _pilot.pause()
+            # Dismiss the dialog with params
+            params = CrawlParams(url="https://test.com", depth=1, max_pages=10)
+            app.screen.dismiss(params)
+            await _pilot.pause()
+        mock_start.assert_called_once_with("https://test.com", 1, 10)
+
+
+async def test_chat_crawl_dialog_callback_none_noop():
+    """CrawlDialog callback with None does not start a crawl."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch.object(app.screen, "_start_crawl") as mock_start,
+        ):
+            app.screen._cmd_crawl("")
+            await _pilot.pause()
+            app.screen.dismiss(None)
+            await _pilot.pause()
+        mock_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WikiScreen._source_for_slug
+# ---------------------------------------------------------------------------
+
+
+async def test_wiki_source_for_slug_returns_source():
+    """_source_for_slug extracts source from page frontmatter."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        mock_page = MagicMock()
+        mock_page.frontmatter = {"sources": ["doc.txt", "other.txt"]}
+        with patch("lilbee.wiki.browse.read_page", return_value=mock_page):
+            result = app.screen._source_for_slug("summaries/doc")
+        assert result == "doc.txt"
+
+
+async def test_wiki_source_for_slug_returns_none_for_missing():
+    """_source_for_slug returns None when page not found."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with patch("lilbee.wiki.browse.read_page", return_value=None):
+            result = app.screen._source_for_slug("summaries/missing")
+        assert result is None
+
+
+async def test_wiki_source_for_slug_returns_none_for_empty_sources():
+    """_source_for_slug returns None when sources list is empty."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        mock_page = MagicMock()
+        mock_page.frontmatter = {"sources": []}
+        with patch("lilbee.wiki.browse.read_page", return_value=mock_page):
+            result = app.screen._source_for_slug("summaries/doc")
+        assert result is None
+
+
+async def test_wiki_regenerate_selected_page():
+    """action_regenerate with a selected page regenerates that source."""
+    from textual.widgets import OptionList
+    from textual.widgets.option_list import Option
+
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def __init__(self):
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+            self.task_bar = TaskBarController(self)
+
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        # Simulate a highlighted page by focusing and navigating
+        option_list = app.screen.query_one("#wiki-page-list", OptionList)
+        option_list.clear_options()
+        option_list.add_option(Option("test page", id="summaries/test"))
+        option_list.focus()
+        await pilot.pause()
+        # Force highlight to first option
+        option_list.action_cursor_down()
+        await pilot.pause()
+        mock_page = MagicMock()
+        mock_page.frontmatter = {"sources": ["test.txt"]}
+        with (
+            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
+            patch("lilbee.wiki.browse.read_page", return_value=mock_page),
+            patch(
+                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                return_value=["test.txt"],
+            ),
+            patch.object(app.screen, "_run_wiki_background") as mock_bg,
+            patch.object(app.screen, "notify"),
+        ):
+            mock_cfg.wiki = True
+            app.screen.action_regenerate()
+            await pilot.pause()
+        mock_bg.assert_called_once()
+        assert mock_bg.call_args[0][0] == ["test.txt"]
+
+
+async def test_wiki_run_wiki_background():
+    """WikiScreen._run_wiki_background delegates to run_wiki_generation."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def __init__(self):
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+            self.task_bar = TaskBarController(self)
+
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        task_id = app.task_bar.add_task("Wiki (1)", "wiki")
+        app.task_bar.queue.advance("wiki")
+        with patch("lilbee.cli.tui.wiki_worker.run_wiki_generation") as mock_gen:
+            app.screen._run_wiki_background(["a.txt"], task_id)
+            await pilot.pause()
+            while app.screen.workers:
+                await pilot.pause()
+        mock_gen.assert_called_once()
+
+
+async def test_wiki_regenerate_with_targets():
+    """action_regenerate with resolved targets enqueues a task."""
+    from lilbee.cli.tui.screens.wiki import WikiScreen
+
+    class _WikiApp(App[None]):
+        def __init__(self):
+            super().__init__()
+            from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+            self.task_bar = TaskBarController(self)
+
+        def on_mount(self):
+            self.push_screen(WikiScreen())
+
+    app = _WikiApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
+            patch(
+                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                return_value=["a.txt"],
+            ),
+            patch.object(app.screen, "_run_wiki_background") as mock_bg,
+            patch.object(app.screen, "notify"),
+        ):
+            mock_cfg.wiki = True
+            app.screen.action_regenerate()
+            await pilot.pause()
+        mock_bg.assert_called_once()

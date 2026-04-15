@@ -42,8 +42,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "/crawl",
         "_cmd_crawl",
         aliases=(),
-        args_hint="url",
-        help_text="Crawl a URL into knowledge base",
+        args_hint="[url]",
+        help_text="Crawl a URL (no args = dialog)",
     ),
     SlashCommand(
         "/delete",

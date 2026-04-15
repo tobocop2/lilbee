@@ -37,6 +37,7 @@ from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.cli.tui.wiki_worker import WIKI_SUBCMD_GENERATE
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -51,16 +52,6 @@ log = logging.getLogger(__name__)
 _DISPATCH = build_dispatch_dict()
 
 _MAX_HISTORY_MESSAGES = 200
-
-_WIKI_SUBCMD_GENERATE = "generate"
-_WIKI_STAGE_PREPARING = "preparing"
-# Monotonic fractions per wiki pipeline stage (see lilbee.wiki.gen._emit calls).
-# Used to advance the progress bar smoothly across preparing → generating → faithfulness_check.
-_WIKI_STAGE_FRACTIONS: dict[str, float] = {
-    _WIKI_STAGE_PREPARING: 0.0,
-    "generating": 0.33,
-    "faithfulness_check": 0.67,
-}
 
 
 class ChatStatusLine(Label):
@@ -405,7 +396,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
             return
         if not args:
-            self.notify(msg.CMD_CRAWL_USAGE, severity="warning")
+            self._open_crawl_dialog()
             return
         parts = args.split()
         url = parts[0]
@@ -415,9 +406,24 @@ class ChatScreen(Screen[None]):
             self.notify(str(exc), severity="error")
             return
         depth, max_pages = self._parse_crawl_flags(parts[1:])
+        self._start_crawl(url, depth, max_pages)
+
+    def _open_crawl_dialog(self) -> None:
+        """Push the crawl modal and handle its result."""
+        from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog, CrawlParams
+
+        def _on_result(result: CrawlParams | None) -> None:
+            if result is not None:
+                self._start_crawl(result.url, result.depth, result.max_pages)
+
+        self.app.push_screen(CrawlDialog(), callback=_on_result)
+
+    def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
+        """Enqueue a crawl task and run it in the background."""
         task_bar = self._task_bar
         task_id = task_bar.add_task(f"Crawl {url}", "crawl")
         task_bar.queue.advance("crawl")
+        self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
         self._run_crawl_background(url, depth, max_pages, task_id)
 
     @staticmethod
@@ -443,7 +449,9 @@ class ChatScreen(Screen[None]):
 
         worker = _get_worker()
         task_bar = self._task_bar
-        call_from_thread(self, task_bar.update_task, task_id, 0, f"Crawling {url}...")
+        call_from_thread(
+            self, task_bar.update_task, task_id, 0, msg.CMD_CRAWL_STARTED.format(url=url)
+        )
 
         try:
 
@@ -657,30 +665,23 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CHAT_VERSION.format(version=get_version()))
 
     def _cmd_wiki(self, args: str) -> None:
+        from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
         parts = args.split()
-        if not parts or parts[0] != _WIKI_SUBCMD_GENERATE:
+        if not parts or parts[0] != WIKI_SUBCMD_GENERATE:
             self.notify(msg.CMD_WIKI_USAGE, severity="warning")
             return
         requested = parts[1] if len(parts) > 1 else None
-        try:
-            sources = get_services().store.get_sources()
-        except Exception:
-            log.warning("Failed to list sources for /wiki", exc_info=True)
-            sources = []
-        names = [s["filename"] for s in sources if s.get("filename")]
-        if not names:
-            self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
-            return
-        if requested is not None:
-            if requested not in names:
+        targets = resolve_wiki_targets(requested)
+        if targets is None:
+            if requested is not None:
                 self.notify(msg.CMD_WIKI_NOT_FOUND.format(name=requested), severity="error")
-                return
-            targets = [requested]
-        else:
-            targets = names
+            else:
+                self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
+            return
         task_bar = self._task_bar
         task_id = task_bar.add_task(f"Wiki ({len(targets)})", "wiki")
         task_bar.queue.advance("wiki")
@@ -690,78 +691,21 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
         """Generate wiki pages for each source in a background thread."""
-        from lilbee.wiki.gen import generate_summary_page
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
 
         worker = _get_worker()
         task_bar = self._task_bar
-        svc = get_services()
-        total = len(sources)
-        generated = 0
-        last_error: str = ""
-        try:
-            for idx, source in enumerate(sources):
-                if worker.is_cancelled:
-                    break
-                base_pct = int(idx * 100 / total)
-                call_from_thread(
-                    self,
-                    task_bar.update_task,
-                    task_id,
-                    base_pct,
-                    msg.CMD_WIKI_PROGRESS.format(name=source, stage=_WIKI_STAGE_PREPARING),
-                )
-                chunks = svc.store.get_chunks_by_source(source)
-                if not chunks:
-                    continue
-
-                def _on_progress(
-                    stage: str,
-                    _data: dict[str, object],
-                    source_name: str = source,
-                    source_idx: int = idx,
-                ) -> None:
-                    nonlocal last_error
-                    if stage == "failed":
-                        last_error = str(_data.get("error", "Unknown error"))
-                        return
-                    fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
-                    pct = int((source_idx + fraction) * 100 / total)
-                    call_from_thread(
-                        self,
-                        task_bar.update_task,
-                        task_id,
-                        pct,
-                        msg.CMD_WIKI_PROGRESS.format(name=source_name, stage=stage),
-                    )
-
-                result = generate_summary_page(
-                    source, chunks, svc.provider, svc.store, on_progress=_on_progress
-                )
-                if result is not None:
-                    generated += 1
-            if generated > 0:
-                call_from_thread(self, task_bar.complete_task, task_id)
-                call_from_thread(
-                    self,
-                    self.notify,
-                    msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
-                )
-                call_from_thread(self, self._refresh_wiki_screen)
-            else:
-                fail_reason = last_error or "No pages generated"
-                call_from_thread(self, task_bar.fail_task, task_id, fail_reason)
-                call_from_thread(
-                    self,
-                    self.notify,
-                    msg.CMD_WIKI_NONE_GENERATED.format(total=total),
-                    severity="warning",
-                )
-        except Exception as exc:
-            log.warning("Wiki generation failed", exc_info=True)
-            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
-            call_from_thread(
-                self, self.notify, msg.CMD_WIKI_FAILED.format(error=exc), severity="error"
-            )
+        run_wiki_generation(
+            sources=sources,
+            task_id=task_id,
+            widget=self,
+            update_task=task_bar.update_task,
+            complete_task=task_bar.complete_task,
+            fail_task=task_bar.fail_task,
+            notify=self.notify,
+            on_complete=self._refresh_wiki_screen,
+            is_cancelled=lambda: worker.is_cancelled,
+        )
 
     def _refresh_wiki_screen(self) -> None:
         """If a WikiScreen is mounted, reload its sidebar after generation."""

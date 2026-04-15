@@ -3318,3 +3318,231 @@ class TestConfirmDialog:
             await pilot.pause()
 
         assert results == [False]
+
+
+# ---------------------------------------------------------------------------
+# CrawlDialog
+# ---------------------------------------------------------------------------
+
+
+class CrawlDialogTestApp(App[None]):
+    def __init__(self):
+        super().__init__()
+        self.results: list = []
+
+    def on_mount(self):
+        from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
+
+        self.push_screen(CrawlDialog(), self.results.append)
+
+
+async def test_crawl_dialog_submit_valid():
+    """Submitting with a valid URL returns CrawlParams."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        depth_input = app.screen.query_one("#crawl-depth-input")
+        depth_input.value = "2"
+        max_input = app.screen.query_one("#crawl-max-pages-input")
+        max_input.value = "10"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+
+    assert len(app.results) == 1
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.url == "https://example.com"
+    assert result.depth == 2
+    assert result.max_pages == 10
+
+
+async def test_crawl_dialog_cancel():
+    """Cancel button dismisses with None."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        btn = app.screen.query_one("#crawl-cancel")
+        btn.press()
+        await pilot.pause()
+
+    assert app.results == [None]
+
+
+async def test_crawl_dialog_escape_cancels():
+    """Escape key dismisses with None."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert app.results == [None]
+
+
+async def test_crawl_dialog_empty_url_shows_error():
+    """Submitting with empty URL shows validation error."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        btn = app.screen.query_one("#crawl-submit")
+        btn.press()
+        await pilot.pause()
+        error = app.screen.query_one("#crawl-error", Static)
+        assert "required" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_invalid_url_shows_error():
+    """Invalid URL shows validation error from require_valid_crawl_url."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        await pilot.pause()
+        with mock.patch(
+            "lilbee.crawler.require_valid_crawl_url",
+            side_effect=ValueError("bad url"),
+        ):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "bad url" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_invalid_depth_shows_error():
+    """Non-numeric depth shows validation error."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        depth_input = app.screen.query_one("#crawl-depth-input")
+        depth_input.value = "abc"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "depth" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_invalid_max_pages_shows_error():
+    """Non-numeric max pages shows validation error."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        max_input = app.screen.query_one("#crawl-max-pages-input")
+        max_input.value = "abc"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "max pages" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_negative_depth_shows_error():
+    """Negative depth shows validation error."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        depth_input = app.screen.query_one("#crawl-depth-input")
+        depth_input.value = "-1"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "depth" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_input_submitted():
+    """Pressing Enter in an input field triggers submit."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            await pilot.press("enter")
+            await pilot.pause()
+
+    assert len(app.results) == 1
+    assert isinstance(app.results[0], CrawlParams)
+
+
+async def test_crawl_dialog_defaults():
+    """Default values are depth=0, max_pages=50 when left unchanged."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.depth == 0
+    assert result.max_pages == 50
+
+
+async def test_crawl_dialog_negative_max_pages_shows_error():
+    """Negative max pages shows validation error."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        max_input = app.screen.query_one("#crawl-max-pages-input")
+        max_input.value = "-5"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+            error = app.screen.query_one("#crawl-error", Static)
+            assert "max pages" in str(error.render()).lower()
+
+
+async def test_crawl_dialog_auto_prefix_https():
+    """URL without scheme gets https:// auto-prefixed."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "example.com"
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.url == "https://example.com"

@@ -99,7 +99,7 @@ class LilbeeApp(App[None]):
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
-        Binding("t", "open_tasks", "Tasks", show=False),
+        Binding("t", "open_tasks", "Tasks", show=True),
         # priority=True is required: even though NavAwareInput lets [ and ]
         # bubble past Input.check_consume_key, Textual's focused Input still
         # handles printable keys in _on_key before a non-priority ancestor

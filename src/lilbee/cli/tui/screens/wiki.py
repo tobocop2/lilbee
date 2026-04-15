@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from lilbee.wiki.browse import WikiPageInfo
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
+from textual.worker import get_current_worker as _get_worker
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
@@ -61,6 +62,7 @@ class WikiScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "dismiss_or_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
+        Binding("r", "regenerate", "Regen", show=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),
@@ -198,6 +200,71 @@ class WikiScreen(Screen[None]):
     def _on_search_changed(self, event: Input.Changed) -> None:
         """Filter pages when search input changes."""
         self._load_pages(filter_text=event.value.strip())
+
+    def action_regenerate(self) -> None:
+        """Regenerate wiki page(s). Selected page's source, or all sources."""
+        from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+
+        if not cfg.wiki:
+            self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
+            return
+
+        requested: str | None = None
+        option_list = self.query_one("#wiki-page-list", OptionList)
+        highlighted = option_list.highlighted
+        if highlighted is not None:
+            slug = option_list.get_option_at_index(highlighted).id
+            if slug is not None:
+                requested = self._source_for_slug(slug)
+
+        targets = resolve_wiki_targets(requested)
+        if targets is None:
+            if requested is not None:
+                self.notify(msg.CMD_WIKI_NOT_FOUND.format(name=requested), severity="error")
+            else:
+                self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
+            return
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        task_bar = self.query_one(TaskBar)
+        task_id = task_bar.add_task(f"Wiki ({len(targets)})", "wiki")
+        task_bar.queue.advance("wiki")
+        self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
+        self._run_wiki_background(targets, task_id)
+
+    def _source_for_slug(self, slug: str) -> str | None:
+        """Extract the primary source filename from a wiki page's frontmatter."""
+        from lilbee.wiki.browse import read_page
+
+        root = _wiki_root()
+        page = read_page(root, slug)
+        if page is None:
+            return None
+        sources = page.frontmatter.get("sources")
+        if isinstance(sources, list) and sources:
+            return str(sources[0])
+        return None
+
+    @work(thread=True)
+    def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
+        """Generate wiki pages in a background thread."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        worker = _get_worker()
+        task_bar = self.query_one(TaskBar)
+        run_wiki_generation(
+            sources=sources,
+            task_id=task_id,
+            widget=self,
+            update_task=task_bar.update_task,
+            complete_task=task_bar.complete_task,
+            fail_task=task_bar.fail_task,
+            notify=self.notify,
+            on_complete=self.reload,
+            is_cancelled=lambda: worker.is_cancelled,
+        )
 
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""
