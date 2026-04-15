@@ -35,6 +35,7 @@ async def search_route(
 
 
 @post("/api/ask")
+@read_only
 async def ask_route(data: AskRequest) -> AskResponse:
     """One-shot RAG question returning an answer with source chunks."""
     try:
@@ -50,6 +51,7 @@ async def ask_route(data: AskRequest) -> AskResponse:
 
 
 @post("/api/ask/stream")
+@read_only
 async def ask_stream_route(data: AskRequest) -> Stream:
     """Streaming SSE version of ask, emitting token-by-token answer chunks."""
     return Stream(

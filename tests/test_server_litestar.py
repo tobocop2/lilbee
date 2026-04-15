@@ -748,3 +748,20 @@ class TestAuthRequiredRoutes:
     def test_put_models_embedding_requires_auth(self, auth_client):
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
         assert resp.status_code == 401
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "42", "sources": []},
+    )
+    def test_ask_is_read_only(self, _mock_ask, auth_client):
+        """POST /api/ask should not require a bearer token."""
+        resp = auth_client.post("/api/ask", json={"question": "test"})
+        assert resp.status_code == 201
+
+    @mock.patch("lilbee.server.handlers.ask_stream")
+    def test_ask_stream_is_read_only(self, mock_stream, auth_client):
+        """POST /api/ask/stream should not require a bearer token."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = auth_client.post("/api/ask/stream", json={"question": "test"})
+        assert resp.status_code == 201
