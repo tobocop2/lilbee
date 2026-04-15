@@ -425,12 +425,13 @@ def _fetch_hf_models(
         if cached and now - cached[0] < _HF_CACHE_TTL:
             return cached[1]
 
-    params: dict[str, str | int] = {
+    params: dict[str, str | int | list[str]] = {
         "pipeline_tag": pipeline_tag,
         "search": "GGUF",
         "sort": sort,
         "limit": limit,
         "skip": offset,
+        "expand": ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"],
     }
     if library:
         params["library"] = library
@@ -454,7 +455,12 @@ def _fetch_hf_models(
         downloads = item.get("downloads", 0)
         card_data = item.get("cardData", {}) or {}
         model_desc = item.get("description") or card_data.get("description") or ""
-        size_gb = _estimate_size_from_siblings(item.get("siblings", []))
+        gguf_meta = item.get("gguf") or {}
+        gguf_total = gguf_meta.get("total", 0)
+        if gguf_total > 0:
+            size_gb = round(gguf_total / (1024**3), 1)
+        else:
+            size_gb = _estimate_size_from_siblings(item.get("siblings", []))
         task = _pipeline_to_task(item.get("pipeline_tag", ""))
         repo_name = repo_id.split("/")[-1]
         slug = repo_name.lower().replace(" ", "-")
