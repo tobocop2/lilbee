@@ -123,7 +123,7 @@ class TestSearch:
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
         assert result[0].source == "doc.pdf"
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
 
     async def test_empty_results(self, mock_svc):
         mock_svc.searcher.search.return_value = []
@@ -137,6 +137,16 @@ class TestSearch:
     async def test_whitespace_query_raises(self):
         with pytest.raises(ValueError, match="query must not be empty"):
             await handlers.search("   ")
+
+    async def test_chunk_type_passed_to_searcher(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        await handlers.search("test", chunk_type="wiki")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type="wiki")
+
+    async def test_chunk_type_defaults_to_none(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        await handlers.search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type=None)
 
 
 class TestAsk:
@@ -559,6 +569,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
 
         assert result.total == 1
+        assert result.has_more is False
         assert len(result.models) == 1
         m = result.models[0]
         assert m.name == "qwen3"
@@ -625,6 +636,17 @@ class TestModelsCatalog:
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=0, limit=20, offset=0, models=[], has_more=True
+        )
+        mock_svc.provider.list_models.return_value = []
+        result = await handlers.models_catalog()
+        assert result.has_more is True
 
 
 class TestModelsInstalled:
@@ -826,6 +848,15 @@ class TestUpdateConfig:
 
         with pytest.raises(ValidationError):
             await handlers.update_config({"chunk_size": "not_a_number"})
+
+    async def test_chunk_size_below_minimum_rejected(self):
+        with pytest.raises(ValueError, match="chunk_size must be >= 64"):
+            await handlers.update_config({"chunk_size": 5})
+
+    async def test_chunk_size_at_minimum_accepted(self, tmp_path):
+        result = await handlers.update_config({"chunk_size": 64})
+        assert result.updated == ["chunk_size"]
+        assert cfg.chunk_size == 64
 
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""

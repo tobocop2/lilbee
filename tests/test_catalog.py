@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from huggingface_hub.hf_api import RepoSibling
 
 from lilbee import catalog
 from lilbee.catalog import (
@@ -20,6 +21,7 @@ from lilbee.catalog import (
     ModelFamily,
     ModelVariant,
     _hf_token,
+    _HfPage,
     clean_display_name,
     download_model,
     enrich_catalog,
@@ -28,6 +30,8 @@ from lilbee.catalog import (
     get_families,
     quant_tier,
 )
+
+_EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
 
 @pytest.fixture(autouse=True)
@@ -170,15 +174,32 @@ class TestFeaturedModels:
 
 class TestHasGgufSiblings:
     def test_returns_true_when_gguf_present(self) -> None:
-        siblings = [{"rfilename": "model-Q4_K_M.gguf"}, {"rfilename": "README.md"}]
+        siblings = [RepoSibling(rfilename="model-Q4_K_M.gguf"), RepoSibling(rfilename="README.md")]
         assert catalog._has_gguf_siblings(siblings) is True
 
     def test_returns_false_when_no_gguf(self) -> None:
-        siblings = [{"rfilename": "model.bin"}, {"rfilename": "config.json"}]
+        siblings = [RepoSibling(rfilename="model.bin"), RepoSibling(rfilename="config.json")]
         assert catalog._has_gguf_siblings(siblings) is False
 
     def test_returns_false_for_empty_list(self) -> None:
         assert catalog._has_gguf_siblings([]) is False
+
+
+class TestEstimateSizeFromSiblings:
+    def test_returns_size_from_largest_gguf(self) -> None:
+        siblings = [
+            RepoSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
+            RepoSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
+        ]
+        result = catalog._estimate_size_from_siblings(siblings)
+        assert result == round(7_000_000_000 / (1024**3), 1)
+
+    def test_returns_zero_when_no_size(self) -> None:
+        siblings = [RepoSibling(rfilename="model.gguf", size=0)]
+        assert catalog._estimate_size_from_siblings(siblings) == 0.0
+
+    def test_returns_zero_for_empty_list(self) -> None:
+        assert catalog._estimate_size_from_siblings([]) == 0.0
 
 
 class TestFetchHfModels:
@@ -187,19 +208,22 @@ class TestFetchHfModels:
             {
                 "id": "user/model-7b-gguf",
                 "downloads": 5000,
-                "description": "A test model",
+                "cardData": {"description": "A test model"},
+                "pipeline_tag": "text-generation",
                 "siblings": [
-                    {"rfilename": "model-7b-Q4_K_M.gguf", "size": 4_000_000_000},
-                    {"rfilename": "model-7b-Q8_0.gguf", "size": 7_000_000_000},
+                    {"rfilename": "model-7b-Q4_K_M.gguf"},
+                    {"rfilename": "model-7b-Q8_0.gguf"},
                 ],
+                "gguf": {"total": 7_000_000_000, "architecture": "llama"},
             },
             {
                 "id": "user/model-13b-gguf",
                 "downloads": 1000,
-                "description": "",
+                "pipeline_tag": "text-generation",
                 "siblings": [
-                    {"rfilename": "model-13b-Q4_K_M.gguf", "size": 0},
+                    {"rfilename": "model-13b-Q4_K_M.gguf"},
                 ],
+                "gguf": {},
             },
         ]
 
@@ -210,7 +234,8 @@ class TestFetchHfModels:
             return mock_resp
 
         monkeypatch.setattr(httpx, "get", mock_get)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert len(models) == 2
         assert models[0].name == "model-7b-gguf"
         assert models[0].hf_repo == "user/model-7b-gguf"
@@ -219,19 +244,35 @@ class TestFetchHfModels:
         assert models[0].featured is False
         assert models[0].task == "chat"
 
-    def test_estimates_size_from_largest_gguf(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_estimates_size_from_gguf_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
-        # Largest GGUF file is 7GB -> ~6.5 GB estimate
-        assert 6.0 < models[0].size_gb < 7.5
+        page = catalog._fetch_hf_models()
+        models = page.models
+        # gguf.total = 7_000_000_000 bytes -> ~6.5 GB
+        assert models[0].size_gb == round(7_000_000_000 / (1024**3), 1)
+        assert models[0].min_ram_gb == max(2.0, models[0].size_gb * 1.5)
 
-    def test_no_gguf_size_info_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_gguf_meta_falls_back_to_siblings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
-        # Second model has gguf sibling with size=0 -> fallback 0.0 (unknown)
+        page = catalog._fetch_hf_models()
+        models = page.models
+        # Second model has empty gguf metadata and siblings without size -> 0.0
         assert models[1].size_gb == 0.0
+
+    def test_gguf_expand_param_sent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify expand=gguf is included in API request params."""
+        mock_resp = httpx.Response(200, json=[])
+        captured_params: dict = {}
+
+        def capture_get(url: str, params: dict | None = None, **kwargs: Any) -> httpx.Response:
+            captured_params.update(params or {})
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models()
+        assert "gguf" in captured_params.get("expand", [])
 
     def test_library_param_passed_to_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify library parameter is included in API request."""
@@ -250,7 +291,8 @@ class TestFetchHfModels:
         data = [{"id": "", "downloads": 0}, {"downloads": 0}]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert len(models) == 0
 
     def test_http_error_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,7 +300,8 @@ class TestFetchHfModels:
             raise httpx.ConnectError("fail")
 
         monkeypatch.setattr(httpx, "get", mock_get)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert models == []
 
     def test_invalid_json_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,13 +309,15 @@ class TestFetchHfModels:
             raise ValueError("bad json")
 
         monkeypatch.setattr(httpx, "get", mock_get)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert models == []
 
     def test_http_status_error_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(500)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert models == []
 
     def test_truncates_long_description(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -280,14 +325,15 @@ class TestFetchHfModels:
             {
                 "id": "user/test",
                 "downloads": 0,
-                "description": "A" * 200,
+                "cardData": {"description": "A" * 200},
                 "siblings": [{"rfilename": "model.gguf"}],
             }
         ]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
-        assert len(models[0].description) <= 120
+        page = catalog._fetch_hf_models()
+        models = page.models
+        assert len(models[0].description) == 120
 
     def test_uses_pipeline_tag_for_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [
@@ -306,7 +352,8 @@ class TestFetchHfModels:
         ]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert models[0].task == "embedding"
         assert models[1].task == "vision"
 
@@ -314,13 +361,42 @@ class TestFetchHfModels:
         data = [{"id": "user/model", "downloads": 100, "siblings": [{"rfilename": "m.gguf"}]}]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert models[0].task == "chat"
+
+    def test_has_more_true_when_link_header_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """has_more is True when the response contains a Link rel=next header."""
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        mock_resp = httpx.Response(
+            200,
+            json=data,
+            headers={"Link": '<https://huggingface.co/api/models?limit=50&skip=50>; rel="next"'},
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        page = catalog._fetch_hf_models()
+        assert page.has_more is True
+        assert len(page.models) == 1
+
+    def test_has_more_false_when_no_link_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """has_more is False when no Link header in response (last page)."""
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        mock_resp = httpx.Response(200, json=data)
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        page = catalog._fetch_hf_models()
+        assert page.has_more is False
+
+    def test_has_more_false_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Error responses return empty page with has_more=False."""
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(500))
+        page = catalog._fetch_hf_models()
+        assert page.has_more is False
+        assert page.models == []
 
 
 class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog()
         assert result.total == len(FEATURED_ALL)
         assert all(m.featured for m in result.models)
@@ -343,13 +419,13 @@ class TestGetCatalog:
         assert all(m.task == "chat" for m in result.models)
 
     def test_filter_by_task_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task="embedding")
         assert all(m.task == "embedding" for m in result.models)
         assert result.total == len(FEATURED_EMBEDDING)
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task="vision")
         assert all(m.task == "vision" for m in result.models)
         assert result.total == len(FEATURED_VISION)
@@ -396,36 +472,36 @@ class TestGetCatalog:
         assert all(m.featured for m in result.models)
 
     def test_filter_featured_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(featured=False)
         assert result.total == 0
 
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="featured")
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_downloads(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="downloads")
         downloads = [m.downloads for m in result.models]
         assert downloads == sorted(downloads, reverse=True)
 
     def test_sort_size_asc(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="size_asc")
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes)
 
     def test_sort_size_desc(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="size_desc")
         sizes = [m.size_gb for m in result.models]
         assert sizes == sorted(sizes, reverse=True)
 
     def test_sort_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: [])
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort="name")
         names = [m.name.lower() for m in result.models]
         assert names == sorted(names)
@@ -470,7 +546,11 @@ class TestGetCatalog:
                 task="chat",
             )
         ]
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: hf_models)
+        monkeypatch.setattr(
+            catalog,
+            "_fetch_hf_models",
+            lambda **kw: _HfPage(models=hf_models, has_more=False),
+        )
         result = get_catalog()
         names = [m.name for m in result.models]
         assert "hf-model" in names
@@ -492,11 +572,35 @@ class TestGetCatalog:
                 task="chat",
             )
         ]
-        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: hf_models)
+        monkeypatch.setattr(
+            catalog,
+            "_fetch_hf_models",
+            lambda **kw: _HfPage(models=hf_models, has_more=False),
+        )
         result = get_catalog()
         qwen3_models = [m for m in result.models if m.hf_repo == "Qwen/Qwen3-8B-GGUF"]
         assert len(qwen3_models) == 1
         assert qwen3_models[0].featured is True
+
+    def test_has_more_propagated_from_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CatalogResult.has_more reflects the HF API Link header."""
+        monkeypatch.setattr(
+            catalog,
+            "_fetch_hf_models",
+            lambda **kw: _HfPage(models=[], has_more=True),
+        )
+        result = get_catalog()
+        assert result.has_more is True
+
+    def test_has_more_false_when_featured_only(self) -> None:
+        """Featured-only requests have has_more=False (no HF fetch)."""
+        result = get_catalog(featured=True)
+        assert result.has_more is False
+
+    def test_has_more_false_when_no_more_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(catalog, "_fetch_hf_models", lambda **kw: _EMPTY_HF_PAGE)
+        result = get_catalog()
+        assert result.has_more is False
 
 
 class TestFindCatalogEntry:
@@ -877,7 +981,7 @@ class TestHfCacheEviction:
         from lilbee.catalog import _hf_cache
 
         # Seed an expired entry (timestamp 0, way older than TTL)
-        _hf_cache["old:key:sort:50"] = (0.0, [])
+        _hf_cache["old:key:sort:50"] = (0.0, _EMPTY_HF_PAGE)
         # Ensure monotonic returns a time that makes the entry expired
         monkeypatch.setattr(_time, "monotonic", lambda: 1000.0)
 
@@ -886,6 +990,7 @@ class TestHfCacheEviction:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = []
+        mock_resp.links = {}
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
         catalog._fetch_hf_models(pipeline_tag="text-generation")
@@ -900,7 +1005,7 @@ class TestHfCacheEviction:
         base_time = 1000.0
         # Fill cache with 50 entries (timestamps 1000..1049)
         for i in range(50):
-            _hf_cache[f"key:{i}"] = (base_time + i, [])
+            _hf_cache[f"key:{i}"] = (base_time + i, _EMPTY_HF_PAGE)
 
         # Next fetch will add entry #51, triggering eviction of oldest (key:0)
         monkeypatch.setattr(_time, "monotonic", lambda: base_time + 50)
@@ -910,6 +1015,7 @@ class TestHfCacheEviction:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = []
+        mock_resp.links = {}
         monkeypatch.setattr("lilbee.catalog.httpx.get", lambda *a, **kw: mock_resp)
 
         catalog._fetch_hf_models(pipeline_tag="unique")
@@ -1361,7 +1467,8 @@ class TestHfModelsSearchFilter:
         ]
         mock_resp = httpx.Response(200, json=data)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
-        models = catalog._fetch_hf_models()
+        page = catalog._fetch_hf_models()
+        models = page.models
         assert len(models) == 2
 
 

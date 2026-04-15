@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
+from huggingface_hub import ModelInfo
+from huggingface_hub.hf_api import RepoSibling
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
@@ -146,6 +148,17 @@ class _ProgressTracker:
         return _Cls
 
 
+class _HfGgufMeta(BaseModel):
+    """GGUF metadata returned by the HF API when expand=gguf is requested.
+
+    ModelInfo.gguf is typed as ``dict | None`` upstream, so we validate it ourselves.
+    """
+
+    total: int = 0
+    architecture: str = ""
+    context_length: int = 0
+
+
 class DownloadConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -158,6 +171,10 @@ class DownloadConfig(BaseModel):
 
 
 _DEFAULT_TIMEOUT = 30.0
+
+# Fields to request from the HF listing API via ?expand=.
+# Without expand, the default response omits siblings, cardData, and gguf.
+_HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"]
 
 
 @dataclass(frozen=True)
@@ -195,6 +212,15 @@ class CatalogResult:
     limit: int
     offset: int
     models: list[CatalogModel]
+    has_more: bool = False
+
+
+@dataclass(frozen=True)
+class _HfPage:
+    """Internal: one page of HuggingFace API results."""
+
+    models: list[CatalogModel]
+    has_more: bool
 
 
 @dataclass(frozen=True)
@@ -386,8 +412,10 @@ def _hf_headers() -> dict[str, str]:
 # ``RuntimeError: dictionary changed size during iteration``.
 _HF_CACHE_TTL = 300
 _HF_CACHE_MAX_ENTRIES = 50
-_hf_cache: dict[str, tuple[float, list["CatalogModel"]]] = {}
+_hf_cache: dict[str, tuple[float, _HfPage]] = {}
 _hf_cache_lock = threading.Lock()
+
+_EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
 
 def _fetch_hf_models(
@@ -396,12 +424,16 @@ def _fetch_hf_models(
     limit: int = 50,
     offset: int = 0,
     library: str | None = None,
-) -> list[CatalogModel]:
-    """Fetch GGUF models from HuggingFace API with 5-minute cache. Returns empty list on error."""
+) -> _HfPage:
+    """Fetch GGUF models from HuggingFace API with 5-minute cache.
+
+    Returns an ``_HfPage`` with a ``has_more`` flag derived from the
+    ``Link: <...>; rel="next"`` response header (RFC 5988), the same
+    mechanism the ``huggingface_hub`` library uses internally.
+    """
     cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}"
     now = time.monotonic()
     with _hf_cache_lock:
-        # Evict expired entries
         expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
         for k in expired:
             del _hf_cache[k]
@@ -410,75 +442,78 @@ def _fetch_hf_models(
         if cached and now - cached[0] < _HF_CACHE_TTL:
             return cached[1]
 
-    params: dict[str, str | int] = {
-        "pipeline_tag": pipeline_tag,
-        "search": "GGUF",
-        "sort": sort,
-        "limit": limit,
-        "skip": offset,
-    }
+    params = httpx.QueryParams(
+        pipeline_tag=pipeline_tag,
+        search="GGUF",
+        sort=sort,
+        limit=limit,
+        skip=offset,
+        expand=_HF_EXPAND_FIELDS,
+    )
     if library:
-        params["library"] = library
+        params = params.add("library", library)
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
         if resp.status_code >= 400:
             log.warning("HuggingFace API returned HTTP %d", resp.status_code)
-            return []
+            return _EMPTY_HF_PAGE
         data = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         log.warning("Failed to fetch models from HuggingFace: %s", exc)
-        return []
+        return _EMPTY_HF_PAGE
+
+    has_more = "next" in resp.links
 
     models: list[CatalogModel] = []
-    for item in data:
-        repo_id = item.get("id", "")
-        if not repo_id:
+    for raw in data:
+        if not raw.get("id"):
             continue
-        downloads = item.get("downloads", 0)
-        card_data = item.get("cardData", {}) or {}
-        model_desc = item.get("description") or card_data.get("description") or ""
-        # Estimate size from siblings (empty on list API, populated on detail)
-        size_gb = _estimate_size_from_siblings(item.get("siblings", []))
-        task = _pipeline_to_task(item.get("pipeline_tag", ""))
-        repo_name = repo_id.split("/")[-1]
+        item = ModelInfo(**raw)
+        card_desc = item.card_data.get("description", "") if item.card_data else ""
+        model_desc = card_desc
+        gguf_meta = _HfGgufMeta(**(item.gguf or {}))
+        if gguf_meta.total > 0:
+            size_gb = round(gguf_meta.total / (1024**3), 1)
+        else:
+            size_gb = _estimate_size_from_siblings(item.siblings or [])
+        task = _pipeline_to_task(item.pipeline_tag or "")
+        repo_name = item.id.split("/")[-1]
         slug = repo_name.lower().replace(" ", "-")
         models.append(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=clean_display_name(repo_id),
-                hf_repo=repo_id,
+                display_name=clean_display_name(item.id),
+                hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
                 min_ram_gb=max(2.0, size_gb * 1.5),
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
-                downloads=downloads,
+                downloads=item.downloads or 0,
                 task=task,
             )
         )
+    page = _HfPage(models=models, has_more=has_more)
     with _hf_cache_lock:
-        _hf_cache[cache_key] = (now, models)
-        # Cap cache size, evicting the oldest entry on overflow.
+        _hf_cache[cache_key] = (now, page)
         if len(_hf_cache) > _HF_CACHE_MAX_ENTRIES:
             oldest_key = min(_hf_cache, key=lambda k: _hf_cache[k][0])
             del _hf_cache[oldest_key]
-    return models
+    return page
 
 
-def _has_gguf_siblings(siblings: list[dict[str, Any]]) -> bool:
+def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
     """Return True if the sibling list contains at least one .gguf file."""
-    return any(s.get("rfilename", "").endswith(".gguf") for s in siblings)
+    return any(s.rfilename.endswith(".gguf") for s in siblings)
 
 
-def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
+def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
     """Estimate model size in GB from the largest GGUF file in siblings."""
     max_bytes = 0
     for sib in siblings:
-        filename = sib.get("rfilename", "")
-        if filename.endswith(".gguf"):
-            size = sib.get("size", 0) or 0
-            max_bytes = max(max_bytes, size)
+        if sib.rfilename.endswith(".gguf"):
+            max_bytes = max(max_bytes, sib.size or 0)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
     return 0.0  # unknown — display as "?" in UI
@@ -499,19 +534,21 @@ def get_catalog(
     """Get paginated, filtered catalog of models."""
     # Featured models only on the first page
     all_models = list(FEATURED_ALL) if offset == 0 else []
+    hf_has_more = False
 
     # Optionally fetch from HF API
     if not featured:
         hf_task, hf_library = _task_to_pipeline(task)
-        hf_models = _fetch_hf_models(
+        hf_page = _fetch_hf_models(
             pipeline_tag=hf_task,
             limit=limit,
             offset=offset,
             library=hf_library,
         )
+        hf_has_more = hf_page.has_more
         # Deduplicate: skip HF models whose repo matches a featured model
         featured_repos = {m.hf_repo for m in FEATURED_ALL}
-        hf_models = [m for m in hf_models if m.hf_repo not in featured_repos]
+        hf_models = [m for m in hf_page.models if m.hf_repo not in featured_repos]
         all_models.extend(hf_models)
 
     # Filter by task
@@ -556,7 +593,9 @@ def get_catalog(
     # to avoid double-applying the offset. Only slice for featured-only requests.
     paginated = all_models[offset : offset + limit] if featured else all_models[:limit]
 
-    return CatalogResult(total=total, limit=limit, offset=offset, models=paginated)
+    return CatalogResult(
+        total=total, limit=limit, offset=offset, models=paginated, has_more=hf_has_more
+    )
 
 
 def _task_to_pipeline(task: str | None) -> tuple[str, str | None]:

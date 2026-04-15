@@ -72,7 +72,7 @@ class TestSearchRoute:
         resp = client.get("/api/search", params={"q": "hello", "top_k": "3"})
         assert resp.status_code == 200
         assert resp.json() == []
-        mock_search.assert_awaited_once_with("hello", top_k=3)
+        mock_search.assert_awaited_once_with("hello", top_k=3, chunk_type=None)
 
     @mock.patch(
         "lilbee.server.handlers.search",
@@ -87,7 +87,7 @@ class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_default_top_k(self, mock_search, client):
         client.get("/api/search", params={"q": "x"})
-        mock_search.assert_awaited_once_with("x", top_k=5)
+        mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
 
 
 class TestAskRoute:
