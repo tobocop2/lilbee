@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
+from huggingface_hub import ModelInfo
+from huggingface_hub.hf_api import RepoSibling
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
@@ -146,6 +148,17 @@ class _ProgressTracker:
         return _Cls
 
 
+class _HfGgufMeta(BaseModel):
+    """GGUF metadata returned by the HF API when expand=gguf is requested.
+
+    ModelInfo.gguf is typed as ``dict | None`` upstream, so we validate it ourselves.
+    """
+
+    total: int = 0
+    architecture: str = ""
+    context_length: int = 0
+
+
 class DownloadConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -158,6 +171,10 @@ class DownloadConfig(BaseModel):
 
 
 _DEFAULT_TIMEOUT = 30.0
+
+# Fields to request from the HF listing API via ?expand=.
+# Without expand, the default response omits siblings, cardData, and gguf.
+_HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"]
 
 
 @dataclass(frozen=True)
@@ -425,15 +442,16 @@ def _fetch_hf_models(
         if cached and now - cached[0] < _HF_CACHE_TTL:
             return cached[1]
 
-    params: dict[str, str | int] = {
-        "pipeline_tag": pipeline_tag,
-        "search": "GGUF",
-        "sort": sort,
-        "limit": limit,
-        "skip": offset,
-    }
+    params = httpx.QueryParams(
+        pipeline_tag=pipeline_tag,
+        search="GGUF",
+        sort=sort,
+        limit=limit,
+        skip=offset,
+        expand=_HF_EXPAND_FIELDS,
+    )
     if library:
-        params["library"] = library
+        params = params.add("library", library)
     try:
         resp = httpx.get(HF_API_URL, params=params, timeout=_DEFAULT_TIMEOUT, headers=_hf_headers())
         if resp.status_code >= 400:
@@ -447,29 +465,32 @@ def _fetch_hf_models(
     has_more = "next" in resp.links
 
     models: list[CatalogModel] = []
-    for item in data:
-        repo_id = item.get("id", "")
-        if not repo_id:
+    for raw in data:
+        if not raw.get("id"):
             continue
-        downloads = item.get("downloads", 0)
-        card_data = item.get("cardData", {}) or {}
-        model_desc = item.get("description") or card_data.get("description") or ""
-        size_gb = _estimate_size_from_siblings(item.get("siblings", []))
-        task = _pipeline_to_task(item.get("pipeline_tag", ""))
-        repo_name = repo_id.split("/")[-1]
+        item = ModelInfo(**raw)
+        card_desc = item.card_data.get("description", "") if item.card_data else ""
+        model_desc = card_desc
+        gguf_meta = _HfGgufMeta(**(item.gguf or {}))
+        if gguf_meta.total > 0:
+            size_gb = round(gguf_meta.total / (1024**3), 1)
+        else:
+            size_gb = _estimate_size_from_siblings(item.siblings or [])
+        task = _pipeline_to_task(item.pipeline_tag or "")
+        repo_name = item.id.split("/")[-1]
         slug = repo_name.lower().replace(" ", "-")
         models.append(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=clean_display_name(repo_id),
-                hf_repo=repo_id,
+                display_name=clean_display_name(item.id),
+                hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
                 min_ram_gb=max(2.0, size_gb * 1.5),
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
-                downloads=downloads,
+                downloads=item.downloads or 0,
                 task=task,
             )
         )
@@ -482,19 +503,17 @@ def _fetch_hf_models(
     return page
 
 
-def _has_gguf_siblings(siblings: list[dict[str, Any]]) -> bool:
+def _has_gguf_siblings(siblings: list[RepoSibling]) -> bool:
     """Return True if the sibling list contains at least one .gguf file."""
-    return any(s.get("rfilename", "").endswith(".gguf") for s in siblings)
+    return any(s.rfilename.endswith(".gguf") for s in siblings)
 
 
-def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
+def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
     """Estimate model size in GB from the largest GGUF file in siblings."""
     max_bytes = 0
     for sib in siblings:
-        filename = sib.get("rfilename", "")
-        if filename.endswith(".gguf"):
-            size = sib.get("size", 0) or 0
-            max_bytes = max(max_bytes, size)
+        if sib.rfilename.endswith(".gguf"):
+            max_bytes = max(max_bytes, sib.size or 0)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
     return 0.0  # unknown — display as "?" in UI
