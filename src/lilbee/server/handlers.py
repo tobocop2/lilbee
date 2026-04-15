@@ -643,6 +643,7 @@ async def models_catalog(
         total=result.total,
         limit=result.limit,
         offset=result.offset,
+        has_more=result.has_more,
         models=[
             CatalogEntryResponse(
                 name=e.name,

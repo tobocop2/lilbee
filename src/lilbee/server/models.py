@@ -195,6 +195,7 @@ class ModelsCatalogResponse(BaseModel):
     limit: int
     offset: int
     models: list[CatalogEntryResponse]
+    has_more: bool = False
 
 
 class InstalledModelEntry(BaseModel):
