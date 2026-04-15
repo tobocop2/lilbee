@@ -310,7 +310,8 @@ class TestModelRegistry:
         assert blob_path.exists()
         assert registry.is_installed("removeme") is False
 
-    def test_remove_multiple_manifests_keeps_cache(self, tmp_path: Path) -> None:
+    def test_install_same_source_absorbs_alias(self, tmp_path: Path) -> None:
+        """Installing a model with same source as an existing one absorbs the old name as alias."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         registry = ModelRegistry(models_dir)
@@ -325,9 +326,109 @@ class TestModelRegistry:
         registry.install(ref1, blob_path, m1)
         registry.install(ref2, blob_path, m2)
 
-        assert registry.remove("model-a") is True
-        assert blob_path.exists()  # still exists, still referenced by model-b
+        # model-a was absorbed as an alias of model-b
         assert registry.is_installed("model-b") is True
+        assert registry.is_installed("model-a") is True  # resolves via alias
+        # Only model-b appears in list (canonical)
+        names = [f"{m.name}:{m.tag}" for m in registry.list_installed()]
+        assert "model-b:latest" in names
+        assert "model-a:latest" not in names
+
+    def test_resolve_by_alias(self, tmp_path: Path) -> None:
+        """A model can be resolved by its alias name."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        content = b"alias test"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
+        ref_old = ModelRef(name="old-name")
+        ref_new = ModelRef(name="new-name")
+        m_old = _make_manifest(name="old-name", source_repo="org/repo")
+        m_new = _make_manifest(name="new-name", source_repo="org/repo")
+        registry.install(ref_old, blob_path, m_old)
+        registry.install(ref_new, blob_path, m_new)
+        # old-name resolves via alias
+        path = registry.resolve("old-name")
+        assert path == blob_path
+
+    def test_alias_stored_in_manifest(self, tmp_path: Path) -> None:
+        """Absorbed aliases appear in the manifest's aliases field."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        content = b"alias data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
+        ref1 = ModelRef(name="first")
+        ref2 = ModelRef(name="second")
+        m1 = _make_manifest(name="first", source_repo="org/repo")
+        m2 = _make_manifest(name="second", source_repo="org/repo")
+        registry.install(ref1, blob_path, m1)
+        registry.install(ref2, blob_path, m2)
+        manifest = registry.list_installed()[0]
+        assert "first:latest" in manifest.aliases
+
+    def test_old_manifest_file_deleted_on_absorb(self, tmp_path: Path) -> None:
+        """The old manifest file is deleted when absorbed as an alias."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        content = b"absorb data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
+        ref1 = ModelRef(name="stale")
+        ref2 = ModelRef(name="canonical")
+        m1 = _make_manifest(name="stale", source_repo="org/repo")
+        m2 = _make_manifest(name="canonical", source_repo="org/repo")
+        registry.install(ref1, blob_path, m1)
+        old_manifest = models_dir / "manifests" / "stale" / "latest.json"
+        assert old_manifest.exists()
+        registry.install(ref2, blob_path, m2)
+        assert not old_manifest.exists()  # deleted
+        assert not old_manifest.parent.exists()  # empty dir cleaned up
+
+    def test_install_different_source_no_alias(self, tmp_path: Path) -> None:
+        """Models from different sources don't create aliases."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        blob1 = _create_hf_cache_structure(models_dir, "org/repo-a", b"data-a")
+        blob2 = _create_hf_cache_structure(models_dir, "org/repo-b", b"data-b")
+        ref1 = ModelRef(name="model-a")
+        ref2 = ModelRef(name="model-b")
+        m1 = _make_manifest(name="model-a", source_repo="org/repo-a")
+        m2 = _make_manifest(name="model-b", source_repo="org/repo-b")
+        registry.install(ref1, blob1, m1)
+        registry.install(ref2, blob2, m2)
+        assert len(registry.list_installed()) == 2
+        for m in registry.list_installed():
+            assert m.aliases == []
+
+    def test_find_by_alias_skips_non_dirs(self, tmp_path: Path) -> None:
+        """_find_by_alias ignores non-directory entries in manifests dir."""
+        models_dir = tmp_path / "models"
+        manifests_dir = models_dir / "manifests"
+        manifests_dir.mkdir(parents=True)
+        (manifests_dir / "stray_file.txt").write_text("not a dir")
+        registry = ModelRegistry(models_dir)
+        assert registry._find_by_alias("anything") is None
+
+    def test_absorb_skips_corrupt_manifest(self, tmp_path: Path) -> None:
+        """_absorb_conflicting_aliases ignores corrupt manifests."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        registry = ModelRegistry(models_dir)
+        content = b"data"
+        blob_path = _create_hf_cache_structure(models_dir, "org/repo", content)
+
+        # Create a corrupt manifest
+        corrupt_dir = models_dir / "manifests" / "corrupt-model"
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "latest.json").write_text("not valid json")
+
+        # Install should succeed despite the corrupt manifest
+        ref = ModelRef(name="good-model")
+        m = _make_manifest(name="good-model", source_repo="org/repo")
+        registry.install(ref, blob_path, m)
+        assert registry.is_installed("good-model") is True
 
     def test_remove_nonexistent(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
