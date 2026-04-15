@@ -123,7 +123,7 @@ class TestSearch:
         result = await handlers.search("test", top_k=3)
         assert len(result) == 1
         assert result[0].source == "doc.pdf"
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
 
     async def test_empty_results(self, mock_svc):
         mock_svc.searcher.search.return_value = []
@@ -137,6 +137,16 @@ class TestSearch:
     async def test_whitespace_query_raises(self):
         with pytest.raises(ValueError, match="query must not be empty"):
             await handlers.search("   ")
+
+    async def test_chunk_type_passed_to_searcher(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        await handlers.search("test", chunk_type="wiki")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type="wiki")
+
+    async def test_chunk_type_defaults_to_none(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        await handlers.search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type=None)
 
 
 class TestAsk:

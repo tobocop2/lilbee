@@ -207,11 +207,11 @@ async def status() -> StatusResponse:
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
-async def search(q: str, top_k: int = 5) -> list[DocumentResult]:
+async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
         raise ValueError("query must not be empty")
-    results = get_services().searcher.search(q, top_k=top_k)
+    results = get_services().searcher.search(q, top_k=top_k, chunk_type=chunk_type)
     results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
