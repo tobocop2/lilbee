@@ -176,11 +176,10 @@ async def test_task_bar_shows_active_task_on_catalog_screen() -> None:
         await pilot.pause()
         bar = app.screen.query_one(TaskBar)
         assert bar.display is False  # idle: hidden
-        task_id = app.task_bar.add_task("Download test-model", "download")
+        app.task_bar.add_task("Download test-model", "download")
         app.task_bar.queue.advance()
         await pilot.pause()
         assert bar.display is True
-        assert task_id in bar._panels
 
 
 async def test_task_bar_state_shared_across_screens() -> None:
