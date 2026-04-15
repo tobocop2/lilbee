@@ -207,11 +207,11 @@ async def status() -> StatusResponse:
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
-async def search(q: str, top_k: int = 5) -> list[DocumentResult]:
+async def search(q: str, top_k: int = 5, chunk_type: str | None = None) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
         raise ValueError("query must not be empty")
-    results = get_services().searcher.search(q, top_k=top_k)
+    results = get_services().searcher.search(q, top_k=top_k, chunk_type=chunk_type)
     results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
@@ -489,13 +489,19 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     return await _set_model("embedding_model", normalized)
 
 
+_MIN_CHUNK_SIZE = 64
+
+
 def _validate_config_updates(updates: dict[str, Any]) -> None:
-    """Reject unknown fields and null values on non-nullable fields."""
+    """Reject unknown fields, null values on non-nullable fields, and invalid ranges."""
     for key, value in updates.items():
         if key not in WRITABLE_CONFIG_FIELDS:
             raise ValueError(f"Unknown or read-only config field: {key}")
         if value is None and not WRITABLE_CONFIG_FIELDS[key]:
             raise ValueError(f"Field '{key}' does not accept null")
+    chunk_val = updates.get("chunk_size")
+    if isinstance(chunk_val, int) and chunk_val < _MIN_CHUNK_SIZE:
+        raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
 
 
 def _apply_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], list[str]]:

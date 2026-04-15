@@ -212,6 +212,18 @@ class TestSearchContext:
         mock_svc.store.search.assert_called_once()
         assert mock_svc.store.search.call_args[1]["query_text"] == "my question"
 
+    def test_passes_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("my question", chunk_type="wiki")
+        mock_svc.store.search.assert_called_once()
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+
+    def test_chunk_type_defaults_to_none(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("my question")
+        mock_svc.store.search.assert_called_once()
+        assert mock_svc.store.search.call_args[1]["chunk_type"] is None
+
     def test_expansion_merges_results(self, mock_svc):
         original = _make_result(source="a.md", chunk_index=0)
         expanded = _make_result(source="b.md", chunk_index=0)
@@ -1119,6 +1131,41 @@ class TestPreferWiki:
         filtered = prefer_wiki(results)
         assert len(filtered) == 1
         assert filtered[0].chunk_type == "wiki"
+
+
+class TestPreferWikiGuard:
+    """prefer_wiki should only run in build_rag_context when wiki is enabled."""
+
+    def test_prefer_wiki_skipped_when_wiki_disabled(self, mock_svc):
+        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
+        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
+        mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
+        old_wiki = cfg.wiki
+        cfg.wiki = False
+        try:
+            result = get_services().searcher.build_rag_context("question")
+            assert result is not None
+            chunks, _ = result
+            # Both chunks survive — prefer_wiki was NOT applied
+            assert len(chunks) == 2
+        finally:
+            cfg.wiki = old_wiki
+
+    def test_prefer_wiki_applied_when_wiki_enabled(self, mock_svc):
+        wiki_chunk = _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
+        raw_chunk = _make_result(source="doc.md", chunk_type="raw")
+        mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
+        old_wiki = cfg.wiki
+        cfg.wiki = True
+        try:
+            result = get_services().searcher.build_rag_context("question")
+            assert result is not None
+            chunks, _ = result
+            # Only wiki chunk survives — prefer_wiki removed the raw duplicate
+            assert len(chunks) == 1
+            assert chunks[0].chunk_type == "wiki"
+        finally:
+            cfg.wiki = old_wiki
 
 
 class TestStructuredQueryWikiRaw:

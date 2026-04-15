@@ -112,7 +112,7 @@ class Config(BaseSettings):
     chat_model: str = Field(default="qwen3:latest", min_length=1)
     embedding_model: str = Field(default="nomic-embed-text:latest", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
-    chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
+    chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=10, ge=1, writable=True)
