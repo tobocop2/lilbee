@@ -809,29 +809,32 @@ class TestIsVisionCapable:
 class TestHasProviderKey:
     def test_env_var_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        assert _has_provider_key("openai", "OPENAI_API_KEY") is True
+        assert _has_provider_key("openai", "openai_api_key", "OPENAI_API_KEY") is True
 
     def test_env_var_absent_config_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.config import cfg
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg.openai_api_key = "sk-from-config"
-        assert _has_provider_key("openai", "OPENAI_API_KEY") is True
+        assert _has_provider_key("openai", "openai_api_key", "OPENAI_API_KEY") is True
 
     def test_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.config import cfg
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         cfg.anthropic_api_key = ""
-        assert _has_provider_key("anthropic", "ANTHROPIC_API_KEY") is False
+        assert _has_provider_key("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY") is False
 
     def test_unknown_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SOME_KEY", raising=False)
-        assert _has_provider_key("unknown", "SOME_KEY") is False
+        assert _has_provider_key("unknown", "nonexistent_field", "SOME_KEY") is False
 
 
 class TestDiscoverApiModels:
-    def test_returns_empty_when_litellm_not_installed(self) -> None:
+    def test_returns_empty_when_litellm_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         with mock.patch.dict("sys.modules", {"litellm": None}):
             result = discover_api_models()
         assert result == {}

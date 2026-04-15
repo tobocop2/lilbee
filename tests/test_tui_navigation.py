@@ -339,3 +339,68 @@ async def test_chat_m_key_skips_in_insert_mode():
         except SkipAction:
             raised = True
         assert raised
+
+
+async def test_backward_nav_from_catalog_after_visiting_tasks():
+    """Regression: [ from Catalog after visiting Task Center got stuck.
+
+    The bug was that switch_screen is async but active_view updated
+    synchronously. Rapid navigation queued conflicting screen switches
+    that corrupted the stack. Fixed by adding a _switching guard.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.task_center import TaskCenter
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Forward to Catalog
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert isinstance(app.screen, CatalogScreen)
+
+        # Forward past Catalog to Tasks (Catalog > Status > Settings > Tasks)
+        for _ in range(3):
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+        assert isinstance(app.screen, TaskCenter)
+
+        # Backward back to Catalog (Tasks > Settings > Status > Catalog)
+        for _ in range(3):
+            await pilot.press("left_square_bracket")
+            await pilot.pause()
+        assert isinstance(app.screen, CatalogScreen)
+
+        # The critical step: backward from Catalog to Chat
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen), (
+            f"Expected ChatScreen after [ from Catalog, got {type(app.screen).__name__}"
+        )
+
+
+async def test_switching_guard_blocks_concurrent_switch():
+    """The _switching guard drops a second switch_view call while one is pending."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Manually set the guard
+        app._switching = True
+        original_view = app.active_view
+
+        # This should be a no-op
+        app.switch_view("Status")
+
+        # active_view unchanged because guard blocked the call
+        assert app.active_view == original_view
+
+        # Clean up guard so teardown works
+        app._switching = False

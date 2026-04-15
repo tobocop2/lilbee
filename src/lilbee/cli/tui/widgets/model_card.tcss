@@ -8,16 +8,22 @@ ModelCard {
         background: $surface;
     }
 
+    &.-highlight {
+        border: tall $primary;
+    }
+
     #card-header {
         grid-size: 4 1;
         grid-columns: 1fr auto auto auto;
         height: auto;
+        overflow: hidden;
     }
 
     #card-name {
         text-style: bold;
         text-wrap: nowrap;
         text-overflow: ellipsis;
+        overflow: hidden;
     }
 
     #card-pick {
@@ -37,6 +43,7 @@ ModelCard {
         color: $text-muted;
         text-wrap: nowrap;
         text-overflow: ellipsis;
+        overflow: hidden;
     }
 
     #card-status {

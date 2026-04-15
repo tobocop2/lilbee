@@ -365,7 +365,7 @@ class SetupWizard(Screen[str | None]):
         is_first: bool,
     ) -> None:
         """Mark the row as failed and, if the chat model succeeded first, save partial state."""
-        log.warning("Download failed for %s", model.ref, exc_info=True)
+        log.warning("Download failed for %s: %s", model.ref, exc)
         error_msg = str(exc)
         if "401" in error_msg or "PermissionError" in error_msg:
             error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
@@ -392,6 +392,9 @@ class SetupWizard(Screen[str | None]):
                 log.info("Download cancelled for %s", model.ref)
                 return
             except Exception as exc:
+                if self._cancel_event.is_set():
+                    log.info("Download cancelled for %s", model.ref)
+                    return
                 self._handle_download_error(notify, exc, model, is_first=is_first)
                 return
             notify(self._mark_row_done, model.ref)

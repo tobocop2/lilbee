@@ -109,8 +109,8 @@ class Config(BaseSettings):
     lancedb_dir: Path = Field(default=Path())
     models_dir: Path = Field(default=Path())
 
-    chat_model: str = Field(default="qwen3", min_length=1)
-    embedding_model: str = Field(default="nomic-embed-text", min_length=1)
+    chat_model: str = Field(default="qwen3:latest", min_length=1)
+    embedding_model: str = Field(default="nomic-embed-text:latest", min_length=1)
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=1, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
@@ -396,6 +396,26 @@ class Config(BaseSettings):
                 return False
         return bool(v)
 
+    @field_validator("chat_model", "embedding_model", mode="after")
+    @classmethod
+    def _normalize_model_tag(cls, v: str) -> str:
+        """Ensure model names always have an explicit tag (e.g. qwen3 -> qwen3:latest).
+
+        API-prefixed models (openai/, anthropic/, gemini/) are left as-is
+        since they don't use tags. Ollama-prefixed models keep their prefix
+        for routing.
+        """
+        if not v:
+            return v
+        from lilbee.providers.model_ref import parse_model_ref
+
+        ref = parse_model_ref(v)
+        if ref.is_api:
+            return v
+        if ref.provider == "ollama":
+            return f"ollama/{ref.name}"
+        return ref.name
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, v: Any) -> Any:
@@ -416,7 +436,7 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.platform import default_data_dir, find_local_root
+        from lilbee.platform import canonical_models_dir, default_data_dir, find_local_root
 
         if not isinstance(data, dict):  # pragma: no cover
             return data
@@ -438,7 +458,7 @@ class Config(BaseSettings):
         if data.get("lancedb_dir") in (None, _UNSET):
             data["lancedb_dir"] = root / "data" / "lancedb"
         if data.get("models_dir") in (None, _UNSET):
-            data["models_dir"] = root / "models"
+            data["models_dir"] = canonical_models_dir()
 
         if "LILBEE_LITELLM_BASE_URL" not in os.environ:
             ollama_host = os.environ.get("OLLAMA_HOST")

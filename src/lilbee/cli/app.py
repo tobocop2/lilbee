@@ -11,7 +11,6 @@ from rich.console import Console
 from lilbee.cli.helpers import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.config import cfg
-from lilbee.models import ensure_tag
 
 app = typer.Typer(help="lilbee — Local RAG knowledge base", invoke_without_command=True)
 console = Console()
@@ -96,7 +95,7 @@ def apply_overrides(
             _apply_data_root(Path(data_env))
 
     if model is not None:
-        cfg.chat_model = ensure_tag(model)
+        cfg.chat_model = model
     if temperature is not None:
         cfg.temperature = temperature
     if top_p is not None:
@@ -155,6 +154,13 @@ def _default(
     install_lancedb_thread_error_suppressor()
 
     cfg.json_mode = json_output
+    if cfg.json_mode:
+        try:
+            import litellm
+
+            litellm.suppress_debug_info = True
+        except ImportError:
+            pass
     if ctx.invoked_subcommand is None:
         apply_overrides(data_dir=data_dir, model=model, use_global=use_global)
         if cfg.json_mode:

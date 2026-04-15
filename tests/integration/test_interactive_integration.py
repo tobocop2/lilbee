@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, download_model
 from lilbee.cli.app import app
 from lilbee.config import cfg
+from lilbee.platform import canonical_models_dir
 from lilbee.services import reset_services as reset_provider
 
 pytestmark = pytest.mark.slow
@@ -121,8 +122,11 @@ out of the box. Set appropriate timeouts and max connections.
 
 
 def _chat_model_entry():
-    """Return the Qwen3 0.6B catalog entry (smallest available)."""
-    return FEATURED_CHAT[0]
+    """Return the chat model catalog entry based on env var or default."""
+    from tests.integration.conftest import _CI_CHAT_MODEL
+
+    name, tag = _CI_CHAT_MODEL.split(":")
+    return next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag)
 
 
 def _embedding_model_entry():
@@ -133,6 +137,7 @@ def _embedding_model_entry():
 @pytest.fixture(scope="module")
 def real_models():
     """Download real models once per module. Cached in ~/.lilbee/models/."""
+    cfg.models_dir = canonical_models_dir()
     chat_entry = _chat_model_entry()
     embed_entry = _embedding_model_entry()
 
@@ -157,6 +162,7 @@ def isolated_env(tmp_path, real_models):
     cfg.data_root = tmp_path
 
     cfg.llm_provider = "llama-cpp"
+    cfg.models_dir = canonical_models_dir()
     cfg.chat_model = _chat_model_entry().ref
     cfg.embedding_model = _embedding_model_entry().ref
     cfg.embedding_dim = 768
@@ -164,6 +170,7 @@ def isolated_env(tmp_path, real_models):
     cfg.concept_graph = False
     cfg.query_expansion_count = 0
     cfg.hyde = False
+    cfg.max_tokens = 512
     cfg.chunk_size = 128
     cfg.chunk_overlap = 20
     cfg.max_embed_chars = 500

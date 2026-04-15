@@ -59,7 +59,10 @@ class TestChatFlow:
         app = _IntegrationChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            cfg.chat_model = next(m for m in FEATURED_CHAT if m.name == "smollm2").ref
+            from tests.integration.conftest import _CI_CHAT_MODEL
+
+            name, tag = _CI_CHAT_MODEL.split(":")
+            cfg.chat_model = next(m for m in FEATURED_CHAT if m.name == name and m.tag == tag).ref
             reset_services()
             inp = app.screen.query_one("#chat-input", Input)
             inp.value = "What engine does the Thunderbolt X500 have?"

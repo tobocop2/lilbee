@@ -9,6 +9,7 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     parse_wiki_citations,
     render_citation_block,
+    strip_citation_block,
     verify_citation,
 )
 from tests.conftest import make_citation as _citation_record
@@ -86,7 +87,7 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: python-docs/typing.md, lines 12-45" in result
+        assert '[^src1]: python-docs/typing.md, lines 12-45, excerpt: "some text"' in result
         assert "<!-- citations" in result
         assert result.startswith("---\n")
 
@@ -102,7 +103,7 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: mypy-manual.pdf, page 3" in result
+        assert '[^src1]: mypy-manual.pdf, page 3, excerpt: "some text"' in result
 
     def test_renders_page_range(self):
         records = [
@@ -115,7 +116,7 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: manual.pdf, pages 2-5" in result
+        assert '[^src1]: manual.pdf, pages 2-5, excerpt: "text"' in result
 
     def test_renders_filename_only_when_no_location(self):
         records = [
@@ -126,7 +127,7 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: notes.txt\n" in result
+        assert '[^src1]: notes.txt, excerpt: "text"' in result
 
     def test_renders_multiple_citations(self):
         records = [
@@ -147,11 +148,22 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: a.md, lines 1-10" in result
-        assert "[^src2]: b.pdf, page 5" in result
+        assert '[^src1]: a.md, lines 1-10, excerpt: "t1"' in result
+        assert '[^src2]: b.pdf, page 5, excerpt: "t2"' in result
 
     def test_renders_empty_list(self):
         assert render_citation_block([]) == ""
+
+    def test_renders_no_excerpt_when_empty(self):
+        records = [
+            _citation_record(
+                source_filename="notes.txt",
+                excerpt="",
+            ),
+        ]
+        result = render_citation_block(records)
+        assert "[^src1]: notes.txt\n" in result
+        assert "excerpt" not in result
 
     def test_page_zero_treated_as_no_location(self):
         """page_start=0 should not produce a 'page 0' reference."""
@@ -166,7 +178,7 @@ class TestRenderCitationBlock:
             ),
         ]
         result = render_citation_block(records)
-        assert "[^src1]: doc.txt\n" in result
+        assert '[^src1]: doc.txt, excerpt: "text"' in result
         assert "page" not in result
         assert "lines" not in result
 
@@ -273,6 +285,46 @@ class TestFindUnmarkedClaims:
             "[^src1]: doc.md, lines 1-5\n"
         )
         assert find_unmarked_claims(md) == []
+
+
+class TestStripCitationBlock:
+    def test_strips_citation_block(self):
+        md = (
+            "# Heading\n\n"
+            "> Cited fact.[^src1]\n\n"
+            "---\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        result = strip_citation_block(md)
+        assert "# Heading" in result
+        assert "> Cited fact.[^src1]" in result
+        assert "<!-- citations" not in result
+        assert "[^src1]: doc.md" not in result
+
+    def test_no_citation_block_returns_unchanged(self):
+        md = "# Heading\n\nSome text.\n"
+        assert strip_citation_block(md) == md
+
+    def test_empty_string(self):
+        assert strip_citation_block("") == ""
+
+    def test_strips_block_without_separator(self):
+        md = (
+            "# Heading\n\n"
+            "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+            "[^src1]: doc.md, lines 1-5\n"
+        )
+        result = strip_citation_block(md)
+        assert "# Heading" in result
+        assert "<!-- citations" not in result
+
+    def test_strips_from_full_wiki_page(self):
+        result = strip_citation_block(SAMPLE_WIKI_PAGE)
+        assert "<!-- citations" not in result
+        assert "[^src1]: python-docs/typing.md" not in result
+        assert "Python Type System" in result
+        assert "[^src1]" in result  # inline anchors preserved
 
 
 class TestCitationStatusEnum:

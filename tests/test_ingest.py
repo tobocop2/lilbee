@@ -860,7 +860,7 @@ class TestVisionFallback:
 
             result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
         mock_vision.assert_called_once_with(
-            f, "test-vision", quiet=True, timeout=45.0, on_progress=mock.ANY
+            f, "test-vision:latest", quiet=True, timeout=45.0, on_progress=mock.ANY
         )
         assert len(result) > 0
         assert result[0]["content_type"] == "pdf"
@@ -886,7 +886,7 @@ class TestVisionFallback:
 
             await ingest_document(f, "scanned.pdf", "pdf")
         mock_vision.assert_called_once_with(
-            f, "test-vision", quiet=False, timeout=120.0, on_progress=mock.ANY
+            f, "test-vision:latest", quiet=False, timeout=120.0, on_progress=mock.ANY
         )
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
@@ -909,7 +909,7 @@ class TestVisionFallback:
 
             await _ingest_file(f, "scanned.pdf", "pdf", quiet=True)
         mock_vision.assert_called_once_with(
-            f, "test-vision", quiet=True, timeout=120.0, on_progress=mock.ANY
+            f, "test-vision:latest", quiet=True, timeout=120.0, on_progress=mock.ANY
         )
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
@@ -1269,13 +1269,13 @@ class TestIngestMarkdownEdgeCases:
             result = await ingest_markdown(md, "blank.md")
         assert result == []
 
-    async def test_frontmatter_only_returns_empty(self, isolated_env):
+    async def test_frontmatter_only_produces_chunks(self, isolated_env):
         from lilbee.ingest import ingest_markdown
 
         md = isolated_env / "fm_only.md"
         md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
         result = await ingest_markdown(md, "fm_only.md")
-        assert result == []
+        assert len(result) > 0, "Frontmatter content should be indexed"
 
 
 class TestIngestDocumentEdgeCases:

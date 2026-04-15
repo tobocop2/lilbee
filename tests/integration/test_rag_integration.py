@@ -411,6 +411,12 @@ class TestStructuredQueries:
 class TestAskStream:
     """Tests for ask_stream() with real LLM streaming."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_provider(self):
+        """Reset the provider between tests to release any held model locks."""
+        yield
+        reset_provider()
+
     def test_stream_yields_tokens(self, rag_pipeline):
         """ask_stream() yields StreamToken objects with content."""
         from lilbee.reasoning import StreamToken
@@ -432,16 +438,19 @@ class TestAskStream:
         assert "Sources:" in last_token.content
 
     def test_stream_is_reasoning_flag(self, rag_pipeline):
-        """Tokens from ask_stream() have is_reasoning=False for normal content."""
+        """ask_stream() yields StreamTokens with correct is_reasoning flags."""
         from lilbee.reasoning import StreamToken
 
         svc = get_services()
         tokens = list(svc.searcher.ask_stream("Tell me about the Thunderbolt", top_k=5))
         non_empty = [t for t in tokens if t.content.strip()]
         assert len(non_empty) > 0
-        for t in non_empty:
-            assert isinstance(t, StreamToken)
-            assert t.is_reasoning is False
+        assert all(isinstance(t, StreamToken) for t in non_empty)
+        # With thinking models (qwen3), some tokens are reasoning. Verify
+        # that at least some non-reasoning content exists (the actual answer
+        # or citations).
+        response_tokens = [t for t in non_empty if not t.is_reasoning]
+        assert len(response_tokens) > 0, "Expected non-reasoning content in stream"
 
 
 class TestDownloadProgressCallbacks:

@@ -16,6 +16,7 @@ from lilbee.wiki.citation import (
     find_unmarked_claims,
     parse_wiki_citations,
     render_citation_block,
+    strip_citation_block,
     verify_citation,
 )
 from lilbee.wiki.gen import WikiProgressCallback, generate_summary_page, generate_synthesis_pages
@@ -56,6 +57,7 @@ __all__ = [
     "prune_wiki",
     "read_page",
     "render_citation_block",
+    "strip_citation_block",
     "update_wiki_index",
     "verify_citation",
 ]

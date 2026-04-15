@@ -15,6 +15,7 @@ from lilbee import settings
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.config import cfg
 from lilbee.models import ModelTask
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
@@ -99,13 +100,17 @@ def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -
     try:
         from lilbee.model_manager import discover_api_models
 
-        for provider_name, models in discover_api_models().items():
+        for display_name, models in discover_api_models().items():
             for model in models:
-                if model.name in seen:
+                # model.provider is the display name ("Anthropic"), but the ref
+                # needs the litellm prefix ("anthropic/model-name") for routing.
+                prefix = display_name.lower()
+                qualified = f"{prefix}/{model.name}"
+                if qualified in seen:
                     continue
-                seen.add(model.name)
-                label = f"{model.name} ({provider_name})"
-                buckets[ModelTask.CHAT].append(ModelOption(label=label, ref=model.name))
+                seen.add(qualified)
+                label = f"{model.name} ({display_name})"
+                buckets[ModelTask.CHAT].append(ModelOption(label=label, ref=qualified))
     except Exception:
         log.debug("Could not discover API models", exc_info=True)
 
@@ -113,8 +118,13 @@ def _collect_api_models(buckets: dict[str, list[ModelOption]], seen: set[str]) -
 def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> None:
     """Populate a model Select and set it to *default* (from cfg).
 
+    Normalizes *default* with :latest when no tag is present so that a
+    bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
+    instead of creating a broken fallback entry.
     Prepends *default* if it is not already in *opts*.
     """
+    ref = parse_model_ref(default) if default else None
+    default = default if (ref and ref.is_api) else (ref.name if ref else default)
     if default and not any(o.ref == default for o in opts):
         opts.insert(0, ModelOption(default, default))
     sel.set_options(opts)
@@ -243,6 +253,7 @@ class ModelBar(Widget, can_focus=False):
         screen = self.app.screen
         if isinstance(screen, ChatScreen):
             screen._apply_model_change()
+            screen._refresh_status_line()
         else:
             reset_services()
 

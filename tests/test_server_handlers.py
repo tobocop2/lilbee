@@ -130,6 +130,14 @@ class TestSearch:
         result = await handlers.search("nothing")
         assert result == []
 
+    async def test_empty_query_raises(self):
+        with pytest.raises(ValueError, match="query must not be empty"):
+            await handlers.search("")
+
+    async def test_whitespace_query_raises(self):
+        with pytest.raises(ValueError, match="query must not be empty"):
+            await handlers.search("   ")
+
 
 class TestAsk:
     async def test_returns_answer_and_sources(self, mock_svc):
@@ -164,6 +172,14 @@ class TestAsk:
         result = await handlers.ask("what?")
         assert result.answer == "No docs found."
         assert result.sources == []
+
+    async def test_empty_question_raises(self):
+        with pytest.raises(ValueError, match="question must not be empty"):
+            await handlers.ask("")
+
+    async def test_whitespace_question_raises(self):
+        with pytest.raises(ValueError, match="question must not be empty"):
+            await handlers.ask("   ")
 
 
 class TestAskStream:
@@ -543,6 +559,7 @@ class TestModelsCatalog:
         result = await handlers.models_catalog()
 
         assert result.total == 1
+        assert result.has_more is False
         assert len(result.models) == 1
         m = result.models[0]
         assert m.name == "qwen3"
@@ -609,6 +626,17 @@ class TestModelsCatalog:
         mock_svc.provider.list_models.return_value = ["qwen3:8b"]
         result = await handlers.models_catalog()
         assert result.models[0].installed is True
+
+    @patch("lilbee.catalog.get_catalog")
+    async def test_has_more_propagated(self, mock_get_catalog, mock_svc):
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=0, limit=20, offset=0, models=[], has_more=True
+        )
+        mock_svc.provider.list_models.return_value = []
+        result = await handlers.models_catalog()
+        assert result.has_more is True
 
 
 class TestModelsInstalled:
@@ -1254,3 +1282,59 @@ class TestModelPullProgressCancel:
 
         assert progress_called.is_set()
         assert not any("should_be_suppressed" in e for e in events if e)
+
+
+class TestSearchRouteErrors:
+    """Cover error handling wrappers in search and ask routes."""
+
+    @staticmethod
+    def _auth_headers() -> dict[str, str]:
+        from lilbee.server import auth as _auth_mod
+
+        return {"Authorization": f"Bearer {_auth_mod.session_manager.token}"}
+
+    async def test_empty_search_returns_400(self):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get("/api/search", params={"q": ""}, headers=self._auth_headers())
+        assert resp.status_code == 400
+
+    async def test_search_provider_error_returns_503(self):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            with patch("lilbee.server.handlers.get_services") as mock_svc:
+                mock_svc.return_value.searcher.search.side_effect = RuntimeError("down")
+                resp = await client.get(
+                    "/api/search", params={"q": "test"}, headers=self._auth_headers()
+                )
+        assert resp.status_code == 503
+
+    async def test_empty_ask_returns_400(self):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/ask", json={"question": ""}, headers=self._auth_headers()
+            )
+        assert resp.status_code == 400
+
+    async def test_ask_provider_error_returns_503(self):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            with patch("lilbee.server.handlers.get_services") as mock_svc:
+                mock_svc.return_value.searcher.ask_raw.side_effect = RuntimeError("down")
+                resp = await client.post(
+                    "/api/ask", json={"question": "test"}, headers=self._auth_headers()
+                )
+        assert resp.status_code == 503

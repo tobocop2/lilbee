@@ -319,6 +319,24 @@ class TestAskRaw:
         messages = mock_svc.provider.chat.call_args[0][0]
         assert len(messages) == 3  # system + history + user
 
+    def test_ask_raw_strips_think_tags(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = "<think>reasoning</think>The answer is 42."
+        result = get_services().searcher.ask_raw("question")
+        assert "<think>" not in result.answer
+        assert result.answer == "The answer is 42."
+
+    def test_ask_raw_preserves_think_tags_when_show_reasoning(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = "<think>reasoning</think>The answer is 42."
+        old = cfg.show_reasoning
+        cfg.show_reasoning = True
+        try:
+            result = get_services().searcher.ask_raw("question")
+            assert "<think>reasoning</think>" in result.answer
+        finally:
+            cfg.show_reasoning = old
+
 
 class TestAsk:
     def test_returns_answer_with_citations(self, mock_svc):
@@ -1166,6 +1184,23 @@ class TestAskRawNoEmbed:
         assert "Chat only" in result.answer
         assert "direct answer" in result.answer
         assert result.sources == []
+
+    def test_no_embed_strips_think_tags(self, mock_svc):
+        """ask_raw no-embed path strips <think> tags."""
+        mock_svc.embedder.embedding_available.return_value = False
+        mock_svc.provider.chat.return_value = "<think>inner thought</think>direct answer"
+
+        searcher = Searcher(
+            cfg,
+            mock_svc.provider,
+            mock_svc.store,
+            mock_svc.embedder,
+            mock_svc.reranker,
+            mock_svc.concepts,
+        )
+        result = searcher.ask_raw("hello")
+        assert "<think>" not in result.answer
+        assert "direct answer" in result.answer
 
 
 class TestAskStreamNoEmbed:

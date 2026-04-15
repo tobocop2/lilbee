@@ -99,6 +99,7 @@ class LilbeeApp(App[None]):
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("t", "open_tasks", "Tasks", show=False),
         # priority=True is required: even though NavAwareInput lets [ and ]
         # bubble past Input.check_consume_key, Textual's focused Input still
         # handles printable keys in _on_key before a non-priority ancestor
@@ -127,6 +128,7 @@ class LilbeeApp(App[None]):
         self._auto_sync = auto_sync
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
+        self._switching = False
         self._theme_index = 0
         self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
@@ -201,25 +203,46 @@ class LilbeeApp(App[None]):
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view via lazy screen factories."""
+        """Switch to a named view via lazy screen factories.
+
+        Guards against concurrent switches: ``switch_screen`` is async
+        (processed on the next event-loop tick) but callers read
+        ``active_view`` synchronously. Without a guard, rapid keypresses
+        queue conflicting switches that corrupt the screen stack.
+        ``active_view`` is updated after the switch completes.
+        """
+        if self._switching:
+            return
+        self._switching = True
+
         if view_name == "Chat":
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
                 self.switch_screen(_CHAT_SCREEN_NAME)
+            # Already on Chat, just update state below.
         else:
             factory = get_views().get(view_name)
             if factory is None:
+                self._switching = False
                 return
             self.switch_screen(factory())
 
-        self.active_view = view_name
+        def _finish() -> None:
+            self.active_view = view_name
+            self._switching = False
+
+        self.call_later(_finish)
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
             self.action_hide_help_panel()
         else:
             self.action_show_help_panel()
+
+    def action_open_tasks(self) -> None:
+        """Jump to the Task Center screen (t key)."""
+        self.switch_view("Tasks")
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""

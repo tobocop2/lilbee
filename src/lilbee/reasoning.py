@@ -31,6 +31,7 @@ class _TagParser:
         self.show = show
         self.buf = ""
         self.in_thinking = False
+        self.reasoning_chars = 0
 
     def feed(self, token: str) -> list[StreamToken]:
         """Feed a token and return any complete StreamTokens."""
@@ -59,6 +60,7 @@ class _TagParser:
             if _could_be_partial(_CLOSE_TAG, self.buf):
                 return None  # wait for more
             content = self.buf
+            self.reasoning_chars += len(content)
             self.buf = ""
             return (
                 StreamToken(content=content, is_reasoning=True)
@@ -67,6 +69,7 @@ class _TagParser:
             )
 
         thinking_content = self.buf[:close_idx]
+        self.reasoning_chars += len(thinking_content)
         self.buf = self.buf[close_idx + len(_CLOSE_TAG) :]
         self.in_thinking = False
         if thinking_content and self.show:
@@ -102,23 +105,32 @@ def filter_reasoning(tokens: Iterator[str], *, show: bool) -> Iterator[StreamTok
     thinking loops (common with Qwen3 and similar models).
     """
     parser = _TagParser(show=show)
-    reasoning_chars = 0
+    truncated = False
     for token in tokens:
         for st in parser.feed(token):
             if st.content:
-                if st.is_reasoning:
-                    reasoning_chars += len(st.content)
-                    if reasoning_chars > _MAX_REASONING_CHARS:
-                        parser.in_thinking = False
-                        parser.buf = ""
-                        yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
-                        break
                 yield st
-        else:
-            continue
-        break  # reasoning limit hit — exit outer loop too
-    # Drain remaining non-reasoning tokens after truncation
+        if parser.reasoning_chars > _MAX_REASONING_CHARS:
+            parser.in_thinking = False
+            parser.buf = ""
+            yield StreamToken(content="\n[reasoning truncated]", is_reasoning=True)
+            truncated = True
+            break
+    if not truncated:
+        final = parser.flush()
+        if final and final.content:
+            yield final
+        return
+    # Drain a small number of tokens after truncation to capture any
+    # response content that follows a closed </think> tag. Keep the cap
+    # low: each token pull triggers a model inference step, so a large
+    # cap hangs on slow CI runners.
+    _DRAIN_CAP = 512
+    drain_chars = 0
     for token in tokens:
+        drain_chars += len(token)
+        if drain_chars > _DRAIN_CAP:
+            break
         for st in parser.feed(token):
             if st.content and not st.is_reasoning:
                 yield st

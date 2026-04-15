@@ -6,11 +6,29 @@
 Collapsible {
     margin: 0 0 1 0;
     padding: 0 1;
+    background: $background;
+}
+
+Collapsible:hover {
+    background: $background;
 }
 
 Collapsible > CollapsibleTitle {
     color: $primary;
     text-style: bold;
+    background: $background;
+}
+
+Collapsible > CollapsibleTitle:hover {
+    background: $background;
+}
+
+Collapsible > Contents {
+    background: $background;
+}
+
+Collapsible > Contents *:hover {
+    background: $background;
 }
 
 #config-info, #arch-info, #storage-info {

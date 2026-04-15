@@ -73,7 +73,13 @@ jobs:
           CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF"
 
       - name: Run unit tests with coverage
-        run: make test-ci
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.python-version }}" = "3.11" ]; then
+            make test-ci-few-workers
+          else
+            make test-ci
+          fi
+        shell: bash
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
@@ -166,21 +172,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/lilbee/models
-          key: gguf-models-Linux-v3
+          key: gguf-models-Linux-v4
 
       - name: Cache GGUF models (macOS)
         if: runner.os == 'macOS'
         uses: actions/cache@v4
         with:
           path: ~/Library/Application Support/lilbee/models
-          key: gguf-models-macOS-v3
+          key: gguf-models-macOS-v4
 
       - name: Cache GGUF models (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\lilbee\models
-          key: gguf-models-Windows-v3
+          key: gguf-models-Windows-v4
 
       - name: Cache HuggingFace models
         uses: actions/cache@v4
@@ -238,11 +244,23 @@ jobs:
           & C:\ollama\ollama.exe pull qwen3:0.6b
           & C:\ollama\ollama.exe pull nomic-embed-text
 
+      - name: Pre-download GGUF models
+        shell: bash
+        run: |
+          CHAT_MODEL="${{ runner.os == 'macOS' && 'smollm2:135m' || 'qwen3:0.6b' }}"
+          for i in 1 2 3; do
+            uv run lilbee model pull nomic-embed-text:v1.5 && \
+            uv run lilbee model pull "$CHAT_MODEL" && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+
       - name: Run integration tests
         run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: llama-cpp
+          LILBEE_TEST_CHAT_MODEL: ${{ runner.os == 'macOS' && 'smollm2:135m' || 'qwen3:0.6b' }}
           OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 

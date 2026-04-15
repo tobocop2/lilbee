@@ -362,27 +362,11 @@ def classify_remote_models(
     return result
 
 
-# Mapping from litellm provider names to env vars and display labels.
-_API_PROVIDERS: tuple[tuple[str, str, str], ...] = (
-    ("openai", "OPENAI_API_KEY", "OpenAI"),
-    ("anthropic", "ANTHROPIC_API_KEY", "Anthropic"),
-    ("gemini", "GEMINI_API_KEY", "Gemini"),
-)
-
-# Config fields that also supply provider keys (checked after env vars).
-_CFG_KEY_FIELDS: dict[str, str] = {
-    "openai": "openai_api_key",
-    "anthropic": "anthropic_api_key",
-    "gemini": "gemini_api_key",
-}
-
-
-def _has_provider_key(provider: str, env_var: str) -> bool:
-    """Return True if a usable API key exists for *provider*."""
+def _has_provider_key(provider_name: str, cfg_field: str, env_var: str) -> bool:
+    """Return True if a usable API key exists for *provider_name*."""
     if os.environ.get(env_var):
         return True
-    cfg_field = _CFG_KEY_FIELDS.get(provider, "")
-    return bool(getattr(cfg, cfg_field, "")) if cfg_field else False
+    return bool(getattr(cfg, cfg_field, ""))
 
 
 def discover_api_models() -> dict[str, list[RemoteModel]]:
@@ -392,16 +376,28 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
     then queries ``litellm.models_by_provider`` for each. Only chat
     models are returned. Returns an empty dict when litellm is not
     installed or no keys are configured.
+
+    Short-circuits before importing litellm when no keys are present,
+    avoiding the expensive import on CI or headless environments.
     """
+    from lilbee.providers.litellm_provider import PROVIDER_KEYS
+
+    # Check for any configured key before paying the litellm import cost.
+    active = [
+        (prov, cfg_f, env, label)
+        for prov, cfg_f, env, label in PROVIDER_KEYS
+        if _has_provider_key(prov, cfg_f, env)
+    ]
+    if not active:
+        return {}
+
     try:
         import litellm
     except ImportError:
         return {}
 
     result: dict[str, list[RemoteModel]] = {}
-    for provider, env_var, display_name in _API_PROVIDERS:
-        if not _has_provider_key(provider, env_var):
-            continue
+    for provider, _cfg_field, _env_var, display_name in active:
         models = litellm.models_by_provider.get(provider, set())
         chat_models: list[RemoteModel] = []
         for model_name in sorted(models):

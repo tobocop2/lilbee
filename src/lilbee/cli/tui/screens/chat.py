@@ -20,6 +20,10 @@ from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Footer, Input, Label, Select, Static
 
+# Cancellation check for @work(thread=True) workers. Import at module level
+# since it's used in multiple methods.
+from textual.worker import get_current_worker as _get_worker
+
 from lilbee import settings
 from lilbee.cli.helpers import get_version
 from lilbee.cli.settings_map import SETTINGS_MAP
@@ -221,10 +225,12 @@ class ChatScreen(Screen[None]):
 
     def _on_setup_complete(self, result: str | None) -> None:
         """Called when wizard completes or is skipped."""
-        if result == "skipped":
+        if result == "skipped" and not self._embedding_ready():
             self._show_chat_only_banner()
-        elif self._auto_sync and self._embedding_ready():
-            self._run_sync()
+        elif self._embedding_ready():
+            self._hide_chat_only_banner()
+            if self._auto_sync:
+                self._run_sync()
         self._refresh_model_bar()
 
     def _show_chat_only_banner(self) -> None:
@@ -435,6 +441,7 @@ class ChatScreen(Screen[None]):
         """Run a crawl in a background thread, then trigger sync."""
         from lilbee.crawler import crawl_and_save
 
+        worker = _get_worker()
         task_bar = self._task_bar
         call_from_thread(self, task_bar.update_task, task_id, 0, f"Crawling {url}...")
 
@@ -458,13 +465,15 @@ class ChatScreen(Screen[None]):
                 self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
             )
         except Exception as exc:
-            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
-            call_from_thread(
-                self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
-            )
+            if not worker.is_cancelled:
+                call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+                call_from_thread(
+                    self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
+                )
             return
 
-        call_from_thread(self, self._run_sync)
+        if not worker.is_cancelled:
+            call_from_thread(self, self._run_sync)
 
     def _cmd_catalog(self, _args: str) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -526,13 +535,10 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
-            from lilbee.models import ensure_tag
-
-            tagged = ensure_tag(args)
-            cfg.chat_model = tagged
-            settings.set_value(cfg.data_root, "chat_model", tagged)
+            cfg.chat_model = args
+            settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
             self.app.title = f"lilbee -- {cfg.chat_model}"
-            self.notify(msg.CMD_MODEL_SET.format(name=tagged))
+            self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
             self._refresh_model_bar()
         else:
@@ -575,7 +581,11 @@ class ChatScreen(Screen[None]):
             )
 
     def _cmd_reset(self, args: str) -> None:
-        if args == "confirm":
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
             from lilbee.cli.helpers import perform_reset
 
             try:
@@ -584,8 +594,11 @@ class ChatScreen(Screen[None]):
             except Exception as exc:
                 log.warning("Reset failed", exc_info=True)
                 self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
-        else:
-            self.notify(msg.CMD_RESET_CONFIRM, severity="warning")
+
+        self.app.push_screen(
+            ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),
+            _on_confirm,
+        )
 
     def _cmd_set(self, args: str) -> None:
         if not args:
@@ -679,12 +692,16 @@ class ChatScreen(Screen[None]):
         """Generate wiki pages for each source in a background thread."""
         from lilbee.wiki.gen import generate_summary_page
 
+        worker = _get_worker()
         task_bar = self._task_bar
         svc = get_services()
         total = len(sources)
         generated = 0
+        last_error: str = ""
         try:
             for idx, source in enumerate(sources):
+                if worker.is_cancelled:
+                    break
                 base_pct = int(idx * 100 / total)
                 call_from_thread(
                     self,
@@ -703,6 +720,10 @@ class ChatScreen(Screen[None]):
                     source_name: str = source,
                     source_idx: int = idx,
                 ) -> None:
+                    nonlocal last_error
+                    if stage == "failed":
+                        last_error = str(_data.get("error", "Unknown error"))
+                        return
                     fraction = _WIKI_STAGE_FRACTIONS.get(stage, 0.0)
                     pct = int((source_idx + fraction) * 100 / total)
                     call_from_thread(
@@ -727,7 +748,8 @@ class ChatScreen(Screen[None]):
                 )
                 call_from_thread(self, self._refresh_wiki_screen)
             else:
-                call_from_thread(self, task_bar.fail_task, task_id, "No pages generated")
+                fail_reason = last_error or "No pages generated"
+                call_from_thread(self, task_bar.fail_task, task_id, fail_reason)
                 call_from_thread(
                     self,
                     self.notify,
@@ -766,6 +788,7 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _stream_response(self, question: str, widget: AssistantMessage) -> None:
         """Stream LLM response in a background thread."""
+        worker = _get_worker()
         response_parts: list[str] = []
         sources: list[str] = []
         last_scroll = 0.0
@@ -775,6 +798,8 @@ class ChatScreen(Screen[None]):
                 history_snapshot = self._history[:-1]
             stream = get_services().searcher.ask_stream(question, history=history_snapshot)
             for token in stream:
+                if worker.is_cancelled:
+                    break
                 try:
                     if token.is_reasoning:
                         call_from_thread(self, widget.append_reasoning, token.content)
@@ -881,13 +906,7 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_sync_worker(self, task_id: str) -> None:
-        """Run background document sync in a Textual worker thread.
-        Architecture: @work(thread=True) runs this method in a daemon thread,
-        keeping the Textual event loop free for UI updates. Progress is reported
-        back to the main thread via app.call_from_thread(). The asyncio.run()
-        call creates a fresh event loop because Textual workers are plain threads,
-        not coroutines on the app's async loop.
-        """
+        """Run background document sync in a Textual worker thread."""
         import asyncio
 
         self._sync_active = True

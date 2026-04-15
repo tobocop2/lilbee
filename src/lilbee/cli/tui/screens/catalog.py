@@ -15,7 +15,7 @@ from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
-from textual.worker import Worker, WorkerState
+from textual.worker import Worker, WorkerState, get_current_worker
 
 from lilbee.catalog import (
     CatalogModel,
@@ -199,6 +199,7 @@ class CatalogScreen(Screen[None]):
         """Fetch one page of HF models for all task types (runs in worker thread)."""
         all_models: list[CatalogModel] = []
         seen_repos: set[str] = set()
+        any_has_more = False
         for task in _ALL_TASKS:
             result = get_catalog(
                 task=task,
@@ -206,11 +207,13 @@ class CatalogScreen(Screen[None]):
                 limit=_HF_PAGE_SIZE,
                 offset=self._hf_offset,
             )
+            if result.has_more:
+                any_has_more = True
             for m in result.models:
                 if not m.featured and m.hf_repo not in seen_repos:
                     seen_repos.add(m.hf_repo)
                     all_models.append(m)
-        self._hf_has_more = len(all_models) >= _HF_PAGE_SIZE
+        self._hf_has_more = any_has_more
         return all_models
 
     @work(thread=True, name=_WORKER_FETCH_HF)
@@ -373,6 +376,16 @@ class CatalogScreen(Screen[None]):
             self._hf_fetched = True
             self._fetch_all_hf_models()
 
+    @on(GridSelect.LeaveDown)
+    def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
+        """Move focus to the next GridSelect or focusable widget."""
+        self.focus_next()
+
+    @on(GridSelect.LeaveUp)
+    def _on_grid_leave_up(self, event: GridSelect.LeaveUp) -> None:
+        """Move focus to the previous GridSelect or focusable widget."""
+        self.focus_previous()
+
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
         """Handle model selection from the grid view."""
@@ -501,8 +514,11 @@ class CatalogScreen(Screen[None]):
         """Download a model in a background thread, reporting to TaskBar."""
         from lilbee.catalog import download_model
 
+        worker = get_current_worker()
         try:
             download_model(model, on_progress=self._make_progress_callback(task_id, bar))
+            if worker.is_cancelled:
+                return
             self._safe_call(bar.complete_task, task_id)
             self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
         except PermissionError:

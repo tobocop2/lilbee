@@ -345,10 +345,31 @@ class TestAddPathsBackground:
 
 class TestChat:
     def test_chat_non_tty_exits_with_error(self) -> None:
-        """CliRunner is non-TTY, so chat should exit with error."""
         result = runner.invoke(app, ["chat"])
         assert result.exit_code == 1
         assert "terminal" in result.output.lower()
+
+    def test_chat_json_returns_json_error(self) -> None:
+        result = runner.invoke(app, ["--json", "chat"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "terminal" in data["error"].lower() or "json" in data["error"].lower()
+
+    def test_json_mode_suppresses_litellm_debug(self) -> None:
+        """--json sets litellm.suppress_debug_info when litellm is installed."""
+        fake_litellm = mock.MagicMock()
+        fake_litellm.suppress_debug_info = False
+        with mock.patch.dict("sys.modules", {"litellm": fake_litellm}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
+            assert fake_litellm.suppress_debug_info is True
+
+    def test_json_mode_suppresses_litellm_without_litellm(self) -> None:
+        """When litellm is not installed, the ImportError is silently caught."""
+        with mock.patch.dict("sys.modules", {"litellm": None}):
+            result = runner.invoke(app, ["--json", "chat"])
+            assert result.exit_code == 1
 
 
 class TestApplyOverrides:
@@ -733,6 +754,31 @@ class TestSearch:
         assert "relevance_score" in data["results"][0]
         assert "distance" not in data["results"][0]
 
+    def test_search_json_empty_query_error(self, mock_svc):
+        result = runner.invoke(app, ["--json", "search", ""])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        mock_svc.searcher.search.assert_not_called()
+
+    def test_search_json_provider_error(self, mock_svc):
+        mock_svc.searcher.search.side_effect = RuntimeError("provider down")
+        result = runner.invoke(app, ["--json", "search", "test"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "provider down" in data["error"]
+
+    def test_search_human_empty_query_error(self, mock_svc):
+        result = runner.invoke(app, ["search", ""])
+        assert result.exit_code == 1
+        assert "empty" in result.output.lower()
+
+    def test_search_human_provider_error(self, mock_svc):
+        mock_svc.searcher.search.side_effect = RuntimeError("connection refused")
+        result = runner.invoke(app, ["search", "test"])
+        assert result.exit_code == 1
+        assert "connection refused" in result.output
+
 
 # ---------------------------------------------------------------------------
 # JSON status tests (Task 3)
@@ -829,14 +875,14 @@ class TestRemove:
         assert data["command"] == "remove"
         assert "test.pdf" in data["removed"]
 
-    def test_remove_json_not_found(self, mock_svc):
+    def test_remove_json_not_found_exits_1(self, mock_svc):
         from lilbee.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["nope.pdf"]
         )
         result = runner.invoke(app, ["--json", "remove", "nope.pdf"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert data["removed"] == []
         assert "nope.pdf" in data["not_found"]
@@ -1197,6 +1243,22 @@ class TestAddJson:
         assert "manual.txt" in data["copied"]
         assert "sync" in data
 
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_skipped_no_stdout_pollution(self, mock_sync, isolated_env, tmp_path):
+        """JSON add with existing file returns skipped list, no console warnings."""
+        src = tmp_path / "source" / "notes.txt"
+        src.parent.mkdir()
+        src.write_text("some content")
+        # Pre-populate documents dir so file is skipped
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "notes.txt").write_text("old content")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["copied"] == []
+        assert "notes.txt" in data["skipped"]
+        assert "Warning" not in result.output
+
 
 # ---------------------------------------------------------------------------
 # JSON ask tests (Task 5)
@@ -1266,6 +1328,29 @@ class TestAskModelNotFound:
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "not found" in data["error"]
+
+
+class TestAskProviderError:
+    """ProviderError from the LLM backend must be caught, not dumped as a traceback."""
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_human(self, mock_sync, mock_svc):
+        from lilbee.providers.base import ProviderError
+
+        mock_svc.searcher.ask_stream.side_effect = ProviderError("model 'ghost' not found")
+        result = runner.invoke(app, ["ask", "hello"])
+        assert result.exit_code == 1
+        assert "ghost" in result.output
+
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_provider_error_json(self, mock_sync, mock_svc):
+        from lilbee.providers.base import ProviderError
+
+        mock_svc.searcher.ask_raw.side_effect = ProviderError("model 'ghost' not found")
+        result = runner.invoke(app, ["--json", "ask", "hello"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "ghost" in data["error"]
 
 
 class TestBackendUnavailable:
@@ -1512,6 +1597,22 @@ class TestAddWithUrls:
         assert data["crawled"] == 1
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands._crawl_urls_blocking")
+    @mock.patch("lilbee.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
+        """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
+        from pathlib import Path
+
+        mock_crawl.return_value = [Path("a.md")]
+        result = runner.invoke(app, ["--json", "add", "https://example.com"])
+        assert result.exit_code == 0
+        raw = result.output.strip()
+        # Must start with '{' — no [INIT]/[FETCH]/spinner text leaked to stdout
+        assert raw.startswith("{"), f"stdout has non-JSON prefix: {raw[:80]}"
+        data = json.loads(raw)
+        assert data["command"] == "add"
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.cli.commands._crawl_urls_blocking", return_value=[])
     def test_add_mixed_urls_and_files(
         self, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc
@@ -1630,6 +1731,17 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == 5
         assert call_kwargs["max_pages"] == 20
+
+    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
+    def test_json_mode_passes_quiet(self, mock_crawl, isolated_env):
+        """In JSON mode, quiet=True is passed to crawl_and_save."""
+        from lilbee.cli.commands import _crawl_urls_blocking
+
+        mock_crawl.return_value = []
+        cfg.json_mode = True
+        _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
+        call_kwargs = mock_crawl.call_args[1]
+        assert call_kwargs["quiet"] is True
 
 
 class TestTopicsCommand:

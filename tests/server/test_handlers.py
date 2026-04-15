@@ -84,7 +84,6 @@ class TestAddEndpoint:
         assert "file_start" in event_types
         assert "file_done" in event_types
         assert "done" in event_types
-        assert "summary" in event_types
 
     async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""
@@ -97,7 +96,7 @@ class TestAddEndpoint:
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
-        summary = next(d for t, d in events if t == "summary")
+        summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "/no/such/file.txt" in summary["errors"]
 
     async def test_add_with_force_flag(self, mock_extract_file, isolated_env, tmp_path):
@@ -115,7 +114,7 @@ class TestAddEndpoint:
 
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
-        summary = next(d for t, d in events if t == "summary")
+        summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "dup.txt" in summary["copied"]
 
     async def test_done_event_has_correct_fields(self, mock_extract_file, isolated_env, tmp_path):

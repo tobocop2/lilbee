@@ -63,15 +63,16 @@ def _ensure_spacy_model() -> Any:
         return spacy.load(model_name)
     except OSError:
         log.info("Downloading spaCy model '%s'...", model_name)
-        from spacy.cli import download
+        try:
+            from spacy.cli import download
 
-        download(model_name)
-        return spacy.load(model_name)
-
-
-def _get_nlp() -> Any:
-    """Lazy-load and cache the spaCy model (used only by ConceptGraph)."""
-    return _ensure_spacy_model()
+            download(model_name)
+            return spacy.load(model_name)
+        except (SystemExit, OSError, Exception) as exc:
+            raise ImportError(
+                f"spaCy model '{model_name}' not available and auto-download failed. "
+                f"Install manually: python -m spacy download {model_name}"
+            ) from exc
 
 
 def _filter_noun_chunks(doc: Any, max_concepts: int) -> list[str]:
@@ -171,11 +172,19 @@ class ConceptGraph:
         self._config = config
         self._store = store
         self._nlp: Any = None
+        self._nlp_unavailable: bool = False
 
-    def _ensure_nlp(self) -> Any:
-        """Lazy-load and cache the spaCy model."""
+    def _ensure_nlp(self) -> Any | None:
+        """Lazy-load and cache the spaCy model. Returns None if unavailable."""
+        if self._nlp_unavailable:
+            return None
         if self._nlp is None:
-            self._nlp = _get_nlp()
+            try:
+                self._nlp = _ensure_spacy_model()
+            except ImportError:
+                log.warning("Concept graph disabled: spaCy model unavailable")
+                self._nlp_unavailable = True
+                return None
         return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
@@ -184,15 +193,20 @@ class ConceptGraph:
             max_concepts = self._config.concept_max_per_chunk
         if not text.strip():
             return []
-        doc = self._ensure_nlp()(text)
+        nlp = self._ensure_nlp()
+        if nlp is None:
+            return []
+        doc = nlp(text)
         return _filter_noun_chunks(doc, max_concepts)
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
         """Batch-extract concepts from multiple texts."""
         if not texts:
             return []
-        max_concepts = self._config.concept_max_per_chunk
         nlp = self._ensure_nlp()
+        if nlp is None:
+            return [[] for _ in texts]
+        max_concepts = self._config.concept_max_per_chunk
         return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
 
     def build_from_chunks(
@@ -414,6 +428,7 @@ class ConceptGraph:
     def reset_nlp_cache(self) -> None:
         """Clear the spaCy model cache. For testing only."""
         self._nlp = None
+        self._nlp_unavailable = False
 
 
 class ConceptGraphClusterer:

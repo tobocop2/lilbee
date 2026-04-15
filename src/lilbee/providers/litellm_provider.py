@@ -16,43 +16,34 @@ from typing import Any
 import httpx
 
 from lilbee.config import cfg
-from lilbee.providers.base import LLMProvider, ProviderError, filter_options
+from lilbee.providers.base import LLMProvider, ProviderError
+from lilbee.providers.model_ref import parse_model_ref, translate_options
 
 log = logging.getLogger(__name__)
 
 # HTTP timeout for litellm API calls (seconds)
 _HTTP_TIMEOUT = 30
 
-_OLLAMA_PREFIX = "ollama/"
-
 _OLLAMA_URL_PATTERNS = ("localhost:11434", "127.0.0.1:11434", "ollama")
 
-# Mapping from lilbee config fields to provider env vars.
-# litellm reads these at call time for per-provider authentication.
-_PROVIDER_KEY_MAP: dict[str, str] = {
-    "openai_api_key": "OPENAI_API_KEY",
-    "anthropic_api_key": "ANTHROPIC_API_KEY",
-    "gemini_api_key": "GEMINI_API_KEY",
-}
+
+# Single source of truth for per-provider API key configuration.
+# Maps (litellm_provider_name, config_field, env_var, display_label).
+# Used by inject_provider_keys(), discover_api_models(), and config update handler.
+PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
+    ("openai", "openai_api_key", "OPENAI_API_KEY", "OpenAI"),
+    ("anthropic", "anthropic_api_key", "ANTHROPIC_API_KEY", "Anthropic"),
+    ("gemini", "gemini_api_key", "GEMINI_API_KEY", "Gemini"),
+)
+
+# Derived set of config field names (for checking which updates touch API keys).
+API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
 
 
 def _is_ollama(base_url: str) -> bool:
     """Return True if *base_url* points to an Ollama instance."""
     url_lower = base_url.lower()
     return any(p in url_lower for p in _OLLAMA_URL_PATTERNS)
-
-
-def _route_model(name: str, base_url: str) -> str:
-    """Add the ``ollama/`` prefix only when targeting an Ollama backend.
-
-    Models that already carry a provider prefix (e.g. ``openai/gpt-4o``)
-    are returned as-is regardless of the backend.
-    """
-    if "/" in name:
-        return name
-    if _is_ollama(base_url):
-        return f"{_OLLAMA_PREFIX}{name}"
-    return name
 
 
 def inject_provider_keys() -> None:
@@ -63,7 +54,7 @@ def inject_provider_keys() -> None:
     and litellm's env-var-based auth. Explicit env vars are never
     overwritten so users can still override via their shell.
     """
-    for cfg_field, env_var in _PROVIDER_KEY_MAP.items():
+    for _, cfg_field, env_var, _ in PROVIDER_KEYS:
         value = getattr(cfg, cfg_field, "")
         if value and not os.environ.get(env_var):
             os.environ[env_var] = value
@@ -92,24 +83,39 @@ class LiteLLMProvider(LLMProvider):
         self._api_key = api_key
 
     def _model_name(self, model: str | None = None) -> str:
-        """Route model name for litellm, adding ollama/ prefix only when needed."""
-        return _route_model(model or cfg.chat_model, self._base_url)
+        """Route model name for litellm via parse_model_ref."""
+        ref = parse_model_ref(model or cfg.chat_model)
+        if ref.is_api:
+            return ref.for_litellm()
+        if _is_ollama(self._base_url):
+            return f"ollama/{ref.name}"
+        return ref.name
 
     def _embed_model_name(self) -> str:
         """Route embedding model name for litellm."""
-        return _route_model(cfg.embedding_model, self._base_url)
+        ref = parse_model_ref(cfg.embedding_model)
+        if ref.is_api:
+            return ref.for_litellm()
+        if _is_ollama(self._base_url):
+            return f"ollama/{ref.name}"
+        return ref.name
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via litellm."""
         import litellm
 
         try:
-            response = litellm.embedding(
-                model=self._embed_model_name(),
-                input=texts,
-                api_base=self._base_url,
-                api_key=self._api_key or None,
-            )
+            ref = parse_model_ref(cfg.embedding_model)
+            routed = self._embed_model_name()
+            embed_kwargs: dict[str, Any] = {
+                "model": routed,
+                "input": texts,
+            }
+            if ref.needs_api_base:
+                embed_kwargs["api_base"] = self._base_url
+            if self._api_key:
+                embed_kwargs["api_key"] = self._api_key
+            response = litellm.embedding(**embed_kwargs)
             return [item["embedding"] for item in response["data"]]
         except Exception as exc:
             raise ProviderError(f"Embedding failed: {exc}", provider="litellm") from exc
@@ -125,17 +131,21 @@ class LiteLLMProvider(LLMProvider):
         """Chat completion via litellm."""
         import litellm
 
+        inject_provider_keys()
+        ref = parse_model_ref(model or cfg.chat_model)
         formatted = _format_messages(messages)
+        routed = self._model_name(model)
         kwargs: dict[str, Any] = {
-            "model": self._model_name(model),
+            "model": routed,
             "messages": formatted,
             "stream": stream,
-            "api_base": self._base_url,
         }
+        if ref.needs_api_base:
+            kwargs["api_base"] = self._base_url
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if options:
-            kwargs.update(filter_options(options))
+            kwargs.update(translate_options(options, ref))
 
         try:
             response = litellm.completion(**kwargs)

@@ -240,6 +240,13 @@ class TestListCmd:
         assert result.exit_code != 0
         assert "bogus" in result.output
 
+    def test_invalid_source_json_returns_error(self, fake_manager):
+        result = runner.invoke(app, ["--json", "model", "list", "--source", "bogus"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "bogus" in data["error"]
+
 
 class TestShowModelData:
     def test_catalog_and_installed_merged(self, fake_manager, native_manifests):
@@ -483,6 +490,12 @@ class TestRmCmd:
         parsed = RemoveResult.model_validate_json(result.output)
         assert parsed.deleted is True
         assert parsed.freed_gb == 5.0
+
+    def test_json_not_found_exits_1(self, fake_manager, native_manifests):
+        result = runner.invoke(app, ["--json", "model", "rm", "ghost:1.0"])
+        assert result.exit_code == 1
+        parsed = RemoveResult.model_validate_json(result.output)
+        assert parsed.deleted is False
 
     def test_invalid_source(self, fake_manager):
         result = runner.invoke(app, ["model", "rm", "--yes", "qwen3:0.6b", "--source", "bad"])

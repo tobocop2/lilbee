@@ -3,7 +3,7 @@ name = "lilbee"
 version = "0.6.0"
 description = "Local knowledge base for documents and code. Search, ask questions, or chat — standalone or as an AI agent backend via MCP. Runs fully offline with llama-cpp."
 readme = "README.md"
-license = "MIT"
+license = "Elastic-2.0"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
@@ -27,7 +27,7 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.6.3",
+    "kreuzberg>=4.8.5",
     "filelock",
     "tree-sitter-language-pack>=1.4.0",
     "typer",
@@ -88,7 +88,10 @@ pythonpath = [".", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--ignore=tests/integration"
-markers = ["slow: integration tests that download models or take >10s"]
+markers = [
+    "slow: integration tests that download models or take >10s",
+    "real_model_classify: opt out of the global _classify_installed_models mock",
+]
 
 [tool.coverage.run]
 source = ["lilbee"]

@@ -274,8 +274,8 @@ Useful for benchmarking (compare BM25 vs vector on the same question), debugging
 - OpenAPI docs at `/schema`
 
 ### MCP Server
-- `lilbee_search`, `lilbee_status`, `lilbee_sync`, `lilbee_add`
-- `lilbee_remove`, `lilbee_list_documents`, `lilbee_reset`
+- `search`, `status`, `sync`, `add`
+- `remove`, `list_documents`, `reset`
 - JSON responses (MCP does not support streaming)
 
 ---

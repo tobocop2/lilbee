@@ -209,12 +209,17 @@ async def status() -> StatusResponse:
 
 async def search(q: str, top_k: int = 5) -> list[DocumentResult]:
     """Search and return grouped DocumentResults."""
+    if not q or not q.strip():
+        raise ValueError("query must not be empty")
     results = get_services().searcher.search(q, top_k=top_k)
+    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
 
 async def ask(question: str, top_k: int = 0, options: dict[str, Any] | None = None) -> AskResponse:
     """One-shot RAG answer. Returns answer and sources."""
+    if not question or not question.strip():
+        raise ValueError("question must not be empty")
     opts = _resolve_generation_options(options)
     result = get_services().searcher.ask_raw(question, top_k=top_k, options=opts)
     return AskResponse(
@@ -424,9 +429,7 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
         summary = task.result()
-        dumped = summary.model_dump()
-        yield sse_event("summary", dumped)
-        yield sse_done(dumped)
+        yield sse_done(summary.model_dump())
 
 
 async def list_models() -> ModelsResponse:
@@ -541,10 +544,9 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
         settings.update_values(cfg.data_root, to_persist)
     if to_delete:
         settings.delete_values(cfg.data_root, to_delete)
-    _API_KEY_FIELDS = {"openai_api_key", "anthropic_api_key", "gemini_api_key"}
-    if _API_KEY_FIELDS & set(updates):
-        from lilbee.providers.litellm_provider import inject_provider_keys
+    from lilbee.providers.litellm_provider import API_KEY_FIELDS, inject_provider_keys
 
+    if API_KEY_FIELDS & set(updates):
         inject_provider_keys()
     reindex_required = bool(REINDEX_FIELDS & set(updates))
     return ConfigUpdateResponse(updated=list(updates), reindex_required=reindex_required)
@@ -641,6 +643,7 @@ async def models_catalog(
         total=result.total,
         limit=result.limit,
         offset=result.offset,
+        has_more=result.has_more,
         models=[
             CatalogEntryResponse(
                 name=e.name,
