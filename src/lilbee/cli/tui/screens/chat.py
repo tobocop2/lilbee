@@ -421,7 +421,7 @@ class ChatScreen(Screen[None]):
     def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
         """Enqueue a crawl task and run it in the background."""
         task_bar = self._task_bar
-        task_id = task_bar.add_task(f"Crawl {url}", "crawl")
+        task_id = task_bar.add_task(msg.TASK_NAME_CRAWL.format(url=url), "crawl")
         task_bar.queue.advance("crawl")
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
         self._run_crawl_background(url, depth, max_pages, task_id)
@@ -683,7 +683,7 @@ class ChatScreen(Screen[None]):
                 self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
             return
         task_bar = self._task_bar
-        task_id = task_bar.add_task(f"Wiki ({len(targets)})", "wiki")
+        task_id = task_bar.add_task(msg.TASK_NAME_WIKI.format(count=len(targets)), "wiki")
         task_bar.queue.advance("wiki")
         self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
         self._run_wiki_background(targets, task_id)

@@ -3320,11 +3320,6 @@ class TestConfirmDialog:
         assert results == [False]
 
 
-# ---------------------------------------------------------------------------
-# CrawlDialog
-# ---------------------------------------------------------------------------
-
-
 class CrawlDialogTestApp(App[None]):
     def __init__(self):
         super().__init__()

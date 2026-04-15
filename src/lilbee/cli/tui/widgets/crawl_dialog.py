@@ -67,6 +67,19 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
     def on_input_submitted(self, _event: Input.Submitted) -> None:
         self._try_submit()
 
+    @staticmethod
+    def _parse_non_negative_int(value: str, default: int) -> int:
+        """Parse a non-negative integer, returning *default* for empty strings.
+
+        Raises ValueError on non-numeric or negative input.
+        """
+        if not value:
+            return default
+        n = int(value)
+        if n < 0:
+            raise ValueError("negative")
+        return n
+
     def _try_submit(self) -> None:
         """Validate inputs and dismiss with CrawlParams or show an error."""
         from lilbee.crawler import require_valid_crawl_url
@@ -90,19 +103,19 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return
 
         try:
-            depth = int(depth_str) if depth_str else 0
-            if depth < 0:
-                raise ValueError("negative")
+            depth = self._parse_non_negative_int(depth_str, 0)
         except ValueError:
-            error_widget.update(msg.CRAWL_DIALOG_INVALID_NUMBER.format(field="Depth"))
+            error_widget.update(
+                msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
+            )
             return
 
         try:
-            max_pages = int(max_pages_str) if max_pages_str else 50
-            if max_pages < 0:
-                raise ValueError("negative")
+            max_pages = self._parse_non_negative_int(max_pages_str, 50)
         except ValueError:
-            error_widget.update(msg.CRAWL_DIALOG_INVALID_NUMBER.format(field="Max pages"))
+            error_widget.update(
+                msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
+            )
             return
 
         error_widget.update("")

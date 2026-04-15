@@ -8207,11 +8207,6 @@ async def test_task_bar_indeterminate_flag_propagated():
         assert bar.display is True
 
 
-# ---------------------------------------------------------------------------
-# wiki_worker.resolve_wiki_targets
-# ---------------------------------------------------------------------------
-
-
 def test_resolve_wiki_targets_disabled():
     """Returns None when wiki is disabled."""
     from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
@@ -8304,11 +8299,6 @@ def test_resolve_wiki_targets_get_sources_error():
         assert resolve_wiki_targets() is None
 
 
-# ---------------------------------------------------------------------------
-# WikiScreen.action_regenerate
-# ---------------------------------------------------------------------------
-
-
 async def test_wiki_screen_regenerate_disabled():
     """Regenerate notifies when wiki is disabled."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
@@ -8325,7 +8315,7 @@ async def test_wiki_screen_regenerate_disabled():
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = False
-            app.screen.action_regenerate()
+            await pilot.press("r")
             mock_notify.assert_called_once()
 
 
@@ -8344,20 +8334,15 @@ async def test_wiki_screen_regenerate_no_sources():
             patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
             patch("lilbee.cli.tui.wiki_worker.cfg") as mock_worker_cfg,
             patch(
-                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
                 return_value=None,
             ),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = True
             mock_worker_cfg.wiki = True
-            app.screen.action_regenerate()
+            await pilot.press("r")
             mock_notify.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# TaskBar detail text in display
-# ---------------------------------------------------------------------------
 
 
 async def test_task_bar_shows_detail_text():
@@ -8386,11 +8371,6 @@ async def test_task_bar_shows_detail_text():
         text = str(label.render())
         assert "45%" in text
         assert "[12/30]" in text
-
-
-# ---------------------------------------------------------------------------
-# ChatScreen._open_crawl_dialog
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_open_crawl_dialog():
@@ -8456,11 +8436,6 @@ async def test_chat_crawl_dialog_callback_none_noop():
             app.screen.dismiss(None)
             await _pilot.pause()
         mock_start.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# WikiScreen._source_for_slug
-# ---------------------------------------------------------------------------
 
 
 async def test_wiki_source_for_slug_returns_source():
@@ -8550,14 +8525,14 @@ async def test_wiki_regenerate_selected_page():
             patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
             patch("lilbee.wiki.browse.read_page", return_value=mock_page),
             patch(
-                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
                 return_value=["test.txt"],
             ),
             patch.object(app.screen, "_run_wiki_background") as mock_bg,
             patch.object(app.screen, "notify"),
         ):
             mock_cfg.wiki = True
-            app.screen.action_regenerate()
+            await pilot.press("r")
             await pilot.pause()
         mock_bg.assert_called_once()
         assert mock_bg.call_args[0][0] == ["test.txt"]
@@ -8596,13 +8571,13 @@ async def test_wiki_regenerate_selected_page_not_found():
             patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
             patch("lilbee.wiki.browse.read_page", return_value=mock_page),
             patch(
-                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
                 return_value=None,
             ),
             patch.object(app.screen, "notify") as mock_notify,
         ):
             mock_cfg.wiki = True
-            app.screen.action_regenerate()
+            await pilot.press("r")
             await pilot.pause()
         mock_notify.assert_called_once()
         assert "Source not found" in mock_notify.call_args[0][0]
@@ -8655,13 +8630,13 @@ async def test_wiki_regenerate_with_targets():
         with (
             patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
             patch(
-                "lilbee.cli.tui.wiki_worker.resolve_wiki_targets",
+                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
                 return_value=["a.txt"],
             ),
             patch.object(app.screen, "_run_wiki_background") as mock_bg,
             patch.object(app.screen, "notify"),
         ):
             mock_cfg.wiki = True
-            app.screen.action_regenerate()
+            await pilot.press("r")
             await pilot.pause()
         mock_bg.assert_called_once()

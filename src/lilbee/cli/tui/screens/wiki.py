@@ -21,6 +21,7 @@ from textual.worker import get_current_worker as _get_worker
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
 from lilbee.config import cfg
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class WikiScreen(Screen[None]):
         Binding("q", "go_back", "Back", show=True),
         Binding("escape", "dismiss_or_back", "Back", show=False),
         Binding("slash", "focus_search", "Search", show=True),
-        Binding("r", "regenerate", "Regen", show=True),
+        Binding("r", "regenerate", "Regen", show=True, priority=True),
         Binding("j", "cursor_down", "Nav", show=False),
         Binding("k", "cursor_up", "Nav", show=False),
         Binding("g", "jump_top", "Top", show=False),
@@ -203,8 +204,6 @@ class WikiScreen(Screen[None]):
 
     def action_regenerate(self) -> None:
         """Regenerate wiki page(s). Selected page's source, or all sources."""
-        from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
@@ -228,7 +227,7 @@ class WikiScreen(Screen[None]):
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         task_bar = self.query_one(TaskBar)
-        task_id = task_bar.add_task(f"Wiki ({len(targets)})", "wiki")
+        task_id = task_bar.add_task(msg.TASK_NAME_WIKI.format(count=len(targets)), "wiki")
         task_bar.queue.advance("wiki")
         self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
         self._run_wiki_background(targets, task_id)
@@ -242,8 +241,9 @@ class WikiScreen(Screen[None]):
         if page is None:
             return None
         sources = page.frontmatter.get("sources")
+        # frontmatter values are untyped (Any from YAML); guard against non-list shapes
         if isinstance(sources, list) and sources:
-            return str(sources[0])
+            return str(next(iter(sources)))
         return None
 
     @work(thread=True)
