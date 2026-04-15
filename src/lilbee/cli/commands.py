@@ -564,6 +564,11 @@ def reset(
         f"Reset complete: {result.deleted_docs} document(s), "
         f"{result.deleted_data} data item(s) deleted."
     )
+    if result.skipped:
+        console.print(
+            f"[{theme.WARNING}]{len(result.skipped)} item(s) could not be deleted "
+            f"(locked or permission denied).[/{theme.WARNING}]"
+        )
 
 
 @app.command()
