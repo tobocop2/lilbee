@@ -128,6 +128,7 @@ class LilbeeApp(App[None]):
         self._auto_sync = auto_sync
         self._initial_view = initial_view
         self.active_view = msg.DEFAULT_VIEW
+        self._switching = False
         self._theme_index = 0
         self.last_quit_time: float = 0.0
         self.settings_changed_signal: Signal[tuple[str, object]] = Signal(self, "settings_changed")
@@ -202,19 +203,36 @@ class LilbeeApp(App[None]):
         os._exit(1)
 
     def switch_view(self, view_name: str) -> None:
-        """Switch to a named view via lazy screen factories."""
+        """Switch to a named view via lazy screen factories.
+
+        Guards against concurrent switches: ``switch_screen`` is async
+        (processed on the next event-loop tick) but callers read
+        ``active_view`` synchronously. Without a guard, rapid keypresses
+        queue conflicting switches that corrupt the screen stack.
+        ``active_view`` is updated after the switch completes.
+        """
+        if self._switching:
+            return
+        self._switching = True
+
         if view_name == "Chat":
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
                 self.switch_screen(_CHAT_SCREEN_NAME)
+            # Already on Chat, just update state below.
         else:
             factory = get_views().get(view_name)
             if factory is None:
+                self._switching = False
                 return
             self.switch_screen(factory())
 
-        self.active_view = view_name
+        def _finish() -> None:
+            self.active_view = view_name
+            self._switching = False
+
+        self.call_later(_finish)
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
