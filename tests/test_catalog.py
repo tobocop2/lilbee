@@ -21,6 +21,7 @@ from lilbee.catalog import (
     ModelVariant,
     _hf_token,
     _HfPage,
+    _HfSibling,
     clean_display_name,
     download_model,
     enrich_catalog,
@@ -173,11 +174,11 @@ class TestFeaturedModels:
 
 class TestHasGgufSiblings:
     def test_returns_true_when_gguf_present(self) -> None:
-        siblings = [{"rfilename": "model-Q4_K_M.gguf"}, {"rfilename": "README.md"}]
+        siblings = [_HfSibling(rfilename="model-Q4_K_M.gguf"), _HfSibling(rfilename="README.md")]
         assert catalog._has_gguf_siblings(siblings) is True
 
     def test_returns_false_when_no_gguf(self) -> None:
-        siblings = [{"rfilename": "model.bin"}, {"rfilename": "config.json"}]
+        siblings = [_HfSibling(rfilename="model.bin"), _HfSibling(rfilename="config.json")]
         assert catalog._has_gguf_siblings(siblings) is False
 
     def test_returns_false_for_empty_list(self) -> None:
@@ -187,14 +188,14 @@ class TestHasGgufSiblings:
 class TestEstimateSizeFromSiblings:
     def test_returns_size_from_largest_gguf(self) -> None:
         siblings = [
-            {"rfilename": "model-Q4_K_M.gguf", "size": 4_000_000_000},
-            {"rfilename": "model-Q8_0.gguf", "size": 7_000_000_000},
+            _HfSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
+            _HfSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
         ]
         result = catalog._estimate_size_from_siblings(siblings)
         assert result == round(7_000_000_000 / (1024**3), 1)
 
     def test_returns_zero_when_no_size(self) -> None:
-        siblings = [{"rfilename": "model.gguf", "size": 0}]
+        siblings = [_HfSibling(rfilename="model.gguf", size=0)]
         assert catalog._estimate_size_from_siblings(siblings) == 0.0
 
     def test_returns_zero_for_empty_list(self) -> None:

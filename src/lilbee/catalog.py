@@ -146,6 +146,41 @@ class _ProgressTracker:
         return _Cls
 
 
+class _HfGgufMeta(BaseModel):
+    """GGUF metadata returned by the HF API when expand=gguf is requested."""
+
+    total: int = 0
+    architecture: str = ""
+    context_length: int = 0
+
+
+class _HfSibling(BaseModel):
+    """A single file entry in the HF API siblings array."""
+
+    rfilename: str = ""
+    size: int = 0
+
+
+class _HfCardData(BaseModel):
+    """Card metadata from the HF API cardData field."""
+
+    description: str = ""
+
+
+class _HfModelItem(BaseModel):
+    """A single model entry from the HF /api/models listing response."""
+
+    model_config = {"extra": "ignore"}
+
+    id: str = ""
+    downloads: int = 0
+    description: str = ""
+    pipeline_tag: str = ""
+    siblings: list[_HfSibling] = []
+    gguf: _HfGgufMeta | None = None
+    cardData: _HfCardData | None = None
+
+
 class DownloadConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -448,34 +483,32 @@ def _fetch_hf_models(
     has_more = "next" in resp.links
 
     models: list[CatalogModel] = []
-    for item in data:
-        repo_id = item.get("id", "")
-        if not repo_id:
+    for raw in data:
+        item = _HfModelItem.model_validate(raw)
+        if not item.id:
             continue
-        downloads = item.get("downloads", 0)
-        card_data = item.get("cardData", {}) or {}
-        model_desc = item.get("description") or card_data.get("description") or ""
-        gguf_meta = item.get("gguf") or {}
-        gguf_total = gguf_meta.get("total", 0)
+        card_desc = item.cardData.description if item.cardData else ""
+        model_desc = item.description or card_desc
+        gguf_total = item.gguf.total if item.gguf else 0
         if gguf_total > 0:
             size_gb = round(gguf_total / (1024**3), 1)
         else:
-            size_gb = _estimate_size_from_siblings(item.get("siblings", []))
-        task = _pipeline_to_task(item.get("pipeline_tag", ""))
-        repo_name = repo_id.split("/")[-1]
+            size_gb = _estimate_size_from_siblings(item.siblings)
+        task = _pipeline_to_task(item.pipeline_tag)
+        repo_name = item.id.split("/")[-1]
         slug = repo_name.lower().replace(" ", "-")
         models.append(
             CatalogModel(
                 name=slug,
                 tag=DEFAULT_TAG,
-                display_name=clean_display_name(repo_id),
-                hf_repo=repo_id,
+                display_name=clean_display_name(item.id),
+                hf_repo=item.id,
                 gguf_filename="*.gguf",
                 size_gb=size_gb,
                 min_ram_gb=max(2.0, size_gb * 1.5),
                 description=model_desc[:120] if model_desc else "",
                 featured=False,
-                downloads=downloads,
+                downloads=item.downloads,
                 task=task,
             )
         )
@@ -488,19 +521,17 @@ def _fetch_hf_models(
     return page
 
 
-def _has_gguf_siblings(siblings: list[dict[str, Any]]) -> bool:
+def _has_gguf_siblings(siblings: list[_HfSibling]) -> bool:
     """Return True if the sibling list contains at least one .gguf file."""
-    return any(s.get("rfilename", "").endswith(".gguf") for s in siblings)
+    return any(s.rfilename.endswith(".gguf") for s in siblings)
 
 
-def _estimate_size_from_siblings(siblings: list[dict[str, Any]]) -> float:
+def _estimate_size_from_siblings(siblings: list[_HfSibling]) -> float:
     """Estimate model size in GB from the largest GGUF file in siblings."""
     max_bytes = 0
     for sib in siblings:
-        filename = sib.get("rfilename", "")
-        if filename.endswith(".gguf"):
-            size = sib.get("size", 0) or 0
-            max_bytes = max(max_bytes, size)
+        if sib.rfilename.endswith(".gguf"):
+            max_bytes = max(max_bytes, sib.size)
     if max_bytes > 0:
         return round(max_bytes / (1024**3), 1)
     return 0.0  # unknown — display as "?" in UI
