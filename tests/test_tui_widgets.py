@@ -3523,6 +3523,31 @@ async def test_crawl_dialog_negative_max_pages_shows_error():
             assert "max pages" in str(error.render()).lower()
 
 
+async def test_crawl_dialog_empty_depth_uses_default():
+    """Empty depth field falls back to default 0."""
+    from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
+
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        url_input = app.screen.query_one("#crawl-url-input")
+        url_input.value = "https://example.com"
+        depth_input = app.screen.query_one("#crawl-depth-input")
+        depth_input.value = ""
+        max_input = app.screen.query_one("#crawl-max-pages-input")
+        max_input.value = ""
+        await pilot.pause()
+        with mock.patch("lilbee.crawler.require_valid_crawl_url"):
+            btn = app.screen.query_one("#crawl-submit")
+            btn.press()
+            await pilot.pause()
+
+    result = app.results[0]
+    assert isinstance(result, CrawlParams)
+    assert result.depth == 0
+    assert result.max_pages == 50
+
+
 async def test_crawl_dialog_auto_prefix_https():
     """URL without scheme gets https:// auto-prefixed."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
