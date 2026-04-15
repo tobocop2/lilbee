@@ -90,7 +90,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """
     import asyncio
     import concurrent.futures
-
     import warnings
 
     try:
