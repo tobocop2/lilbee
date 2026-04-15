@@ -23,10 +23,11 @@ from lilbee.server.models import (
 async def search_route(
     q: str = Parameter(query="q"),
     top_k: int = Parameter(query="top_k", default=5, le=100),
+    chunk_type: str | None = Parameter(query="chunk_type", default=None),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     try:
-        return await handlers.search(q, top_k=top_k)
+        return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:

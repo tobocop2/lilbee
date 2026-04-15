@@ -447,9 +447,15 @@ class Searcher:
         selected.sort()
         return [results[i] for i in selected]
 
-    def search(self, question: str, top_k: int = 0) -> list[SearchChunk]:
+    def search(
+        self,
+        question: str,
+        top_k: int = 0,
+        chunk_type: str | None = None,
+    ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for downstream filtering.
+        When *chunk_type* is set, only chunks of that type are returned.
         """
         if top_k == 0:
             top_k = self._config.top_k
@@ -457,12 +463,22 @@ class Searcher:
         if mode is not None:
             return self._search_structured(mode, clean_query, top_k)
         query_vec = self._embedder.embed(question)
-        results = self._store.search(query_vec, top_k=top_k, query_text=question)
+        results = self._store.search(
+            query_vec,
+            top_k=top_k,
+            query_text=question,
+            chunk_type=chunk_type,
+        )
         if self._should_skip_expansion(question):
             return results[: top_k * 2]
         seen = {(r.source, r.chunk_index) for r in results}
         for variant, variant_vec in self._expand_query(question, query_vec):
-            variant_results = self._store.search(variant_vec, top_k=top_k, query_text=variant)
+            variant_results = self._store.search(
+                variant_vec,
+                top_k=top_k,
+                query_text=variant,
+                chunk_type=chunk_type,
+            )
             for r in variant_results:
                 key = (r.source, r.chunk_index)
                 if key not in seen:
@@ -489,7 +505,7 @@ class Searcher:
         """Build RAG context from search results."""
         results = self.search(question, top_k=top_k)
         mode, _ = self._parse_structured_query(question)
-        if mode is None:
+        if mode is None and self._config.wiki:
             results = prefer_wiki(results)
         if not results:
             return None
