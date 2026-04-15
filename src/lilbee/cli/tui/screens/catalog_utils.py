@@ -94,6 +94,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
         ref=f"{f.slug}:{v.tag}",
+        backend="native",
         variant=v,
         family=f,
     )
@@ -114,6 +115,7 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> TableRow:
         sort_downloads=m.downloads,
         sort_size=m.size_gb,
         ref=m.ref,
+        backend="native",
         catalog_model=m,
     )
 
