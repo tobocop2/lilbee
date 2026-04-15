@@ -581,7 +581,11 @@ class ChatScreen(Screen[None]):
             )
 
     def _cmd_reset(self, args: str) -> None:
-        if args == "confirm":
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
             from lilbee.cli.helpers import perform_reset
 
             try:
@@ -590,8 +594,11 @@ class ChatScreen(Screen[None]):
             except Exception as exc:
                 log.warning("Reset failed", exc_info=True)
                 self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
-        else:
-            self.notify(msg.CMD_RESET_CONFIRM, severity="warning")
+
+        self.app.push_screen(
+            ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),
+            _on_confirm,
+        )
 
     def _cmd_set(self, args: str) -> None:
         if not args:

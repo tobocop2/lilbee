@@ -1307,7 +1307,7 @@ class TestSetupWizard:
         assert card.row is row
         assert card.row.featured is True
         assert card.row.task == "chat"
-        assert card.row.backend == ""
+        assert card.row.backend == "native"
 
     def test_pick_recommended_picks_largest_fitting_not_first(self) -> None:
         """Default pick is the biggest-size-gb model whose min_ram_gb fits."""
@@ -3208,3 +3208,113 @@ class TestModelBarCfgSourceOfTruth:
             )
             await pilot.pause()
             assert chat_sel.value == "smollm2:135m"
+
+
+class TestConfirmDialog:
+    async def test_confirm_with_y_key(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+        assert results == [True]
+
+    async def test_cancel_with_n_key(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+
+        assert results == [False]
+
+    async def test_cancel_with_escape(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert results == [False]
+
+    async def test_confirm_with_yes_button(self) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert results == [True]
+
+    async def test_yes_button_click(self) -> None:
+        from textual.widgets import Button
+
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            btn = app.screen.query_one("#confirm-yes", Button)
+            btn.press()
+            await pilot.pause()
+
+        assert results == [True]
+
+    async def test_no_button_click(self) -> None:
+        from textual.widgets import Button
+
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        results: list[bool] = []
+
+        class _App(App):
+            def on_mount(self):
+                self.push_screen(ConfirmDialog("Title", "Message"), results.append)
+
+        app = _App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            btn = app.screen.query_one("#confirm-no", Button)
+            btn.press()
+            await pilot.pause()
+
+        assert results == [False]

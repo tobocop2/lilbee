@@ -372,11 +372,11 @@ class TestBackendField:
     a backend pill so users know lilbee cannot install/delete them.
     """
 
-    def test_catalog_to_row_backend_empty(self):
+    def test_catalog_to_row_backend_native(self):
         row = catalog_to_row(_make_catalog_model(), installed=False)
-        assert row.backend == ""
+        assert row.backend == "native"
 
-    def test_variant_to_row_backend_empty(self):
+    def test_variant_to_row_backend_native(self):
         from lilbee.catalog import ModelFamily, ModelVariant
 
         variant = ModelVariant(
@@ -392,7 +392,7 @@ class TestBackendField:
             slug="qwen3", name="Qwen3", task="chat", description="test", variants=(variant,)
         )
         row = variant_to_row(variant, family, installed=False)
-        assert row.backend == ""
+        assert row.backend == "native"
 
     def test_installed_name_to_row_backend_empty(self):
         from lilbee.cli.tui.screens.setup import _installed_name_to_row
@@ -1251,32 +1251,53 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
             assert "No documents" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_reset_confirm():
+async def test_chat_slash_reset_pushes_confirm_dialog():
+    """``/reset`` pushes a ConfirmDialog modal."""
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._handle_slash("/reset")
+        await _pilot.pause()
+        assert isinstance(app.screen_stack[-1], ConfirmDialog)
+
+
+async def test_chat_slash_reset_confirm_executes():
+    """Confirming the reset dialog calls perform_reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
             mock_reset.return_value = None
-            app.screen._handle_slash("/reset confirm")
+            app.screen._handle_slash("/reset")
+            await _pilot.pause()
+            await _pilot.press("y")
+            await _pilot.pause()
             mock_reset.assert_called_once()
 
 
-async def test_chat_slash_reset_no_confirm():
+async def test_chat_slash_reset_cancel_does_nothing():
+    """Cancelling the reset dialog does not call perform_reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
+        with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
             app.screen._handle_slash("/reset")
-            mock_notify.assert_called_once()
-            assert "confirm" in mock_notify.call_args[0][0].lower()
+            await _pilot.pause()
+            await _pilot.press("n")
+            await _pilot.pause()
+            mock_reset.assert_not_called()
 
 
-async def test_chat_slash_reset_error():
+async def test_chat_slash_reset_error_notifies():
+    """Reset failure shows an error notification."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset", side_effect=Exception("oops")):
             with patch.object(app.screen, "notify") as mock_notify:
-                app.screen._handle_slash("/reset confirm")
-                mock_notify.assert_called_once()
-                assert "oops" in mock_notify.call_args[0][0]
+                app.screen._handle_slash("/reset")
+                await _pilot.pause()
+                await _pilot.press("y")
+                await _pilot.pause()
+                assert any("oops" in str(c) for c in mock_notify.call_args_list)
 
 
 async def test_chat_slash_set_valid():
