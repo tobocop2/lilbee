@@ -99,6 +99,7 @@ class LilbeeApp(App[None]):
         Binding("f1", "push_help", "Help", show=False),
         Binding("ctrl+h", "push_help", "Help", show=False),
         Binding("ctrl+t", "cycle_theme", "Theme", show=False),
+        Binding("t", "open_tasks", "Tasks", show=False),
         # priority=True is required: even though NavAwareInput lets [ and ]
         # bubble past Input.check_consume_key, Textual's focused Input still
         # handles printable keys in _on_key before a non-priority ancestor
@@ -220,6 +221,10 @@ class LilbeeApp(App[None]):
             self.action_hide_help_panel()
         else:
             self.action_show_help_panel()
+
+    def action_open_tasks(self) -> None:
+        """Jump to the Task Center screen (t key)."""
+        self.switch_view("Tasks")
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""

@@ -8130,13 +8130,13 @@ async def test_cmd_add_uses_indeterminate_progress_during_ingest(tmp_path):
         )
 
 
-async def test_task_bar_indeterminate_renders_total_none():
-    """BEE-65f: indeterminate tasks render the Textual ProgressBar with total=None.
-    Setting total=None is how Textual draws an indeterminate pulsing bar.
-    A task flagged indeterminate=True must not leak a total=100 update.
-    """
-    from textual.widgets import ProgressBar
+async def test_task_bar_indeterminate_flag_propagated():
+    """BEE-65f: indeterminate flag is stored on the task in the queue.
 
+    The TaskBar no longer renders ProgressBar widgets (those live in the
+    Task Center), but the indeterminate flag must still propagate through
+    the controller into the queue so the Task Center can render correctly.
+    """
     from lilbee.cli.tui.task_queue import TaskStatus
     from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -8155,28 +8155,12 @@ async def test_task_bar_indeterminate_renders_total_none():
         task_id = app.task_bar.add_task("indet", "add")
         app.task_bar.queue.advance("add")
         app.task_bar.update_task(task_id, 0, "working", indeterminate=True)
-        # Wait until the ProgressBar exists and reflects indeterminate mode.
-        # The render loop may need several frames on slow CI runners.
-        bar = app.screen.query_one("#tbar", TaskBar)
-        pb = None
-        for _ in range(30):
-            await _pilot.pause()
-            pbs = bar.query(ProgressBar)
-            if pbs:
-                pb = pbs.first()
-                if pb.total is None:
-                    break
+        await _pilot.pause()
 
         task = app.task_bar.queue.get_task(task_id)
         assert task is not None
         assert task.indeterminate is True
         assert task.status == TaskStatus.ACTIVE
-        assert pb is not None, "ProgressBar never appeared"
-        assert pb.total is None
 
-        # Completing flips indeterminate off and drives the bar to 100
-        app.task_bar.complete_task(task_id)
-        await _pilot.pause()
-        task = app.task_bar.queue.get_task(task_id)
-        if task is not None:
-            assert task.indeterminate is False
+        bar = app.screen.query_one("#tbar", TaskBar)
+        assert bar.display is True

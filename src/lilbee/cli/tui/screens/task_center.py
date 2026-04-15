@@ -90,11 +90,22 @@ class TaskCenter(Screen[None]):
         self.app.task_bar.queue.unsubscribe(self._on_queue_change)
 
     def _on_queue_change(self) -> None:
-        """Called when task queue changes - refresh the display."""
-        try:
-            self._refresh_tasks()
-        except Exception:
-            log.debug("Queue change refresh failed", exc_info=True)
+        """Called when task queue changes - refresh the display.
+
+        May fire from a worker thread (download callbacks), so marshal
+        back to the main thread via call_from_thread when needed.
+        """
+        import threading
+
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
+        if threading.current_thread() is threading.main_thread():
+            try:
+                self._refresh_tasks()
+            except Exception:
+                log.debug("Queue change refresh failed", exc_info=True)
+        else:
+            call_from_thread(self, self._refresh_tasks)
 
     def action_refresh_tasks(self) -> None:
         """Refresh the task list."""

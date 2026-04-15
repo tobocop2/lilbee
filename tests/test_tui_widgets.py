@@ -7,7 +7,6 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from conftest import make_test_catalog_model as _make_model
@@ -2405,26 +2404,116 @@ class TestModelCardBuildHelpers:
 
 
 class TestTaskBarAdditional:
-    async def test_refresh_display_no_active_but_queued(self) -> None:
+    async def test_single_active_task_shows_name_in_label(self) -> None:
+        """One active task displays its name in the status label."""
+        from textual.widgets import Label
+
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         app = _TaskBarApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            # Add tasks but don't advance (so no active, but queued)
+            bar.add_task("Sync docs", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            assert "Sync docs" in str(label._Static__content)  # type: ignore[attr-defined]
+
+    async def test_multiple_active_tasks_shows_count(self) -> None:
+        """Two or more active tasks show a running count instead of a name."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Download A", "download")
+            bar.add_task("Sync B", "sync")
+            bar.queue.advance("download")
+            bar.queue.advance("sync")
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "2 tasks running" in text
+
+    async def test_queued_tasks_shown_in_label(self) -> None:
+        """Queued tasks appear as 'N queued' in the status label."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Download A", "download")
+            bar.queue.advance()
+            bar.add_task("Sync B", "sync")
+            bar.add_task("Crawl C", "crawl")
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "2 queued" in text
+
+    async def test_no_tasks_hides_bar(self) -> None:
+        """When no tasks exist, the bar is hidden."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert bar.display is False
+
+    async def test_only_queued_no_active_shows_bar(self) -> None:
+        """Queued-only tasks (no active) still show the bar."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
             bar.add_task("Sync", "sync")
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
-            # No panels created since no task is active
-            assert len(bar._panels) == 0
+            label = bar.query_one("#task-status-label", Label)
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "queued" in text
 
-    async def test_status_icon_unknown_status(self) -> None:
+    async def test_spinner_index_advances(self) -> None:
+        """The spinner frame index increments when active tasks exist."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
-        icon = TaskBar._status_icon("unknown_status")  # type: ignore[arg-type]
-        assert icon == "▸"
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            initial = bar._spinner_index
+            bar._tick_spinner()
+            assert bar._spinner_index == initial + 1
+
+    async def test_spinner_does_not_advance_when_idle(self) -> None:
+        """The spinner stays put when there are no active tasks."""
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            initial = bar._spinner_index
+            bar._tick_spinner()
+            assert bar._spinner_index == initial
 
     async def test_on_queue_change_exception_suppressed(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2433,133 +2522,8 @@ class TestTaskBarAdditional:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            # call_from_thread might raise if not on worker thread, but suppress
             bar._on_queue_change()  # should not raise
             assert bar.display is False
-
-    async def test_render_task_panel_done_status(self) -> None:
-        """Cover _render_task_panel when status is DONE (shows checkmark icon)."""
-        from lilbee.cli.tui.task_queue import Task, TaskStatus
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Sync", "sync")
-            bar.queue.advance()
-            bar._refresh_display()
-            await pilot.pause()
-            # Manually set the task to DONE and re-render its panel
-            done_task = Task(
-                task_id=task_id,
-                fn=lambda: None,
-                name="Sync",
-                task_type="sync",
-                status=TaskStatus.DONE,
-                progress=100,
-                detail="",
-            )
-            bar._render_task_panel(task_id, done_task)
-            await pilot.pause()
-
-    async def test_multiple_panels_for_concurrent_downloads(self) -> None:
-        """Each active task gets its own panel with progress bar."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            t1 = bar.add_task("Download A", "download")
-            t2 = bar.add_task("Sync B", "sync")
-            bar.queue.advance("download")
-            bar.queue.advance("sync")
-            bar._refresh_display()
-            await pilot.pause()
-            assert len(bar._panels) == 2
-            assert t1 in bar._panels
-            assert t2 in bar._panels
-
-    async def test_panel_removed_when_task_removed_from_queue(self) -> None:
-        """Removing a task from the shared queue drops its panel on next refresh."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Download", "download")
-            bar.queue.advance()
-            await pilot.pause()
-            bar.query_one(f"#task-panel-{task_id}")  # raises NoMatches if absent
-            bar.queue.remove_task(task_id)
-            await pilot.pause()
-            with pytest.raises(NoMatches):
-                bar.query_one(f"#task-panel-{task_id}")
-
-    async def test_fail_task_adds_failed_class_to_panel(self) -> None:
-        """fail_task marks the panel with task-failed CSS class."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Download", "download")
-            bar.queue.advance()
-            bar._refresh_display()
-            await pilot.pause()
-            bar.fail_task(task_id, "Network error")
-            await pilot.pause()
-            panel = bar._panels.get(task_id)
-            assert panel is not None
-            assert panel.has_class("task-failed")
-
-    async def test_render_task_panel_with_failed_status(self) -> None:
-        """_render_task_panel renders FAILED status icon."""
-        from lilbee.cli.tui.task_queue import Task, TaskStatus
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Download", "download")
-            bar.queue.advance()
-            bar._refresh_display()
-            await pilot.pause()
-            failed_task = Task(
-                task_id=task_id,
-                fn=lambda: None,
-                name="Download",
-                task_type="download",
-                status=TaskStatus.FAILED,
-                progress=0,
-                detail="timeout",
-            )
-            bar._render_task_panel(task_id, failed_task)
-            await pilot.pause()
-
-    async def test_render_task_panel_no_panel_is_noop(self) -> None:
-        """_render_task_panel with unknown task_id does nothing."""
-        from lilbee.cli.tui.task_queue import Task, TaskStatus
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task = Task(
-                task_id="nonexistent",
-                fn=lambda: None,
-                name="X",
-                task_type="x",
-                status=TaskStatus.ACTIVE,
-                progress=0,
-            )
-            bar._render_task_panel("nonexistent", task)  # should not raise
-            bar._render_task_panel("nonexistent", None)  # should not raise
 
     async def test_on_queue_change_from_worker_thread(self) -> None:
         """Queue notifications fired from a background thread must marshal back."""
@@ -2580,7 +2544,6 @@ class TestTaskBarAdditional:
 
             thread = threading.Thread(target=worker)
             thread.start()
-            # Poll instead of fixed timeout to handle slow CI runners.
             for _ in range(20):
                 await pilot.pause()
                 if called.is_set():
@@ -2588,9 +2551,27 @@ class TestTaskBarAdditional:
             thread.join(timeout=5)
             assert called.is_set()
 
-    async def test_render_task_panel_queued_status(self) -> None:
-        """_render_task_panel with QUEUED status uses fallback icon."""
-        from lilbee.cli.tui.task_queue import Task, TaskStatus
+    async def test_label_contains_task_center_hint(self) -> None:
+        """The status label includes the 'press t for Task Center' hint."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Sync", "sync")
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            assert "press t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
+
+    async def test_active_task_with_progress_shows_percentage(self) -> None:
+        """An active task with nonzero progress shows its percentage."""
+        from textual.widgets import Label
+
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         app = _TaskBarApp()
@@ -2599,24 +2580,34 @@ class TestTaskBarAdditional:
             bar = app.query_one(TaskBar)
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
+            bar.update_task(task_id, 45)
             bar._refresh_display()
             await pilot.pause()
-            queued_task = Task(
-                task_id=task_id,
-                fn=lambda: None,
-                name="Download",
-                task_type="download",
-                status=TaskStatus.QUEUED,
-                progress=0,
-            )
-            bar._render_task_panel(task_id, queued_task)
+            label = bar.query_one("#task-status-label", Label)
+            assert "45%" in str(label._Static__content)  # type: ignore[attr-defined]
+
+    async def test_refresh_display_exception_suppressed(self) -> None:
+        """_refresh_display handles missing label gracefully."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
             await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("test", "download")
+            bar.queue.advance()
+            # Remove the label to trigger the except path
+            label = bar.query_one("#task-status-label", Label)
+            label.remove()
+            await pilot.pause()
+            # Should not raise
+            bar._refresh_display()
 
 
 class TestTaskBarIndeterminate:
-    """Tests for indeterminate progress bar rendering (BEE-65f) and
-    redundant ProgressBar update avoidance (BEE-jmj, BEE-73k).
-    """
+    """Tests for indeterminate task flag propagation."""
 
     async def test_add_task_indeterminate_creates_indeterminate_task(self) -> None:
         """Tasks created with indeterminate=True start in indeterminate mode."""
@@ -2641,99 +2632,6 @@ class TestTaskBarIndeterminate:
         assert task is not None
         assert task.indeterminate is True
 
-    async def test_indeterminate_renders_pulsing_bar(self) -> None:
-        """An indeterminate active task renders ProgressBar with total=None."""
-        from textual.widgets import ProgressBar as PB
-
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Sync", "sync", indeterminate=True)
-            bar.queue.advance()
-            bar._refresh_display()
-            # Wait for the panel to compose its children
-            await pilot.pause()
-            # Re-render now that children are mounted
-            bar._refresh_display()
-            await pilot.pause()
-            panel = bar._panels[task_id]
-            pb = panel.query_one(PB)
-            assert pb.total is None
-
-    async def test_progress_bar_not_updated_when_unchanged(self) -> None:
-        """Redundant ProgressBar.update calls are skipped when state matches."""
-        from textual.widgets import ProgressBar as PB
-
-        from lilbee.cli.tui.task_queue import Task, TaskStatus
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Download", "download")
-            bar.queue.advance()
-            bar._refresh_display()
-            await pilot.pause()
-            # Panel children are now composed. Re-render to populate tracking state.
-            bar._refresh_display()
-            await pilot.pause()
-
-            panel = bar._panels[task_id]
-            pb = panel.query_one(PB)
-            assert panel._last_progress == 0
-            assert panel._last_indeterminate is False
-
-            # Same state renders should not touch the progress bar
-            original_update = pb.update
-            call_count = 0
-
-            def counting_update(**kwargs: object) -> None:
-                nonlocal call_count
-                call_count += 1
-                original_update(**kwargs)
-
-            pb.update = counting_update  # type: ignore[assignment]
-
-            task = Task(
-                task_id=task_id,
-                fn=lambda: None,
-                name="Download",
-                task_type="download",
-                status=TaskStatus.ACTIVE,
-                progress=0,
-            )
-            bar._render_task_panel(task_id, task)
-            assert call_count == 0, "Should skip ProgressBar.update when state unchanged"
-
-    async def test_progress_bar_updated_when_progress_changes(self) -> None:
-        """ProgressBar.update is called when task progress changes."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            task_id = bar.add_task("Download", "download")
-            bar.queue.advance()
-            bar._refresh_display()
-            await pilot.pause()
-            # Panel children are now composed. Re-render to populate tracking state.
-            bar._refresh_display()
-            await pilot.pause()
-
-            panel = bar._panels[task_id]
-            assert panel._last_progress == 0
-
-            # Now change progress and verify the bar updates
-            bar.update_task(task_id, 50, "halfway")
-            bar._refresh_display()
-            await pilot.pause()
-            assert panel._last_progress == 50
-
     async def test_controller_add_task_indeterminate(self) -> None:
         """TaskBarController.add_task passes indeterminate through to queue."""
         from lilbee.cli.tui.widgets.task_bar import TaskBarController
@@ -2747,6 +2645,24 @@ class TestTaskBarIndeterminate:
             task = controller.queue.get_task(task_id)
             assert task is not None
             assert task.indeterminate is True
+
+    async def test_indeterminate_task_shows_in_label(self) -> None:
+        """An indeterminate active task still renders its name in the label."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task("Sync", "sync", indeterminate=True)
+            bar.queue.advance()
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            assert "Sync" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert bar.display is True
 
 
 class TestGridSelectExtra:
