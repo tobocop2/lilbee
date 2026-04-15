@@ -1446,14 +1446,14 @@ wheels = [
 
 [[package]]
 name = "kreuzberg"
-version = "4.6.3"
+version = "4.8.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/98/6e/a04a24f901e772ccdc06920fe3c0b5d366239dd5a11c4ce77c5f6815ca15/kreuzberg-4.6.3.tar.gz", hash = "sha256:eaea80d5395f35761cce9396660cf6cb06d9b94ed20d616b137c736b236c4eb0", size = 2173464 }
+sdist = { url = "https://files.pythonhosted.org/packages/99/bb/d7b16fe737929e27f3cb65ca55fd47a1d952db0d2d1d4fced4bfaa3f626c/kreuzberg-4.8.5.tar.gz", hash = "sha256:59154e8afca4be834f67fa326b3fe6f841d849bc524953dbc978d1afaa19bcd9", size = 2395546 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/6d/ca7f91c7da9d22841a618350dc085ec0d543e0bc916dab1c905029412e24/kreuzberg-4.6.3-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:2a01e9bbdf0d0d316bbc26873fb40a648ce5a2cd60fdcafc62d046cfe1bace4b", size = 51045873 },
-    { url = "https://files.pythonhosted.org/packages/e3/4c/c6a777d3a90e4fb8bb3bc128d15b9767f47dac52fa5fc93b3f86bcfb3390/kreuzberg-4.6.3-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:c265ebd92e5ce4ab3d90cc6ff74a100abe6de92c067a3cffd7988e75d205e9ca", size = 59278814 },
-    { url = "https://files.pythonhosted.org/packages/6d/cc/87494127d7b991852b3e2e53b975203e1ca6296076d1886448574d526433/kreuzberg-4.6.3-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:43f3db7ada83f11bf297a14a151769b0d8572e1d0931c7bb6fe20a70c70d26ea", size = 59017388 },
-    { url = "https://files.pythonhosted.org/packages/6d/7a/d8fe90973f1047576832f019d1cc716e8c00be52fee8a48fe89712d299ab/kreuzberg-4.6.3-cp310-abi3-win_amd64.whl", hash = "sha256:fc0afd51f0a22808e87a76351b105bb82f7b352b2e7b3b33cbbc09e4b54e55df", size = 58766457 },
+    { url = "https://files.pythonhosted.org/packages/f1/30/f9d56277f673ee6939b52229f5612a98d5fc71e4a2b78af37a9fe2411e4d/kreuzberg-4.8.5-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:a756a994e70c00f112bb4e5ab7049cfec57bbe925b26b5d4c08695550bcb8228", size = 58650863 },
+    { url = "https://files.pythonhosted.org/packages/bd/9d/e591a4872860bfdb1297f78c889ab0f2f0bf3e4cd4f8b64939b6fe7aca7f/kreuzberg-4.8.5-cp310-abi3-manylinux_2_39_aarch64.whl", hash = "sha256:fe7573f0100714780a3210bdd8450ccc3294df83088a68a8623beec5b9942feb", size = 59170334 },
+    { url = "https://files.pythonhosted.org/packages/6d/85/19d3fbe2069f4eadf15b0d6567ea3273c8a8dda6e82026e4afe552e7f2c0/kreuzberg-4.8.5-cp310-abi3-manylinux_2_39_x86_64.whl", hash = "sha256:be18709c4a936f04aae377f382757e9be9a1a19e05e081023bd707412535fd7d", size = 60595622 },
+    { url = "https://files.pythonhosted.org/packages/0a/60/20285aefc7240f0c8c3cbe5672bf8c72a585f1a4903d888ed541b9a2ddca/kreuzberg-4.8.5-cp310-abi3-win_amd64.whl", hash = "sha256:6be7c255a6ad37889d4b714cd067d190c3104964331b9e38c76d816866dd7dda", size = 67163857 },
 ]
 
 [[package]]
@@ -1648,7 +1648,7 @@ requires-dist = [
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
     { name = "huggingface-hub", git = "https://github.com/tobocop2/huggingface_hub.git?branch=fix%2Ftqdm-bad-fd-safety" },
-    { name = "kreuzberg", specifier = ">=4.6.3" },
+    { name = "kreuzberg", specifier = ">=4.8.5" },
     { name = "lancedb" },
     { name = "litellm", marker = "extra == 'litellm'" },
     { name = "litestar", specifier = ">=2.0" },
@@ -1752,7 +1752,7 @@ wheels = [
 
 [[package]]
 name = "llama-cpp-python"
-version = "0.3.16"
+version = "0.3.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "diskcache" },
@@ -1760,7 +1760,7 @@ dependencies = [
     { name = "numpy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/b4/c8cd17629ced0b9644a71d399a91145aedef109c0333443bef015e45b704/llama_cpp_python-0.3.16.tar.gz", hash = "sha256:34ed0f9bd9431af045bb63d9324ae620ad0536653740e9bb163a2e1fcb973be6", size = 50688636 }
+sdist = { url = "https://files.pythonhosted.org/packages/45/95/c69c47c9c8dda97f712f5864688d13a22b0159aa9adae91a69067a728532/llama_cpp_python-0.3.20.tar.gz", hash = "sha256:70f01b7d915d31c617dc66610a332cb2d51cde84c8b152d09a352206323616f5", size = 59323017 }
 
 [[package]]
 name = "lxml"
