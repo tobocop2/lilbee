@@ -202,20 +202,24 @@ class WikiScreen(Screen[None]):
         """Filter pages when search input changes."""
         self._load_pages(filter_text=event.value.strip())
 
+    def _selected_source(self) -> str | None:
+        """Return the source name for the highlighted wiki page, or None."""
+        option_list = self.query_one("#wiki-page-list", OptionList)
+        highlighted = option_list.highlighted
+        if highlighted is None:
+            return None
+        slug = option_list.get_option_at_index(highlighted).id
+        if slug is None:
+            return None
+        return self._source_for_slug(slug)
+
     def action_regenerate(self) -> None:
         """Regenerate wiki page(s). Selected page's source, or all sources."""
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
 
-        requested: str | None = None
-        option_list = self.query_one("#wiki-page-list", OptionList)
-        highlighted = option_list.highlighted
-        if highlighted is not None:
-            slug = option_list.get_option_at_index(highlighted).id
-            if slug is not None:
-                requested = self._source_for_slug(slug)
-
+        requested = self._selected_source()
         targets = resolve_wiki_targets(requested)
         if targets is None:
             if requested is not None:

@@ -8282,15 +8282,27 @@ def test_resolve_wiki_targets_get_sources_error():
         assert resolve_wiki_targets() is None
 
 
-async def test_wiki_screen_regenerate_disabled():
-    """Regenerate notifies when wiki is disabled."""
+def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
+    """Build a test app that pushes WikiScreen on mount."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
 
     class _WikiApp(App[None]):
-        def on_mount(self):
+        def __init__(self) -> None:
+            super().__init__()
+            if with_task_bar:
+                from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+                self.task_bar = TaskBarController(self)
+
+        def on_mount(self) -> None:
             self.push_screen(WikiScreen())
 
-    app = _WikiApp()
+    return _WikiApp()
+
+
+async def test_wiki_screen_regenerate_disabled():
+    """Regenerate notifies when wiki is disabled."""
+    app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         with (
@@ -8304,13 +8316,7 @@ async def test_wiki_screen_regenerate_disabled():
 
 async def test_wiki_screen_regenerate_no_sources():
     """Regenerate notifies when no indexed sources found."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         with (
@@ -8422,13 +8428,7 @@ async def test_chat_crawl_dialog_callback_none_noop():
 
 async def test_wiki_source_for_slug_returns_source():
     """_source_for_slug extracts source from page frontmatter."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         mock_page = MagicMock()
@@ -8440,13 +8440,7 @@ async def test_wiki_source_for_slug_returns_source():
 
 async def test_wiki_source_for_slug_returns_none_for_missing():
     """_source_for_slug returns None when page not found."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         with patch("lilbee.wiki.browse.read_page", return_value=None):
@@ -8456,13 +8450,7 @@ async def test_wiki_source_for_slug_returns_none_for_missing():
 
 async def test_wiki_source_for_slug_returns_none_for_empty_sources():
     """_source_for_slug returns None when sources list is empty."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         mock_page = MagicMock()
@@ -8477,19 +8465,7 @@ async def test_wiki_regenerate_selected_page():
     from textual.widgets import OptionList
     from textual.widgets.option_list import Option
 
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def __init__(self):
-            super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
-            self.task_bar = TaskBarController(self)
-
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app(with_task_bar=True)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         # Simulate a highlighted page by focusing and navigating
@@ -8525,19 +8501,7 @@ async def test_wiki_regenerate_selected_page_not_found():
     from textual.widgets import OptionList
     from textual.widgets.option_list import Option
 
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def __init__(self):
-            super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
-            self.task_bar = TaskBarController(self)
-
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app(with_task_bar=True)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         option_list = app.screen.query_one("#wiki-page-list", OptionList)
@@ -8567,19 +8531,7 @@ async def test_wiki_regenerate_selected_page_not_found():
 
 async def test_wiki_run_wiki_background():
     """WikiScreen._run_wiki_background delegates to run_wiki_generation."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def __init__(self):
-            super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
-            self.task_bar = TaskBarController(self)
-
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app(with_task_bar=True)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         task_id = app.task_bar.add_task("Wiki (1)", "wiki")
@@ -8594,19 +8546,7 @@ async def test_wiki_run_wiki_background():
 
 async def test_wiki_regenerate_with_targets():
     """action_regenerate with resolved targets enqueues a task."""
-    from lilbee.cli.tui.screens.wiki import WikiScreen
-
-    class _WikiApp(App[None]):
-        def __init__(self):
-            super().__init__()
-            from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
-            self.task_bar = TaskBarController(self)
-
-        def on_mount(self):
-            self.push_screen(WikiScreen())
-
-    app = _WikiApp()
+    app = _make_wiki_app(with_task_bar=True)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         with (

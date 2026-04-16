@@ -43,7 +43,7 @@ def resolve_wiki_targets(requested: str | None = None) -> list[str] | None:
     except Exception:
         log.warning("Failed to list sources for wiki", exc_info=True)
         return None
-    names = [s["filename"] for s in sources if s.get("filename")]
+    names = [s["filename"] for s in sources if s["filename"]]
     if not names:
         return None
     if requested is not None:
@@ -51,6 +51,61 @@ def resolve_wiki_targets(requested: str | None = None) -> list[str] | None:
             return None
         return [requested]
     return names
+
+
+def _make_progress_callback(
+    source_name: str,
+    source_idx: int,
+    total: int,
+    widget: DOMNode,
+    update_task: Callable[[str, int, str], None],
+    task_id: str,
+    errors: list[str],
+) -> Callable[[str, dict[str, object]], None]:
+    """Build a progress callback for a single source's wiki generation."""
+
+    def _on_progress(stage: str, _data: dict[str, object]) -> None:
+        if stage == WIKI_STAGE_FAILED:
+            errors.append(str(_data.get("error", msg.CMD_WIKI_UNKNOWN_ERROR)))
+            return
+        fraction = WIKI_STAGE_FRACTIONS.get(stage, 0.0)
+        pct = int((source_idx + fraction) * 100 / total)
+        call_from_thread(
+            widget,
+            update_task,
+            task_id,
+            pct,
+            msg.CMD_WIKI_PROGRESS.format(name=source_name, stage=stage),
+        )
+
+    return _on_progress
+
+
+def _report_result(
+    generated: int,
+    total: int,
+    errors: list[str],
+    widget: DOMNode,
+    task_id: str,
+    complete_task: Callable[[str], None],
+    fail_task: Callable[[str, str], None],
+    notify: Callable[..., None],
+    on_complete: Callable[[], None] | None,
+) -> None:
+    """Notify the user of wiki generation results."""
+    if generated > 0:
+        call_from_thread(widget, complete_task, task_id)
+        call_from_thread(
+            widget, notify, msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total)
+        )
+        if on_complete is not None:
+            call_from_thread(widget, on_complete)
+    else:
+        fail_reason = errors[-1] if errors else msg.CMD_WIKI_NO_PAGES
+        call_from_thread(widget, fail_task, task_id, fail_reason)
+        call_from_thread(
+            widget, notify, msg.CMD_WIKI_NONE_GENERATED.format(total=total), severity="warning"
+        )
 
 
 def run_wiki_generation(
@@ -64,92 +119,48 @@ def run_wiki_generation(
     on_complete: Callable[[], None] | None = None,
     is_cancelled: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Run wiki generation for the given sources (call from a background thread).
-
-    Parameters
-    ----------
-    sources:
-        List of source filenames to generate wiki pages for.
-    task_id:
-        The task queue ID for progress updates.
-    widget:
-        The Textual widget used as the context for ``call_from_thread``.
-    update_task, complete_task, fail_task:
-        Task bar callbacks for progress, completion, and failure.
-    notify:
-        Notification callback (e.g., ``screen.notify``).
-    on_complete:
-        Optional callback fired after successful generation (e.g., reload wiki sidebar).
-    is_cancelled:
-        Returns True if the worker has been cancelled.
-    """
+    """Run wiki generation for the given sources (call from a background thread)."""
     from lilbee.wiki.gen import generate_summary_page
 
     svc = get_services()
     total = len(sources)
     generated = 0
-    last_error: str = ""
+    errors: list[str] = []
 
     try:
         for idx, source in enumerate(sources):
             if is_cancelled():
                 break
-            base_pct = int(idx * 100 / total)
             call_from_thread(
                 widget,
                 update_task,
                 task_id,
-                base_pct,
+                int(idx * 100 / total),
                 msg.CMD_WIKI_PROGRESS.format(name=source, stage=WIKI_STAGE_PREPARING),
             )
             chunks = svc.store.get_chunks_by_source(source)
             if not chunks:
                 continue
-
-            def _on_progress(
-                stage: str,
-                _data: dict[str, object],
-                source_name: str = source,
-                source_idx: int = idx,
-            ) -> None:
-                nonlocal last_error
-                if stage == WIKI_STAGE_FAILED:
-                    last_error = str(_data.get("error", msg.CMD_WIKI_UNKNOWN_ERROR))
-                    return
-                fraction = WIKI_STAGE_FRACTIONS.get(stage, 0.0)
-                pct = int((source_idx + fraction) * 100 / total)
-                call_from_thread(
-                    widget,
-                    update_task,
-                    task_id,
-                    pct,
-                    msg.CMD_WIKI_PROGRESS.format(name=source_name, stage=stage),
-                )
-
+            progress_cb = _make_progress_callback(
+                source, idx, total, widget, update_task, task_id, errors
+            )
             result = generate_summary_page(
-                source, chunks, svc.provider, svc.store, on_progress=_on_progress
+                source, chunks, svc.provider, svc.store, on_progress=progress_cb
             )
             if result is not None:
                 generated += 1
 
-        if generated > 0:
-            call_from_thread(widget, complete_task, task_id)
-            call_from_thread(
-                widget,
-                notify,
-                msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
-            )
-            if on_complete is not None:
-                call_from_thread(widget, on_complete)
-        else:
-            fail_reason = last_error or msg.CMD_WIKI_NO_PAGES
-            call_from_thread(widget, fail_task, task_id, fail_reason)
-            call_from_thread(
-                widget,
-                notify,
-                msg.CMD_WIKI_NONE_GENERATED.format(total=total),
-                severity="warning",
-            )
+        _report_result(
+            generated,
+            total,
+            errors,
+            widget,
+            task_id,
+            complete_task,
+            fail_task,
+            notify,
+            on_complete,
+        )
     except Exception as exc:
         log.warning("Wiki generation failed", exc_info=True)
         call_from_thread(widget, fail_task, task_id, str(exc))

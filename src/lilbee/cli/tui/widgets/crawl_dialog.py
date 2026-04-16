@@ -12,6 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.config import cfg
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,6 @@ class CrawlParams:
     url: str
     depth: int
     max_pages: int
-
-
-_DEFAULT_DEPTH = 0
-_DEFAULT_MAX_PAGES = 50
 
 
 class CrawlDialog(ModalScreen[CrawlParams | None]):
@@ -47,13 +44,13 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             )
             yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
             yield Input(
-                value=str(_DEFAULT_DEPTH),
+                value=str(cfg.crawl_max_depth),
                 placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
                 id="crawl-depth-input",
             )
             yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
             yield Input(
-                value=str(_DEFAULT_MAX_PAGES),
+                value=str(cfg.crawl_max_pages),
                 placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
                 id="crawl-max-pages-input",
             )
@@ -84,18 +81,16 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             raise ValueError("negative")
         return n
 
-    def _try_submit(self) -> None:
-        """Validate inputs and dismiss with CrawlParams or show an error."""
+    def _validate(self) -> CrawlParams | str:
+        """Validate inputs. Returns CrawlParams on success, error message on failure."""
         from lilbee.crawler import require_valid_crawl_url
 
-        error_widget = self.query_one("#crawl-error", Static)
         url = self.query_one("#crawl-url-input", Input).value.strip()
         depth_str = self.query_one("#crawl-depth-input", Input).value.strip()
         max_pages_str = self.query_one("#crawl-max-pages-input", Input).value.strip()
 
         if not url:
-            error_widget.update(msg.CRAWL_DIALOG_URL_REQUIRED)
-            return
+            return msg.CRAWL_DIALOG_URL_REQUIRED
 
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
@@ -103,27 +98,29 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         try:
             require_valid_crawl_url(url)
         except ValueError as exc:
-            error_widget.update(msg.CRAWL_DIALOG_INVALID_URL.format(error=exc))
-            return
+            return msg.CRAWL_DIALOG_INVALID_URL.format(error=exc)
 
         try:
-            depth = self._parse_non_negative_int(depth_str, _DEFAULT_DEPTH)
+            depth = self._parse_non_negative_int(depth_str, cfg.crawl_max_depth)
         except ValueError:
-            error_widget.update(
-                msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
-            )
-            return
+            return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
 
         try:
-            max_pages = self._parse_non_negative_int(max_pages_str, _DEFAULT_MAX_PAGES)
+            max_pages = self._parse_non_negative_int(max_pages_str, cfg.crawl_max_pages)
         except ValueError:
-            error_widget.update(
-                msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
-            )
-            return
+            return msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)
 
+        return CrawlParams(url=url, depth=depth, max_pages=max_pages)
+
+    def _try_submit(self) -> None:
+        """Validate inputs and dismiss with CrawlParams or show an error."""
+        result = self._validate()
+        error_widget = self.query_one("#crawl-error", Static)
+        if isinstance(result, str):
+            error_widget.update(result)
+            return
         error_widget.update("")
-        self.dismiss(CrawlParams(url=url, depth=depth, max_pages=max_pages))
+        self.dismiss(result)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

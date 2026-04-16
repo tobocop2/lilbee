@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from conftest import make_test_catalog_model as _make_model
 from lilbee.cli.tui.screens.catalog_utils import TableRow
@@ -3346,8 +3346,7 @@ async def test_crawl_dialog_submit_valid():
         max_input.value = "10"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
 
     assert len(app.results) == 1
@@ -3363,8 +3362,7 @@ async def test_crawl_dialog_cancel():
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
-        btn = app.screen.query_one("#crawl-cancel")
-        btn.press()
+        app.screen.query_one("#crawl-cancel", Button).press()
         await pilot.pause()
 
     assert app.results == [None]
@@ -3386,8 +3384,7 @@ async def test_crawl_dialog_empty_url_shows_error():
     app = CrawlDialogTestApp()
     async with app.run_test(size=(80, 30)) as pilot:
         await pilot.pause()
-        btn = app.screen.query_one("#crawl-submit")
-        btn.press()
+        app.screen.query_one("#crawl-submit", Button).press()
         await pilot.pause()
         error = app.screen.query_one("#crawl-error", Static)
         assert "required" in str(error.render()).lower()
@@ -3405,8 +3402,7 @@ async def test_crawl_dialog_invalid_url_shows_error():
             "lilbee.crawler.require_valid_crawl_url",
             side_effect=ValueError("bad url"),
         ):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
             error = app.screen.query_one("#crawl-error", Static)
             assert "bad url" in str(error.render()).lower()
@@ -3423,8 +3419,7 @@ async def test_crawl_dialog_invalid_depth_shows_error():
         depth_input.value = "abc"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
             error = app.screen.query_one("#crawl-error", Static)
             assert "depth" in str(error.render()).lower()
@@ -3441,8 +3436,7 @@ async def test_crawl_dialog_invalid_max_pages_shows_error():
         max_input.value = "abc"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
             error = app.screen.query_one("#crawl-error", Static)
             assert "max pages" in str(error.render()).lower()
@@ -3459,8 +3453,7 @@ async def test_crawl_dialog_negative_depth_shows_error():
         depth_input.value = "-1"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
             error = app.screen.query_one("#crawl-error", Static)
             assert "depth" in str(error.render()).lower()
@@ -3485,7 +3478,7 @@ async def test_crawl_dialog_input_submitted():
 
 
 async def test_crawl_dialog_defaults():
-    """Default values are depth=0, max_pages=50 when left unchanged."""
+    """Default values match config when left unchanged."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
 
     app = CrawlDialogTestApp()
@@ -3495,14 +3488,13 @@ async def test_crawl_dialog_defaults():
         url_input.value = "https://example.com"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
 
     result = app.results[0]
     assert isinstance(result, CrawlParams)
-    assert result.depth == 0
-    assert result.max_pages == 50
+    assert result.depth == cfg.crawl_max_depth
+    assert result.max_pages == cfg.crawl_max_pages
 
 
 async def test_crawl_dialog_negative_max_pages_shows_error():
@@ -3516,15 +3508,14 @@ async def test_crawl_dialog_negative_max_pages_shows_error():
         max_input.value = "-5"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
             error = app.screen.query_one("#crawl-error", Static)
             assert "max pages" in str(error.render()).lower()
 
 
 async def test_crawl_dialog_empty_depth_uses_default():
-    """Empty depth field falls back to default 0."""
+    """Empty depth field falls back to config defaults."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
 
     app = CrawlDialogTestApp()
@@ -3538,13 +3529,12 @@ async def test_crawl_dialog_empty_depth_uses_default():
         max_input.value = ""
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
 
     result = app.results[0]
     assert isinstance(result, CrawlParams)
-    assert result.depth == 0
+    assert result.depth == cfg.crawl_max_depth
     assert result.max_pages == 50
 
 
@@ -3559,8 +3549,7 @@ async def test_crawl_dialog_auto_prefix_https():
         url_input.value = "example.com"
         await pilot.pause()
         with mock.patch("lilbee.crawler.require_valid_crawl_url"):
-            btn = app.screen.query_one("#crawl-submit")
-            btn.press()
+            app.screen.query_one("#crawl-submit", Button).press()
             await pilot.pause()
 
     result = app.results[0]
