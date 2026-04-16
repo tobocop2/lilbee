@@ -8460,6 +8460,25 @@ async def test_wiki_source_for_slug_returns_none_for_empty_sources():
         assert result is None
 
 
+async def test_wiki_selected_source_returns_none_for_option_without_id():
+    """_selected_source returns None when highlighted option has no id."""
+    from textual.widgets import OptionList
+    from textual.widgets.option_list import Option
+
+    app = _make_wiki_app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        option_list = app.screen.query_one("#wiki-page-list", OptionList)
+        option_list.clear_options()
+        option_list.add_option(Option("no-id page"))  # id defaults to None
+        option_list.focus()
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        result = app.screen._selected_source()
+        assert result is None
+
+
 async def test_wiki_regenerate_selected_page():
     """action_regenerate with a selected page regenerates that source."""
     from textual.widgets import OptionList
