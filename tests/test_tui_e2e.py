@@ -2146,13 +2146,19 @@ class TestChatSlashCommands:
             assert app.screen._history == []
 
     async def test_cmd_clear_cancels_stream(self, _mock_resolve):
-        """/clear cancels active stream before clearing."""
+        """/clear cancels active workers before clearing."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.screen.streaming = True
-            app.screen._handle_slash("/clear")
+            mock_worker = mock.MagicMock()
+            with mock.patch.object(
+                type(app.screen), "workers", new_callable=mock.PropertyMock
+            ) as mock_workers:
+                mock_workers.return_value = [mock_worker]
+                app.screen._handle_slash("/clear")
             await pilot.pause()
+            mock_worker.cancel.assert_called_once()
             assert app.screen.streaming is False
             assert app.screen._history == []
 
