@@ -1,6 +1,5 @@
 """Shared test helpers."""
 
-import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,33 +12,6 @@ from lilbee.ingest import file_hash
 from lilbee.store import CitationRecord
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-
-def _patch_executor_daemon_threads() -> None:
-    """Make ThreadPoolExecutor worker threads daemon on Python 3.11.
-
-    asyncio.run() inside @work(thread=True) creates nested event loops, each
-    with its own ThreadPoolExecutor. On 3.11, those executor threads are
-    non-daemon and block xdist worker process exit. On 3.12+, interpreter
-    shutdown handles this correctly. Patching Thread.__init__ to mark executor
-    workers as daemon lets the process exit without waiting for them.
-    """
-    if sys.version_info >= (3, 12):
-        return
-    import concurrent.futures.thread as _tmod
-
-    _real_init = threading.Thread.__init__
-
-    def _init_with_daemon(self: threading.Thread, *args: object, **kwargs: object) -> None:
-        _real_init(self, *args, **kwargs)  # type: ignore[misc]
-        if getattr(self, "_target", None) is _tmod._worker:
-            self.daemon = True
-
-    threading.Thread.__init__ = _init_with_daemon  # type: ignore[assignment]
-
-
-# Apply at import time so xdist workers get the patch immediately.
-_patch_executor_daemon_threads()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -92,18 +64,13 @@ def _suppress_model_scan(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Safety net: join non-daemon threads that outlive the test.
-
-    Daemon threads (executor workers, litestar QueueListeners) are safe to
-    ignore since they won't block process exit. Only non-daemon threads need
-    explicit joining to prevent xdist hangs.
-    """
+    """Safety net: join any Textual worker threads that outlive the test."""
     before = set(threading.enumerate())
     yield
     for thread in threading.enumerate():
         if thread in before or thread is threading.current_thread():
             continue
-        if thread.is_alive() and not thread.daemon:
+        if thread.is_alive():
             thread.join(timeout=2.0)
 
 
