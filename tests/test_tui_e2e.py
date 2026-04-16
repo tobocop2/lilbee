@@ -2121,6 +2121,41 @@ class TestChatSlashCommands:
             await pilot.pause()
             assert app.screen.streaming is False
 
+    async def test_cmd_clear(self, _mock_resolve):
+        """/clear removes messages and clears history."""
+        from textual.containers import VerticalScroll
+
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen._history = [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ]
+            chat_log = app.screen.query_one("#chat-log", VerticalScroll)
+            await chat_log.mount(UserMessage("hello"))
+            await pilot.pause()
+            assert len(chat_log.children) > 0
+
+            app.screen._handle_slash("/clear")
+            await pilot.pause()
+
+            assert len(chat_log.children) == 0
+            assert app.screen._history == []
+
+    async def test_cmd_clear_cancels_stream(self, _mock_resolve):
+        """/clear cancels active stream before clearing."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = True
+            app.screen._handle_slash("/clear")
+            await pilot.pause()
+            assert app.screen.streaming is False
+            assert app.screen._history == []
+
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
         from lilbee.cli.tui.app import LilbeeApp

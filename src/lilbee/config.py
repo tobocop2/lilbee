@@ -71,10 +71,10 @@ CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a precise, direct assistant grounded in the provided context. "
     "Answer using only the context — if it doesn't contain enough information, "
-    "say so rather than guessing. Be specific: quote relevant passages, cite file "
-    "paths, and prefer exact values over approximations. For code, prefer working "
-    "examples over abstract explanations. Keep responses concise unless asked to "
-    "elaborate."
+    "say so rather than guessing. Be specific: quote relevant passages and "
+    "reference context by number (e.g. [1], [2]) inline. Prefer exact values "
+    "over approximations. For code, prefer working examples over abstract "
+    "explanations. Keep responses concise unless asked to elaborate."
 )
 
 # Default regex for the CORS allow-origin filter. Covers:
@@ -117,6 +117,8 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=10, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.9, ge=0.0, writable=True)
+    # Minimum RRF relevance score for hybrid search results (0.0 = no filtering).
+    min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     system_prompt: str = ConfigField(default=_DEFAULT_SYSTEM_PROMPT, min_length=1, writable=True)
     ignore_dirs: frozenset[str] = Field(default=DEFAULT_IGNORE_DIRS)
@@ -351,6 +353,10 @@ class Config(BaseSettings):
     # Weight for concept overlap boosting in search results (0.0-1.0).
     # Higher = concept overlap matters more relative to vector similarity.
     concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
+
+    # Minimum distance after concept boost. Prevents boost from making
+    # marginally relevant results appear artificially close.
+    concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
     # Maximum noun-phrase concepts extracted per chunk.
     # Caps extraction to avoid noise from very long chunks.

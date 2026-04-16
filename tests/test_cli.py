@@ -2,6 +2,8 @@
 
 import json
 import logging
+import shutil
+from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1090,6 +1092,88 @@ class TestReset:
         result = runner.invoke(app, ["reset", "--yes"])
         assert result.exit_code == 0
         assert list(cfg.data_dir.iterdir()) == []
+
+    def test_reset_skips_locked_file(self, isolated_env):
+        """Locked file is skipped, other files still deleted."""
+        (cfg.documents_dir / "ok.txt").write_text("deletable")
+        locked = cfg.documents_dir / "locked.exe"
+        locked.write_text("in use")
+
+        original_unlink = Path.unlink
+
+        def _unlink_raises(self, *args, **kwargs):
+            if self.name == "locked.exe":
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_unlink(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", _unlink_raises):
+            result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 0
+        assert "could not be deleted" in result.output
+        remaining = [p.name for p in cfg.documents_dir.iterdir()]
+        assert "locked.exe" in remaining
+        assert "ok.txt" not in remaining
+
+    def test_reset_skips_locked_directory(self, isolated_env):
+        """Locked directory is skipped, other items still deleted."""
+        (cfg.documents_dir / "ok.txt").write_text("deletable")
+        locked_dir = cfg.documents_dir / "locked_dir"
+        locked_dir.mkdir()
+        (locked_dir / "file.txt").write_text("nested")
+
+        original_rmtree = shutil.rmtree
+
+        def _rmtree_raises(path, *args, **kwargs):
+            if Path(path).name == "locked_dir":
+                raise OSError("[WinError 32] The process cannot access the file")
+            return original_rmtree(path, *args, **kwargs)
+
+        with mock.patch("lilbee.cli.helpers.shutil.rmtree", side_effect=_rmtree_raises):
+            result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 0
+        assert "could not be deleted" in result.output
+        remaining = [p.name for p in cfg.documents_dir.iterdir()]
+        assert "locked_dir" in remaining
+        assert "ok.txt" not in remaining
+
+    def test_reset_reports_skipped_in_json(self, isolated_env):
+        """JSON output includes skipped files."""
+        locked = cfg.documents_dir / "locked.exe"
+        locked.write_text("in use")
+
+        original_unlink = Path.unlink
+
+        def _unlink_raises(self, *args, **kwargs):
+            if self.name == "locked.exe":
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_unlink(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", _unlink_raises):
+            result = runner.invoke(app, ["--json", "reset", "--yes"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["deleted_docs"] == 0
+        assert len(data["skipped"]) == 1
+        assert "locked.exe" in data["skipped"][0]
+
+    def test_reset_all_locked_reports_all_skipped(self, isolated_env):
+        """When all files are locked, nothing is deleted and all are reported."""
+        (cfg.documents_dir / "a.txt").write_text("locked")
+        (cfg.documents_dir / "b.txt").write_text("locked")
+
+        def _unlink_always_raises(self, *args, **kwargs):
+            raise PermissionError("Access is denied")
+
+        with mock.patch.object(Path, "unlink", _unlink_always_raises):
+            result = runner.invoke(app, ["--json", "reset", "--yes"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["deleted_docs"] == 0
+        assert len(data["skipped"]) == 2
 
 
 class TestInit:

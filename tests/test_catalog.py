@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from huggingface_hub.hf_api import RepoSibling
 
 from lilbee import catalog
 from lilbee.catalog import (
@@ -173,15 +174,32 @@ class TestFeaturedModels:
 
 class TestHasGgufSiblings:
     def test_returns_true_when_gguf_present(self) -> None:
-        siblings = [{"rfilename": "model-Q4_K_M.gguf"}, {"rfilename": "README.md"}]
+        siblings = [RepoSibling(rfilename="model-Q4_K_M.gguf"), RepoSibling(rfilename="README.md")]
         assert catalog._has_gguf_siblings(siblings) is True
 
     def test_returns_false_when_no_gguf(self) -> None:
-        siblings = [{"rfilename": "model.bin"}, {"rfilename": "config.json"}]
+        siblings = [RepoSibling(rfilename="model.bin"), RepoSibling(rfilename="config.json")]
         assert catalog._has_gguf_siblings(siblings) is False
 
     def test_returns_false_for_empty_list(self) -> None:
         assert catalog._has_gguf_siblings([]) is False
+
+
+class TestEstimateSizeFromSiblings:
+    def test_returns_size_from_largest_gguf(self) -> None:
+        siblings = [
+            RepoSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
+            RepoSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
+        ]
+        result = catalog._estimate_size_from_siblings(siblings)
+        assert result == round(7_000_000_000 / (1024**3), 1)
+
+    def test_returns_zero_when_no_size(self) -> None:
+        siblings = [RepoSibling(rfilename="model.gguf", size=0)]
+        assert catalog._estimate_size_from_siblings(siblings) == 0.0
+
+    def test_returns_zero_for_empty_list(self) -> None:
+        assert catalog._estimate_size_from_siblings([]) == 0.0
 
 
 class TestFetchHfModels:
@@ -190,19 +208,22 @@ class TestFetchHfModels:
             {
                 "id": "user/model-7b-gguf",
                 "downloads": 5000,
-                "description": "A test model",
+                "cardData": {"description": "A test model"},
+                "pipeline_tag": "text-generation",
                 "siblings": [
-                    {"rfilename": "model-7b-Q4_K_M.gguf", "size": 4_000_000_000},
-                    {"rfilename": "model-7b-Q8_0.gguf", "size": 7_000_000_000},
+                    {"rfilename": "model-7b-Q4_K_M.gguf"},
+                    {"rfilename": "model-7b-Q8_0.gguf"},
                 ],
+                "gguf": {"total": 7_000_000_000, "architecture": "llama"},
             },
             {
                 "id": "user/model-13b-gguf",
                 "downloads": 1000,
-                "description": "",
+                "pipeline_tag": "text-generation",
                 "siblings": [
-                    {"rfilename": "model-13b-Q4_K_M.gguf", "size": 0},
+                    {"rfilename": "model-13b-Q4_K_M.gguf"},
                 ],
+                "gguf": {},
             },
         ]
 
@@ -223,21 +244,35 @@ class TestFetchHfModels:
         assert models[0].featured is False
         assert models[0].task == "chat"
 
-    def test_estimates_size_from_largest_gguf(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_estimates_size_from_gguf_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         page = catalog._fetch_hf_models()
         models = page.models
-        # Largest GGUF file is 7GB -> ~6.5 GB estimate
-        assert 6.0 < models[0].size_gb < 7.5
+        # gguf.total = 7_000_000_000 bytes -> ~6.5 GB
+        assert models[0].size_gb == round(7_000_000_000 / (1024**3), 1)
+        assert models[0].min_ram_gb == max(2.0, models[0].size_gb * 1.5)
 
-    def test_no_gguf_size_info_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_gguf_meta_falls_back_to_siblings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp = httpx.Response(200, json=self._mock_hf_response())
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         page = catalog._fetch_hf_models()
         models = page.models
-        # Second model has gguf sibling with size=0 -> fallback 0.0 (unknown)
+        # Second model has empty gguf metadata and siblings without size -> 0.0
         assert models[1].size_gb == 0.0
+
+    def test_gguf_expand_param_sent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify expand=gguf is included in API request params."""
+        mock_resp = httpx.Response(200, json=[])
+        captured_params: dict = {}
+
+        def capture_get(url: str, params: dict | None = None, **kwargs: Any) -> httpx.Response:
+            captured_params.update(params or {})
+            return mock_resp
+
+        monkeypatch.setattr(httpx, "get", capture_get)
+        catalog._fetch_hf_models()
+        assert "gguf" in captured_params.get("expand", [])
 
     def test_library_param_passed_to_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify library parameter is included in API request."""
@@ -290,7 +325,7 @@ class TestFetchHfModels:
             {
                 "id": "user/test",
                 "downloads": 0,
-                "description": "A" * 200,
+                "cardData": {"description": "A" * 200},
                 "siblings": [{"rfilename": "model.gguf"}],
             }
         ]
@@ -298,7 +333,7 @@ class TestFetchHfModels:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         page = catalog._fetch_hf_models()
         models = page.models
-        assert len(models[0].description) <= 120
+        assert len(models[0].description) == 120
 
     def test_uses_pipeline_tag_for_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
         data = [

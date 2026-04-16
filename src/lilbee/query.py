@@ -53,17 +53,37 @@ def _idf_weights(
     return {t: max(0.0, math.log(n / (1 + df.get(t, 0)))) for t in question_terms}
 
 
+_DEFAULT_RELEVANCE_WEIGHT = 0.5
+
+
+def _relevance_weight(result: SearchChunk) -> float:
+    """Return a [0, 1] relevance weight for distance-aware selection.
+
+    Hybrid results (relevance_score set): use directly.
+    Vector results (distance set): invert cosine distance.
+    Neither: neutral default.
+    """
+    if result.relevance_score is not None:
+        return min(1.0, max(0.0, result.relevance_score))
+    if result.distance is not None:
+        return max(0.0, 1.0 - result.distance)
+    return _DEFAULT_RELEVANCE_WEIGHT
+
+
 def _greedy_cover(
     chunk_tokens: list[set[str]],
     question_terms: set[str],
     term_weights: dict[str, float],
     budget: int,
+    relevance_weights: list[float] | None = None,
 ) -> list[int]:
     """Greedy weighted set cover: pick chunks that add the most uncovered weight.
 
     Standard (1 - 1/e) approximation for weighted set cover. Budget is
     always filled, falling back to retrieval order once no chunk can
-    contribute any new weight.
+    contribute any new weight. When *relevance_weights* is provided,
+    each chunk's IDF gain is scaled by its relevance so that far-away
+    chunks are penalised even when they share query terms.
     """
     selected: list[int] = []
     covered: set[str] = set()
@@ -74,6 +94,8 @@ def _greedy_cover(
         for pos, idx in enumerate(remaining):
             new_terms = (chunk_tokens[idx] & question_terms) - covered
             gain = sum(term_weights[t] for t in new_terms)
+            if relevance_weights is not None:
+                gain *= relevance_weights[idx]
             if gain > best_gain:
                 best_gain = gain
                 best_pos = pos
@@ -95,6 +117,50 @@ class ChatMessage(TypedDict):
 
     role: str
     content: str
+
+
+_CITE_REF_RE = re.compile(r"\[(\d+)\]")
+
+# Matches trailing LLM-generated citation blocks like "Key sources:", "Sources:",
+# "References:", "Bibliography:", "Citations:" (with optional markdown heading).
+_LLM_CITATION_BLOCK_RE = re.compile(
+    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n.*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_cited_indices(text: str) -> set[int]:
+    """Extract [N] citation references from LLM answer text."""
+    return {int(m.group(1)) for m in _CITE_REF_RE.finditer(text)}
+
+
+def strip_llm_citations(text: str) -> str:
+    """Remove LLM-generated trailing citation blocks from answer text."""
+    return _LLM_CITATION_BLOCK_RE.sub("", text).rstrip()
+
+
+def filter_results(
+    results: list[SearchChunk],
+    max_distance: float,
+    min_relevance_score: float = 0.0,
+) -> list[SearchChunk]:
+    """Drop results above max_distance or below min_relevance_score.
+
+    Hybrid results (relevance_score set) are checked against min_relevance_score.
+    Vector results (distance set) are checked against max_distance.
+    Results with neither score pass through.
+    """
+    if max_distance <= 0 and min_relevance_score <= 0:
+        return results
+    filtered: list[SearchChunk] = []
+    for r in results:
+        if r.relevance_score is not None:
+            if min_relevance_score > 0 and r.relevance_score < min_relevance_score:
+                continue
+        elif r.distance is not None and max_distance > 0 and r.distance > max_distance:
+            continue
+        filtered.append(r)
+    return filtered
 
 
 CONTEXT_TEMPLATE = """Context:
@@ -443,7 +509,8 @@ class Searcher:
         if not any(term_weights.values()):
             return results[:max_sources]
 
-        selected = _greedy_cover(chunk_tokens, question_terms, term_weights, max_sources)
+        weights = [_relevance_weight(r) for r in results]
+        selected = _greedy_cover(chunk_tokens, question_terms, term_weights, max_sources, weights)
         selected.sort()
         return [results[i] for i in selected]
 
@@ -507,6 +574,9 @@ class Searcher:
         mode, _ = self._parse_structured_query(question)
         if mode is None and self._config.wiki:
             results = prefer_wiki(results)
+        results = filter_results(
+            results, self._config.max_distance, self._config.min_relevance_score
+        )
         if not results:
             return None
         results = prepare_results(results)
@@ -580,8 +650,12 @@ class Searcher:
         result = self.ask_raw(question, top_k=top_k, history=history, options=options)
         if not result.sources:
             return result.answer
-        citations = deduplicate_sources(result.sources)
-        return f"{result.answer}\n\nSources:\n" + "\n".join(citations)
+        cited = _extract_cited_indices(result.answer)
+        used = [result.sources[i - 1] for i in sorted(cited) if 1 <= i <= len(result.sources)]
+        answer = strip_llm_citations(result.answer)
+        source_list = used if used else result.sources
+        citations = deduplicate_sources(source_list)
+        return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
     def ask_stream(
         self,
@@ -623,16 +697,22 @@ class Searcher:
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         raw_stream = self._provider.chat(provider_messages, stream=True, options=opts or None)
+        answer_parts: list[str] = []
         try:
             for st in filter_reasoning(
                 cast(Iterator[str], raw_stream), show=self._config.show_reasoning
             ):
                 if st.content:
+                    answer_parts.append(st.content)
                     yield st
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
         finally:
             if hasattr(raw_stream, "close"):
                 raw_stream.close()
-        citations = deduplicate_sources(results)
+        full_answer = "".join(answer_parts)
+        cited = _extract_cited_indices(full_answer)
+        used = [results[i - 1] for i in sorted(cited) if 1 <= i <= len(results)]
+        source_list = used if used else results
+        citations = deduplicate_sources(source_list)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
