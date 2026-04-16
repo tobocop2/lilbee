@@ -74,6 +74,41 @@ def _drain_textual_threads():
             thread.join(timeout=2.0)
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Kill lingering executor threads so xdist workers can exit.
+
+    Textual's @work(thread=True) creates asyncio ThreadPoolExecutor threads
+    that are non-daemon and block process exit. You can't set daemon on a
+    running thread. Instead, shut down the executor (which signals threads
+    to stop) then force-exit the process if threads still linger. The
+    trylast=True ensures this runs after xdist collects results but the
+    process-level os._exit prevents the hang in safe_terminate.
+    """
+    import concurrent.futures
+
+    # Try clean executor shutdown first.
+    try:
+        import asyncio
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            executor = getattr(loop, "_default_executor", None)
+            if isinstance(executor, concurrent.futures.ThreadPoolExecutor):
+                executor.shutdown(wait=False, cancel_futures=True)
+    except RuntimeError:
+        pass
+
+    # Force exit to prevent gc.collect() from hanging on llama-cpp destructors
+    # and xdist safe_terminate from hanging on executor threads.
+    import os
+
+    os._exit(exitstatus or 0)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_cfg(tmp_path):
     """Snapshot and restore cfg for every test to prevent cross-test pollution."""
