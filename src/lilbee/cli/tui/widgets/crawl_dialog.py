@@ -23,6 +23,10 @@ class CrawlParams:
     max_pages: int
 
 
+_DEFAULT_DEPTH = 0
+_DEFAULT_MAX_PAGES = 50
+
+
 class CrawlDialog(ModalScreen[CrawlParams | None]):
     """Modal dialog that collects URL, depth, and max-pages for a crawl."""
 
@@ -43,13 +47,13 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             )
             yield Label(msg.CRAWL_DIALOG_DEPTH_LABEL, classes="crawl-field-label")
             yield Input(
-                value="0",
+                value=str(_DEFAULT_DEPTH),
                 placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
                 id="crawl-depth-input",
             )
             yield Label(msg.CRAWL_DIALOG_MAX_PAGES_LABEL, classes="crawl-field-label")
             yield Input(
-                value="50",
+                value=str(_DEFAULT_MAX_PAGES),
                 placeholder=msg.CRAWL_DIALOG_MAX_PAGES_PLACEHOLDER,
                 id="crawl-max-pages-input",
             )
@@ -103,7 +107,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return
 
         try:
-            depth = self._parse_non_negative_int(depth_str, 0)
+            depth = self._parse_non_negative_int(depth_str, _DEFAULT_DEPTH)
         except ValueError:
             error_widget.update(
                 msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_DEPTH_LABEL)
@@ -111,7 +115,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return
 
         try:
-            max_pages = self._parse_non_negative_int(max_pages_str, 50)
+            max_pages = self._parse_non_negative_int(max_pages_str, _DEFAULT_MAX_PAGES)
         except ValueError:
             error_widget.update(
                 msg.CRAWL_DIALOG_INVALID_NUMBER.format(field=msg.CRAWL_DIALOG_MAX_PAGES_LABEL)

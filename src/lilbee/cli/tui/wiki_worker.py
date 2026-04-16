@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.config import cfg
 from lilbee.services import get_services
 
 if TYPE_CHECKING:
@@ -22,22 +21,23 @@ log = logging.getLogger(__name__)
 
 WIKI_SUBCMD_GENERATE = "generate"
 WIKI_STAGE_PREPARING = "preparing"
+WIKI_STAGE_GENERATING = "generating"
+WIKI_STAGE_FAITHFULNESS = "faithfulness_check"
+WIKI_STAGE_FAILED = "failed"
 
 WIKI_STAGE_FRACTIONS: dict[str, float] = {
     WIKI_STAGE_PREPARING: 0.0,
-    "generating": 0.33,
-    "faithfulness_check": 0.67,
+    WIKI_STAGE_GENERATING: 0.33,
+    WIKI_STAGE_FAITHFULNESS: 0.67,
 }
 
 
 def resolve_wiki_targets(requested: str | None = None) -> list[str] | None:
     """Resolve source names for wiki generation.
 
-    Returns a list of source names, or None if validation fails (caller should
-    notify the user with the appropriate message).
+    Callers must check ``cfg.wiki`` before calling. Returns a list of source
+    names, or None when no sources are indexed or *requested* is not found.
     """
-    if not cfg.wiki:
-        return None
     try:
         sources = get_services().store.get_sources()
     except Exception:
@@ -113,7 +113,7 @@ def run_wiki_generation(
                 source_idx: int = idx,
             ) -> None:
                 nonlocal last_error
-                if stage == "failed":
+                if stage == WIKI_STAGE_FAILED:
                     last_error = str(_data.get("error", msg.CMD_WIKI_UNKNOWN_ERROR))
                     return
                 fraction = WIKI_STAGE_FRACTIONS.get(stage, 0.0)
