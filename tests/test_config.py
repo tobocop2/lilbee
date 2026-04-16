@@ -595,7 +595,7 @@ class TestEmptyStringValidation:
             )
 
     def test_empty_vision_model_allowed(self):
-        """vision_model is nullable — empty string is valid."""
+        """vision_model is nullable -- empty string is valid."""
         c = Config(
             data_root=Path("/tmp"),
             documents_dir=Path("/tmp/docs"),
@@ -614,3 +614,65 @@ class TestEmptyStringValidation:
             vision_model="",
         )
         assert c.vision_model == ""
+
+
+def _minimal_config_kwargs():
+    """Minimal required kwargs for Config construction."""
+    return {
+        "data_root": Path("/tmp"),
+        "documents_dir": Path("/tmp/docs"),
+        "data_dir": Path("/tmp/data"),
+        "lancedb_dir": Path("/tmp/data/lancedb"),
+        "chat_model": "qwen3:8b",
+        "embedding_model": "nomic-embed-text",
+        "embedding_dim": 768,
+        "chunk_size": 512,
+        "chunk_overlap": 100,
+        "max_embed_chars": 2000,
+        "top_k": 10,
+        "max_distance": 0.7,
+        "system_prompt": "You are helpful.",
+        "ignore_dirs": frozenset(),
+    }
+
+
+class TestSemanticChunkingConfig:
+    """Tests for semantic_chunking and topic_threshold config fields."""
+
+    def test_semantic_chunking_default_true(self):
+        from lilbee.config import cfg as live_cfg
+
+        assert live_cfg.semantic_chunking is True
+
+    def test_topic_threshold_default(self):
+        from lilbee.config import cfg as live_cfg
+
+        assert live_cfg.topic_threshold == pytest.approx(0.75)
+
+    def test_topic_threshold_validation_range(self):
+        """topic_threshold must be between 0.0 and 1.0."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Config(topic_threshold=-0.1, **_minimal_config_kwargs())
+
+        with pytest.raises(ValidationError):
+            Config(topic_threshold=1.1, **_minimal_config_kwargs())
+
+    def test_topic_threshold_valid_boundaries(self):
+        c = Config(topic_threshold=0.0, **_minimal_config_kwargs())
+        assert c.topic_threshold == 0.0
+
+        c = Config(topic_threshold=1.0, **_minimal_config_kwargs())
+        assert c.topic_threshold == 1.0
+
+    def test_semantic_chunking_env_var(self, monkeypatch):
+        """LILBEE_SEMANTIC_CHUNKING env var controls the setting."""
+        monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "false")
+        from lilbee.config import _load_bool
+
+        assert _load_bool("SEMANTIC_CHUNKING", True) is False
+
+    def test_semantic_chunking_can_be_disabled(self):
+        c = Config(semantic_chunking=False, **_minimal_config_kwargs())
+        assert c.semantic_chunking is False

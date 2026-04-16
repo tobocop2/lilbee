@@ -7,7 +7,10 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+if TYPE_CHECKING:
+    from kreuzberg import ChunkingConfig, ExtractionConfig
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -47,6 +50,22 @@ _MIN_MEANINGFUL_CHARS = 50
 
 # Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
 _CHARS_PER_TOKEN = 4
+
+
+def _chunk_vision_page(text: str) -> list[str]:
+    """Chunk a vision OCR page, using semantic chunking when enabled."""
+    if not text or not text.strip():
+        return []
+    if cfg.semantic_chunking:
+        from kreuzberg import ExtractionConfig, extract_bytes_sync
+
+        chunking = _build_chunking_config(semantic=True)
+        config = ExtractionConfig(chunking=chunking)
+        result = extract_bytes_sync(text.encode("utf-8"), "text/plain", config=config)
+        if result.chunks:
+            return [c.content for c in result.chunks]
+        return []
+    return chunk_text(text)
 
 
 def _has_meaningful_text(result: Any) -> bool:
@@ -198,14 +217,30 @@ def classify_file(path: Path) -> str | None:
     return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def kreuzberg_config(content_type: str) -> object:
-    """Build kreuzberg ExtractionConfig for a given content type."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
+def _build_chunking_config(*, semantic: bool = False) -> "ChunkingConfig":
+    """Build kreuzberg ChunkingConfig, optionally with semantic chunking."""
+    from kreuzberg import ChunkingConfig
 
-    chunking = ChunkingConfig(
+    if semantic and cfg.semantic_chunking:
+        # Semantic chunker auto-derives chunk budget from document structure.
+        return ChunkingConfig(
+            chunker_type="semantic",
+            topic_threshold=cfg.topic_threshold,
+            max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
+        )
+
+    return ChunkingConfig(
         max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
         max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
     )
+
+
+def kreuzberg_config(content_type: str) -> "ExtractionConfig":
+    """Build kreuzberg ExtractionConfig for a given content type."""
+    from kreuzberg import ExtractionConfig, PageConfig
+
+    use_semantic = content_type == "pdf"
+    chunking = _build_chunking_config(semantic=use_semantic)
 
     if content_type == "pdf":
         return ExtractionConfig(
@@ -215,14 +250,11 @@ def kreuzberg_config(content_type: str) -> object:
     return ExtractionConfig(chunking=chunking, output_format="markdown")
 
 
-def kreuzberg_ocr_config() -> object:
+def kreuzberg_ocr_config() -> "ExtractionConfig":
     """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
+    from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
-    chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * _CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * _CHARS_PER_TOKEN,
-    )
+    chunking = _build_chunking_config(semantic=True)
     return ExtractionConfig(
         chunking=chunking,
         pages=PageConfig(extract_pages=True, insert_page_markers=False),
@@ -230,7 +262,7 @@ def kreuzberg_ocr_config() -> object:
     )
 
 
-async def _try_tesseract_ocr(path: Path, source_name: str, fallback: object) -> object:
+async def _try_tesseract_ocr(path: Path, source_name: str, fallback: Any) -> Any:
     """Attempt Tesseract OCR on a scanned PDF. Returns the OCR result or *fallback* on failure."""
     try:
         from kreuzberg import extract_file
@@ -273,7 +305,9 @@ async def _vision_fallback(
     if not page_texts:
         return []
 
-    all_chunks = [(page_num, chunk) for page_num, text in page_texts for chunk in chunk_text(text)]
+    all_chunks = [
+        (page_num, chunk) for page_num, text in page_texts for chunk in _chunk_vision_page(text)
+    ]
     if not all_chunks:
         return []
 

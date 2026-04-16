@@ -48,6 +48,8 @@ class Config(BaseModel):
     embedding_dim: int = Field(ge=1)
     chunk_size: int = Field(ge=1)
     chunk_overlap: int = Field(ge=0)
+    semantic_chunking: bool = True
+    topic_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     max_embed_chars: int = Field(ge=1)
     top_k: int = Field(ge=1)
     max_distance: float = Field(ge=0.0)
@@ -117,6 +119,10 @@ class Config(BaseModel):
             embedding_dim=_load_setting(data_root, "embedding_dim", "EMBEDDING_DIM", 768, int),
             chunk_size=_load_setting(data_root, "chunk_size", "CHUNK_SIZE", 512, int),
             chunk_overlap=_load_setting(data_root, "chunk_overlap", "CHUNK_OVERLAP", 100, int),
+            semantic_chunking=_load_bool("SEMANTIC_CHUNKING", True),
+            topic_threshold=_load_setting(
+                data_root, "topic_threshold", "TOPIC_THRESHOLD", 0.75, float
+            ),
             max_embed_chars=_load_setting(
                 data_root, "max_embed_chars", "MAX_EMBED_CHARS", 2000, int
             ),
@@ -144,6 +150,14 @@ class Config(BaseModel):
             num_ctx=_load_setting(data_root, "num_ctx", "NUM_CTX", None, int),
             seed=_load_setting(data_root, "seed", "SEED", None, int),
         )
+
+
+def _load_bool(env_var: str, default: bool) -> bool:
+    """Load a boolean from LILBEE_<ENV>. Accepts true/false/1/0/yes/no."""
+    raw = os.environ.get(f"LILBEE_{env_var}")
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes")
 
 
 def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:
