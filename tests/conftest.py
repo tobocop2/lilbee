@@ -102,7 +102,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     executor = getattr(loop, "_default_executor", None)
     if isinstance(executor, concurrent.futures.ThreadPoolExecutor):
-        executor.shutdown(wait=True, cancel_futures=True)
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 @pytest.fixture(autouse=True)
