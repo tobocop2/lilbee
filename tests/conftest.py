@@ -46,67 +46,45 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
 
 @pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
-    """Prevent ModelBar._scan_models from doing real work in tests.
+    """Prevent ModelBar._scan_models from spawning a worker thread.
 
     ModelBar.on_mount calls _scan_models which is @work(thread=True).
-    The real function does registry scans, HTTP calls, and litellm imports.
-    Mocking it to return empty results makes the worker thread complete
-    instantly, avoiding both thread accumulation and per-test join overhead.
+    The thread uses asyncio's ThreadPoolExecutor, creating non-daemon
+    threads that block xdist worker process exit. Patching _scan_models
+    itself (not just the function inside it) prevents the thread from
+    being created at all.
 
     Tests that need real classification use @pytest.mark.real_model_classify.
     """
     if "real_model_classify" not in {m.name for m in request.node.iter_markers()}:
-        monkeypatch.setattr(
-            "lilbee.cli.tui.widgets.model_bar._classify_installed_models",
-            lambda: ([], []),
-        )
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        monkeypatch.setattr(ModelBar, "_scan_models", lambda self: None)
 
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Safety net: join any Textual worker threads that outlive the test."""
-    before = set(threading.enumerate())
-    yield
-    for thread in threading.enumerate():
-        if thread in before or thread is threading.current_thread():
-            continue
-        if thread.is_alive():
-            thread.join(timeout=2.0)
+    """Shut down asyncio executor after each test to prevent thread leaks.
 
-
-@pytest.hookimpl(trylast=True)
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Kill lingering executor threads so xdist workers can exit.
-
-    Textual's @work(thread=True) creates asyncio ThreadPoolExecutor threads
-    that are non-daemon and block process exit. You can't set daemon on a
-    running thread. Instead, shut down the executor (which signals threads
-    to stop) then force-exit the process if threads still linger. The
-    trylast=True ensures this runs after xdist collects results but the
-    process-level os._exit prevents the hang in safe_terminate.
+    Every @work(thread=True) in Textual uses asyncio's ThreadPoolExecutor.
+    The pool creates non-daemon threads that persist for the event loop's
+    lifetime. Without cleanup, they accumulate across tests and block xdist
+    worker process exit. Shutting down the executor after each test ensures
+    pool threads terminate promptly.
     """
+    yield
+    import asyncio
     import concurrent.futures
 
-    # Try clean executor shutdown first.
     try:
-        import asyncio
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            loop = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         if not loop.is_closed():
             executor = getattr(loop, "_default_executor", None)
             if isinstance(executor, concurrent.futures.ThreadPoolExecutor):
-                executor.shutdown(wait=False, cancel_futures=True)
+                executor.shutdown(wait=True, cancel_futures=True)
     except RuntimeError:
         pass
 
-    # Force exit to prevent gc.collect() from hanging on llama-cpp destructors
-    # and xdist safe_terminate from hanging on executor threads.
-    import os
-
-    os._exit(exitstatus or 0)
 
 
 @pytest.fixture(autouse=True)
