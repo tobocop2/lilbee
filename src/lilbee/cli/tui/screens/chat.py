@@ -400,6 +400,16 @@ class ChatScreen(Screen[None]):
             worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
+    def _cmd_clear(self, _args: str) -> None:
+        for worker in self.workers:
+            worker.cancel()
+        self.streaming = False
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log.remove_children()
+        with self._history_lock:
+            self._history.clear()
+        self.notify(msg.CMD_CLEAR)
+
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
             self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
