@@ -97,6 +97,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "_cmd_help", aliases=("/h",), help_text="Show help"),
     SlashCommand("/version", "_cmd_version", help_text="Show version"),
     SlashCommand("/cancel", "_cmd_cancel", help_text="Cancel active operations"),
+    SlashCommand("/clear", "_cmd_clear", help_text="Clear chat history"),
     SlashCommand("/quit", "_cmd_quit", aliases=("/q", "/exit"), help_text="Exit"),
 )
 
