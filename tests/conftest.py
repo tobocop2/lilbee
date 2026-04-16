@@ -64,12 +64,7 @@ def _suppress_model_scan(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _drain_textual_threads():
-    """Join Textual worker threads after each test.
-
-    Textual's @work(thread=True) uses run_in_executor which spawns thread
-    pool threads. These are non-daemon and persist for the event loop's
-    lifetime. Join them after each test to prevent accumulation.
-    """
+    """Safety net: join any Textual worker threads that outlive the test."""
     before = set(threading.enumerate())
     yield
     for thread in threading.enumerate():
@@ -77,32 +72,6 @@ def _drain_textual_threads():
             continue
         if thread.is_alive():
             thread.join(timeout=2.0)
-
-
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Shut down asyncio executor threads so xdist workers can exit cleanly.
-
-    Textual's @work(thread=True) creates asyncio executor pool threads that
-    are non-daemon and persist after all tests finish. xdist's safe_terminate
-    waits for all non-daemon threads, causing an indefinite hang if any
-    executor threads are still alive. Shutting down the executor here ensures
-    they terminate before xdist tries to exit the process.
-    """
-    import asyncio
-    import concurrent.futures
-    import warnings
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return
-    if loop.is_closed():
-        return
-    executor = getattr(loop, "_default_executor", None)
-    if isinstance(executor, concurrent.futures.ThreadPoolExecutor):
-        executor.shutdown(wait=True, cancel_futures=True)
 
 
 @pytest.fixture(autouse=True)

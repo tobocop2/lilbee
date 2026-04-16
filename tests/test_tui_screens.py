@@ -1264,10 +1264,14 @@ async def test_chat_slash_reset_pushes_confirm_dialog():
 
 async def test_chat_slash_reset_confirm_executes():
     """Confirming the reset dialog calls perform_reset."""
+    from lilbee.cli.helpers import ResetResult
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch("lilbee.cli.helpers.perform_reset") as mock_reset:
-            mock_reset.return_value = None
+            mock_reset.return_value = ResetResult(
+                deleted_docs=0, deleted_data=0, documents_dir="d", data_dir="d"
+            )
             app.screen._handle_slash("/reset")
             await _pilot.pause()
             await _pilot.press("y")
@@ -1298,6 +1302,24 @@ async def test_chat_slash_reset_error_notifies():
                 await _pilot.press("y")
                 await _pilot.pause()
                 assert any("oops" in str(c) for c in mock_notify.call_args_list)
+
+
+async def test_chat_slash_reset_partial_notifies_warning():
+    """When some files can't be deleted, a warning notification is shown."""
+    from lilbee.cli.helpers import ResetResult
+
+    partial = ResetResult(
+        deleted_docs=1, deleted_data=0, skipped=["/locked.exe"], documents_dir="d", data_dir="d"
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch("lilbee.cli.helpers.perform_reset", return_value=partial):
+            with patch.object(app.screen, "notify") as mock_notify:
+                app.screen._handle_slash("/reset")
+                await _pilot.pause()
+                await _pilot.press("y")
+                await _pilot.pause()
+                assert any("could not be deleted" in str(c) for c in mock_notify.call_args_list)
 
 
 async def test_chat_slash_set_valid():
