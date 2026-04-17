@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from lilbee.cli import app
 from lilbee.config import cfg
+from lilbee.server.auth import server_json_path
 
 runner = CliRunner()
 
@@ -31,9 +32,9 @@ def isolated_env(tmp_path):
 
 
 class TestTokenCommand:
-    def test_prints_token_when_server_running(self, tmp_path):
-        server_json = cfg.data_dir / "server.json"
-        server_json.write_text(json.dumps({"token": "test-secret-token"}))
+    def test_prints_token_when_server_running(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"token": "test-secret-token"}))
 
         result = runner.invoke(app, ["token"])
         assert result.exit_code == 0
@@ -44,9 +45,9 @@ class TestTokenCommand:
         assert result.exit_code == 1
         assert "No running server found" in result.output
 
-    def test_json_mode_prints_token(self, tmp_path):
-        server_json = cfg.data_dir / "server.json"
-        server_json.write_text(json.dumps({"token": "json-token-val"}))
+    def test_json_mode_prints_token(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"token": "json-token-val"}))
 
         result = runner.invoke(app, ["--json", "token"])
         assert result.exit_code == 0
@@ -58,6 +59,31 @@ class TestTokenCommand:
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert "error" in data
+
+    def test_corrupted_server_json_exits_1(self):
+        path = server_json_path()
+        path.write_text("not valid json{{{")
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 1
+        assert "Could not read server.json" in result.output
+
+    def test_corrupted_server_json_json_mode(self):
+        path = server_json_path()
+        path.write_text("not valid json{{{")
+
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "Could not read server.json" in data["error"]
+
+    def test_missing_token_key_returns_empty(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"other": "field"}))
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 0
 
 
 class TestServeCommand:

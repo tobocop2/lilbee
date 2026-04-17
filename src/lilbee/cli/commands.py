@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -658,18 +659,27 @@ def token(
     use_global: bool = global_option,
 ) -> None:
     """Print the auth token for a running server."""
-    import json
+    from lilbee.server.auth import server_json_path
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    path = cfg.data_dir / "server.json"
+    path = server_json_path()
     if not path.exists():
         if cfg.json_mode:
             json_output({"error": "No running server found"})
         else:
             console.print("No running server found (server.json missing).")
-        raise typer.Exit(1)
-    data = json.loads(path.read_text())
-    tok = data.get("token", "")
+        raise SystemExit(1)
+    try:
+        data = json.loads(path.read_text())
+        tok = data.get("token", "")
+    except (json.JSONDecodeError, OSError) as exc:
+        if cfg.json_mode:
+            json_output({"error": f"Could not read server.json: {exc}"})
+        else:
+            console.print(
+                f"[{theme.ERROR}]Error:[/{theme.ERROR}] Could not read server.json: {exc}"
+            )
+        raise SystemExit(1) from None
     if cfg.json_mode:
         json_output({"token": tok})
         return
