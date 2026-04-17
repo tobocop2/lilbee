@@ -71,11 +71,16 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - **100% test coverage required** — enforced by `pytest-cov` with `fail_under = 100`
 - Write tests BEFORE or alongside implementation, not after
 - Every public function MUST have at least one test
+- **Every test must assert something meaningful** — no zero-assertion coverage padding
 - Mock all external dependencies (LLM providers, filesystem I/O where needed) — tests must run without a live server
 - Use `pytest.mark.skipif` only for integration tests that genuinely require live services
 - Use `tmp_path` fixtures for filesystem tests — never write to real paths
 - Test edge cases and error paths, not just the happy path
 - Tests are documentation — name them descriptively (`test_add_nonexistent_fails`, not `test_add_3`)
+- **Never run tests in background** — user must see output
+- **Kill tests that hang past 2-3 minutes** — investigate the hang, don't wait
+- **Integration tests must test real multi-system flows**, not mocked unit test duplicates
+- Target only affected test files during development; full suite once at the end
 
 ### DRY & Modularity
 - **Don't Repeat Yourself** — extract shared logic into helpers when duplicated
@@ -90,7 +95,8 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - No LangChain — provider abstraction (no raw SDK calls)
 - Type hints on all public functions
 - Dataclasses for structured return types (not raw dicts)
-- Named constants for magic numbers — with descriptive comments
+- **Named constants for magic numbers AND magic strings** — never use raw string literals when a constant exists. Grep globally for the raw value of any new constant to ensure no duplicates remain.
+- **No positional array indexes** — use named constants or membership checks, not `array[0]`
 - Descriptive variable names — `pending_segments` not `current`, `chunk_size` not `n`
 - Logging with `logging.getLogger(__name__)` — no bare `except: pass`
 - No hardcoded values — all configurable through `config.py` with env var overrides
@@ -98,6 +104,11 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Lazy imports in CLI callbacks only for heavy third-party deps or circular imports
 - Linting: `ruff check` + `ruff format` (line length 100)
 - Type checking: `mypy` with strict settings
+- **No em dashes (—)** — use periods or commas instead
+- **No divider comments** (`# ------`) for grouping — use modules or classes instead
+- **Annotate `isinstance` guards** with a comment explaining why the check is needed (e.g. untyped frontmatter, test compatibility)
+- Use literal unicode chars (`★`) not escapes (`\u2605`); extract to named constants
+- **No filterwarnings** without explicit user approval; fix warnings at the source
 
 ### Configuration & State
 - **No mutable module-level globals** — all config lives in the `Config` dataclass singleton (`from lilbee.config import cfg`)
@@ -128,6 +139,13 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - Never save/restore individual fields manually — snapshot the whole object
 - Never touch internal module state (e.g. `store_mod.LANCEDB_DIR`) — only mutate `cfg`
 
+### TUI Rules (Textual)
+- **No inline CSS** — screens and modals use `.tcss` files via `CSS_PATH`, not `DEFAULT_CSS` strings. Widgets that don't support `CSS_PATH` may use `DEFAULT_CSS` or load from a file.
+- **CSS class/ID sync** — every CSS class or ID in a `.tcss` file must have a matching widget in the `.py` file and vice versa
+- **TUI tests use `pilot.press()`** — not `action_*()` method calls. `Button.press()` is acceptable since it's a public widget API, not an action bypass.
+- **All TUI design must reference ~/projects/toad** as the canonical implementation for patterns
+- **All user-facing text in `messages.py`** — inline strings in screens and widgets are forbidden
+
 ### Tests Before Deletion
 - When removing code, first make existing tests pass with the new implementation, then delete redundant tests
 - Never delete tests and implementation in the same step
@@ -145,6 +163,22 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - CI runs on every push and PR
 - **Never git push without explicit user approval** — ask before pushing
 - No Co-Authored-By lines in commits
+- No Claude Code attribution in PRs, commits, or docs
+- No "Phase N" numbering in commit messages
+- Don't commit specs to repo; `docs/superpowers/` is gitignored
+- **Pre-commit checklist**: `make format && make lint && make format-check` before every commit
+- **Pre-push checklist**: run full review workflow, verify code compiles, run affected tests. Never push optimistically.
+- PR descriptions: short, human-readable, no implementation details or internal names, no test plan sections
+- Don't rename branches with open PRs; use `gh pr edit` instead
+- Use worktrees for parallel work, separate branches for distinct features
+- Never stop to ask "should I keep going?" during multi-phase work. Just finish.
+- Fix root causes individually, not downstream choke-point bandaids
+
+### QA Protocol
+- **QA must run in a dedicated worktree** — branch drift corrupts runs
+- QA sessions: **file bugs as beads issues, don't fix inline**
+- Use tmux send-keys for automated QA of TUI features
+- Always ask before creating issues, PRs, or anything externally visible
 
 ### Code Review Standards
 - **Low complexity** — max ~3 branches per function, extract helpers when exceeded
@@ -155,6 +189,17 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - **Minimal changes** — make smallest possible edit, don't rewrite large blocks for small fixes
 - **Exhaustive review** — multiple review passes until no new findings emerge
 - **Compile before test** — verify code compiles before running tests
+
+### Self-Review Checklist (before every push)
+Run this mentally or explicitly before claiming work is done:
+1. **Trace consumers** — for every changed file, grep for who imports it. Go 2-3 levels deep for shared modules (types, constants, config).
+2. **Constants vs raw strings** — grep globally for the raw value of any new constant. Every occurrence must use the constant.
+3. **CSS sync** — every class/ID in `.tcss` has a matching widget in `.py` and vice versa.
+4. **Mock signatures** — after any refactor, verify test patches target the correct module path (patch where imported, not where defined).
+5. **Dead code** — removed/renamed functions have no remaining references. No orphaned imports.
+6. **Test coverage** — every new code path has a test with meaningful assertions. No untested branches.
+7. **Type changes** — field added/removed? All constructors, factories, serializers updated?
+8. **Export changes** — new export actually needed? Removed export has no dangling imports?
 
 ### Behavior Learning (floop)
 - `floop` captures corrections and learned behaviors across sessions
