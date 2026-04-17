@@ -27,7 +27,8 @@ def read_only(fn: F) -> F:
     return fn
 
 
-def _server_json_path() -> Path:
+def server_json_path() -> Path:
+    """Return the path to the server session file."""
     return cfg.data_dir / "server.json"
 
 
@@ -43,7 +44,7 @@ class SessionManager:
     def generate(self) -> str:
         """Generate a random session token and persist to server.json."""
         self.token = secrets.token_urlsafe(32)
-        path = _server_json_path()
+        path = server_json_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}))
         if sys.platform != "win32":
@@ -53,7 +54,7 @@ class SessionManager:
     def cleanup(self) -> None:
         """Remove server.json on shutdown and clear the in-memory token."""
         self.token = None
-        path = _server_json_path()
+        path = server_json_path()
         path.unlink(missing_ok=True)
 
     def validate(self, auth_header: str) -> bool:
