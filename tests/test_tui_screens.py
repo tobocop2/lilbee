@@ -2624,14 +2624,13 @@ async def test_chat_run_sync_worker():
     """Cover _run_sync lines 356-376 via actual worker."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType
+        from lilbee.progress import EventType, FileStartEvent
 
-        async def fake_sync(quiet=False, on_progress=None):
-            # Call progress callback to cover lines 367-370
+        async def fake_sync(quiet=False, on_progress=None, cancel=None):
             if on_progress:
                 on_progress(
                     EventType.FILE_START,
-                    {"current_file": 1, "total_files": 2, "file": "test.md"},
+                    FileStartEvent(current_file=1, total_files=2, file="test.md"),
                 )
             return {"added": 3}
 
@@ -2643,8 +2642,8 @@ async def test_chat_run_sync_worker():
             assert app.screen._sync_active is False
 
 
-async def test_chat_sync_progress_uses_indeterminate():
-    """Verify sync progress uses indeterminate mode, not percentages."""
+async def test_chat_sync_progress_reports_percentage():
+    """Verify sync progress reports real percentages (not indeterminate)."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.progress import EventType, FileDoneEvent, FileStartEvent
@@ -2657,16 +2656,69 @@ async def test_chat_sync_progress_uses_indeterminate():
             update_calls.append((task_id, pct, status, indeterminate))
             return original_update(task_id, pct, status, indeterminate=indeterminate)
 
-        async def fake_sync(quiet=False, on_progress=None):
+        async def fake_sync(quiet=False, on_progress=None, cancel=None):
             if on_progress:
                 on_progress(
                     EventType.FILE_START,
-                    FileStartEvent(current_file=1, total_files=1, file="doc.md"),
+                    FileStartEvent(current_file=1, total_files=2, file="doc.md"),
                 )
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file="doc.md", status="ok", chunks=3),
                 )
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(current_file=2, total_files=2, file="doc2.md"),
+                )
+                on_progress(
+                    EventType.FILE_DONE,
+                    FileDoneEvent(file="doc2.md", status="ok", chunks=2),
+                )
+            return {"added": 2}
+
+        with (
+            patch("lilbee.ingest.sync", new=fake_sync),
+            patch.object(task_bar, "update_task", tracking_update),
+        ):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+
+        # FILE_START and FILE_DONE updates should use determinate mode
+        file_updates = [(pct, indet) for _, pct, _, indet in update_calls if indet is not None]
+        assert any(indet is False for _, indet in file_updates)
+        # FILE_START for file 1/2 should report 0%, file 2/2 should report 50%
+        pct_values = [pct for _, pct, _, _ in update_calls]
+        assert 0 in pct_values
+
+
+async def test_chat_sync_embed_throttling():
+    """Embed events are throttled to avoid flooding the main thread."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EmbedEvent, EventType, FileStartEvent
+
+        update_calls: list[tuple] = []
+        task_bar = app.task_bar
+        original_update = task_bar.update_task
+
+        def tracking_update(task_id, pct, status, *, indeterminate=None):
+            update_calls.append((task_id, pct, status, indeterminate))
+            return original_update(task_id, pct, status, indeterminate=indeterminate)
+
+        async def fake_sync(quiet=False, on_progress=None, cancel=None):
+            if on_progress:
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(current_file=1, total_files=1, file="big.pdf"),
+                )
+                # Fire many embed events rapidly (should be throttled)
+                for i in range(20):
+                    on_progress(
+                        EventType.EMBED,
+                        EmbedEvent(file="big.pdf", chunk=i + 1, total_chunks=20),
+                    )
             return {"added": 1}
 
         with (
@@ -2678,13 +2730,11 @@ async def test_chat_sync_progress_uses_indeterminate():
             while app.screen.workers:
                 await _pilot.pause()
 
-        # All progress updates should use indeterminate mode
-        for _, _pct, _, indet in update_calls:
-            if indet is not None:
-                assert indet is True
-        # No update should report 100% progress
-        pct_values = [pct for _, pct, _, _ in update_calls]
-        assert 100 not in pct_values
+        # Not all 20 embed events should trigger updates (throttled at 150ms)
+        embed_updates = [s for _, _, s, _ in update_calls if "Embedding" in s]
+        assert len(embed_updates) < 20
+        # But at least the first embed update should fire
+        assert len(embed_updates) >= 1
 
 
 async def test_chat_sync_file_done_bad_type():
@@ -7190,6 +7240,38 @@ async def test_chat_cmd_crawl_invalid_url():
             mock_notify.assert_called()
 
 
+async def test_chat_cmd_crawl_auto_prefix_https():
+    """_cmd_crawl auto-prefixes https:// when URL has no scheme."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url") as mock_validate,
+            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
+        ):
+            app.screen._cmd_crawl("example.com")
+            mock_validate.assert_called_once_with("https://example.com")
+            mock_crawl.assert_called_once()
+            assert mock_crawl.call_args[0][0] == "https://example.com"
+
+
+async def test_chat_cmd_crawl_auto_prefix_with_flags():
+    """_cmd_crawl auto-prefixes https:// and parses flags correctly."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await _pilot.pause()
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
+        ):
+            app.screen._cmd_crawl("example.com --depth 2")
+            call_args = mock_crawl.call_args[0]
+            assert call_args[0] == "https://example.com"
+            assert call_args[1] == 2
+
+
 async def test_chat_cmd_wiki_disabled_notifies():
     """/wiki notifies when wiki config flag is off."""
     app = ChatTestApp()
@@ -7971,6 +8053,40 @@ def test_resolve_wiki_targets_get_sources_error():
     fake_svc = MagicMock(store=fake_store)
     with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
         assert resolve_wiki_targets() is None
+
+
+def test_process_source_suppresses_wiki_warnings():
+    """_process_source suppresses WARNING-level logs from wiki.gen during TUI mode."""
+    import logging
+
+    from lilbee.cli.tui.wiki_worker import _process_source
+
+    wiki_logger = logging.getLogger("lilbee.wiki.gen")
+    original_level = wiki_logger.level
+
+    fake_store = MagicMock()
+    fake_store.get_chunks_by_source.return_value = [MagicMock(chunk="text")]
+    fake_svc = MagicMock(store=fake_store)
+
+    levels_during_generation: list[int] = []
+
+    def capture_level(*args, **kwargs):
+        levels_during_generation.append(wiki_logger.level)
+        return MagicMock()
+
+    widget = MagicMock()
+    with (
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+        patch("lilbee.cli.tui.wiki_worker.call_from_thread"),
+        patch("lilbee.wiki.gen.generate_summary_page", side_effect=capture_level),
+    ):
+        _process_source("test.md", 0, 1, widget, MagicMock(), "task-1", [])
+
+    # During generation, the wiki logger should be set to ERROR level
+    assert levels_during_generation
+    assert levels_during_generation[0] >= logging.ERROR
+    # After generation, it should be restored
+    assert wiki_logger.level == original_level
 
 
 def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:

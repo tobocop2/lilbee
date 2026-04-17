@@ -252,7 +252,7 @@ class TestTaskBar:
             bar.complete_task(task_id)
             await pilot.pause()
             # After flash timer fires, task is removed
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
     async def test_queue_advances_on_complete(self) -> None:
@@ -267,7 +267,7 @@ class TestTaskBar:
             bar.add_task("Sync B", "sync")
             bar.complete_task(t1)
             # After flash, next task should advance
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             active = bar.queue.active_task
             assert active is not None
             assert active.name == "Sync B"
@@ -309,7 +309,7 @@ class TestTaskBar:
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
             bar.fail_task(task_id, "Network error")
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
@@ -2552,7 +2552,7 @@ class TestTaskBarAdditional:
             assert called.is_set()
 
     async def test_label_contains_task_center_hint(self) -> None:
-        """The status label includes the 'press t for Task Center' hint."""
+        """The status label includes the Task Center hint."""
         from textual.widgets import Label
 
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2566,7 +2566,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "press t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "Esc then t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_active_task_with_progress_shows_percentage(self) -> None:
         """An active task with nonzero progress shows its percentage."""

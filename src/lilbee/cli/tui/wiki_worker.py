@@ -131,7 +131,16 @@ def _process_source(
     if not chunks:
         return False
     progress_cb = _make_progress_callback(source, idx, total, widget, update_task, task_id, errors)
-    result = generate_summary_page(source, chunks, svc.provider, svc.store, on_progress=progress_cb)
+    # Suppress wiki gen warnings during TUI mode to prevent stderr corruption.
+    wiki_logger = logging.getLogger("lilbee.wiki.gen")
+    original_level = wiki_logger.level
+    wiki_logger.setLevel(logging.ERROR)
+    try:
+        result = generate_summary_page(
+            source, chunks, svc.provider, svc.store, on_progress=progress_cb
+        )
+    finally:
+        wiki_logger.setLevel(original_level)
     return result is not None
 
 

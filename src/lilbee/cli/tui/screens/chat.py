@@ -409,6 +409,8 @@ class ChatScreen(Screen[None]):
             return
         parts = args.split()
         url = parts[0]
+        if not is_url(url):
+            url = f"https://{url}"
         try:
             require_valid_crawl_url(url)
         except ValueError as exc:
@@ -825,6 +827,7 @@ class ChatScreen(Screen[None]):
     def _run_sync_worker(self, task_id: str) -> None:
         """Run background document sync in a Textual worker thread."""
         import asyncio
+        import time
 
         self._sync_active = True
         task_bar = self._task_bar
@@ -832,22 +835,27 @@ class ChatScreen(Screen[None]):
             from lilbee.ingest import sync
 
             call_from_thread(
-                self, task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
+                self, task_bar.update_task, task_id, 0, msg.SYNC_STATUS_SYNCING, indeterminate=True
             )
 
+            last_embed_update = 0.0
+            _THROTTLE_SECONDS = 0.15
+
             def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+                nonlocal last_embed_update
                 if event_type == EventType.FILE_START:
                     from lilbee.progress import FileStartEvent
 
                     if not isinstance(data, FileStartEvent):
                         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
+                    pct = int((data.current_file - 1) * 100 / data.total_files)
                     status = msg.SYNC_FILE_PROGRESS.format(
                         current=data.current_file,
                         total=data.total_files,
                         file=data.file,
                     )
                     call_from_thread(
-                        self, task_bar.update_task, task_id, 0, status, indeterminate=True
+                        self, task_bar.update_task, task_id, pct, status, indeterminate=False
                     )
                 elif event_type == EventType.FILE_DONE:
                     from lilbee.progress import FileDoneEvent
@@ -859,8 +867,26 @@ class ChatScreen(Screen[None]):
                         task_bar.update_task,
                         task_id,
                         0,
-                        f"Done: {data.file}",
-                        indeterminate=True,
+                        msg.SYNC_FILE_DONE.format(file=data.file),
+                        indeterminate=False,
+                    )
+                elif event_type == EventType.EMBED:
+                    now = time.monotonic()
+                    if now - last_embed_update < _THROTTLE_SECONDS:
+                        return
+                    from lilbee.progress import EmbedEvent
+
+                    if not isinstance(data, EmbedEvent):
+                        return
+                    last_embed_update = now
+                    pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
+                    call_from_thread(
+                        self,
+                        task_bar.update_task,
+                        task_id,
+                        pct,
+                        msg.SYNC_EMBEDDING.format(file=data.file),
+                        indeterminate=False,
                     )
 
             asyncio.run(sync(quiet=True, on_progress=on_progress))

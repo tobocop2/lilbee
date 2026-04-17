@@ -149,3 +149,6 @@ def get_nav_views() -> list[str]:
 
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
+TASKBAR_HINT = "Esc then t for Task Center"
+SYNC_EMBEDDING = "Embedding {file}"
+SYNC_FILE_DONE = "Done: {file}"

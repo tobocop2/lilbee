@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_DONE_FLASH_SECONDS = 1.0
+_DONE_FLASH_SECONDS = 2.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _SPINNER_INTERVAL = 0.1
 
@@ -211,7 +211,7 @@ class TaskBar(Static):
         if active:
             count = len(active)
             task = active[0]
-            pct = f" {task.progress}%" if task.progress > 0 else ""
+            pct = f" {task.progress}%" if not task.indeterminate else ""
             if count == 1:
                 detail = f" {task.detail}" if task.detail else ""
                 parts.append(f"{spinner} {task.name}{pct}{detail}")
@@ -222,7 +222,9 @@ class TaskBar(Static):
             parts.append(f"{len(queued)} queued")
 
         summary = " | ".join(parts)
-        label_text = f" {summary}  press t for Task Center"
+        from lilbee.cli.tui import messages as msg
+
+        label_text = f" {summary}  {msg.TASKBAR_HINT}"
 
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
