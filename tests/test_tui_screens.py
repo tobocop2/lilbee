@@ -8131,6 +8131,23 @@ def test_process_source_suppresses_wiki_warnings():
     assert wiki_logger.level == original_level
 
 
+def test_process_source_empty_chunks_returns_false():
+    """_process_source returns False when source has no chunks."""
+    from lilbee.cli.tui.wiki_worker import _process_source
+
+    fake_store = MagicMock()
+    fake_store.get_chunks_by_source.return_value = []
+    fake_svc = MagicMock(store=fake_store)
+
+    widget = MagicMock()
+    with (
+        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+        patch("lilbee.cli.tui.wiki_worker.call_from_thread"),
+    ):
+        result = _process_source("empty.md", 0, 1, widget, MagicMock(), "task-1", [])
+    assert result is False
+
+
 def test_wiki_worker_make_progress_callback():
     """_make_progress_callback builds a callback that reports progress stages."""
     from lilbee.cli.tui.wiki_worker import (
@@ -8278,6 +8295,16 @@ def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
             self.push_screen(WikiScreen())
 
     return _WikiApp()
+
+
+async def test_wiki_screen_reload():
+    """WikiScreen.reload refreshes the sidebar."""
+    app = _make_wiki_app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with patch.object(app.screen, "_load_pages") as mock_load:
+            app.screen.reload()
+            mock_load.assert_called_once()
 
 
 async def test_wiki_screen_regenerate_disabled():
