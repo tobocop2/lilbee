@@ -14,37 +14,7 @@ from textual.widgets import Button, Label, Static
 class ConfirmDialog(ModalScreen[bool]):
     """Modal yes/no dialog that returns True (confirmed) or False (cancelled)."""
 
-    DEFAULT_CSS = """
-    ConfirmDialog {
-        align: center middle;
-    }
-    ConfirmDialog > Vertical {
-        width: 50;
-        height: auto;
-        max-height: 12;
-        border: thick $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-    ConfirmDialog #confirm-title {
-        text-style: bold;
-        width: 100%;
-        content-align: center middle;
-        margin-bottom: 1;
-    }
-    ConfirmDialog #confirm-message {
-        width: 100%;
-        content-align: center middle;
-        margin-bottom: 1;
-    }
-    ConfirmDialog Center {
-        width: 100%;
-        height: auto;
-    }
-    ConfirmDialog Button {
-        margin: 0 1;
-    }
-    """
+    CSS_PATH = "confirm_dialog.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "confirm", "Yes", show=True),
