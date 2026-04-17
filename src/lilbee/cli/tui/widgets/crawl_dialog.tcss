@@ -1,0 +1,42 @@
+CrawlDialog {
+    align: center middle;
+}
+
+CrawlDialog > Vertical {
+    width: 64;
+    height: auto;
+    max-height: 22;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+CrawlDialog #crawl-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+CrawlDialog .crawl-field-label {
+    margin-top: 1;
+}
+
+CrawlDialog Input {
+    width: 100%;
+}
+
+CrawlDialog #crawl-error {
+    color: $error;
+    margin-top: 1;
+}
+
+CrawlDialog Center {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+}
+
+CrawlDialog Button {
+    margin: 0 1;
+}

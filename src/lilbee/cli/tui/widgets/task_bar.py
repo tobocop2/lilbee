@@ -213,7 +213,8 @@ class TaskBar(Static):
             task = active[0]
             pct = f" {task.progress}%" if task.progress > 0 else ""
             if count == 1:
-                parts.append(f"{spinner} {task.name}{pct}")
+                detail = f" {task.detail}" if task.detail else ""
+                parts.append(f"{spinner} {task.name}{pct}{detail}")
             else:
                 parts.append(f"{spinner} {count} tasks running")
 

@@ -42,8 +42,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "/crawl",
         "_cmd_crawl",
         aliases=(),
-        args_hint="url",
-        help_text="Crawl a URL into knowledge base",
+        args_hint="[url]",
+        help_text="Crawl a URL (no args = dialog)",
     ),
     SlashCommand(
         "/delete",
@@ -82,8 +82,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/wiki",
         "_cmd_wiki",
-        args_hint="generate [source]",
-        help_text="Generate wiki pages for indexed sources",
+        help_text="Open wiki",
     ),
     SlashCommand(
         "/remove",
