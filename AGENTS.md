@@ -163,7 +163,6 @@ CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--vision
 - CI runs on every push and PR
 - **Never git push without explicit user approval** — ask before pushing
 - No Co-Authored-By lines in commits
-- No Claude Code attribution in PRs, commits, or docs
 - No "Phase N" numbering in commit messages
 - Don't commit specs to repo; `docs/superpowers/` is gitignored
 - **Pre-commit checklist**: `make format && make lint && make format-check` before every commit
