@@ -52,8 +52,8 @@ _MIN_MEANINGFUL_CHARS = 50
 _CHARS_PER_TOKEN = 4
 
 
-def _chunk_vision_page(text: str) -> list[str]:
-    """Chunk a vision OCR page, using semantic chunking when enabled."""
+def _chunk_text_semantically(text: str) -> list[str]:
+    """Chunk text, using semantic chunking when enabled."""
     if not text or not text.strip():
         return []
     if cfg.semantic_chunking:
@@ -239,8 +239,7 @@ def kreuzberg_config(content_type: str) -> "ExtractionConfig":
     """Build kreuzberg ExtractionConfig for a given content type."""
     from kreuzberg import ExtractionConfig, PageConfig
 
-    use_semantic = content_type == "pdf"
-    chunking = _build_chunking_config(semantic=use_semantic)
+    chunking = _build_chunking_config(semantic=True)
 
     if content_type == "pdf":
         return ExtractionConfig(
@@ -306,7 +305,9 @@ async def _vision_fallback(
         return []
 
     all_chunks = [
-        (page_num, chunk) for page_num, text in page_texts for chunk in _chunk_vision_page(text)
+        (page_num, chunk)
+        for page_num, text in page_texts
+        for chunk in _chunk_text_semantically(text)
     ]
     if not all_chunks:
         return []
@@ -441,7 +442,7 @@ async def ingest_structured(
     text = await asyncio.to_thread(preprocessor, path)
     if not text.strip():
         return []
-    texts = chunk_text(text)
+    texts = _chunk_text_semantically(text)
     if not texts:
         return []
     vectors = await asyncio.to_thread(

@@ -711,13 +711,13 @@ class TestSemanticChunking:
         assert config.chunking.chunker_type == "semantic"
         assert config.chunking.topic_threshold == pytest.approx(0.6, abs=1e-5)
 
-    def test_kreuzberg_config_text_no_semantic(self):
-        """Non-PDF content types use default text chunker."""
+    def test_kreuzberg_config_text_has_semantic(self):
+        """All content types use semantic chunker when enabled."""
         from lilbee.ingest import kreuzberg_config
 
         cfg.semantic_chunking = True
         config = kreuzberg_config("text")
-        assert config.chunking.chunker_type == "text"
+        assert config.chunking.chunker_type == "semantic"
 
     def test_kreuzberg_ocr_config_has_semantic(self):
         """OCR config uses semantic chunker."""
@@ -729,65 +729,65 @@ class TestSemanticChunking:
         assert config.chunking.chunker_type == "semantic"
         assert config.chunking.topic_threshold == pytest.approx(0.7, abs=1e-5)
 
-    def test_chunk_vision_page_produces_real_chunks(self):
-        """Vision page chunking produces actual text chunks from kreuzberg."""
-        from lilbee.ingest import _chunk_vision_page
+    def test_chunk_text_semantically_produces_real_chunks(self):
+        """Semantic text chunking produces actual text chunks from kreuzberg."""
+        from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.75
         text = "First paragraph about machine learning.\n\nSecond paragraph about databases."
-        result = _chunk_vision_page(text)
+        result = _chunk_text_semantically(text)
         assert len(result) >= 1
         combined = " ".join(result)
         assert "machine learning" in combined
         assert "databases" in combined
 
-    def test_chunk_vision_page_long_text_respects_budget(self):
+    def test_chunk_text_semantically_long_text_respects_budget(self):
         """Chunks from semantic chunker stay within the configured budget."""
-        from lilbee.ingest import _chunk_vision_page
+        from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = True
         # Generate text exceeding the 4000-char auto-budget ceiling.
         text = "\n\n".join(f"Paragraph {i} fills space." for i in range(200))
-        result = _chunk_vision_page(text)
+        result = _chunk_text_semantically(text)
         assert len(result) >= 2, f"Should split, got {len(result)}"
         ceiling = 4100  # AUTO_BUDGET_CEILING (4000) + tolerance
         for chunk in result:
             assert len(chunk) <= ceiling, f"Chunk too large: {len(chunk)}"
 
-    def test_chunk_vision_page_semantic_disabled_uses_internal_chunker(self):
+    def test_chunk_text_semantically_disabled_uses_internal_chunker(self):
         """When semantic disabled, falls back to internal chunk_text."""
-        from lilbee.ingest import _chunk_vision_page
+        from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = False
         text = "Some text for chunking."
-        result = _chunk_vision_page(text)
+        result = _chunk_text_semantically(text)
         assert len(result) >= 1
         assert result[0] == text  # short text returns as single chunk
 
-    def test_chunk_vision_page_empty_input(self):
-        from lilbee.ingest import _chunk_vision_page
+    def test_chunk_text_semantically_empty_input(self):
+        from lilbee.ingest import _chunk_text_semantically
 
-        assert _chunk_vision_page("") == []
-        assert _chunk_vision_page("   ") == []
+        assert _chunk_text_semantically("") == []
+        assert _chunk_text_semantically("   ") == []
 
-    def test_chunk_vision_page_whitespace_only(self):
-        from lilbee.ingest import _chunk_vision_page
+    def test_chunk_text_semantically_whitespace_only(self):
+        from lilbee.ingest import _chunk_text_semantically
 
-        assert _chunk_vision_page("\n\n\n") == []
-        assert _chunk_vision_page("\t  \n  ") == []
+        assert _chunk_text_semantically("\n\n\n") == []
+        assert _chunk_text_semantically("\t  \n  ") == []
 
-    def test_chunk_vision_page_semantic_no_chunks_returns_empty(self):
+    def test_chunk_text_semantically_no_chunks_returns_empty(self):
         """When semantic chunker produces no chunks, return empty list."""
         from unittest.mock import MagicMock, patch
 
-        from lilbee.ingest import _chunk_vision_page
+        from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = True
         mock_result = MagicMock()
         mock_result.chunks = []
         with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
-            assert _chunk_vision_page("some text") == []
+            assert _chunk_text_semantically("some text") == []
 
     def test_semantic_chunking_toggle_changes_behavior(self):
         """Toggling semantic_chunking changes the chunker type in configs."""
@@ -1365,6 +1365,7 @@ class TestIngestStructuredEdgeCases:
     async def test_no_chunks_returns_empty(self, isolated_env):
         from lilbee.ingest import _PREPROCESSORS, ingest_structured
 
+        cfg.semantic_chunking = False
         with (
             mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "some content here"}),
             mock.patch("lilbee.ingest.chunk_text", return_value=[]),

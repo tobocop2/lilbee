@@ -193,7 +193,7 @@ All settings are configurable via environment variables:
 | `LILBEE_TOP_K` | `10` | Number of retrieval results |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
-| `LILBEE_SEMANTIC_CHUNKING` | `true` | Use topic-aware semantic chunking for PDFs (set `false` to use basic text splitting) |
+| `LILBEE_SEMANTIC_CHUNKING` | `true` | Use topic-aware semantic chunking for document extraction (set `false` to use basic text splitting) |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine similarity threshold for topic boundary detection (0.0-1.0, lower = more splits) |
 
 **Server:**
