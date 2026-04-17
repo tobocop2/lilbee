@@ -2757,6 +2757,48 @@ async def test_chat_sync_file_done_bad_type():
             assert app.screen._sync_active is False
 
 
+async def test_chat_sync_file_start_bad_type():
+    """Sync progress raises TypeError when FILE_START data is not FileStartEvent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EventType
+
+        async def fake_sync(quiet=False, on_progress=None, cancel=None):
+            if on_progress:
+                on_progress(
+                    EventType.FILE_START,
+                    {"current_file": 1, "total_files": 1, "file": "x.md"},
+                )
+            return {"added": 0}
+
+        with patch("lilbee.ingest.sync", new=fake_sync):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+            # Worker catches the TypeError via the except Exception handler
+            assert app.screen._sync_active is False
+
+
+async def test_chat_sync_embed_bad_type():
+    """Sync progress silently skips when EMBED data is not EmbedEvent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        from lilbee.progress import EventType
+
+        async def fake_sync(quiet=False, on_progress=None, cancel=None):
+            if on_progress:
+                on_progress(EventType.EMBED, {"file": "x.md", "chunk": 1, "total_chunks": 5})
+            return {"added": 0}
+
+        with patch("lilbee.ingest.sync", new=fake_sync):
+            app.screen._run_sync()
+            await _pilot.pause()
+            while app.screen.workers:
+                await _pilot.pause()
+            assert app.screen._sync_active is False
+
+
 async def test_chat_run_sync_error_worker():
     """Cover the sync error branch."""
     app = ChatTestApp()
@@ -8087,6 +8129,137 @@ def test_process_source_suppresses_wiki_warnings():
     assert levels_during_generation[0] >= logging.ERROR
     # After generation, it should be restored
     assert wiki_logger.level == original_level
+
+
+def test_wiki_worker_make_progress_callback():
+    """_make_progress_callback builds a callback that reports progress stages."""
+    from lilbee.cli.tui.wiki_worker import (
+        WIKI_STAGE_FAILED,
+        WIKI_STAGE_GENERATING,
+        _make_progress_callback,
+    )
+
+    widget = MagicMock()
+    update_task = MagicMock()
+    errors: list[str] = []
+
+    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
+        cb = _make_progress_callback("doc.md", 0, 2, widget, update_task, "task-1", errors)
+        cb(WIKI_STAGE_GENERATING, {})
+        mock_cft.assert_called_once()
+        # Percentage: (0 + 0.33) * 100 / 2 = 16
+        assert mock_cft.call_args[0][3] == 16
+
+    # Test failed stage
+    cb(WIKI_STAGE_FAILED, {"error": "timeout"})
+    assert "timeout" in errors[-1]
+
+
+def test_wiki_worker_report_result_success():
+    """_report_result notifies on successful generation."""
+    from lilbee.cli.tui.wiki_worker import _report_result
+
+    widget = MagicMock()
+    complete = MagicMock()
+    fail = MagicMock()
+    notify = MagicMock()
+    on_complete = MagicMock()
+
+    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
+        _report_result(2, 3, [], widget, "t1", complete, fail, notify, on_complete)
+        # Should call complete_task and notify, plus on_complete
+        assert mock_cft.call_count == 3
+
+
+def test_wiki_worker_report_result_failure():
+    """_report_result notifies on failed generation."""
+    from lilbee.cli.tui.wiki_worker import _report_result
+
+    widget = MagicMock()
+    complete = MagicMock()
+    fail = MagicMock()
+    notify = MagicMock()
+
+    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
+        _report_result(0, 2, ["err1"], widget, "t1", complete, fail, notify, None)
+        # Should call fail_task and notify
+        assert mock_cft.call_count == 2
+
+
+def test_wiki_worker_report_result_no_errors_no_pages():
+    """_report_result uses default message when no errors and no pages."""
+    from lilbee.cli.tui.wiki_worker import _report_result
+
+    widget = MagicMock()
+    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
+        _report_result(0, 1, [], widget, "t1", MagicMock(), MagicMock(), MagicMock(), None)
+        assert mock_cft.call_count == 2
+
+
+def test_wiki_worker_run_wiki_generation():
+    """run_wiki_generation processes sources and reports results."""
+    from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+    widget = MagicMock()
+    update = MagicMock()
+    complete = MagicMock()
+    fail = MagicMock()
+    notify = MagicMock()
+
+    with (
+        patch("lilbee.cli.tui.wiki_worker._process_source", return_value=True) as mock_ps,
+        patch("lilbee.cli.tui.wiki_worker._report_result") as mock_rr,
+    ):
+        run_wiki_generation(["a.txt", "b.txt"], "t1", widget, update, complete, fail, notify)
+        assert mock_ps.call_count == 2
+        mock_rr.assert_called_once()
+        # generated=2, total=2
+        assert mock_rr.call_args[0][0] == 2
+        assert mock_rr.call_args[0][1] == 2
+
+
+def test_wiki_worker_run_wiki_generation_cancelled():
+    """run_wiki_generation stops when cancelled."""
+    from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+    widget = MagicMock()
+
+    with (
+        patch("lilbee.cli.tui.wiki_worker._process_source") as mock_ps,
+        patch("lilbee.cli.tui.wiki_worker._report_result") as mock_rr,
+    ):
+        run_wiki_generation(
+            ["a.txt", "b.txt"],
+            "t1",
+            widget,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            is_cancelled=lambda: True,
+        )
+        mock_ps.assert_not_called()
+        mock_rr.assert_called_once()
+
+
+def test_wiki_worker_run_wiki_generation_exception():
+    """run_wiki_generation handles exceptions from _process_source."""
+    from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+    widget = MagicMock()
+    fail = MagicMock()
+    notify = MagicMock()
+
+    with (
+        patch(
+            "lilbee.cli.tui.wiki_worker._process_source",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft,
+    ):
+        run_wiki_generation(["a.txt"], "t1", widget, MagicMock(), MagicMock(), fail, notify)
+        # Should call fail_task and notify via call_from_thread
+        assert mock_cft.call_count == 2
 
 
 def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
