@@ -255,3 +255,13 @@ See [docs/agent-integration.md](docs/agent-integration.md) for full reference.
 - `platform.py` — OS helpers, `find_local_root()` for `.lilbee/` discovery
 - `cli.py` — Typer CLI with --model, --data-dir, --version, and --json flags
 - `mcp.py` — MCP server exposing search, ask, status, sync, init as tools
+
+## Known Quirks (see docs/adr/ for details)
+- Drain llama-cpp iterators before releasing locks on macOS (ADR-0005)
+- Use `os.set_blocking(False)` for Windows pipe reads (ADR-0005)
+- Python 3.11 executor threads are non-daemon, patch in conftest (ADR-0001)
+- Mock implementations, not `@work` decorators, in TUI tests (ADR-0007)
+- RAG pipeline stages must fail silently to baseline search (ADR-0002)
+- Track raw stream position for reasoning caps, not visible output (ADR-0006)
+- Validate crawl content independently of library status flags (ADR-0004)
+- All crawl URLs go through centralized SSRF validation (ADR-0003)

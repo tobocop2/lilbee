@@ -62,19 +62,19 @@ Add files (`lilbee add`), then search or ask questions. Once indexed, `search` w
 
 | | API hallucinations | Lines |
 |---|---|---|
-| **With lilbee** ([code](demos/godot-with-lilbee/level_generator.gd) · [config](demos/godot-with-lilbee/)) | 0 | 261 |
-| **Without lilbee** ([code](demos/godot-without-lilbee/level_generator.gd) · [config](demos/godot-without-lilbee/)) | 4 (~22% error rate) | 213 |
+| **With lilbee** ([code](https://tobocop2.github.io/lilbee/demos/godot-with-lilbee/level_generator.gd) · [config](https://tobocop2.github.io/lilbee/demos/godot-with-lilbee/)) | 0 | 261 |
+| **Without lilbee** ([code](https://tobocop2.github.io/lilbee/demos/godot-without-lilbee/level_generator.gd) · [config](https://tobocop2.github.io/lilbee/demos/godot-without-lilbee/)) | 4 (~22% error rate) | 213 |
 
 <details>
 <summary><b>With lilbee</b> — all Godot API calls match the class reference</summary>
 
-![With lilbee MCP](demos/godot-with-lilbee.gif)
+![With lilbee MCP](https://tobocop2.github.io/lilbee/demos/godot-with-lilbee.gif)
 </details>
 
 <details>
 <summary><b>Without lilbee</b> — 4 hallucinated APIs (<a href="docs/benchmarks/godot-level-generator.md#without-lilbee-213-lines--4-bugs">details</a>)</summary>
 
-![Without lilbee](demos/godot-without-lilbee.gif)
+![Without lilbee](https://tobocop2.github.io/lilbee/demos/godot-without-lilbee.gif)
 </details>
 
 If you spot issues with these benchmarks, please [open an issue](https://github.com/tobocop2/lilbee/issues).
@@ -88,7 +88,7 @@ If you spot issues with these benchmarks, please [open an issue](https://github.
 
 A scanned 1998 Star Wars: X-Wing Collector's Edition manual indexed with vision OCR ([LightOnOCR-2][lightonocr]), then queried in lilbee's interactive chat (`qwen3-coder:30b`, fully local). Three questions about dev team credits, energy management, and starfighter speeds — all answered from the OCR'd content.
 
-![Vision OCR demo](demos/vision-ocr.gif)
+![Vision OCR demo](https://tobocop2.github.io/lilbee/demos/vision-ocr.gif)
 
 See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.md) for model comparisons.
 </details>
@@ -98,7 +98,7 @@ See [benchmarks, test documents, and sample output](docs/benchmarks/vision-ocr.m
 
 The scanned Star Wars: X-Wing Collector's Edition guide, queried with a single `lilbee ask` command — no interactive chat needed.
 
-![Top speed question](demos/top-speed.gif)
+![Top speed question](https://tobocop2.github.io/lilbee/demos/top-speed.gif)
 
 </details>
 
@@ -112,14 +112,14 @@ The scanned Star Wars: X-Wing Collector's Edition guide, queried with a single `
 
 Model switching via tab completion, then a Q&A grounded in an indexed PDF.
 
-![Interactive local offline chat](demos/chat.gif)
+![Interactive local offline chat](https://tobocop2.github.io/lilbee/demos/chat.gif)
 
 </details>
 
 <details>
 <summary><b>Code index and search</b></summary>
 
-![Code search](demos/code-search.gif)
+![Code search](https://tobocop2.github.io/lilbee/demos/code-search.gif)
 
 Add a codebase and search with natural language. Tree-sitter provides AST-aware chunking.
 </details>
@@ -127,7 +127,7 @@ Add a codebase and search with natural language. Tree-sitter provides AST-aware 
 <details>
 <summary><b>JSON output</b></summary>
 
-![JSON output](demos/json.gif)
+![JSON output](https://tobocop2.github.io/lilbee/demos/json.gif)
 
 Structured JSON output for agents and scripts.
 </details>
