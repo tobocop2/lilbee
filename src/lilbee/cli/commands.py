@@ -653,6 +653,30 @@ def serve(
 
 
 @app.command()
+def token(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Print the auth token for a running server."""
+    import json
+
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    path = cfg.data_dir / "server.json"
+    if not path.exists():
+        if cfg.json_mode:
+            json_output({"error": "No running server found"})
+        else:
+            console.print("No running server found (server.json missing).")
+        raise typer.Exit(1)
+    data = json.loads(path.read_text())
+    tok = data.get("token", "")
+    if cfg.json_mode:
+        json_output({"token": tok})
+        return
+    console.print(tok)
+
+
+@app.command()
 def topics(
     query: str = typer.Argument(None, help="Optional query to find related concepts."),
     top_k: int = typer.Option(10, "--top-k", "-k", help="Number of results."),

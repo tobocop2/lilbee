@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest import mock
 
 import pytest
@@ -27,6 +28,36 @@ def isolated_env(tmp_path):
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+class TestTokenCommand:
+    def test_prints_token_when_server_running(self, tmp_path):
+        server_json = cfg.data_dir / "server.json"
+        server_json.write_text(json.dumps({"token": "test-secret-token"}))
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 0
+        assert "test-secret-token" in result.output
+
+    def test_exits_1_when_no_server(self):
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 1
+        assert "No running server found" in result.output
+
+    def test_json_mode_prints_token(self, tmp_path):
+        server_json = cfg.data_dir / "server.json"
+        server_json.write_text(json.dumps({"token": "json-token-val"}))
+
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["token"] == "json-token-val"
+
+    def test_json_mode_exits_1_when_no_server(self):
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
 
 
 class TestServeCommand:
