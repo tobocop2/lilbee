@@ -3535,7 +3535,7 @@ async def test_crawl_dialog_empty_depth_uses_default():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.depth == cfg.crawl_max_depth
-    assert result.max_pages == 50
+    assert result.max_pages == cfg.crawl_max_pages
 
 
 async def test_crawl_dialog_auto_prefix_https():

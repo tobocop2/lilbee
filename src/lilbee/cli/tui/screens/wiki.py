@@ -247,7 +247,7 @@ class WikiScreen(Screen[None]):
         sources = page.frontmatter.get("sources")
         # frontmatter values are untyped (Any from YAML); guard against non-list shapes
         if isinstance(sources, list) and sources:
-            return str(next(iter(sources)))
+            return str(sources[0])
         return None
 
     @work(thread=True)

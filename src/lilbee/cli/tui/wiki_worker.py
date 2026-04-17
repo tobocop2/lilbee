@@ -43,7 +43,7 @@ def resolve_wiki_targets(requested: str | None = None) -> list[str] | None:
     except Exception:
         log.warning("Failed to list sources for wiki", exc_info=True)
         return None
-    names = [s["filename"] for s in sources if s["filename"]]
+    names = [s["filename"] for s in sources if s.get("filename")]
     if not names:
         return None
     if requested is not None:
@@ -108,6 +108,34 @@ def _report_result(
         )
 
 
+def _process_source(
+    source: str,
+    idx: int,
+    total: int,
+    widget: DOMNode,
+    update_task: Callable[[str, int, str], None],
+    task_id: str,
+    errors: list[str],
+) -> bool:
+    """Generate a wiki page for one source. Returns True if a page was produced."""
+    from lilbee.wiki.gen import generate_summary_page
+
+    svc = get_services()
+    call_from_thread(
+        widget,
+        update_task,
+        task_id,
+        int(idx * 100 / total),
+        msg.CMD_WIKI_PROGRESS.format(name=source, stage=WIKI_STAGE_PREPARING),
+    )
+    chunks = svc.store.get_chunks_by_source(source)
+    if not chunks:
+        return False
+    progress_cb = _make_progress_callback(source, idx, total, widget, update_task, task_id, errors)
+    result = generate_summary_page(source, chunks, svc.provider, svc.store, on_progress=progress_cb)
+    return result is not None
+
+
 def run_wiki_generation(
     sources: list[str],
     task_id: str,
@@ -120,9 +148,6 @@ def run_wiki_generation(
     is_cancelled: Callable[[], bool] = lambda: False,
 ) -> None:
     """Run wiki generation for the given sources (call from a background thread)."""
-    from lilbee.wiki.gen import generate_summary_page
-
-    svc = get_services()
     total = len(sources)
     generated = 0
     errors: list[str] = []
@@ -131,23 +156,7 @@ def run_wiki_generation(
         for idx, source in enumerate(sources):
             if is_cancelled():
                 break
-            call_from_thread(
-                widget,
-                update_task,
-                task_id,
-                int(idx * 100 / total),
-                msg.CMD_WIKI_PROGRESS.format(name=source, stage=WIKI_STAGE_PREPARING),
-            )
-            chunks = svc.store.get_chunks_by_source(source)
-            if not chunks:
-                continue
-            progress_cb = _make_progress_callback(
-                source, idx, total, widget, update_task, task_id, errors
-            )
-            result = generate_summary_page(
-                source, chunks, svc.provider, svc.store, on_progress=progress_cb
-            )
-            if result is not None:
+            if _process_source(source, idx, total, widget, update_task, task_id, errors):
                 generated += 1
 
         _report_result(

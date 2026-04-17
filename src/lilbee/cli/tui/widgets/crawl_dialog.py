@@ -78,12 +78,12 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
             return default
         n = int(value)
         if n < 0:
-            raise ValueError("negative")
+            raise ValueError
         return n
 
     def _validate(self) -> CrawlParams | str:
         """Validate inputs. Returns CrawlParams on success, error message on failure."""
-        from lilbee.crawler import require_valid_crawl_url
+        from lilbee.crawler import is_url, require_valid_crawl_url
 
         url = self.query_one("#crawl-url-input", Input).value.strip()
         depth_str = self.query_one("#crawl-depth-input", Input).value.strip()
@@ -92,7 +92,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         if not url:
             return msg.CRAWL_DIALOG_URL_REQUIRED
 
-        if not url.startswith(("http://", "https://")):
+        if not is_url(url):
             url = f"https://{url}"
 
         try:
@@ -116,6 +116,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
         """Validate inputs and dismiss with CrawlParams or show an error."""
         result = self._validate()
         error_widget = self.query_one("#crawl-error", Static)
+        # _validate returns str (error) or CrawlParams; isinstance disambiguates
         if isinstance(result, str):
             error_widget.update(result)
             return
