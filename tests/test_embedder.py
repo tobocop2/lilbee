@@ -185,7 +185,7 @@ class TestValidateModel:
             from lilbee.embedder import validate_model
 
             validate_model()
-            mock_pull.assert_called_once_with("nomic-embed-text", stream=True)
+            mock_pull.assert_called_once_with("nomic-embed-text:latest", stream=True)
 
     def test_auto_pull_failure_propagates(self):
         mock_model = mock.MagicMock()

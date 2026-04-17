@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "ollama",
     "lancedb",
-    "kreuzberg",
+    "kreuzberg>=4.8.5",
     "filelock",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.7",

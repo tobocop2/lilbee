@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
+from lilbee import ingest
 from lilbee.cli import theme
-from lilbee.ingest import sync
 from lilbee.progress import EventType, ExtractEvent, FileStartEvent, SyncDoneEvent
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def run_sync_background(
     def _run() -> object:
         if chat_mode:
             status.pending -= 1
-        return asyncio.run(sync(quiet=True, on_progress=callback, force_vision=force_vision))
+        return asyncio.run(ingest.sync(quiet=True, on_progress=callback, force_vision=force_vision))
 
     if chat_mode:
         status.pending += 1
