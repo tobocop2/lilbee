@@ -18,7 +18,10 @@ def _close_coro(coro, *_args, **_kwargs):
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
+    # CI sets LILBEE_DATA at workflow level; clear it so the token command's
+    # apply_overrides() does not clobber cfg.data_dir during invocation.
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
