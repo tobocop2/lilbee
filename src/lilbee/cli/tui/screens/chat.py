@@ -37,7 +37,6 @@ from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.cli.tui.widgets.task_bar import TaskBar
-from lilbee.cli.tui.wiki_worker import WIKI_SUBCMD_GENERATE
 from lilbee.config import cfg
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.progress import EventType, ProgressEvent
@@ -680,56 +679,14 @@ class ChatScreen(Screen[None]):
     def _cmd_version(self, _args: str) -> None:
         self.notify(msg.CHAT_VERSION.format(version=get_version()))
 
-    def _cmd_wiki(self, args: str) -> None:
-        from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
-
+    def _cmd_wiki(self, _args: str) -> None:
         if not cfg.wiki:
             self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
             return
-        parts = args.split()
-        if not parts or parts[0] != WIKI_SUBCMD_GENERATE:
-            self.notify(msg.CMD_WIKI_USAGE, severity="warning")
-            return
-        requested = parts[1] if len(parts) > 1 else None
-        targets = resolve_wiki_targets(requested)
-        if targets is None:
-            if requested is not None:
-                self.notify(msg.CMD_WIKI_NOT_FOUND.format(name=requested), severity="error")
-            else:
-                self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
-            return
-        task_bar = self._task_bar
-        task_id = task_bar.add_task(msg.TASK_NAME_WIKI.format(count=len(targets)), "wiki")
-        task_bar.queue.advance("wiki")
-        self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
-        self._run_wiki_background(targets, task_id)
+        from lilbee.cli.tui.app import LilbeeApp
 
-    @work(thread=True)
-    def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
-        """Generate wiki pages for each source in a background thread."""
-        from lilbee.cli.tui.wiki_worker import run_wiki_generation
-
-        worker = _get_worker()
-        task_bar = self._task_bar
-        run_wiki_generation(
-            sources=sources,
-            task_id=task_id,
-            widget=self,
-            update_task=task_bar.update_task,
-            complete_task=task_bar.complete_task,
-            fail_task=task_bar.fail_task,
-            notify=self.notify,
-            on_complete=self._refresh_wiki_screen,
-            is_cancelled=lambda: worker.is_cancelled,
-        )
-
-    def _refresh_wiki_screen(self) -> None:
-        """If a WikiScreen is mounted, reload its sidebar after generation."""
-        from lilbee.cli.tui.screens.wiki import WikiScreen
-
-        for screen in self.app.screen_stack:
-            if isinstance(screen, WikiScreen):
-                screen.reload()
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.app.switch_view("Wiki")
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""

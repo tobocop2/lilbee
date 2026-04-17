@@ -21,8 +21,10 @@ from textual.worker import get_current_worker as _get_worker
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
 from lilbee.config import cfg
+from lilbee.wiki.browse import read_page
 
 log = logging.getLogger(__name__)
 
@@ -228,8 +230,6 @@ class WikiScreen(Screen[None]):
                 self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
             return
 
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
         task_bar = self.query_one(TaskBar)
         task_id = task_bar.add_task(msg.TASK_NAME_WIKI.format(count=len(targets)), "wiki")
         task_bar.queue.advance("wiki")
@@ -238,8 +238,6 @@ class WikiScreen(Screen[None]):
 
     def _source_for_slug(self, slug: str) -> str | None:
         """Extract the primary source filename from a wiki page's frontmatter."""
-        from lilbee.wiki.browse import read_page
-
         root = _wiki_root()
         page = read_page(root, slug)
         if page is None:
@@ -253,7 +251,6 @@ class WikiScreen(Screen[None]):
     @work(thread=True)
     def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
         """Generate wiki pages in a background thread."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
         from lilbee.cli.tui.wiki_worker import run_wiki_generation
 
         worker = _get_worker()

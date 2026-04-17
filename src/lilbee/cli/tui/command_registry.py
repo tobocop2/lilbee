@@ -82,8 +82,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/wiki",
         "_cmd_wiki",
-        args_hint="generate [source]",
-        help_text="Generate wiki pages for indexed sources",
+        help_text="Open wiki",
     ),
     SlashCommand(
         "/remove",

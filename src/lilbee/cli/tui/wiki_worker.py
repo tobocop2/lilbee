@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-WIKI_SUBCMD_GENERATE = "generate"
 WIKI_STAGE_PREPARING = "preparing"
 WIKI_STAGE_GENERATING = "generating"
 WIKI_STAGE_FAITHFULNESS = "faithfulness_check"
