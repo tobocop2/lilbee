@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-integration imports-check check clean install demo build publish docs docs-api docs-site
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-integration imports-check check clean install demo build publish docs docs-api docs-site
 
 lint:
 	uv run ruff check src/ tests/
@@ -18,8 +18,8 @@ test:
 test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n auto
 
-test-ci-few-workers:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n 2
+test-ci-serial:
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli, config, chunk, code_chunker, embedder, store, ingest, query"
