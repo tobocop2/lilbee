@@ -44,7 +44,7 @@ class Task:
     task_type: str
     fn: Callable[[], None]
     status: TaskStatus = TaskStatus.QUEUED
-    progress: int = 0
+    progress: float = 0.0
     detail: str = ""
     indeterminate: bool = False
 
@@ -152,7 +152,7 @@ class TaskQueue:
     def update_task(
         self,
         task_id: str,
-        progress: int,
+        progress: float,
         detail: str = "",
         *,
         indeterminate: bool | None = None,

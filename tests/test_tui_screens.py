@@ -4372,7 +4372,7 @@ async def test_task_center_row_click_shows_detail():
         text = detail.content
         assert "Download X" in text
         assert "download" in text
-        assert "42%" in text
+        assert "10/24 MB" in text
 
 
 async def test_task_center_show_detail_no_key():
@@ -6863,21 +6863,6 @@ async def test_task_center_go_back_non_lilbee_app():
         assert not isinstance(app.screen, TaskCenter)
 
 
-async def test_task_center_queue_change_exception():
-    """_on_queue_change suppresses exception from _refresh_tasks."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        with patch.object(screen, "_refresh_tasks", side_effect=RuntimeError("fail")):
-            screen._on_queue_change()
-
-
 async def test_task_center_show_detail_task_not_found():
     """_show_task_detail with unknown task_id shows empty."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -8031,6 +8016,7 @@ async def test_task_bar_indeterminate_flag_propagated():
         assert task.status == TaskStatus.ACTIVE
 
         bar = app.screen.query_one("#tbar", TaskBar)
+        bar._refresh_display()
         assert bar.display is True
 
 
@@ -8364,7 +8350,7 @@ async def test_task_bar_shows_detail_text():
 
         label = bar.query_one("#task-status-label", Label)
         text = str(label.render())
-        assert "45%" in text
+        assert "45.0%" in text
         assert "[12/30]" in text
 
 

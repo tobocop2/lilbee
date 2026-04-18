@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Callable
@@ -38,6 +39,8 @@ from lilbee.models import ModelTask, get_system_ram_gb
 from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
+
+SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
 class _DownloadCancelled(Exception):
@@ -142,6 +145,7 @@ class SetupWizard(Screen[str | None]):
         self._recommended_embed: CatalogModel | None = None
         self._download_models: list[CatalogModel] = []
         self._download_rows: dict[str, _DownloadRow] = {}
+        self._download_tasks: dict[str, str] = {}
         self._cancel_event = threading.Event()
 
     @property
@@ -170,6 +174,9 @@ class SetupWizard(Screen[str | None]):
 
     def on_mount(self) -> None:
         self._build_grid()
+        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
+        with contextlib.suppress(Exception):
+            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
 
     def _build_section(
         self,
@@ -177,6 +184,7 @@ class SetupWizard(Screen[str | None]):
         models: tuple[CatalogModel, ...],
         installed_refs: set[str],
         widgets_out: list[Static | GridSelect],
+        grid_id: str | None = None,
     ) -> list[ModelCard]:
         """Build a heading + GridSelect for a list of catalog models.
         Catalog entries whose canonical ``name:tag`` is already in
@@ -186,7 +194,7 @@ class SetupWizard(Screen[str | None]):
         """
         widgets_out.append(Static(heading, classes="section-heading"))
         cards = [ModelCard(catalog_to_row(m, installed=m.ref in installed_refs)) for m in models]
-        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
+        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50, id=grid_id))
         return cards
 
     def _build_grid(self) -> None:
@@ -213,7 +221,11 @@ class SetupWizard(Screen[str | None]):
             )
 
         chat_cards = self._build_section(
-            msg.SETUP_HEADING_CHAT, FEATURED_CHAT, installed_refs, widgets_to_mount
+            msg.SETUP_HEADING_CHAT,
+            FEATURED_CHAT,
+            installed_refs,
+            widgets_to_mount,
+            grid_id=SETUP_CHAT_GRID_ID,
         )
         embed_cards = self._build_section(
             msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, installed_refs, widgets_to_mount
@@ -355,6 +367,9 @@ class SetupWizard(Screen[str | None]):
         if self._cancel_event.is_set():
             raise _DownloadCancelled
         notify(self._update_row, model_ref, p.percent, p.detail)
+        task_id = self._download_tasks.get(model_ref)
+        if task_id is not None:
+            notify(self._update_task_from_progress, task_id, p.percent, model_ref, p.detail)
 
     def _handle_download_error(
         self,
@@ -376,11 +391,12 @@ class SetupWizard(Screen[str | None]):
     def _download_loop(self, notify: Callable[..., None]) -> None:
         """Download all selected models sequentially."""
         notify(self._mount_download_rows)
+        notify(self._enqueue_download_tasks)
         for idx, model in enumerate(self._download_models, 1):
             if self._cancel_event.is_set():
                 return
             is_first = idx == 1
-            notify(self._update_row, model.ref, 0, msg.SETUP_DOWNLOAD_STARTING)
+            notify(self._update_row, model.ref, 0.0, msg.SETUP_DOWNLOAD_STARTING)
 
             def _progress(p: DownloadProgress, ref: str = model.ref) -> None:
                 self._on_download_progress(notify, ref, p)
@@ -390,14 +406,18 @@ class SetupWizard(Screen[str | None]):
                 download_model(model, on_progress=callback)
             except _DownloadCancelled:
                 log.info("Download cancelled for %s", model.ref)
+                notify(self._complete_download_task, model.ref, True)
                 return
             except Exception as exc:
                 if self._cancel_event.is_set():
                     log.info("Download cancelled for %s", model.ref)
+                    notify(self._complete_download_task, model.ref, True)
                     return
                 self._handle_download_error(notify, exc, model, is_first=is_first)
+                notify(self._complete_download_task, model.ref, True)
                 return
             notify(self._mark_row_done, model.ref)
+            notify(self._complete_download_task, model.ref, False)
 
         notify(self._on_all_downloads_complete)
 
@@ -409,12 +429,61 @@ class SetupWizard(Screen[str | None]):
         self._selections[ModelTask.EMBEDDING] = (None, None)
         self._save_and_dismiss("completed")
 
-    def _update_row(self, model_ref: str, percent: int, detail: str) -> None:
+    def _update_row(self, model_ref: str, percent: float, detail: str) -> None:
         row = self._download_rows[model_ref]
         row.label.update(
             msg.SETUP_DOWNLOAD_ACTIVE.format(name=row.display_name, detail=detail, percent=percent)
         )
         row.bar.update(total=100, progress=percent)
+
+    def _enqueue_download_tasks(self) -> None:
+        """Enqueue each pending model download as a shared-queue task.
+
+        Routing downloads through TaskBarController makes them visible in
+        the Task Center and the 1-line bottom TaskBar, not just the
+        wizard's local download rows.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if not isinstance(self.app, LilbeeApp):
+            return
+        controller = self.app.task_bar
+        for model in self._download_models:
+            task_id = controller.add_task(
+                msg.SETUP_DOWNLOAD_TASK_NAME.format(name=model.display_name),
+                task_type="download",
+            )
+            controller.queue.advance("download")
+            self._download_tasks[model.ref] = task_id
+
+    def _update_task_from_progress(
+        self, task_id: str, percent: float, model_ref: str, detail: str
+    ) -> None:
+        """Mirror a DownloadProgress update onto the shared task bar."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if not isinstance(self.app, LilbeeApp):
+            return
+        row = self._download_rows.get(model_ref)
+        display_name = row.display_name if row else model_ref
+        self.app.task_bar.update_task(
+            task_id,
+            percent,
+            msg.SETUP_DOWNLOAD_ACTIVE.format(name=display_name, detail=detail, percent=percent),
+            indeterminate=False,
+        )
+
+    def _complete_download_task(self, model_ref: str, failed: bool) -> None:
+        """Flash done/fail in the shared task bar and drop the reference."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        task_id = self._download_tasks.pop(model_ref, None)
+        if task_id is None or not isinstance(self.app, LilbeeApp):
+            return
+        if failed:
+            self.app.task_bar.fail_task(task_id)
+        else:
+            self.app.task_bar.complete_task(task_id)
 
     def _mark_row_done(self, model_ref: str) -> None:
         row = self._download_rows[model_ref]

@@ -36,9 +36,14 @@ HF_API_URL = "https://huggingface.co/api/models"
 
 @dataclass
 class DownloadProgress:
-    """Human-readable snapshot of download progress."""
+    """Human-readable snapshot of download progress.
 
-    percent: int
+    ``percent`` is a float (0.0 to 100.0) so the ProgressBar renders smooth
+    fractional movement during multi-GB downloads. Call sites that need
+    an integer for display format it themselves.
+    """
+
+    percent: float
     detail: str
     is_cache_hit: bool
 
@@ -53,19 +58,22 @@ def make_download_callback(
     throttle_interval: float = 0.1,
 ) -> ProgressCallback:
     """Build a download progress callback that converts bytes to human-readable state.
-    *on_update(progress: DownloadProgress)* is called with throttled, deduplicated
-    progress snapshots. Both the catalog and setup screens use this to avoid
-    duplicating byte→MB conversion and cache-hit detection.
+    *on_update(progress: DownloadProgress)* is called at most once per
+    ``throttle_interval`` seconds with a float percentage (0.0 to 100.0), a
+    ``"<done>/<total> MB"`` detail string, and a cache-hit flag. Both the
+    catalog and setup screens use this so byte-to-MB conversion and
+    cache-hit detection aren't duplicated.
     """
     last_update_time = 0.0
-    last_pct = -1
     seen_partial = False
 
     def _on_progress(downloaded: int, total: int) -> None:
-        nonlocal last_update_time, last_pct, seen_partial
+        nonlocal last_update_time, seen_partial
 
         if total > 0 and downloaded >= total and not seen_partial:
-            on_update(DownloadProgress(percent=100, detail="already downloaded", is_cache_hit=True))
+            on_update(
+                DownloadProgress(percent=100.0, detail="already downloaded", is_cache_hit=True)
+            )
             return
         seen_partial = True
 
@@ -76,10 +84,7 @@ def make_download_callback(
 
         mb_done = downloaded / _BYTES_PER_MB
         if total > 0:
-            pct = min(int(downloaded * 100 / total), 100)
-            if pct == last_pct and pct > 0:
-                return
-            last_pct = pct
+            pct = min(downloaded * 100.0 / total, 100.0)
             mb_total = total / _BYTES_PER_MB
             on_update(
                 DownloadProgress(
@@ -89,7 +94,7 @@ def make_download_callback(
                 )
             )
         else:
-            on_update(DownloadProgress(percent=0, detail=f"{mb_done:.0f} MB", is_cache_hit=False))
+            on_update(DownloadProgress(percent=0.0, detail=f"{mb_done:.0f} MB", is_cache_hit=False))
 
     return _on_progress
 

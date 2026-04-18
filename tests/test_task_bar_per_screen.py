@@ -178,6 +178,7 @@ async def test_task_bar_shows_active_task_on_catalog_screen() -> None:
         assert bar.display is False  # idle: hidden
         app.task_bar.add_task("Download test-model", "download")
         app.task_bar.queue.advance()
+        bar._refresh_display()
         await pilot.pause()
         assert bar.display is True
 
@@ -191,15 +192,16 @@ async def test_task_bar_state_shared_across_screens() -> None:
         await pilot.pause()
         app.task_bar.add_task("Background sync", "sync")
         app.task_bar.queue.advance()
-        await pilot.pause()
-
         chat_bar = app.screen.query_one(TaskBar)
+        chat_bar._refresh_display()
+        await pilot.pause()
         assert chat_bar.display is True
 
         app.switch_screen(CatalogScreen())
         await pilot.pause()
         assert isinstance(app.screen, CatalogScreen)
         catalog_bar = app.screen.query_one(TaskBar)
+        catalog_bar._refresh_display()
         assert catalog_bar is not chat_bar
         assert catalog_bar.display is True
         # Same underlying queue → same active task
@@ -252,12 +254,14 @@ async def test_task_bar_auto_hides_when_queue_drains() -> None:
         bar = app.screen.query_one(TaskBar)
         task_id = app.task_bar.add_task("Download", "download")
         app.task_bar.queue.advance()
+        bar._refresh_display()
         await pilot.pause()
         assert bar.display is True
 
         app.task_bar.complete_task(task_id)
         # Wait out the post-completion flash window before the panel is dropped.
         await pilot.pause(delay=task_bar_module._DONE_FLASH_SECONDS + 0.2)
+        bar._refresh_display()
         await pilot.pause()
         assert app.task_bar.queue.is_empty
         assert bar.display is False

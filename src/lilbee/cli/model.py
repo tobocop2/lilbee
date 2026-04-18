@@ -217,7 +217,7 @@ class PullProgressEvent(BaseModel):
     command: str = ModelCommand.PULL
     event: str = PullEvent.PROGRESS
     model: str
-    percent: int
+    percent: float
     detail: str
     cache_hit: bool
 

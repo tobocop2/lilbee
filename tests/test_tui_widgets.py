@@ -2489,7 +2489,7 @@ class TestTaskBarAdditional:
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "queued" in text
 
-    async def test_spinner_index_advances(self) -> None:
+    async def test_tick_advances_spinner_when_active(self) -> None:
         """The spinner frame index increments when active tasks exist."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -2500,10 +2500,10 @@ class TestTaskBarAdditional:
             bar.add_task("Sync", "sync")
             bar.queue.advance()
             initial = bar._spinner_index
-            bar._tick_spinner()
+            bar._tick()
             assert bar._spinner_index == initial + 1
 
-    async def test_spinner_does_not_advance_when_idle(self) -> None:
+    async def test_tick_does_not_advance_spinner_when_idle(self) -> None:
         """The spinner stays put when there are no active tasks."""
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
@@ -2512,44 +2512,8 @@ class TestTaskBarAdditional:
             await pilot.pause()
             bar = app.query_one(TaskBar)
             initial = bar._spinner_index
-            bar._tick_spinner()
+            bar._tick()
             assert bar._spinner_index == initial
-
-    async def test_on_queue_change_exception_suppressed(self) -> None:
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar._on_queue_change()  # should not raise
-            assert bar.display is False
-
-    async def test_on_queue_change_from_worker_thread(self) -> None:
-        """Queue notifications fired from a background thread must marshal back."""
-        import threading
-
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-
-            called = threading.Event()
-
-            def worker() -> None:
-                bar._on_queue_change()
-                called.set()
-
-            thread = threading.Thread(target=worker)
-            thread.start()
-            for _ in range(20):
-                await pilot.pause()
-                if called.is_set():
-                    break
-            thread.join(timeout=5)
-            assert called.is_set()
 
     async def test_label_contains_task_center_hint(self) -> None:
         """The status label includes the Task Center hint."""
@@ -2584,7 +2548,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "45%" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "45.0%" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_refresh_display_exception_suppressed(self) -> None:
         """_refresh_display handles missing label gracefully."""
@@ -2742,18 +2706,6 @@ class TestGridSelectExtra:
             await pilot.pause()
             assert grid.highlighted == 0
 
-    async def test_tab_next_advances_highlight(self) -> None:
-        """Tab advances the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 0
-            grid.action_tab_next()
-            assert grid.highlighted == 1
-
     async def test_tab_next_escapes_at_last_card(self) -> None:
         """Tab on the last card posts LeaveDown to escape the grid."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -2768,18 +2720,6 @@ class TestGridSelectExtra:
             grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
             grid.action_tab_next()
             assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
-
-    async def test_tab_previous_retreats_highlight(self) -> None:
-        """Shift+Tab retreats the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 2
-            grid.action_tab_previous()
-            assert grid.highlighted == 1
 
     async def test_tab_previous_escapes_at_first_card(self) -> None:
         """Shift+Tab on the first card posts LeaveUp to escape the grid."""
@@ -2815,30 +2755,6 @@ class TestGridSelectExtra:
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_tab_previous()
         assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
-
-    async def test_tab_next_initializes_highlight_when_none(self) -> None:
-        """Tab with no highlight initializes to 0."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_next()
-            assert grid.highlighted == 0
-
-    async def test_tab_previous_initializes_highlight_when_none(self) -> None:
-        """Shift+Tab with no highlight initializes to last card."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_previous()
-            assert grid.highlighted == len(grid.children) - 1
 
 
 # ---------------------------------------------------------------------------

@@ -9,15 +9,15 @@ State ownership is split so the bar can render on every screen:
 
 - ``TaskBarController`` lives on the app (``app.task_bar``) and owns the
   single ``TaskQueue``. Callers enqueue/update/complete/fail tasks through it.
-- ``TaskBar`` is a stateless view widget composed by each Screen. It subscribes
-  to the shared queue and re-renders when the queue changes.
+- ``TaskBar`` is a stateless view widget composed by each Screen. It polls the
+  shared queue at 10 Hz on the main event loop and re-renders in place; no
+  thread marshaling or subscriber callbacks are involved in the render path.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +25,6 @@ from textual.app import ComposeResult
 from textual.widgets import Label, Static
 
 from lilbee.cli.tui.task_queue import TaskQueue
-from lilbee.cli.tui.thread_safe import call_from_thread
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -34,7 +33,7 @@ log = logging.getLogger(__name__)
 
 _DONE_FLASH_SECONDS = 2.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_SPINNER_INTERVAL = 0.1
+_POLL_INTERVAL_SECONDS = 0.1
 
 
 class TaskBarController:
@@ -65,7 +64,7 @@ class TaskBarController:
     def update_task(
         self,
         task_id: str,
-        progress: int,
+        progress: float,
         detail: str = "",
         *,
         indeterminate: bool | None = None,
@@ -127,12 +126,8 @@ class TaskBar(Static):
         yield Label("", id="task-status-label")
 
     def on_mount(self) -> None:
-        self.queue.subscribe(self._on_queue_change)
         self._refresh_display()
-        self.set_interval(_SPINNER_INTERVAL, self._tick_spinner)
-
-    def on_unmount(self) -> None:
-        self.queue.unsubscribe(self._on_queue_change)
+        self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
 
     @property
     def _controller(self) -> TaskBarController:
@@ -165,7 +160,7 @@ class TaskBar(Static):
     def update_task(
         self,
         task_id: str,
-        progress: int,
+        progress: float,
         detail: str = "",
         *,
         indeterminate: bool | None = None,
@@ -181,18 +176,11 @@ class TaskBar(Static):
     def cancel_task(self, task_id: str) -> None:
         self._controller.cancel_task(task_id)
 
-    def _on_queue_change(self) -> None:
-        """Queue callback. May fire on either the main or a worker thread."""
-        if threading.current_thread() is threading.main_thread():
-            with contextlib.suppress(Exception):
-                self._refresh_display()
-            return
-        call_from_thread(self, self._refresh_display)
-
-    def _tick_spinner(self) -> None:
+    def _tick(self) -> None:
+        """Poll the shared queue at 10 Hz and re-render."""
         if self.queue.active_tasks:
             self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
-            self._refresh_display()
+        self._refresh_display()
 
     def _refresh_display(self) -> None:
         """Rebuild the 1-line status label from the shared queue."""
@@ -211,7 +199,7 @@ class TaskBar(Static):
         if active:
             count = len(active)
             task = active[0]
-            pct = f" {task.progress}%" if not task.indeterminate else ""
+            pct = f" {task.progress:.1f}%" if not task.indeterminate else ""
             if count == 1:
                 detail = f" {task.detail}" if task.detail else ""
                 parts.append(f"{spinner} {task.name}{pct}{detail}")
