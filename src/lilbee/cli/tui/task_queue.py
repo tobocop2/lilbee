@@ -59,15 +59,29 @@ class TaskQueue:
     query status.
     """
 
-    def __init__(self, *, on_change: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        on_change: Callable[[], None] | None = None,
+        capacity: dict[str, int] | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._tasks: dict[str, Task] = {}
         self._queues: dict[str, list[str]] = {}
-        self._active_ids: dict[str, str] = {}
+        # Per-type set of currently-active task ids. A "type" here means
+        # sync/crawl/download/wiki; each has its own FIFO and own active slots.
+        self._active_ids: dict[str, set[str]] = {}
+        # Max concurrent active tasks per type. Defaults to 1 (single-active).
+        # Callers override per type (e.g. "download": 2 to allow two concurrent
+        # model downloads). Types absent from the map implicitly cap at 1.
+        self._capacity: dict[str, int] = dict(capacity or {})
         self._on_change: list[Callable[[], None]] = []
         if on_change:
             self._on_change.append(on_change)
         self._history: list[Task] = []
+
+    def _capacity_for(self, task_type: str) -> int:
+        return self._capacity.get(task_type, 1)
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Subscribe to task queue changes. Callback is called on any queue update."""
@@ -83,23 +97,25 @@ class TaskQueue:
 
     @property
     def active_task(self) -> Task | None:
-        """Return the first active task (for backward compat). Prefer active_tasks."""
+        """Return any one active task (for backward compat). Prefer active_tasks."""
         with self._lock:
-            for tid in self._active_ids.values():
-                task = self._tasks.get(tid)
-                if task:
-                    return task
+            for ids in self._active_ids.values():
+                for tid in ids:
+                    task = self._tasks.get(tid)
+                    if task:
+                        return task
             return None
 
     @property
     def active_tasks(self) -> list[Task]:
-        """Return all currently active tasks (one per type)."""
+        """Return all currently active tasks across all types."""
         with self._lock:
-            tasks = []
-            for tid in self._active_ids.values():
-                task = self._tasks.get(tid)
-                if task:
-                    tasks.append(task)
+            tasks: list[Task] = []
+            for ids in self._active_ids.values():
+                for tid in ids:
+                    task = self._tasks.get(tid)
+                    if task:
+                        tasks.append(task)
             return tasks
 
     @property
@@ -121,7 +137,7 @@ class TaskQueue:
     @property
     def is_empty(self) -> bool:
         with self._lock:
-            has_active = len(self._active_ids) > 0
+            has_active = any(ids for ids in self._active_ids.values())
             has_queued = any(len(q) > 0 for q in self._queues.values())
             return not has_active and not has_queued
 
@@ -210,16 +226,17 @@ class TaskQueue:
         return True
 
     def advance(self, task_type: str | None = None) -> Task | None:
-        """Pop the next queued task and mark it active.
+        """Pop the next queued task of this type and mark it active.
         If *task_type* is given, only advance that type's queue.
-        If omitted, advance any type that has no active task.
-        Returns None if nothing can advance.
+        If omitted, advance any type that still has a free slot.
+        Respects the per-type capacity: returns None once all slots are full.
         """
         advanced: Task | None = None
         with self._lock:
             types = [task_type] if task_type else list(self._queues.keys())
             for tt in types:
-                if tt in self._active_ids:
+                active = self._active_ids.setdefault(tt, set())
+                if len(active) >= self._capacity_for(tt):
                     continue
                 queue = self._queues.get(tt, [])
                 if not queue:
@@ -228,7 +245,7 @@ class TaskQueue:
                 task = self._tasks.get(tid)
                 if task:
                     task.status = TaskStatus.ACTIVE
-                    self._active_ids[tt] = tid
+                    active.add(tid)
                     advanced = task
                     break
         if advanced is not None:
@@ -246,8 +263,9 @@ class TaskQueue:
 
     def _remove_from_active_locked(self, task_id: str, task_type: str) -> None:
         """Remove a task from active tracking. Caller must hold _lock."""
-        if self._active_ids.get(task_type) == task_id:
-            del self._active_ids[task_type]
+        active = self._active_ids.get(task_type)
+        if active is not None:
+            active.discard(task_id)
 
     def _remove_from_queue_locked(self, task_id: str, task_type: str) -> None:
         """Remove a task from its type queue. Caller must hold _lock."""

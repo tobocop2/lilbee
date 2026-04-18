@@ -17,11 +17,19 @@ log = logging.getLogger(__name__)
 
 
 def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
-    """Post *fn* to the main thread via the app, dropping silently on shutdown."""
+    """Post *fn* to the main thread via the app.
+
+    Drops the call (does not crash the worker) when the target node's app
+    is no longer reachable, e.g. during shutdown or after a screen was
+    replaced. Logs at warning level because a silent drop masks real
+    bugs: a previous iteration of this project lost hours to progress
+    updates that were being swallowed here without a trace.
+    """
     try:
         node.app.call_from_thread(fn, *args, **kwargs)
-    except Exception:
-        log.debug(
-            "call_from_thread dropped (app shutting down): %s",
+    except Exception as exc:
+        log.warning(
+            "call_from_thread dropped %s: %s",
             getattr(fn, "__name__", fn),
+            exc,
         )

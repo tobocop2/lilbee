@@ -557,12 +557,10 @@ class TestSetupWizard:
     async def test_install_button_fires_on_keyboard_enter(self) -> None:
         """Pressing Enter on the focused Install & Go button must trigger install.
 
-        Regression guard for bb-q9gl: after picking both models, focusing
-        #setup-action and pressing Enter did not start the download. We
-        guard the observable side-effect ``-downloading`` class, set
-        synchronously at the top of ``_on_install`` before any worker
-        spawns. Real downloads are blocked by patching ``_run_downloads``
-        so the test finishes quickly.
+        Regression guard: after picking both models, focusing
+        #setup-action and pressing Enter must run ``_on_install`` and
+        dismiss the wizard. Downloads run in the background under
+        ``TaskBarController`` so the wizard doesn't linger.
         """
         from textual.widgets import Button
 
@@ -573,19 +571,18 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             await pilot.pause()
             wizard = SetupWizard()
-            # Block the real download worker; _on_install still runs and
-            # sets the ``-downloading`` class before calling this.
-            wizard._run_downloads = lambda: None  # type: ignore[method-assign]
             await app.push_screen(wizard)
             await pilot.pause()
             install_btn = wizard.query_one("#setup-action", Button)
             assert install_btn.disabled is False, "install button should be enabled after preselect"
             install_btn.focus()
             await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert wizard.has_class("-downloading"), (
-                "Enter on focused Install & Go must run _on_install (sets '-downloading' class)"
+            # Block real downloads so the test doesn't hit the network.
+            with mock.patch.object(app.task_bar, "start_download", return_value="tid"):
+                await pilot.press("enter")
+                await pilot.pause()
+            assert not isinstance(app.screen, SetupWizard), (
+                "Enter on focused Install & Go must dismiss the wizard"
             )
 
     async def test_single_tab_escapes_chat_grid(self) -> None:

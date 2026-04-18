@@ -18,22 +18,31 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
 from textual.widgets import Label, Static
 
-from lilbee.cli.tui.task_queue import TaskQueue
+from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 
 if TYPE_CHECKING:
     from textual.app import App
+
+    from lilbee.catalog import CatalogModel, DownloadProgress
 
 log = logging.getLogger(__name__)
 
 _DONE_FLASH_SECONDS = 2.0
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _POLL_INTERVAL_SECONDS = 0.1
+_DOWNLOAD_CONCURRENCY = 2
+_DOWNLOAD_TYPE = "download"
+
+
+class _DownloadCancelled(Exception):
+    """Raised inside the progress callback to abort ``hf_hub_download``."""
 
 
 class TaskBarController:
@@ -46,7 +55,11 @@ class TaskBarController:
 
     def __init__(self, app: App[Any]) -> None:
         self.app = app
-        self.queue = TaskQueue()
+        self.queue = TaskQueue(capacity={_DOWNLOAD_TYPE: _DOWNLOAD_CONCURRENCY})
+        # Models pending download, keyed by task_id. The worker looks up
+        # its model here so we don't need to capture it in a closure that
+        # would outlive the task.
+        self._pending_models: dict[str, CatalogModel] = {}
 
     def add_task(
         self,
@@ -98,6 +111,78 @@ class TaskBarController:
             self.queue.advance(task_type)
         while self.queue.advance() is not None:
             pass
+
+    def start_download(self, model: CatalogModel) -> str:
+        """Enqueue a model download and spawn a background worker.
+
+        Downloads are owned by this controller, not by any screen: the
+        worker writes progress directly to the shared ``TaskQueue`` (which
+        is lock-protected), so updates survive any screen navigation. Up
+        to ``_DOWNLOAD_CONCURRENCY`` downloads run concurrently; the rest
+        wait in ``QUEUED`` and promote automatically.
+
+        Returns the new task_id.
+        """
+        task_id = self.queue.enqueue(lambda: None, model.display_name, _DOWNLOAD_TYPE)
+        self._pending_models[task_id] = model
+        self._try_start_next_downloads()
+        return task_id
+
+    def _try_start_next_downloads(self) -> None:
+        """Promote queued downloads into the free active slots and spawn their workers."""
+        while (task := self.queue.advance(_DOWNLOAD_TYPE)) is not None:
+            self._spawn_download_worker(task.task_id)
+
+    def _spawn_download_worker(self, task_id: str) -> None:
+        """Start a daemon thread that performs the download for *task_id*."""
+        model = self._pending_models.get(task_id)
+        if model is None:
+            return
+        thread = threading.Thread(
+            target=self._run_download_worker,
+            args=(task_id, model),
+            daemon=True,
+            name=f"download-{task_id}",
+        )
+        thread.start()
+
+    def _run_download_worker(self, task_id: str, model: CatalogModel) -> None:
+        """Body of the download worker thread."""
+        from lilbee.catalog import download_model, make_download_callback
+
+        callback = make_download_callback(self._make_progress_handler(task_id, model))
+        try:
+            download_model(model, on_progress=callback)
+        except _DownloadCancelled:
+            log.info("Download cancelled for %s", model.ref)
+            self.queue.cancel(task_id)
+        except Exception as exc:
+            log.warning("Download failed for %s: %s", model.ref, exc)
+            self.queue.fail_task(task_id, detail=str(exc))
+        else:
+            self.queue.complete_task(task_id)
+        finally:
+            self._pending_models.pop(task_id, None)
+            # One slot freed; promote any queued download into it.
+            self._try_start_next_downloads()
+
+    def _make_progress_handler(
+        self, task_id: str, model: CatalogModel
+    ) -> Callable[[DownloadProgress], None]:
+        """Return a closure that writes ``DownloadProgress`` to the shared queue.
+
+        Each tick first checks whether the task was cancelled from the
+        UI; if so, raises ``_DownloadCancelled`` to abort the underlying
+        ``hf_hub_download`` call.
+        """
+
+        def _on_progress(p: DownloadProgress) -> None:
+            task = self.queue.get_task(task_id)
+            if task is not None and task.status == TaskStatus.CANCELLED:
+                raise _DownloadCancelled
+            self.queue.update_task(task_id, p.percent, f"{model.display_name}: {p.detail}")
+
+        return _on_progress
 
 
 class TaskBar(Static):

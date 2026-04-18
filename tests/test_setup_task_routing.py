@@ -1,12 +1,22 @@
-"""Coverage for setup wizard → shared TaskBar routing."""
+"""Setup wizard hands downloads off to TaskBarController and dismisses immediately.
+
+The wizard is a caller, not an owner. It must:
+  - resolve non-installed selections,
+  - call ``app.task_bar.start_download(model)`` for each,
+  - persist config via ``_save_and_dismiss`` and pop itself.
+
+Download progress reporting is tested in ``test_controller_downloads.py``;
+here we only cover the wizard-as-caller contract.
+"""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
 import pytest
+from textual.app import App, ComposeResult
+from textual.widgets import Footer
 
-from lilbee.catalog import CatalogModel, DownloadProgress
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -22,179 +32,106 @@ def _patch_setup_ram(ram_gb: float = 16.0):
     return patch("lilbee.models.get_system_ram_gb", return_value=ram_gb)
 
 
-def _make_catalog_model(name: str = "test", display_name: str = "Test Model") -> CatalogModel:
-    return CatalogModel(
-        name=name,
-        tag="7b",
-        display_name=display_name,
-        hf_repo=f"org/{name}-7b",
-        gguf_filename="test.gguf",
-        size_gb=4.0,
-        min_ram_gb=8.0,
-        description="A test model",
-        featured=False,
-        downloads=1000,
-        task="chat",
-    )
+class _PlainApp(App[None]):
+    """Minimal host so the wizard can mount without LilbeeApp's auto-wizard."""
+
+    def compose(self) -> ComposeResult:
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.push_screen(SetupWizard())
 
 
 @pytest.mark.asyncio
-async def test_enqueue_download_tasks_routes_to_shared_queue() -> None:
-    """_enqueue_download_tasks creates a task per download in the shared queue."""
+async def test_install_submits_pending_downloads_to_controller() -> None:
+    """Install & Go routes non-installed selections to TaskBarController.start_download."""
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            cm1 = _make_catalog_model(name="chat-one", display_name="ChatOne")
-            cm2 = _make_catalog_model(name="chat-two", display_name="ChatTwo")
-            screen._download_models = [cm1, cm2]
-            screen._enqueue_download_tasks()
-            assert cm1.ref in screen._download_tasks
-            assert cm2.ref in screen._download_tasks
-            # One active, one queued under the download type
-            assert app.task_bar.queue.active_task is not None
+            # ChatScreen auto-pushes SetupWizard when no models are installed.
+            for _ in range(10):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard):
+                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            with (
+                patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.cli.tui.screens.setup.reset_services"),
+            ):
+                wizard._on_install()
+                await pilot.pause()
+            # Both recommended models are non-installed; both should submit.
+            assert mock_start.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_update_task_from_progress_mirrors_bytes() -> None:
-    """Progress updates flow into the shared TaskBarController."""
+async def test_install_with_already_installed_selections_submits_nothing() -> None:
+    """Selections whose cards have ``installed=True`` bypass start_download."""
+    from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
     app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
+    with (
+        _patch_setup_scan(chat=[FEATURED_CHAT[0].ref], embed=[FEATURED_EMBEDDING[0].ref]),
+        _patch_setup_ram(),
+    ):
         async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="single", display_name="Single")
-            screen._download_models = [cm]
-            screen._mount_download_rows()
-            screen._enqueue_download_tasks()
-            task_id = screen._download_tasks[cm.ref]
-            screen._update_task_from_progress(task_id, 42.5, cm.ref, "42/100 MB")
-            task = app.task_bar.queue.get_task(task_id)
-            assert task is not None
-            assert task.progress == 42.5
+            for _ in range(10):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard):
+                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            cards = list(wizard.query(ModelCard))
+            chat_card = next(
+                c for c in cards if c.row.installed and c.row.task == FEATURED_CHAT[0].task
+            )
+            embed_card = next(
+                c for c in cards if c.row.installed and c.row.task == FEATURED_EMBEDDING[0].task
+            )
+            wizard._select_card(chat_card, chat_card.row.task)
+            wizard._select_card(embed_card, embed_card.row.task)
+            with (
+                patch.object(app.task_bar, "start_download") as mock_start,
+                patch("lilbee.settings.set_value"),
+                patch("lilbee.cli.tui.screens.setup.reset_services"),
+            ):
+                wizard._on_install()
+                await pilot.pause()
+            assert mock_start.call_count == 0
 
 
 @pytest.mark.asyncio
-async def test_update_task_from_progress_without_row_falls_back() -> None:
-    """If no local download row exists, the model_ref itself is used as label."""
-    app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="only", display_name="Only")
-            screen._download_models = [cm]
-            screen._enqueue_download_tasks()
-            task_id = screen._download_tasks[cm.ref]
-            # No _mount_download_rows call → no local row
-            screen._update_task_from_progress(task_id, 10.0, cm.ref, "10 MB")
-            task = app.task_bar.queue.get_task(task_id)
-            assert task is not None
-            assert "only:7b" in task.detail or task.progress == 10.0
-
-
-@pytest.mark.asyncio
-async def test_complete_download_task_success_flashes_done() -> None:
-    """_complete_download_task with failed=False calls complete_task."""
-    app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="done", display_name="Done")
-            screen._download_models = [cm]
-            screen._enqueue_download_tasks()
-            assert cm.ref in screen._download_tasks
-            screen._complete_download_task(cm.ref, False)
-            assert cm.ref not in screen._download_tasks
-
-
-@pytest.mark.asyncio
-async def test_complete_download_task_failure_fails_task() -> None:
-    """_complete_download_task with failed=True calls fail_task."""
-    app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="oops", display_name="Oops")
-            screen._download_models = [cm]
-            screen._enqueue_download_tasks()
-            screen._complete_download_task(cm.ref, True)
-            assert cm.ref not in screen._download_tasks
-
-
-@pytest.mark.asyncio
-async def test_complete_download_task_unknown_ref_is_noop() -> None:
-    """_complete_download_task returns silently for unknown model refs."""
-    app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
-        async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._complete_download_task("nonexistent:ref", True)  # no raise
-
-
-@pytest.mark.asyncio
-async def test_update_task_from_progress_noop_outside_lilbee_app() -> None:
-    """_update_task_from_progress returns silently when host app isn't LilbeeApp."""
-    from textual.app import App, ComposeResult
-    from textual.widgets import Footer
-
-    class _PlainApp(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Footer()
-
-        def on_mount(self) -> None:
-            self.push_screen(SetupWizard())
-
+async def test_install_outside_lilbee_app_saves_and_dismisses_without_downloads() -> None:
+    """Without a TaskBarController, the wizard still saves config and pops itself."""
     app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            # Must return without raising even though app.task_bar doesn't exist.
-            screen._update_task_from_progress("task-id", 10.0, "ignored", "10 MB")
+            screen._on_install()  # must not raise without app.task_bar
+            for _ in range(5):
+                await pilot.pause()
+                if not isinstance(app.screen, SetupWizard):
+                    break
+            assert not isinstance(app.screen, SetupWizard)
 
 
 @pytest.mark.asyncio
-async def test_on_download_progress_forwards_to_shared_queue() -> None:
-    """_on_download_progress notifies _update_task_from_progress when a task exists."""
-    app = LilbeeApp()
+async def test_escape_dismisses_without_affecting_shared_queue() -> None:
+    """action_cancel pops the wizard but leaves queued downloads alone."""
+    app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            app.push_screen(SetupWizard())
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            cm = _make_catalog_model(name="prog", display_name="Prog")
-            screen._download_models = [cm]
-            screen._mount_download_rows()
-            screen._enqueue_download_tasks()
-
-            called: list[tuple[object, ...]] = []
-
-            def fake_notify(fn, *args, **kwargs):
-                called.append((fn, args, kwargs))
-                fn(*args, **kwargs)
-
-            progress = DownloadProgress(percent=50.0, detail="50/100 MB", is_cache_hit=False)
-            screen._on_download_progress(fake_notify, cm.ref, progress)
-            # _update_row and _update_task_from_progress both fired
-            fns = [c[0] for c in called]
-            assert screen._update_row in fns
-            assert screen._update_task_from_progress in fns
+            screen.action_cancel()
+            for _ in range(5):
+                await pilot.pause()
+                if not isinstance(app.screen, SetupWizard):
+                    break
+            assert not isinstance(app.screen, SetupWizard)
