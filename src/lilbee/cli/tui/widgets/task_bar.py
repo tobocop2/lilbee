@@ -40,9 +40,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _DONE_FLASH_SECONDS = 2.0
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _POLL_INTERVAL_SECONDS = 0.1
 _DOWNLOAD_CONCURRENCY = 2
+
+# Pulsing-dot cadence: on/off flip at half of this tick count.
+# 10 Hz poll x 5 = 500 ms per half cycle, which is a 1 Hz dot pulse,
+# matching the active-row rail pulse in the Task Center.
+_DOT_PULSE_HALF_TICKS = 5
+_DOT_GLYPH = "●"
 
 
 class TaskCancelled(Exception):
@@ -340,7 +345,12 @@ class TaskBar(Static):
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._spinner_index = 0
+        self._tick_count = 0
+        # Timestamp (tick count) at which the current flash started.
+        # None when no flash is active. The 2 s completion/failure
+        # flash holds the coloured dot + summary past queue drain.
+        self._flash_until_tick: int | None = None
+        self._flash_outcome: TaskStatus | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("", id="task-status-label")
@@ -398,40 +408,79 @@ class TaskBar(Static):
 
     def _tick(self) -> None:
         """Poll the shared queue at 10 Hz and re-render."""
-        if self.queue.active_tasks:
-            self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
+        self._tick_count += 1
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        """Rebuild the 1-line status label from the shared queue."""
+        """Rebuild the 1-line status label from the shared queue.
+
+        Visual language:
+        - Leading ``●`` pulses ``$primary`` <-> ``$primary-lighten-2`` at 1 Hz
+          when anything is active. Dim ``$text-muted`` when only queued tasks
+          remain, ``$success`` during a completion flash, ``$error`` during
+          a failure flash.
+        - The text either reads ``{name} {pct}`` (one active, zero queued),
+          ``{N} tasks running`` (plural), ``{N} queued`` (throttle mode),
+          or the flash copy.
+        - Right-aligned muted-italic ``Esc then t for Task Center`` hint.
+        """
         queue = self.queue
         active = queue.active_tasks
         queued = queue.queued_tasks
+        history = queue.history
 
-        if not active and not queued:
+        in_flash = self._flash_until_tick is not None and self._tick_count <= self._flash_until_tick
+        if not in_flash:
+            self._flash_until_tick = None
+            self._flash_outcome = None
+            # Detect transitions into flash territory by inspecting recent history.
+            if not active and not queued and history:
+                last = history[-1]
+                if last.status in (TaskStatus.DONE, TaskStatus.FAILED):
+                    self._flash_until_tick = self._tick_count + int(
+                        _DONE_FLASH_SECONDS / _POLL_INTERVAL_SECONDS
+                    )
+                    self._flash_outcome = last.status
+
+        if not active and not queued and not in_flash and self._flash_outcome is None:
             self.display = False
             return
 
         self.display = True
-        spinner = _SPINNER_FRAMES[self._spinner_index]
-        parts: list[str] = []
-
-        if active:
-            count = len(active)
-            task = active[0]
-            pct = f" {task.progress:.1f}%" if not task.indeterminate else ""
-            if count == 1:
-                detail = f" {task.detail}" if task.detail else ""
-                parts.append(f"{spinner} {task.name}{pct}{detail}")
-            else:
-                parts.append(f"{spinner} {count} tasks running")
-
-        if queued:
-            parts.append(f"{len(queued)} queued")
-
-        summary = " | ".join(parts)
-        label_text = f" {summary}  {msg.TASKBAR_HINT}"
+        dot_color, summary = self._compose_segments(active, queued)
+        hint = f"[i dim]{msg.TASKBAR_HINT}[/]"
+        dot = f"[{dot_color}]{_DOT_GLYPH}[/]"
+        label_text = f" {dot}  {summary}    {hint}"
 
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _compose_segments(self, active: list, queued: list) -> tuple[str, str]:
+        """Return (dot color, text summary) for the current state."""
+        # Pulsing even/odd cadence, shared with TaskRow's rail pulse.
+        on_beat = (self._tick_count // _DOT_PULSE_HALF_TICKS) % 2 == 0
+
+        if self._flash_outcome == TaskStatus.DONE:
+            return "$success", msg.TASKBAR_ALL_DONE
+        if self._flash_outcome == TaskStatus.FAILED:
+            count = sum(1 for t in self.queue.history if t.status == TaskStatus.FAILED)
+            key = msg.TASKBAR_FAILED if count == 1 else msg.TASKBAR_FAILED_PLURAL
+            return "$error", key.format(count=count)
+
+        parts: list[str] = []
+        if active:
+            count = len(active)
+            task = active[0]
+            if count == 1 and not queued:
+                pct = "" if task.indeterminate else f"  [b]{task.progress:.1f}%[/b]"
+                parts.append(f"[b]{task.name}[/b]{pct}")
+            else:
+                key = msg.TASKBAR_ONE if count == 1 else msg.TASKBAR_MULTIPLE
+                parts.append(key.format(count=count))
+                parts.append(f"[b]{task.name}[/b]")
+        if queued:
+            parts.append(f"[dim]{msg.TASKBAR_QUEUED_COUNT.format(count=len(queued))}[/dim]")
+
+        dot_color = ("$primary" if on_beat else "$primary-lighten-2") if active else "$text-muted"
+        return dot_color, "  ·  ".join(parts)

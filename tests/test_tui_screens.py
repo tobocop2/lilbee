@@ -3719,96 +3719,6 @@ async def test_task_center_shows_history():
     assert any(b.action == "cancel_task" for b in tc.BINDINGS if hasattr(b, "action"))
 
 
-async def test_task_center_renders_empty():
-    """TaskCenter shows 'No tasks' when queue is empty."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        table = app.screen.query_one("#task-table")
-        assert table is not None
-
-
-async def test_task_center_renders_active_and_history():
-    """TaskCenter shows active task and completed history."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.task_bar
-
-        # Complete a task to create history
-        t1 = task_bar.add_task("Sync A", "sync")
-        task_bar.queue.advance()
-        task_bar.queue.complete_task(t1)
-
-        # Add an active task
-        task_bar.add_task("Sync B", "sync")
-        task_bar.queue.advance()
-
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-
-        table = app.screen.query_one("#task-table")
-        assert table is not None
-        assert table.row_count >= 2  # active + history
-
-
-async def test_task_center_cancel_action():
-    """TaskCenter cancel action triggers on active task."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.task_bar
-
-        task_bar.add_task("Sync", "sync")
-        task_bar.queue.advance()
-
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        # Just call action - should not crash even if cursor is on wrong row
-        app.screen.action_cancel_task()
-        await pilot.pause()
-        assert isinstance(app.screen, TaskCenter)
-
-
-async def test_task_center_refresh_action():
-    """TaskCenter refresh action refreshes table."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        app.screen.action_refresh_tasks()
-        await pilot.pause()
-        table = app.screen.query_one("#task-table", DataTable)
-        assert table is not None
-
-
-async def test_task_center_cursor_actions():
-    """TaskCenter cursor up/down delegate to DataTable."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        app.screen.action_cursor_down()
-        app.screen.action_cursor_up()
-        await pilot.pause()
-        table = app.screen.query_one("#task-table", DataTable)
-        assert table is not None
-
-
 async def test_task_center_pop_screen():
     """TaskCenter pop_screen returns to chat."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -4001,39 +3911,6 @@ async def test_chat_action_complete_prev_with_space():
             assert "qwen" in inp.value
 
 
-async def test_task_center_with_queued_tasks():
-    """TaskCenter shows queued tasks when active + queued present."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.task_bar
-
-        # Add active + queued tasks (same type so one is queued)
-        task_bar.add_task("Download A", "download")
-        task_bar.queue.advance("download")
-        task_bar.add_task("Download B", "download")
-
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-
-        table = app.screen.query_one("#task-table")
-        assert table.row_count >= 2  # active + queued
-
-
-async def test_task_center_status_icon():
-    """_status_icon maps all TaskStatus values."""
-    from lilbee.cli.tui.screens.task_center import _status_icon
-    from lilbee.cli.tui.task_queue import TaskStatus
-
-    assert _status_icon(TaskStatus.QUEUED) == "\u23f3"
-    assert _status_icon(TaskStatus.ACTIVE) == "\u25b6"
-    assert _status_icon(TaskStatus.DONE) == "\u2713"
-    assert _status_icon(TaskStatus.FAILED) == "\u2717"
-    assert _status_icon(TaskStatus.CANCELLED) == "\u2298"
-
-
 async def test_app_switch_to_tasks():
     """App switch_view navigates to TaskCenter."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -4134,72 +4011,11 @@ def test_statusbar_mode_text_reactive_declared():
     assert "mode_text" in reactives
 
 
-async def test_task_center_row_click_shows_detail():
-    """Clicking a row in TaskCenter updates the detail panel."""
-    from unittest import mock
-
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        task_bar = app.task_bar
-        tid = task_bar.add_task("Download X", "download")
-        task_bar.queue.advance()
-        task_bar.queue.update_task(tid, 42, "10/24 MB")
-
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        detail = screen.query_one("#task-detail", Static)
-
-        # Simulate row selection with a mock event carrying the task_id as row_key
-        row_key = mock.Mock()
-        row_key.value = tid
-        event = mock.Mock()
-        event.row_key = row_key
-        screen._on_row_highlighted(event)
-        await pilot.pause()
-        text = detail.content
-        assert "Download X" in text
-        assert "download" in text
-        assert "10/24 MB" in text
-
-
-async def test_task_center_show_detail_no_key():
-    """TaskCenter _show_task_detail handles None key gracefully."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        screen._show_task_detail(None)
-        await pilot.pause()
-        detail = screen.query_one("#task-detail", Static)
-        assert detail.content == ""
-
-
 async def test_task_center_has_css_path():
     """TaskCenter declares a CSS_PATH for task-specific styles."""
     from lilbee.cli.tui.screens.task_center import TaskCenter
 
     assert TaskCenter.CSS_PATH == "task_center.tcss"
-
-
-def test_task_center_status_pill():
-    """_status_pill returns a pill string for each status."""
-    from lilbee.cli.tui.screens.task_center import _status_pill
-    from lilbee.cli.tui.task_queue import TaskStatus
-
-    for status in TaskStatus:
-        result = _status_pill(status)
-        assert status.value in result
 
 
 async def test_chat_screen_has_css_path():
@@ -5921,42 +5737,6 @@ async def test_task_center_go_back_non_lilbee_app():
         assert not isinstance(app.screen, TaskCenter)
 
 
-async def test_task_center_show_detail_task_not_found():
-    """_show_task_detail with unknown task_id shows empty."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        screen._show_task_detail("nonexistent-id-xyz")
-        detail = screen.query_one("#task-detail", Static)
-        assert detail.content == ""
-
-
-async def test_task_center_find_task_not_found():
-    """_find_task returns None for unknown ID."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.task_center import TaskCenter
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        result = screen._find_task("nonexistent-id")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# app.py coverage
-# ---------------------------------------------------------------------------
-
-
 async def test_app_action_quit_when_streaming():
     """action_quit cancels stream instead of exiting when streaming."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -6965,34 +6745,6 @@ async def test_wiki_screen_regenerate_no_sources():
 
             await pilot.press("r")
             mock_notify.assert_called_once()
-
-
-async def test_task_bar_shows_detail_text():
-    """TaskBar renders detail text alongside progress percentage."""
-    from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
-
-    class _Harness(App[None]):
-        def __init__(self) -> None:
-            super().__init__()
-            self.task_bar = TaskBarController(self)
-
-        def compose(self) -> ComposeResult:
-            yield TaskBar(id="tbar")
-
-    app = _Harness()
-    async with app.run_test(size=(120, 10)) as _pilot:
-        task_id = app.task_bar.add_task("Crawl test", "crawl")
-        app.task_bar.queue.advance("crawl")
-        app.task_bar.update_task(task_id, 45, "[12/30]: https://example.com")
-        await _pilot.pause()
-        bar = app.screen.query_one("#tbar", TaskBar)
-        bar._refresh_display()
-        from textual.widgets import Label
-
-        label = bar.query_one("#task-status-label", Label)
-        text = str(label.render())
-        assert "45.0%" in text
-        assert "[12/30]" in text
 
 
 async def test_chat_open_crawl_dialog():

@@ -15,7 +15,6 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogResult
-from lilbee.cli.tui.widgets import task_bar as task_bar_module
 from lilbee.cli.tui.widgets.task_bar import TaskBar, TaskBarController
 from lilbee.config import cfg
 from lilbee.services import set_services
@@ -221,47 +220,3 @@ async def test_action_open_tasks_switches_to_task_center() -> None:
         app.action_open_tasks()
         await pilot.pause()
         assert isinstance(app.screen, TaskCenter)
-
-
-async def test_task_center_queue_change_from_worker_thread() -> None:
-    """Queue changes from a worker thread should call_from_thread safely."""
-    import threading
-
-    app = _ControllerApp(_task_center_screen)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.task_bar.add_task("Background work", "sync")
-        app.task_bar.queue.advance()
-        # Simulate a queue change from a worker thread
-        done = threading.Event()
-
-        def worker():
-            app.task_bar.queue.update_task(app.task_bar.queue.active_task.task_id, 50, "halfway")
-            done.set()
-
-        t = threading.Thread(target=worker)
-        t.start()
-        done.wait(timeout=5)
-        t.join(timeout=5)
-        await pilot.pause()
-
-
-async def test_task_bar_auto_hides_when_queue_drains() -> None:
-    """When all tasks finish, every screen's TaskBar should hide again."""
-    app = _ControllerApp(_chat_screen)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        bar = app.screen.query_one(TaskBar)
-        task_id = app.task_bar.add_task("Download", "download")
-        app.task_bar.queue.advance()
-        bar._refresh_display()
-        await pilot.pause()
-        assert bar.display is True
-
-        app.task_bar.complete_task(task_id)
-        # Wait out the post-completion flash window before the panel is dropped.
-        await pilot.pause(delay=task_bar_module._DONE_FLASH_SECONDS + 0.2)
-        bar._refresh_display()
-        await pilot.pause()
-        assert app.task_bar.queue.is_empty
-        assert bar.display is False

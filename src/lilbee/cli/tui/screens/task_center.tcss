@@ -1,18 +1,59 @@
-#task-center-title {
-    text-style: bold;
-    color: $primary;
-    padding: 0 1;
-    height: 1;
+/* Task Center — flight-deck aesthetic.
+ *
+ * Each task is a TaskRow: thick left rail in the state's color,
+ * three stacked lines (title + elapsed, detail + percent, block bar).
+ * Active rows pulse the rail at 1 Hz via an alternating -pulse class
+ * toggled by TaskCenter's poll. */
+
+TaskCenter {
+    #task-center-title {
+        text-style: bold;
+        color: $text;
+        padding: 1 2 0 2;
+    }
+
+    #task-center-counts {
+        color: $text-muted;
+        padding: 0 2 1 2;
+    }
+
+    #task-rows {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    #task-center-hint {
+        dock: bottom;
+        color: $text-muted;
+        text-style: italic;
+        padding: 0 2 1 2;
+    }
 }
 
-#task-table {
-    height: 1fr;
-}
-
-#task-detail {
+TaskRow {
     height: auto;
-    max-height: 5;
     padding: 0 1;
-    border-top: solid $surface-lighten-2;
-    color: $text-muted;
+    margin-bottom: 1;
+    border-left: thick $surface-lighten-2;
+
+    &.-active { border-left: thick $primary; }
+    &.-active.-pulse { border-left: thick $primary-lighten-2; }
+    &.-done { border-left: thick $success; }
+    &.-failed { border-left: thick $error; }
+    &.-cancelled { border-left: thick $warning; }
+    &.-just-completed { text-style: reverse; }
+
+    .row-head { text-style: bold; }
+    .row-meta { color: $text-muted; }
+    .row-bar { color: $primary; }
+    &.-queued .row-bar { color: $text-muted; }
+    &.-done .row-bar { color: $success; }
+    &.-failed .row-bar { color: $error; }
+    &.-cancelled .row-bar { color: $warning; text-style: strike; }
+
+    &:focus-within {
+        background: $surface;
+    }
+
+    &:last-child { margin-bottom: 0; }
 }

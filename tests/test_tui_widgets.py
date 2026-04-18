@@ -2509,32 +2509,6 @@ class TestTaskBarAdditional:
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "queued" in text
 
-    async def test_tick_advances_spinner_when_active(self) -> None:
-        """The spinner frame index increments when active tasks exist."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar.add_task("Sync", "sync")
-            bar.queue.advance()
-            initial = bar._spinner_index
-            bar._tick()
-            assert bar._spinner_index == initial + 1
-
-    async def test_tick_does_not_advance_spinner_when_idle(self) -> None:
-        """The spinner stays put when there are no active tasks."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            initial = bar._spinner_index
-            bar._tick()
-            assert bar._spinner_index == initial
-
     async def test_label_contains_task_center_hint(self) -> None:
         """The status label includes the Task Center hint."""
         from textual.widgets import Label
