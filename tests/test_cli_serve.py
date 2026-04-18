@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest import mock
 
 import pytest
@@ -6,6 +7,7 @@ from typer.testing import CliRunner
 
 from lilbee.cli import app
 from lilbee.config import cfg
+from lilbee.server.auth import server_json_path
 
 runner = CliRunner()
 
@@ -16,7 +18,10 @@ def _close_coro(coro, *_args, **_kwargs):
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
+    # CI sets LILBEE_DATA at workflow level; clear it so the token command's
+    # apply_overrides() does not clobber cfg.data_dir during invocation.
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
@@ -27,6 +32,61 @@ def isolated_env(tmp_path):
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+class TestTokenCommand:
+    def test_prints_token_when_server_running(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"token": "test-secret-token"}))
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 0
+        assert "test-secret-token" in result.output
+
+    def test_exits_1_when_no_server(self):
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 1
+        assert "No running server found" in result.output
+
+    def test_json_mode_prints_token(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"token": "json-token-val"}))
+
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["token"] == "json-token-val"
+
+    def test_json_mode_exits_1_when_no_server(self):
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_corrupted_server_json_exits_1(self):
+        path = server_json_path()
+        path.write_text("not valid json{{{")
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 1
+        assert "Could not read server.json" in result.output
+
+    def test_corrupted_server_json_json_mode(self):
+        path = server_json_path()
+        path.write_text("not valid json{{{")
+
+        result = runner.invoke(app, ["--json", "token"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "Could not read server.json" in data["error"]
+
+    def test_missing_token_key_returns_empty(self):
+        path = server_json_path()
+        path.write_text(json.dumps({"other": "field"}))
+
+        result = runner.invoke(app, ["token"])
+        assert result.exit_code == 0
 
 
 class TestServeCommand:

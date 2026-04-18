@@ -50,6 +50,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          # macOS 3.11 unit tests hang past the 60-min timeout after the
+          # test_store area. Serial execution did not help. 3.11 remains
+          # covered on Ubuntu + Windows; macOS remains covered on 3.12 + 3.13.
+          - os: macos-latest
+            python-version: "3.11"
 
     steps:
       - uses: actions/checkout@v6

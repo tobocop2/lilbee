@@ -22,6 +22,7 @@ from typing import Any, NamedTuple
 import httpx
 from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
+from huggingface_hub.utils import HFValidationError, validate_repo_id
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
@@ -684,6 +685,43 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     idx = _build_catalog_index()
     q = query.lower()
     return idx.by_ref.get(q) or idx.by_name.get(q) or idx.by_display.get(q) or idx.by_hf_repo.get(q)
+
+
+def _is_hf_repo_id(value: str) -> bool:
+    """True if *value* is a well-formed ``owner/name`` HuggingFace repo id."""
+    if "/" not in value:
+        return False
+    try:
+        validate_repo_id(value)
+    except HFValidationError:
+        return False
+    return True
+
+
+def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
+    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
+    repo_name = hf_repo.split("/")[-1]
+    return CatalogModel(
+        name=repo_name.lower().replace(" ", "-"),
+        tag=DEFAULT_TAG,
+        display_name=clean_display_name(hf_repo),
+        hf_repo=hf_repo,
+        gguf_filename="*.gguf",
+        size_gb=0.0,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=task,
+    )
+
+
+def resolve_pull_target(model: str) -> CatalogModel | None:
+    """Resolve *model* to a pullable entry: featured first, then ad-hoc HF."""
+    featured = find_catalog_entry(model)
+    if featured is not None:
+        return featured
+    return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
 
 
 def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:

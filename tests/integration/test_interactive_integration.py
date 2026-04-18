@@ -25,6 +25,7 @@ from lilbee.cli.app import app
 from lilbee.config import cfg
 from lilbee.platform import canonical_models_dir
 from lilbee.services import reset_services as reset_provider
+from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow
 
@@ -249,6 +250,7 @@ class TestSearch:
 
 
 class TestAsk:
+    @skip_if_small_chat_model
     def test_ask_known_fact(self, isolated_env):
         _sync_with_docs()
         result = runner.invoke(app, ["--json", "ask", "What is the oil capacity?"])

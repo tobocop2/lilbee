@@ -6686,6 +6686,262 @@ def test_resolve_wiki_targets_get_sources_error():
         assert resolve_wiki_targets() is None
 
 
+def _direct_call(_widget, fn, *args, **kwargs):
+    """Stub for call_from_thread that calls fn directly (no Textual app needed)."""
+    fn(*args, **kwargs)
+
+
+class TestMakeProgressCallback:
+    """Tests for wiki_worker._make_progress_callback."""
+
+    def test_failed_stage_appends_error(self):
+        from lilbee.cli.tui.wiki_worker import _make_progress_callback
+
+        errors: list[str] = []
+        cb = _make_progress_callback("doc.txt", 0, 1, MagicMock(), MagicMock(), "t1", errors)
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            cb("failed", {"error": "oops"})
+        assert errors == ["oops"]
+
+    def test_failed_stage_default_message(self):
+        from lilbee.cli.tui.wiki_worker import _make_progress_callback
+
+        errors: list[str] = []
+        cb = _make_progress_callback("doc.txt", 0, 1, MagicMock(), MagicMock(), "t1", errors)
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            cb("failed", {})
+        assert errors == ["Unknown error"]
+
+    def test_generating_stage_calls_update_task(self):
+        from lilbee.cli.tui.wiki_worker import _make_progress_callback
+
+        update = MagicMock()
+        widget = MagicMock()
+        cb = _make_progress_callback("doc.txt", 1, 3, widget, update, "t1", [])
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            cb("generating", {})
+        update.assert_called_once()
+        _, pct, detail = update.call_args[0]
+        assert pct == int((1 + 0.33) * 100 / 3)
+        assert "doc.txt" in detail
+        assert "generating" in detail
+
+    def test_unknown_stage_uses_zero_fraction(self):
+        from lilbee.cli.tui.wiki_worker import _make_progress_callback
+
+        update = MagicMock()
+        cb = _make_progress_callback("doc.txt", 0, 2, MagicMock(), update, "t1", [])
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            cb("some_new_stage", {})
+        _, pct, _ = update.call_args[0]
+        assert pct == 0
+
+
+class TestReportResult:
+    """Tests for wiki_worker._report_result."""
+
+    def test_success_calls_complete_and_notify(self):
+        from lilbee.cli.tui.wiki_worker import _report_result
+
+        complete = MagicMock()
+        notify = MagicMock()
+        on_done = MagicMock()
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            _report_result(2, 3, [], MagicMock(), "t1", complete, MagicMock(), notify, on_done)
+        complete.assert_called_once_with("t1")
+        notify.assert_called_once()
+        assert "2/3" in notify.call_args[0][0]
+        on_done.assert_called_once()
+
+    def test_success_without_on_complete(self):
+        from lilbee.cli.tui.wiki_worker import _report_result
+
+        complete = MagicMock()
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            _report_result(1, 1, [], MagicMock(), "t1", complete, MagicMock(), MagicMock(), None)
+        complete.assert_called_once_with("t1")
+
+    def test_failure_with_errors_uses_last_error(self):
+        from lilbee.cli.tui.wiki_worker import _report_result
+
+        fail = MagicMock()
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            _report_result(
+                0, 2, ["err1", "err2"], MagicMock(), "t1", MagicMock(), fail, MagicMock(), None
+            )
+        fail.assert_called_once_with("t1", "err2")
+
+    def test_failure_without_errors_uses_default(self):
+        from lilbee.cli.tui.wiki_worker import _report_result
+
+        fail = MagicMock()
+        with patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call):
+            _report_result(0, 1, [], MagicMock(), "t1", MagicMock(), fail, MagicMock(), None)
+        fail.assert_called_once_with("t1", "No pages generated")
+
+
+class TestProcessSource:
+    """Tests for wiki_worker._process_source."""
+
+    def test_returns_true_when_page_generated(self):
+        from lilbee.cli.tui.wiki_worker import _process_source
+
+        fake_store = MagicMock()
+        fake_store.get_chunks_by_source.return_value = [{"text": "hello"}]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+        with (
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.wiki.gen.generate_summary_page", return_value="page"),
+        ):
+            result = _process_source("doc.txt", 0, 1, MagicMock(), MagicMock(), "t1", [])
+        assert result is True
+
+    def test_returns_false_when_no_chunks(self):
+        from lilbee.cli.tui.wiki_worker import _process_source
+
+        fake_store = MagicMock()
+        fake_store.get_chunks_by_source.return_value = []
+        fake_svc = MagicMock(store=fake_store)
+        with (
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+        ):
+            result = _process_source("doc.txt", 0, 1, MagicMock(), MagicMock(), "t1", [])
+        assert result is False
+
+    def test_returns_false_when_generation_returns_none(self):
+        from lilbee.cli.tui.wiki_worker import _process_source
+
+        fake_store = MagicMock()
+        fake_store.get_chunks_by_source.return_value = [{"text": "hello"}]
+        fake_svc = MagicMock(store=fake_store, provider=MagicMock())
+        with (
+            patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.wiki.gen.generate_summary_page", return_value=None),
+        ):
+            result = _process_source("doc.txt", 0, 1, MagicMock(), MagicMock(), "t1", [])
+        assert result is False
+
+
+class TestRunWikiGeneration:
+    """Tests for wiki_worker.run_wiki_generation."""
+
+    def test_generates_all_sources(self):
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        complete = MagicMock()
+        notify = MagicMock()
+        with (
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.cli.tui.wiki_worker._process_source", return_value=True) as mock_proc,
+        ):
+            run_wiki_generation(
+                sources=["a.txt", "b.txt"],
+                task_id="t1",
+                widget=MagicMock(),
+                update_task=MagicMock(),
+                complete_task=complete,
+                fail_task=MagicMock(),
+                notify=notify,
+            )
+        assert mock_proc.call_count == 2
+        complete.assert_called_once_with("t1")
+
+    def test_cancellation_stops_early(self):
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        call_count = 0
+
+        def cancel_after_first():
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1
+
+        with (
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.cli.tui.wiki_worker._process_source", return_value=True) as mock_proc,
+        ):
+            run_wiki_generation(
+                sources=["a.txt", "b.txt", "c.txt"],
+                task_id="t1",
+                widget=MagicMock(),
+                update_task=MagicMock(),
+                complete_task=MagicMock(),
+                fail_task=MagicMock(),
+                notify=MagicMock(),
+                is_cancelled=cancel_after_first,
+            )
+        assert mock_proc.call_count == 1
+
+    def test_calls_on_complete_callback(self):
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        on_done = MagicMock()
+        with (
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.cli.tui.wiki_worker._process_source", return_value=True),
+        ):
+            run_wiki_generation(
+                sources=["a.txt"],
+                task_id="t1",
+                widget=MagicMock(),
+                update_task=MagicMock(),
+                complete_task=MagicMock(),
+                fail_task=MagicMock(),
+                notify=MagicMock(),
+                on_complete=on_done,
+            )
+        on_done.assert_called_once()
+
+    def test_exception_reports_failure(self):
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        fail = MagicMock()
+        notify = MagicMock()
+        with (
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch(
+                "lilbee.cli.tui.wiki_worker._process_source",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            run_wiki_generation(
+                sources=["a.txt"],
+                task_id="t1",
+                widget=MagicMock(),
+                update_task=MagicMock(),
+                complete_task=MagicMock(),
+                fail_task=fail,
+                notify=notify,
+            )
+        fail.assert_called_once()
+        assert "boom" in fail.call_args[0][1]
+        notify.assert_called_once()
+        assert notify.call_args[1]["severity"] == "error"
+
+    def test_no_pages_generated_reports_failure(self):
+        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+
+        fail = MagicMock()
+        with (
+            patch("lilbee.cli.tui.wiki_worker.call_from_thread", _direct_call),
+            patch("lilbee.cli.tui.wiki_worker._process_source", return_value=False),
+        ):
+            run_wiki_generation(
+                sources=["a.txt"],
+                task_id="t1",
+                widget=MagicMock(),
+                update_task=MagicMock(),
+                complete_task=MagicMock(),
+                fail_task=fail,
+                notify=MagicMock(),
+            )
+        fail.assert_called_once()
+        assert "No pages generated" in fail.call_args[0][1]
+
+
 def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
     """Build a test app that pushes WikiScreen on mount."""
     from lilbee.cli.tui.screens.wiki import WikiScreen
@@ -6880,3 +7136,13 @@ async def test_wiki_regenerate_selected_page_not_found():
             await pilot.pause()
         mock_notify.assert_called_once()
         assert "Source not found" in mock_notify.call_args[0][0]
+
+
+async def test_wiki_screen_reload():
+    """WikiScreen.reload() refreshes pages from disk."""
+    app = _make_wiki_app()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with patch("lilbee.wiki.browse.list_pages", return_value=[]):
+            app.screen.reload()
+            await pilot.pause()
