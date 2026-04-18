@@ -45,8 +45,12 @@ def _format_elapsed(started_at: float | None, status: TaskStatus) -> str:
     return f"{mm:02d}:{ss:02d}"
 
 
-class TaskRow(Widget):
-    """One task, rendered as three stacked lines."""
+class TaskRow(Widget, can_focus=True):
+    """One task, rendered as three stacked lines.
+
+    Focusable so ``Tab`` / ``j`` / ``k`` in the Task Center moves between
+    rows and ``c`` cancels the focused task.
+    """
 
     DEFAULT_CSS = ""  # all styling lives in task_center.tcss
 
