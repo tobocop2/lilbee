@@ -19,6 +19,7 @@ from lilbee.config import cfg
 from lilbee.ingest import sync
 from lilbee.services import get_services
 from lilbee.services import reset_services as reset_provider
+from tests.integration.conftest import skip_if_small_chat_model
 
 pytestmark = pytest.mark.slow
 
@@ -173,6 +174,7 @@ class TestAnswerGeneration:
         source_names = [s.source for s in result.sources]
         assert "specs.md" in source_names
 
+    @skip_if_small_chat_model
     def test_ask_answer_references_facts(self, rag_pipeline):
         """Real LLM answer references known facts from the indexed documents."""
         result = ask_raw("What is the oil capacity of the Thunderbolt X500?", top_k=5)

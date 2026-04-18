@@ -15,6 +15,16 @@ from lilbee.platform import canonical_models_dir
 # smollm2 (135M) is fast enough; qwen3:0.6b is too slow.
 _CI_CHAT_MODEL = os.environ.get("LILBEE_TEST_CHAT_MODEL", "qwen3:0.6b")
 
+# Assertions that depend on the LLM producing specific factual content are
+# unreliable on 135M-param models, which collapse into repetition even with
+# correct retrieval context. Used to skip those content-assertions on macOS
+# CI while still exercising the full pipeline on Ubuntu + Windows.
+_SMALL_CHAT_MODEL = "smollm2:135m"
+skip_if_small_chat_model = pytest.mark.skipif(
+    _CI_CHAT_MODEL == _SMALL_CHAT_MODEL,
+    reason=f"{_SMALL_CHAT_MODEL} too small for reliable factual RAG answers",
+)
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
 TEST_DOCS = {f.name: f.read_text() for f in sorted(DOCS_DIR.iterdir()) if f.is_file()}
