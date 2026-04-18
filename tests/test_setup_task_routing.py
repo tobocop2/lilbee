@@ -1,12 +1,9 @@
-"""Setup wizard hands downloads off to TaskBarController and dismisses immediately.
+"""Setup wizard: Enter-on-card installs via TaskBarController.
 
-The wizard is a caller, not an owner. It must:
-  - resolve non-installed selections,
-  - call ``app.task_bar.start_download(model)`` for each,
-  - persist config via ``_save_and_dismiss`` and pop itself.
-
-Download progress reporting is tested in ``test_controller_downloads.py``;
-here we only cover the wizard-as-caller contract.
+After the Bucket 2 UX redesign there's no Install & Go button — pressing
+Enter on a model card (which fires ``GridSelect.Selected``) routes
+directly to ``_commit_selection``, which writes settings and submits
+the download to the app-level controller.
 """
 
 from __future__ import annotations
@@ -19,6 +16,8 @@ from textual.widgets import Footer
 
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.setup import SetupWizard
+from lilbee.cli.tui.widgets.grid_select import GridSelect
+from lilbee.cli.tui.widgets.model_card import ModelCard
 
 
 def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = None):
@@ -43,40 +42,38 @@ class _PlainApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_install_submits_pending_downloads_to_controller() -> None:
-    """Install & Go routes non-installed selections to TaskBarController.start_download."""
+async def test_enter_on_non_installed_chat_card_submits_download() -> None:
+    """Enter on a non-installed card submits to TaskBarController.start_download."""
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            # ChatScreen auto-pushes SetupWizard when no models are installed.
             for _ in range(10):
                 await pilot.pause()
                 if isinstance(app.screen, SetupWizard):
                     break
             wizard = app.screen
             assert isinstance(wizard, SetupWizard)
+            chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
+            assert chat_cards
+            first = chat_cards[0]
+            assert not first.row.installed
+            mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
                 patch("lilbee.settings.set_value"),
-                patch("lilbee.cli.tui.screens.setup.reset_services"),
             ):
-                wizard._on_install()
-                await pilot.pause()
-            # Both recommended models are non-installed; both should submit.
-            assert mock_start.call_count == 2
+                wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
+            mock_start.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_install_with_already_installed_selections_submits_nothing() -> None:
-    """Selections whose cards have ``installed=True`` bypass start_download."""
-    from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING
-    from lilbee.cli.tui.widgets.model_card import ModelCard
+async def test_enter_on_installed_card_does_not_submit_download() -> None:
+    """Installed cards save config but skip start_download (nothing to fetch)."""
+    from lilbee.catalog import FEATURED_CHAT
 
     app = LilbeeApp()
-    with (
-        _patch_setup_scan(chat=[FEATURED_CHAT[0].ref], embed=[FEATURED_EMBEDDING[0].ref]),
-        _patch_setup_ram(),
-    ):
+    installed_chat = [FEATURED_CHAT[0].ref]
+    with _patch_setup_scan(chat=installed_chat), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
             for _ in range(10):
                 await pilot.pause()
@@ -84,35 +81,104 @@ async def test_install_with_already_installed_selections_submits_nothing() -> No
                     break
             wizard = app.screen
             assert isinstance(wizard, SetupWizard)
-            cards = list(wizard.query(ModelCard))
-            chat_card = next(
-                c for c in cards if c.row.installed and c.row.task == FEATURED_CHAT[0].task
-            )
-            embed_card = next(
-                c for c in cards if c.row.installed and c.row.task == FEATURED_EMBEDDING[0].task
-            )
-            wizard._select_card(chat_card, chat_card.row.task)
-            wizard._select_card(embed_card, embed_card.row.task)
+            installed_cards = [c for c in wizard.query(ModelCard) if c.row.installed]
+            assert installed_cards
+            chosen = installed_cards[0]
+            mock_grid = GridSelect()
             with (
                 patch.object(app.task_bar, "start_download") as mock_start,
                 patch("lilbee.settings.set_value"),
-                patch("lilbee.cli.tui.screens.setup.reset_services"),
             ):
-                wizard._on_install()
-                await pilot.pause()
-            assert mock_start.call_count == 0
+                wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=chosen))
+            mock_start.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_install_outside_lilbee_app_saves_and_dismisses_without_downloads() -> None:
-    """Without a TaskBarController, the wizard still saves config and pops itself."""
+async def test_enter_does_not_resubmit_same_model_twice() -> None:
+    """Re-selecting the same card doesn't double-enqueue the download."""
+    app = LilbeeApp()
+    with _patch_setup_scan(), _patch_setup_ram():
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard):
+                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
+            first = chat_cards[0]
+            mock_grid = GridSelect()
+            with (
+                patch.object(app.task_bar, "start_download", return_value="tid") as mock_start,
+                patch("lilbee.settings.set_value"),
+            ):
+                wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
+                wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
+            assert mock_start.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_enter_noop_outside_lilbee_app() -> None:
+    """Without a TaskBarController, Enter on a card still records the selection."""
     app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._on_install()  # must not raise without app.task_bar
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
+            first = chat_cards[0]
+            mock_grid = GridSelect()
+            with patch("lilbee.settings.set_value"):
+                wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
+            assert first.selected is True
+
+
+@pytest.mark.asyncio
+async def test_commit_selection_with_no_ref_returns_early() -> None:
+    """Defensive: _commit_selection bails out if _mark_selection left no ref."""
+    from lilbee.models import ModelTask
+
+    app = LilbeeApp()
+    with _patch_setup_scan(), _patch_setup_ram():
+        async with app.run_test(size=(120, 40)) as pilot:
+            for _ in range(10):
+                await pilot.pause()
+                if isinstance(app.screen, SetupWizard):
+                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
+            first = chat_cards[0]
+
+            # Stub _mark_selection to not populate _selections so ref stays None.
+            def _stub(card, task):
+                wizard._selections[task] = (None, None)
+
+            with (
+                patch.object(wizard, "_mark_selection", side_effect=_stub),
+                patch.object(app.task_bar, "start_download") as mock_start,
+                patch("lilbee.settings.set_value") as mock_set,
+            ):
+                wizard._commit_selection(first, ModelTask.CHAT)
+            mock_start.assert_not_called()
+            mock_set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_escape_without_selection_dismisses_skipped() -> None:
+    """Esc with no selections → dismiss('skipped')."""
+    app = _PlainApp()
+    with _patch_setup_scan(), _patch_setup_ram():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            from lilbee.models import ModelTask
+
+            wizard._selections[ModelTask.CHAT] = (None, None)
+            wizard._selections[ModelTask.EMBEDDING] = (None, None)
+            wizard.action_cancel()
             for _ in range(5):
                 await pilot.pause()
                 if not isinstance(app.screen, SetupWizard):
@@ -121,17 +187,21 @@ async def test_install_outside_lilbee_app_saves_and_dismisses_without_downloads(
 
 
 @pytest.mark.asyncio
-async def test_escape_dismisses_without_affecting_shared_queue() -> None:
-    """action_cancel pops the wizard but leaves queued downloads alone."""
+async def test_escape_with_selection_dismisses_completed() -> None:
+    """Esc after any pick → dismiss('completed') + reset services."""
     app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen.action_cancel()
-            for _ in range(5):
-                await pilot.pause()
-                if not isinstance(app.screen, SetupWizard):
-                    break
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            # Preselection already filled _selections; action_cancel should
+            # treat that as "user committed to something".
+            with patch("lilbee.cli.tui.screens.setup.reset_services") as mock_reset:
+                wizard.action_cancel()
+                for _ in range(5):
+                    await pilot.pause()
+                    if not isinstance(app.screen, SetupWizard):
+                        break
             assert not isinstance(app.screen, SetupWizard)
+            mock_reset.assert_called_once()

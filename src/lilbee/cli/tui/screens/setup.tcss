@@ -1,3 +1,5 @@
+/* Setup wizard — mirrors the catalog's grid aesthetic. */
+
 #setup-title {
     text-style: bold;
     text-align: center;
@@ -18,7 +20,8 @@
 #setup-footer {
     dock: bottom;
     height: auto;
-    padding: 0 1;
+    padding: 0 2;
+    border-top: solid $surface-lighten-2;
 }
 
 #setup-chat-slot {
@@ -34,21 +37,13 @@
 #setup-download-size {
     width: auto;
     color: $text-muted;
+    padding: 0 1;
 }
 
-#setup-action {
-    margin: 0 1;
-    width: 100%;
-}
-
-#setup-browse {
-    margin: 0 1;
-    width: 100%;
-}
-
-#setup-skip {
-    margin: 0 1;
-    width: 100%;
+#setup-enter-hint {
+    width: auto;
+    color: $primary;
+    text-style: italic;
 }
 
 ModelCard {
@@ -73,6 +68,7 @@ GridSelect:focus ModelCard.-highlight.-selected {
     text-style: bold;
     color: $primary;
     padding: 1 1 0 2;
+    border-bottom: solid $surface-lighten-2;
 }
 
 GridSelect {
@@ -80,4 +76,18 @@ GridSelect {
     padding: 0;
     margin: 0 1;
     grid-gutter: 1;
+    border: round $secondary 50%;
+    keyline: none;
+
+    &.-highlight {
+        background: $surface;
+        border: tall $primary 30%;
+    }
+
+    &:focus * {
+        &.-highlight {
+            background: $surface;
+            border: tall $primary;
+        }
+    }
 }

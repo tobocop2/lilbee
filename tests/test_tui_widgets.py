@@ -1256,7 +1256,25 @@ class TestSetupWizard:
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_action_cancel_dismisses_skipped(self) -> None:
+    async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
+        """action_cancel returns 'skipped' only when the user picked nothing."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.models import ModelTask
+
+        app = _SetupApp()
+        results: list[object] = []
+        async with app.run_test() as pilot:
+            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
+            await pilot.pause()
+            # Clear the RAM-based preselection so action_cancel treats it as empty.
+            app.screen._selections[ModelTask.CHAT] = (None, None)
+            app.screen._selections[ModelTask.EMBEDDING] = (None, None)
+            app.screen.action_cancel()
+            await pilot.pause()
+        assert "skipped" in results
+
+    async def test_action_cancel_dismisses_completed_when_any_selection(self) -> None:
+        """action_cancel returns 'completed' if any model was picked."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
@@ -1264,9 +1282,11 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
-            app.screen.action_cancel()
+            # Preselected chat+embed survive; action_cancel should return completed.
+            with mock.patch("lilbee.services.reset_services"):
+                app.screen.action_cancel()
             await pilot.pause()
-        assert "skipped" in results
+        assert "completed" in results
 
     def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _scan_installed_models

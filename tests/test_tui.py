@@ -554,37 +554,6 @@ class TestSetupWizard:
                 f"expected GridSelect to have focus on mount, got {type(focused).__name__}"
             )
 
-    async def test_install_button_fires_on_keyboard_enter(self) -> None:
-        """Pressing Enter on the focused Install & Go button must trigger install.
-
-        Regression guard: after picking both models, focusing
-        #setup-action and pressing Enter must run ``_on_install`` and
-        dismiss the wizard. Downloads run in the background under
-        ``TaskBarController`` so the wizard doesn't linger.
-        """
-        from textual.widgets import Button
-
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            wizard = SetupWizard()
-            await app.push_screen(wizard)
-            await pilot.pause()
-            install_btn = wizard.query_one("#setup-action", Button)
-            assert install_btn.disabled is False, "install button should be enabled after preselect"
-            install_btn.focus()
-            await pilot.pause()
-            # Block real downloads so the test doesn't hit the network.
-            with mock.patch.object(app.task_bar, "start_download", return_value="tid"):
-                await pilot.press("enter")
-                await pilot.pause()
-            assert not isinstance(app.screen, SetupWizard), (
-                "Enter on focused Install & Go must dismiss the wizard"
-            )
-
     async def test_single_tab_escapes_chat_grid(self) -> None:
         """A single Tab from the chat grid must move focus OUT of the grid.
 
@@ -612,43 +581,6 @@ class TestSetupWizard:
                 "Tab on focused GridSelect must leave the grid; "
                 f"stayed on {type(app.focused).__name__}"
             )
-
-    async def test_tab_reaches_install_button_from_chat_grid(self) -> None:
-        """Tab cycling from the focused chat grid must reach #setup-action.
-
-        Regression guard for bb-q9gl root cause: in the live TUI, Tab from
-        the chat grid moves into the grid's own highlight cycle rather than
-        to the next focusable widget, so users never reach the action
-        buttons. The fix should let Tab escape the grid once the current
-        card is already picked (selected).
-        """
-        from textual.widgets import Button
-
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = LilbeeApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            wizard = SetupWizard()
-            await app.push_screen(wizard)
-            await pilot.pause()
-            # Walk Tab forward; within ~20 hops (cards + buttons) we should
-            # land on the Install & Go button at least once.
-            saw_install_focused = False
-            for _ in range(20):
-                await pilot.press("tab")
-                await pilot.pause()
-                focused = app.focused
-                if isinstance(focused, Button) and focused.id == "setup-action":
-                    saw_install_focused = True
-                    break
-            assert saw_install_focused, (
-                "Tab cycling from the chat grid should reach #setup-action; "
-                f"last focused: {type(app.focused).__name__}"
-            )
-            assert isinstance(app.focused, GridSelect) is False
 
 
 class TestCanonicalModelsDir:

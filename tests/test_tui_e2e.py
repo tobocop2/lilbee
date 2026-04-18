@@ -2495,22 +2495,6 @@ class TestSetupWizardGrid:
                 texts = [str(h.render()) for h in headings]
                 assert "Chat Models" in texts
 
-    async def test_setup_browse_catalog_button(self, _mock_resolve):
-        """Browse catalog button exists in setup wizard."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                btn = app.screen.query_one("#setup-browse")
-                assert btn is not None
-
     async def test_cmd_setup_opens_wizard(self, _mock_resolve):
         """/setup command opens the setup wizard."""
         from lilbee.cli.tui.screens.setup import SetupWizard
@@ -2607,28 +2591,6 @@ class TestSetupWizardGrid:
                 app.switch_view("Catalog")
                 await pilot.pause()
                 assert isinstance(app.screen, CatalogScreen)
-
-    async def test_setup_browse_switches_to_catalog(self, _mock_resolve):
-        """Browse catalog button in setup dismisses and navigates
-        to catalog view."""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                with mock.patch(
-                    "lilbee.cli.tui.screens.setup._scan_installed_models",
-                    return_value=([], []),
-                ):
-                    app.push_screen(SetupWizard())
-                    await pilot.pause()
-                    btn = app.screen.query_one("#setup-browse")
-                    btn.press()
-                    await pilot.pause()
-                    await pilot.pause()
-                    assert not isinstance(app.screen, SetupWizard)
 
 
 class TestChatEmbeddingReadyCoverage:

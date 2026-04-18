@@ -5004,100 +5004,42 @@ async def test_setup_wizard_deselects_previous():
             assert first.selected is False
 
 
-async def test_setup_wizard_skip_dismisses():
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._on_skip()
-            await pilot.pause()
-
-
-async def test_setup_wizard_skip_saves_chat_if_selected():
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._selections["chat"] = ("my-chat:latest", None)
-            screen._selections["embedding"] = (None, None)
-            with (
-                patch("lilbee.settings.set_value") as mock_set,
-                patch("lilbee.services.reset_services"),
-            ):
-                screen._on_skip()
-                assert cfg.chat_model == "my-chat:latest"
-                mock_set.assert_called_once()
-
-
-async def test_setup_wizard_finish_saves_config():
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._selections["chat"] = ("my-chat:latest", None)
-            screen._selections["embedding"] = ("my-embed:latest", None)
-            with (
-                patch("lilbee.settings.set_value") as mock_set,
-                patch("lilbee.services.reset_services"),
-            ):
-                screen._save_and_dismiss("completed")
-                assert cfg.chat_model == "my-chat:latest"
-                assert cfg.embedding_model == "my-embed:latest"
-                assert mock_set.call_count == 2
-
-
-async def test_setup_wizard_finish_no_embed():
-    from lilbee.cli.tui.screens.setup import SetupWizard
-
-    app = SetupTestApp()
-    with _patch_setup_scan(), _patch_setup_ram(16.0):
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SetupWizard)
-            screen._selections["chat"] = ("my-chat:latest", None)
-            screen._selections["embedding"] = (None, None)
-            with (
-                patch("lilbee.settings.set_value") as mock_set,
-                patch("lilbee.services.reset_services"),
-            ):
-                screen._save_and_dismiss("completed")
-                assert mock_set.call_count == 1
-
-
-async def test_setup_wizard_install_already_installed():
+async def test_setup_wizard_commit_chat_selection_writes_settings():
+    """_commit_selection saves chat_model synchronously."""
     from lilbee.cli.tui.screens.setup import SetupWizard
     from lilbee.cli.tui.widgets.model_card import ModelCard
 
     app = SetupTestApp()
-    with _patch_setup_scan(chat=["chat:latest"], embed=["embed:latest"]), _patch_setup_ram(16.0):
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            installed_cards = [c for c in screen.query(ModelCard) if c.row.installed]
-            from lilbee.cli.tui.widgets.grid_select import GridSelect
+            chat_cards = [c for c in screen.query(ModelCard) if c.row.task == "chat"]
+            assert chat_cards
+            with patch("lilbee.settings.set_value") as mock_set:
+                screen._commit_selection(chat_cards[0], "chat")
+            assert mock_set.called
+            assert cfg.chat_model == (chat_cards[0].row.ref or chat_cards[0].row.name)
 
-            mock_grid = MagicMock(spec=GridSelect)
-            for card in installed_cards:
-                screen._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=card))
-            with (
-                patch("lilbee.settings.set_value"),
-                patch("lilbee.services.reset_services"),
-            ):
-                screen._on_install()
+
+async def test_setup_wizard_commit_embed_selection_writes_settings():
+    """_commit_selection saves embedding_model synchronously."""
+    from lilbee.cli.tui.screens.setup import SetupWizard
+    from lilbee.cli.tui.widgets.model_card import ModelCard
+
+    app = SetupTestApp()
+    with _patch_setup_scan(), _patch_setup_ram(16.0):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, SetupWizard)
+            embed_cards = [c for c in screen.query(ModelCard) if c.row.task == "embedding"]
+            assert embed_cards
+            with patch("lilbee.settings.set_value") as mock_set:
+                screen._commit_selection(embed_cards[0], "embedding")
+            assert mock_set.called
+            assert cfg.embedding_model == (embed_cards[0].row.ref or embed_cards[0].row.name)
 
 
 async def test_setup_wizard_action_cancel():
@@ -5114,6 +5056,9 @@ async def test_setup_wizard_action_cancel():
 
 
 async def test_setup_wizard_footer_updates():
+    """_update_footer fills slot labels from current selections."""
+    from textual.widgets import Label
+
     from lilbee.cli.tui.screens.setup import SetupWizard
 
     app = SetupTestApp()
@@ -5122,12 +5067,15 @@ async def test_setup_wizard_footer_updates():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            action_btn = screen.query_one("#setup-action")
-            assert action_btn.disabled is False
+            chat_slot = screen.query_one("#setup-chat-slot", Label)
+            # Pre-selection by _build_grid populated chat_slot.
+            content_before = str(chat_slot._Static__content)  # type: ignore[attr-defined]
+            assert content_before != ""
             screen._selections["chat"] = (None, None)
             screen._selections["embedding"] = (None, None)
             screen._update_footer()
-            assert action_btn.disabled is True
+            content_after = str(chat_slot._Static__content)  # type: ignore[attr-defined]
+            assert "not selected" in content_after
 
 
 async def test_setup_wizard_with_installed_models():

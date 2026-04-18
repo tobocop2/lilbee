@@ -125,10 +125,7 @@ SETUP_CHAT_SLOT = "Chat: {name}"
 SETUP_EMBED_SLOT = "Embed: {name}"
 SETUP_SLOT_EMPTY = "not selected"
 SETUP_TOTAL_DOWNLOAD = "Download: {size}"
-SETUP_INSTALL_BUTTON = "Install & Go"
-SETUP_BROWSE_CATALOG = "Browse full catalog"
-SETUP_SKIP_BUTTON = "Skip setup"
-SETUP_CONTINUE_NO_SEARCH = "Continue without search"
+SETUP_ENTER_HINT = "Enter to install · Esc to finish"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 

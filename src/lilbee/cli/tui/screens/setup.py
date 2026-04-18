@@ -1,4 +1,12 @@
-"""First-run setup — single-screen model picker with RAM-based recommendations."""
+"""First-run setup — single-screen model picker with RAM-based recommendations.
+
+The wizard mirrors the catalog's grid aesthetic: one ``GridSelect`` per
+section (chat, embed), pressing Enter on a card installs that model
+immediately via ``TaskBarController.start_download``. No separate
+Install & Go button, no Browse, no Skip — pick what you want, press
+Esc when done. Downloads continue under the app-level controller, so
+dismissing the wizard while they're in flight is fine.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +19,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Label, Static
 
 from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
@@ -52,11 +60,7 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 
 def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model.
-    ``name`` is a ref string like ``qwen3:0.6b``.  We store it in ``ref``
-    (for config persistence) and also in ``name`` (for display) since we
-    don't have a richer display label for already-installed models.
-    """
+    """Create a minimal TableRow for an already-installed model."""
     return TableRow(
         name=name,
         task=task,
@@ -73,11 +77,7 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
 
 
 def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
-    """Pick chat + embedding models appropriate for system RAM.
-    Selects the largest featured chat model (by ``size_gb``) whose
-    ``min_ram_gb`` fits the host, not just the first entry in authoring
-    order. Always picks the first embedding model (Nomic).
-    """
+    """Pick chat + embedding models appropriate for system RAM."""
     eligible = [m for m in FEATURED_CHAT if m.min_ram_gb <= ram_gb]
     chat = max(eligible, key=lambda m: m.size_gb) if eligible else FEATURED_CHAT[0]
     embed = FEATURED_EMBEDDING[0]
@@ -101,19 +101,22 @@ def _pending_download(card: ModelCard | None) -> CatalogModel | None:
 
 
 class SetupWizard(Screen[str | None]):
-    """First-run setup — browsable single-screen model picker.
+    """First-run setup — pick chat + embedding, Enter installs, Esc exits.
 
-    The wizard collects chat + embedding selections, saves them to config,
-    and submits any pending downloads to ``TaskBarController.start_download``.
-    It then dismisses immediately; downloads continue in the background and
-    render in the shared ``TaskBar`` + Task Center regardless of what screen
-    the user is on.
+    Each card you press Enter on:
+      1. Becomes the saved selection for its task (chat or embedding).
+      2. Triggers a download via the app's ``TaskBarController`` unless
+         the card is already installed.
+      3. Leaves the wizard open so you can pick the other task next.
+
+    Selections are persisted to settings eagerly (not at dismiss time),
+    so Esc-ing out mid-wizard keeps your picks.
     """
 
     CSS_PATH = "setup.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("escape", "cancel", "Done", show=True),
         Binding("tab", "app.focus_next", "Next", show=False),
         Binding("shift+tab", "app.focus_previous", "Prev", show=False),
     ]
@@ -127,6 +130,9 @@ class SetupWizard(Screen[str | None]):
         self._chat_installed, self._embed_installed = _scan_installed_models()
         self._recommended_chat: CatalogModel | None = None
         self._recommended_embed: CatalogModel | None = None
+        # Model refs already submitted to the controller (avoid duplicate
+        # start_download calls when a card is re-selected by arrow + Enter).
+        self._submitted: set[str] = set()
 
     @property
     def _selected_chat(self) -> str | None:
@@ -146,9 +152,7 @@ class SetupWizard(Screen[str | None]):
             yield Label(msg.SETUP_SLOT_EMPTY, id="setup-chat-slot")
             yield Label(msg.SETUP_SLOT_EMPTY, id="setup-embed-slot")
             yield Label("", id="setup-download-size")
-        yield Button(msg.SETUP_INSTALL_BUTTON, id="setup-action", disabled=True)
-        yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse", variant="default")
-        yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
+            yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
         yield TaskBar()
 
     def on_mount(self) -> None:
@@ -165,12 +169,7 @@ class SetupWizard(Screen[str | None]):
         widgets_out: list[Static | GridSelect],
         grid_id: str | None = None,
     ) -> list[ModelCard]:
-        """Build a heading + GridSelect for a list of catalog models.
-        Catalog entries whose canonical ``name:tag`` is already in
-        ``installed_refs`` render with ``installed=True`` so they report a
-        zero download size and don't trigger a redundant download on
-        Install & Go.
-        """
+        """Build a heading + GridSelect for a list of catalog models."""
         widgets_out.append(Static(heading, classes="section-heading"))
         cards = [ModelCard(catalog_to_row(m, installed=m.ref in installed_refs)) for m in models]
         widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50, id=grid_id))
@@ -216,7 +215,7 @@ class SetupWizard(Screen[str | None]):
     def _preselect_recommended(
         self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
     ) -> None:
-        """Pre-select the RAM-appropriate recommended models."""
+        """Pre-select the RAM-appropriate recommended models (without installing)."""
         for cards, recommended in [
             (chat_cards, self._recommended_chat),
             (embed_cards, self._recommended_embed),
@@ -226,26 +225,55 @@ class SetupWizard(Screen[str | None]):
             for card in cards:
                 cm = card.row.catalog_model
                 if cm and cm.ref == recommended.ref:
-                    self._select_card(card, card.row.task)
+                    self._mark_selection(card, card.row.task)
                     break
+        self._update_footer()
 
-    def _select_card(self, card: ModelCard, task: str) -> None:
-        """Select a card, deselecting the previous selection for that task."""
+    def _mark_selection(self, card: ModelCard, task: str) -> None:
+        """Record a selection and repaint its card. No download yet."""
         _ref, prev_card = self._selections[task]
-        if prev_card is not None:
+        if prev_card is not None and prev_card is not card:
             prev_card.selected = False
         ref = card.row.ref or card.row.name
         card.selected = True
         self._selections[task] = (ref, card)
+
+    def _commit_selection(self, card: ModelCard, task: str) -> None:
+        """Persist the selection to settings and submit a download if pending.
+
+        Called when the user presses Enter on a card. Saves the config
+        fragment eagerly so Esc mid-wizard doesn't lose the pick.
+        """
+        from lilbee import settings
+        from lilbee.cli.tui.app import LilbeeApp
+
+        self._mark_selection(card, task)
+        ref = self._selections[task][0]
+        if ref is None:
+            return
+        # Write the fragment; embedding never overrides chat and vice versa.
+        if task == ModelTask.CHAT:
+            cfg.chat_model = ref
+            settings.set_value(cfg.data_root, "chat_model", ref)
+        elif task == ModelTask.EMBEDDING:
+            cfg.embedding_model = ref
+            settings.set_value(cfg.data_root, "embedding_model", ref)
+
+        pending = _pending_download(card)
+        if (
+            pending is not None
+            and pending.ref not in self._submitted
+            and isinstance(self.app, LilbeeApp)
+        ):
+            self._submitted.add(pending.ref)
+            self.app.task_bar.start_download(pending)
         self._update_footer()
 
     def _update_footer(self) -> None:
-        """Update footer slots, download size, and button states."""
+        """Update footer slots and download size strip."""
         chat_slot = self.query_one("#setup-chat-slot", Label)
         embed_slot = self.query_one("#setup-embed-slot", Label)
         size_label = self.query_one("#setup-download-size", Label)
-        action_btn = self.query_one("#setup-action", Button)
-        skip_btn = self.query_one("#setup-skip", Button)
 
         chat_ref, chat_card = self._selections[ModelTask.CHAT]
         embed_ref, embed_card = self._selections[ModelTask.EMBEDDING]
@@ -258,32 +286,19 @@ class SetupWizard(Screen[str | None]):
         )
 
         total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
-        if total_gb > 0:
-            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=format_size_gb(total_gb)))
-        else:
-            size_label.update("")
-
-        both_selected = chat_ref is not None and embed_ref is not None
-        action_btn.disabled = not both_selected
-
-        if both_selected:
-            action_btn.label = msg.SETUP_INSTALL_BUTTON
-            skip_btn.display = False
-        elif chat_ref:
-            skip_btn.label = msg.SETUP_CONTINUE_NO_SEARCH
-            skip_btn.display = True
-        else:
-            skip_btn.label = msg.SETUP_SKIP_BUTTON
-            skip_btn.display = True
+        size_label.update(
+            msg.SETUP_TOTAL_DOWNLOAD.format(size=format_size_gb(total_gb)) if total_gb > 0 else ""
+        )
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
+        """Enter on a card installs it (or records selection if already installed)."""
         if not isinstance(event.widget, ModelCard):
             return
         card = event.widget
         task = card.row.task
         if task in self._selections:
-            self._select_card(card, task)
+            self._commit_selection(card, task)
 
     @on(GridSelect.LeaveDown)
     def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
@@ -295,54 +310,14 @@ class SetupWizard(Screen[str | None]):
         """Arrow-up past the first card walks to the previous focusable widget."""
         self.focus_previous()
 
-    @on(Button.Pressed, "#setup-browse")
-    def _on_browse_catalog(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.dismiss("skipped")
-            self.app.call_later(lambda: self.app.switch_view("Catalog"))
-
-    @on(Button.Pressed, "#setup-action")
-    def _on_install(self) -> None:
-        """Submit any pending downloads to the app's TaskBarController, then dismiss.
-
-        Downloads are owned by the controller now, so the wizard doesn't
-        need to wait for them. Progress is visible in the bottom TaskBar
-        on every screen and in the Task Center (press ``t``).
-        """
-        from lilbee.cli.tui.app import LilbeeApp
-
-        pending = [
-            cm
-            for task in (ModelTask.CHAT, ModelTask.EMBEDDING)
-            if (cm := _pending_download(self._selections[task][1]))
-        ]
-        if isinstance(self.app, LilbeeApp):
-            for model in pending:
-                self.app.task_bar.start_download(model)
-        self._save_and_dismiss("completed")
-
-    def _save_and_dismiss(self, result: str) -> None:
-        """Persist selected models to config and dismiss."""
-        from lilbee import settings
-
-        chat_ref = self._selected_chat
-        embed_ref = self._selected_embed
-        if chat_ref:
-            cfg.chat_model = chat_ref
-            settings.set_value(cfg.data_root, "chat_model", chat_ref)
-        if embed_ref:
-            cfg.embedding_model = embed_ref
-            settings.set_value(cfg.data_root, "embedding_model", embed_ref)
-        reset_services()
-        self.dismiss(result)
-
-    @on(Button.Pressed, "#setup-skip")
-    def _on_skip(self) -> None:
-        """Skip setup — save any partial selection."""
-        self._save_and_dismiss("skipped")
-
     def action_cancel(self) -> None:
-        """Escape dismisses the wizard; any submitted downloads keep running."""
-        self.dismiss("skipped")
+        """Escape dismisses the wizard; any submitted downloads keep running.
+
+        Selections are saved eagerly in ``_commit_selection``; we reset
+        services here so the next screen pulls the updated config.
+        """
+        if self._selected_chat or self._selected_embed:
+            reset_services()
+            self.dismiss("completed")
+        else:
+            self.dismiss("skipped")
