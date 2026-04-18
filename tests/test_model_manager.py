@@ -290,24 +290,49 @@ class TestModelManagerPull:
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with (
-            mock.patch("lilbee.catalog.find_catalog_entry", return_value=fake_entry) as mock_find,
+            mock.patch(
+                "lilbee.catalog.resolve_pull_target", return_value=fake_entry
+            ) as mock_resolve,
             mock.patch("lilbee.catalog.download_model", side_effect=fake_download) as mock_dl,
         ):
             result = mgr.pull("test-model", ModelSource.NATIVE)
 
-        mock_find.assert_called_once_with("test-model")
+        mock_resolve.assert_called_once_with("test-model")
         mock_dl.assert_called_once_with(fake_entry, on_progress=None)
         assert result is not None
         assert result.name == "test-model.gguf"
 
-    def test_native_pull_not_in_catalog(self, tmp_path: Path) -> None:
+    def test_native_pull_succeeds_for_arbitrary_hf_repo(self, tmp_path: Path) -> None:
+        """Non-featured HF repos round-trip through an ad-hoc catalog entry."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+
+        captured: list[object] = []
+
+        def fake_download(entry: object, *, on_progress: object = None) -> Path:
+            captured.append(entry)
+            path = models_dir / "adhoc.gguf"
+            path.write_text("fake model")
+            return path
+
+        mgr = ModelManager(models_dir, "http://localhost:11434")
+        with mock.patch("lilbee.catalog.download_model", side_effect=fake_download):
+            mgr.pull("bartowski/gemma-2-2b-it-GGUF", ModelSource.NATIVE)
+
+        assert len(captured) == 1
+        entry = captured[0]
+        assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
+        assert entry.gguf_filename == "*.gguf"
+        assert entry.featured is False
+
+    def test_native_pull_unknown_short_name_raises(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
 
         mgr = ModelManager(models_dir, "http://localhost:11434")
         with (
-            mock.patch("lilbee.catalog.find_catalog_entry", return_value=None),
-            pytest.raises(RuntimeError, match="not found in catalog"),
+            mock.patch("lilbee.catalog.resolve_pull_target", return_value=None),
+            pytest.raises(RuntimeError, match="HuggingFace repo id"),
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 

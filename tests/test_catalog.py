@@ -22,6 +22,7 @@ from lilbee.catalog import (
     ModelVariant,
     _hf_token,
     _HfPage,
+    build_adhoc_entry,
     clean_display_name,
     download_model,
     enrich_catalog,
@@ -673,6 +674,90 @@ class TestFindCatalogEntry:
     def test_empty_string(self) -> None:
         result = find_catalog_entry("")
         assert result is None
+
+
+class TestBuildAdhocEntry:
+    def test_valid_repo_derives_slug_and_defaults(self) -> None:
+        from lilbee.models import ModelTask
+        from lilbee.registry import DEFAULT_TAG
+
+        entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
+        assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
+        assert entry.name == "gemma-2-2b-it-gguf"
+        assert entry.tag == DEFAULT_TAG
+        assert entry.gguf_filename == "*.gguf"
+        assert entry.featured is False
+        assert entry.task == ModelTask.CHAT
+        assert entry.display_name
+
+    def test_respects_task_override(self) -> None:
+        from lilbee.models import ModelTask
+
+        entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
+        assert entry.task == ModelTask.EMBEDDING
+
+
+class TestIsHfRepoId:
+    @pytest.mark.parametrize(
+        "value",
+        ["bartowski/gemma-2-2b-it-GGUF", "Qwen/Qwen3-8B-GGUF", "foo/bar", "Foo-BAR_foo.bar123/x"],
+    )
+    def test_accepts_valid_repo_ids(self, value: str) -> None:
+        assert catalog._is_hf_repo_id(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "qwen3",
+            "qwen3:0.6b",
+            "https://huggingface.co/Qwen/Qwen3-8B-GGUF",
+            "datasets/foo/bar",
+            "foo--bar/baz",
+            "foo/bar..baz",
+            "/bar",
+            "foo/",
+            "",
+        ],
+    )
+    def test_rejects_non_repo_ids(self, value: str) -> None:
+        assert catalog._is_hf_repo_id(value) is False
+
+
+class TestResolvePullTarget:
+    def test_featured_short_name(self) -> None:
+        entry = catalog.resolve_pull_target("qwen3:0.6b")
+        assert entry is not None
+        assert entry.featured is True
+        assert entry.ref == "qwen3:0.6b"
+
+    def test_featured_hf_repo_returns_featured_entry(self) -> None:
+        entry = catalog.resolve_pull_target("Qwen/Qwen3-8B-GGUF")
+        assert entry is not None
+        assert entry.featured is True
+        assert entry.hf_repo == "Qwen/Qwen3-8B-GGUF"
+        assert entry.gguf_filename != "*.gguf"
+
+    def test_featured_hf_repo_case_insensitive(self) -> None:
+        entry = catalog.resolve_pull_target("qwen/qwen3-8b-gguf")
+        assert entry is not None
+        assert entry.featured is True
+
+    def test_unknown_hf_repo_builds_adhoc(self) -> None:
+        entry = catalog.resolve_pull_target("bartowski/gemma-2-2b-it-GGUF")
+        assert entry is not None
+        assert entry.featured is False
+        assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
+        assert entry.gguf_filename == "*.gguf"
+
+    def test_unknown_short_name_returns_none(self) -> None:
+        assert catalog.resolve_pull_target("not-a-real-model") is None
+
+    @pytest.mark.parametrize(
+        "value",
+        ["https://huggingface.co/Qwen/Qwen3-8B-GGUF", "datasets/foo/bar", "foo--bar/baz"],
+    )
+    def test_malformed_hf_inputs_return_none(self, value: str) -> None:
+        assert catalog.resolve_pull_target(value) is None
 
 
 class TestDownloadModel:
