@@ -145,12 +145,21 @@ class ModelManager:
         *,
         on_bytes: Callable[[int, int], None] | None = None,
     ) -> Path:
-        """Download model to the native GGUF directory via catalog."""
-        from lilbee.catalog import download_model, find_catalog_entry
+        """Download a model to the native GGUF directory.
 
-        entry = find_catalog_entry(model)
+        Accepts either a short featured name (``qwen3:0.6b``) or a
+        HuggingFace repo id (``owner/name``). Non-featured HF repos are
+        pulled via an ad-hoc catalog entry.
+        """
+        from lilbee.catalog import download_model, resolve_pull_target
+
+        entry = resolve_pull_target(model)
         if entry is None:
-            raise ModelNotFoundError(f"Model '{model}' not found in catalog")
+            raise ModelNotFoundError(
+                f"Model '{model}' not recognized. Pass a HuggingFace repo id "
+                "(e.g. 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF') or a "
+                "featured model name."
+            )
         path = download_model(entry, on_progress=on_bytes)
         log.info("Downloaded %s to %s", model, path)
         return path

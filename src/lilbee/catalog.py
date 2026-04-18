@@ -681,6 +681,52 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     return idx.by_ref.get(q) or idx.by_name.get(q) or idx.by_display.get(q) or idx.by_hf_repo.get(q)
 
 
+def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
+    """Build a minimal CatalogModel for any HuggingFace GGUF repo.
+
+    Fields mirror what ``_fetch_hf_models`` produces for non-featured HF
+    search hits (slug from repo name, ``DEFAULT_TAG``, wildcard
+    ``gguf_filename``). ``resolve_filename`` resolves the wildcard at
+    download time.
+    """
+    if "/" not in hf_repo:
+        raise ValueError(f"{hf_repo!r} is not a HuggingFace repo id (expected 'owner/name')")
+    repo_name = hf_repo.split("/")[-1]
+    slug = repo_name.lower().replace(" ", "-")
+    return CatalogModel(
+        name=slug,
+        tag=DEFAULT_TAG,
+        display_name=clean_display_name(hf_repo),
+        hf_repo=hf_repo,
+        gguf_filename="*.gguf",
+        size_gb=0.0,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=task,
+    )
+
+
+def resolve_pull_target(model: str) -> CatalogModel | None:
+    """Resolve a pull request to a pullable ``CatalogModel``.
+
+    HuggingFace repo ids (containing ``/``) are always pullable. When the
+    repo matches a featured entry we return the featured entry so curated
+    metadata wins (explicit filename, vision mmproj wiring, recommended
+    variant tag). Otherwise we construct an ad-hoc entry from the repo id.
+
+    Short names (no ``/``) must resolve through the featured index; there
+    is no way to infer an HF repo from a bare slug. Returns ``None`` when
+    a short name is not featured so the caller can raise with its own
+    message.
+    """
+    if "/" in model:
+        featured = _build_catalog_index().by_hf_repo.get(model.lower())
+        return featured or build_adhoc_entry(model)
+    return find_catalog_entry(model)
+
+
 def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:
     """Download a GGUF model from HuggingFace to cfg.models_dir.
     Uses huggingface_hub for resumable downloads, caching, and auth.
