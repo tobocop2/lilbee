@@ -22,6 +22,7 @@ from typing import Any, NamedTuple
 import httpx
 from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
+from huggingface_hub.utils import HFValidationError, validate_repo_id
 from pydantic import BaseModel
 from tqdm.auto import tqdm as _base_tqdm
 
@@ -681,20 +682,22 @@ def find_catalog_entry(query: str) -> CatalogModel | None:
     return idx.by_ref.get(q) or idx.by_name.get(q) or idx.by_display.get(q) or idx.by_hf_repo.get(q)
 
 
-def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
-    """Build a minimal CatalogModel for any HuggingFace GGUF repo.
+def _is_hf_repo_id(value: str) -> bool:
+    """True if *value* is a well-formed ``owner/name`` HuggingFace repo id."""
+    if "/" not in value:
+        return False
+    try:
+        validate_repo_id(value)
+    except HFValidationError:
+        return False
+    return True
 
-    Fields mirror what ``_fetch_hf_models`` produces for non-featured HF
-    search hits (slug from repo name, ``DEFAULT_TAG``, wildcard
-    ``gguf_filename``). ``resolve_filename`` resolves the wildcard at
-    download time.
-    """
-    if "/" not in hf_repo:
-        raise ValueError(f"{hf_repo!r} is not a HuggingFace repo id (expected 'owner/name')")
+
+def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogModel:
+    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
     repo_name = hf_repo.split("/")[-1]
-    slug = repo_name.lower().replace(" ", "-")
     return CatalogModel(
-        name=slug,
+        name=repo_name.lower().replace(" ", "-"),
         tag=DEFAULT_TAG,
         display_name=clean_display_name(hf_repo),
         hf_repo=hf_repo,
@@ -709,22 +712,11 @@ def build_adhoc_entry(hf_repo: str, *, task: str = ModelTask.CHAT) -> CatalogMod
 
 
 def resolve_pull_target(model: str) -> CatalogModel | None:
-    """Resolve a pull request to a pullable ``CatalogModel``.
-
-    HuggingFace repo ids (containing ``/``) are always pullable. When the
-    repo matches a featured entry we return the featured entry so curated
-    metadata wins (explicit filename, vision mmproj wiring, recommended
-    variant tag). Otherwise we construct an ad-hoc entry from the repo id.
-
-    Short names (no ``/``) must resolve through the featured index; there
-    is no way to infer an HF repo from a bare slug. Returns ``None`` when
-    a short name is not featured so the caller can raise with its own
-    message.
-    """
-    if "/" in model:
-        featured = _build_catalog_index().by_hf_repo.get(model.lower())
-        return featured or build_adhoc_entry(model)
-    return find_catalog_entry(model)
+    """Resolve *model* to a pullable entry: featured first, then ad-hoc HF."""
+    featured = find_catalog_entry(model)
+    if featured is not None:
+        return featured
+    return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
 
 
 def download_model(entry: CatalogModel, *, on_progress: ProgressCallback | None = None) -> Path:

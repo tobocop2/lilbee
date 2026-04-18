@@ -690,15 +690,37 @@ class TestBuildAdhocEntry:
         assert entry.task == ModelTask.CHAT
         assert entry.display_name
 
-    def test_rejects_bare_name(self) -> None:
-        with pytest.raises(ValueError, match="owner/name"):
-            build_adhoc_entry("qwen3")
-
     def test_respects_task_override(self) -> None:
         from lilbee.models import ModelTask
 
         entry = build_adhoc_entry("foo/bar-GGUF", task=ModelTask.EMBEDDING)
         assert entry.task == ModelTask.EMBEDDING
+
+
+class TestIsHfRepoId:
+    @pytest.mark.parametrize(
+        "value",
+        ["bartowski/gemma-2-2b-it-GGUF", "Qwen/Qwen3-8B-GGUF", "foo/bar", "Foo-BAR_foo.bar123/x"],
+    )
+    def test_accepts_valid_repo_ids(self, value: str) -> None:
+        assert catalog._is_hf_repo_id(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "qwen3",
+            "qwen3:0.6b",
+            "https://huggingface.co/Qwen/Qwen3-8B-GGUF",
+            "datasets/foo/bar",
+            "foo--bar/baz",
+            "foo/bar..baz",
+            "/bar",
+            "foo/",
+            "",
+        ],
+    )
+    def test_rejects_non_repo_ids(self, value: str) -> None:
+        assert catalog._is_hf_repo_id(value) is False
 
 
 class TestResolvePullTarget:
@@ -729,6 +751,13 @@ class TestResolvePullTarget:
 
     def test_unknown_short_name_returns_none(self) -> None:
         assert catalog.resolve_pull_target("not-a-real-model") is None
+
+    @pytest.mark.parametrize(
+        "value",
+        ["https://huggingface.co/Qwen/Qwen3-8B-GGUF", "datasets/foo/bar", "foo--bar/baz"],
+    )
+    def test_malformed_hf_inputs_return_none(self, value: str) -> None:
+        assert catalog.resolve_pull_target(value) is None
 
 
 class TestDownloadModel:
