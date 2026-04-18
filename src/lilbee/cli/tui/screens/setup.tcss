@@ -1,0 +1,102 @@
+#setup-title {
+    text-style: bold;
+    text-align: center;
+    padding: 1 0 0 0;
+}
+
+#setup-subtitle {
+    text-align: center;
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+
+#setup-grid-container {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#setup-footer {
+    dock: bottom;
+    height: auto;
+    padding: 0 1;
+}
+
+#setup-chat-slot {
+    width: 1fr;
+    text-style: bold;
+}
+
+#setup-embed-slot {
+    width: 1fr;
+    text-style: bold;
+}
+
+#setup-download-size {
+    width: auto;
+    color: $text-muted;
+}
+
+#setup-action {
+    margin: 0 1;
+    width: 100%;
+}
+
+#setup-browse {
+    margin: 0 1;
+    width: 100%;
+}
+
+#setup-skip {
+    margin: 0 1;
+    width: 100%;
+}
+
+#setup-downloads {
+    height: auto;
+    margin: 0 1;
+    display: none;
+}
+
+#setup-downloads .download-label {
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#setup-downloads .download-bar {
+    height: 1;
+}
+
+SetupWizard.-downloading #setup-downloads {
+    display: block;
+}
+
+ModelCard {
+    border: tall transparent;
+}
+
+ModelCard.-selected {
+    border-left: thick $primary;
+    background: $primary 10%;
+}
+
+GridSelect:focus ModelCard.-highlight {
+    border: tall $primary;
+    background: $surface;
+}
+
+GridSelect:focus ModelCard.-highlight.-selected {
+    border-left: thick $primary;
+}
+
+.section-heading {
+    text-style: bold;
+    color: $primary;
+    padding: 1 1 0 2;
+}
+
+GridSelect {
+    height: auto;
+    padding: 0;
+    margin: 0 1;
+    grid-gutter: 1;
+}

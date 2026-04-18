@@ -1,0 +1,75 @@
+SettingsScreen {
+    #settings-search {
+        dock: top;
+        margin: 0 1;
+    }
+
+    #settings-scroll {
+        padding: 0 1;
+    }
+
+    .setting-group {
+        border-left: thick $surface-lighten-2;
+        border-top: solid $surface-lighten-2;
+        border-right: solid $surface-lighten-2;
+        border-bottom: solid $surface-lighten-2;
+        padding: 0 1;
+        margin-bottom: 1;
+
+        &:focus-within {
+            border-left: thick $primary;
+        }
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .group-title {
+        color: $text-muted;
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+
+    .setting-group:focus-within .group-title {
+        color: $primary;
+    }
+
+    .setting-row {
+        margin-bottom: 1;
+
+        &:last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .setting-title {
+        padding: 0 0 0 1;
+        text-style: bold;
+    }
+
+    .setting-help {
+        color: $text-muted;
+        padding: 0 0 0 1;
+    }
+
+    .setting-editor {
+        margin: 0 0 0 0;
+    }
+
+    Input, Select SelectCurrent, Checkbox {
+        border: tall $surface-lighten-2;
+
+        &:focus {
+            border: tall $primary;
+        }
+    }
+
+    Select:focus > SelectCurrent {
+        border: tall $primary;
+    }
+
+    Input.-invalid {
+        border: tall $error 60%;
+    }
+}

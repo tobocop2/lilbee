@@ -1,62 +1,97 @@
 """RAM detection, model selection, interactive picker, and auto-install for chat models."""
 
+import functools
 import logging
 import os
 import shutil
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
-import ollama
 from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from lilbee import settings
 from lilbee.config import cfg
+from lilbee.services import get_services
+
+
+class ModelTask(StrEnum):
+    """Task classification for models."""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    VISION = "vision"
+
 
 log = logging.getLogger(__name__)
+
+FEATURED_STAR = "★"
 
 # Extra headroom required beyond model size (GB)
 _DISK_HEADROOM_GB = 2
 
-OLLAMA_MODELS_URL = "https://ollama.com/library"
+MODELS_BROWSE_URL = "https://huggingface.co/models?library=gguf&sort=trending"
 
 
 def ensure_tag(name: str) -> str:
-    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``)."""
-    if not name or ":" in name:
+    """Ensure a model name has an explicit tag (e.g. ``llama3`` → ``llama3:latest``).
+
+    API-prefixed models (openai/, anthropic/, gemini/) are returned as-is
+    since they don't use tags.
+    """
+    if not name:
         return name
-    return f"{name}:latest"
+    from lilbee.providers.model_ref import parse_model_ref
+
+    ref = parse_model_ref(name)
+    if ref.is_api:
+        return name
+    if ref.provider == "ollama":
+        return f"ollama/{ref.name}"
+    return ref.name
 
 
 @dataclass(frozen=True)
 class ModelInfo:
     """A curated chat model with metadata for the picker UI."""
 
-    name: str
+    ref: str  # canonical name:tag (e.g. "qwen3:0.6b")
+    display_name: str  # UI label (e.g. "Qwen3 0.6B")
     size_gb: float
     min_ram_gb: float
     description: str
 
-
-MODEL_CATALOG: tuple[ModelInfo, ...] = (
-    ModelInfo("qwen3:1.7b", 1.1, 4, "Tiny — fast on any machine"),
-    ModelInfo("qwen3:4b", 2.5, 8, "Small — good balance for 8 GB RAM"),
-    ModelInfo("mistral:7b", 4.4, 8, "Small — Mistral's fast 7B, 32K context"),
-    ModelInfo("qwen3:8b", 5.0, 8, "Medium — strong general-purpose"),
-    ModelInfo("qwen3-coder:30b", 18.0, 32, "Extra large — best quality, needs 32 GB RAM"),
-)
+    @property
+    def name(self) -> str:
+        """Family slug for backwards compatibility."""
+        return self.ref.split(":")[0] if ":" in self.ref else self.ref
 
 
-VISION_CATALOG: tuple[ModelInfo, ...] = (
-    ModelInfo(
-        "maternion/LightOnOCR-2:latest", 1.5, 4, "Best quality/speed — clean markdown OCR output"
-    ),
-    ModelInfo("deepseek-ocr:latest", 6.7, 8, "Excellent accuracy — plain text, no markdown"),
-    ModelInfo("minicpm-v:latest", 5.5, 8, "Good — some transcription errors, slower"),
-    ModelInfo("glm-ocr:latest", 2.2, 4, "Good accuracy — surprisingly slow despite small size"),
-)
+def _catalog_from_featured(featured: tuple) -> tuple[ModelInfo, ...]:
+    """Build a ModelInfo tuple from catalog.py's CatalogModel entries."""
+    return tuple(
+        ModelInfo(m.ref, m.display_name, m.size_gb, m.min_ram_gb, m.description) for m in featured
+    )
+
+
+# Lazy singletons — resolved on first access to break the circular import
+# between models.py (imports ModelTask) and catalog.py (imports from models).
+
+
+@functools.cache
+def _get_model_catalog() -> tuple[ModelInfo, ...]:
+    from lilbee.catalog import FEATURED_CHAT
+
+    return _catalog_from_featured(FEATURED_CHAT)
+
+
+def __getattr__(name: str) -> tuple[ModelInfo, ...]:
+    if name == "MODEL_CATALOG":
+        return _get_model_catalog()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_system_ram_gb() -> float:
@@ -102,17 +137,17 @@ def get_free_disk_gb(path: Path) -> float:
 
 def pick_default_model(ram_gb: float) -> ModelInfo:
     """Choose the largest catalog model that fits in *ram_gb*."""
-    best = MODEL_CATALOG[0]
-    for model in MODEL_CATALOG:
+    best = _get_model_catalog()[0]
+    for model in _get_model_catalog():
         if model.min_ram_gb <= ram_gb:
             best = model
     return best
 
 
 def _model_download_size_gb(model: str) -> float:
-    """Estimated download size for a model."""
-    catalog_sizes = {m.name: m.size_gb for m in MODEL_CATALOG}
-    fallback = next(m.size_gb for m in MODEL_CATALOG if m.name == "qwen3:8b")
+    """Estimated download size for a model by ref (name:tag)."""
+    catalog_sizes = {m.ref: m.size_gb for m in _get_model_catalog()}
+    fallback = 5.0  # reasonable default for unknown models
     return catalog_sizes.get(model, fallback)
 
 
@@ -129,9 +164,9 @@ def display_model_picker(
     table.add_column("Size", justify="right")
     table.add_column("Description")
 
-    for idx, model in enumerate(MODEL_CATALOG, 1):
+    for idx, model in enumerate(_get_model_catalog(), 1):
         num_str = str(idx)
-        name = model.name
+        label = model.display_name
         size_str = f"{model.size_gb:.1f} GB"
         desc = model.description
 
@@ -139,68 +174,21 @@ def display_model_picker(
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
 
         if is_recommended:
-            name = f"[bold]{name} ★[/bold]"
+            label = f"[bold]{label} ★[/bold]"
             desc = f"[bold]{desc}[/bold]"
             num_str = f"[bold]{num_str}[/bold]"
 
         if disk_too_small:
             size_str = f"[red]{model.size_gb:.1f} GB[/red]"
 
-        table.add_row(num_str, name, size_str, desc)
+        table.add_row(num_str, label, size_str, desc)
 
     console.print()
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
     console.print(table)
     console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
-    console.print(f"  Browse more models at {OLLAMA_MODELS_URL}\n")
-
-    return recommended
-
-
-def pick_default_vision_model() -> ModelInfo:
-    """Return the recommended vision model (first catalog entry, best quality)."""
-    return VISION_CATALOG[0]
-
-
-def display_vision_picker(
-    ram_gb: float, free_disk_gb: float, *, console: Console | None = None
-) -> ModelInfo:
-    """Show a Rich table of vision models and return the recommended model."""
-    console = console or Console(stderr=True)
-    recommended = pick_default_vision_model()
-
-    table = Table(title="Vision OCR Models", show_lines=False)
-    table.add_column("#", justify="right", style="bold")
-    table.add_column("Model", style="cyan")
-    table.add_column("Size", justify="right")
-    table.add_column("Description")
-
-    for idx, model in enumerate(VISION_CATALOG, 1):
-        num_str = str(idx)
-        name = model.name
-        size_str = f"{model.size_gb:.1f} GB"
-        desc = model.description
-
-        is_recommended = model == recommended
-        disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
-
-        if is_recommended:
-            name = f"[bold]{name} \u2605[/bold]"
-            desc = f"[bold]{desc}[/bold]"
-            num_str = f"[bold]{num_str}[/bold]"
-
-        if disk_too_small:
-            size_str = f"[red]{model.size_gb:.1f} GB[/red]"
-
-        table.add_row(num_str, name, size_str, desc)
-
-    console.print()
-    console.print("[bold]Select a vision OCR model for scanned PDF extraction:[/bold]\n")
-    console.print(table)
-    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print("  \u2605 = recommended for your system")
-    console.print(f"  Browse more models at {OLLAMA_MODELS_URL}\n")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
+    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
 
@@ -209,7 +197,7 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
     """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
-    default_idx = list(MODEL_CATALOG).index(recommended) + 1
+    default_idx = list(_get_model_catalog()).index(recommended) + 1
 
     while True:
         try:
@@ -223,13 +211,13 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
         try:
             choice = int(raw)
         except ValueError:
-            sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
+            sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
             continue
 
-        if 1 <= choice <= len(MODEL_CATALOG):
-            return MODEL_CATALOG[choice - 1]
+        if 1 <= choice <= len(_get_model_catalog()):
+            return _get_model_catalog()[choice - 1]
 
-        sys.stderr.write(f"Enter a number 1-{len(MODEL_CATALOG)}.\n")
+        sys.stderr.write(f"Enter a number 1-{len(_get_model_catalog())}.\n")
 
 
 def validate_disk_and_pull(
@@ -239,20 +227,23 @@ def validate_disk_and_pull(
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
     if free_gb < required_gb:
         raise RuntimeError(
-            f"Not enough disk space to download '{model_info.name}': "
+            f"Not enough disk space to download '{model_info.display_name}': "
             f"need {required_gb:.1f} GB, have {free_gb:.1f} GB free. "
-            f"Free up space or manually pull a smaller model with 'ollama pull <model>'."
+            f"Free up space or choose a smaller model."
         )
 
-    pull_with_progress(model_info.name, console=console)
-    cfg.chat_model = model_info.name
-    settings.set_value(cfg.data_root, "chat_model", model_info.name)
+    pull_with_progress(model_info.ref, console=console)
+    cfg.chat_model = model_info.ref
+    settings.set_value(cfg.data_root, "chat_model", model_info.ref)
 
 
 def pull_with_progress(model: str, *, console: Console | None = None) -> None:
-    """Pull an Ollama model, showing a Rich progress bar."""
+    """Pull a model via model_manager, showing a Rich progress bar."""
+    from lilbee.model_manager import ModelSource, get_model_manager
+
     if console is None:
         console = Console(file=sys.__stderr__ or sys.stderr)
+    manager = get_model_manager()
     with Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -264,31 +255,32 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
     ) as progress:
         desc = f"Downloading model '{model}'..."
         ptask = progress.add_task(desc, total=None)
-        for event in ollama.pull(model, stream=True):
-            total = event.total or 0
-            completed = event.completed or 0
+
+        def _on_bytes(downloaded: int, total: int) -> None:
             if total > 0:
-                progress.update(ptask, total=total, completed=completed)
+                progress.update(ptask, total=total, completed=downloaded)
+
+        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
     console.print(f"Model '{model}' ready.")
 
 
 def ensure_chat_model() -> None:
-    """If Ollama has no chat models installed, pick and pull one.
-
+    """If no chat models are installed, pick and pull one.
     Interactive (TTY): show catalog picker with descriptions and sizes.
     Non-interactive (CI/pipes): auto-pick recommended model silently.
     Persists the chosen model in config.toml so it becomes the default.
     """
+    from lilbee.model_manager import get_model_manager
+
+    manager = get_model_manager()
     try:
-        models = ollama.list()
-    except (ConnectionError, OSError) as exc:
-        raise RuntimeError(f"Cannot connect to Ollama: {exc}. Is Ollama running?") from exc
+        installed = manager.list_installed()
+    except RuntimeError as exc:
+        raise RuntimeError(f"Cannot list models: {exc}") from exc
 
     # Filter out embedding model — only check for chat models
     embed_base = cfg.embedding_model.split(":")[0]
-    chat_models = [
-        m.model for m in models.models if m.model and m.model.split(":")[0] != embed_base
-    ]
+    chat_models = [m for m in installed if m.split(":")[0] != embed_base]
     if chat_models:
         return
 
@@ -305,3 +297,14 @@ def ensure_chat_model() -> None:
         )
 
     validate_disk_and_pull(model_info, free_gb)
+
+
+def list_installed_models() -> list[str]:
+    """Return installed model names, excluding embedding models."""
+    try:
+        provider = get_services().provider
+        embed_base = cfg.embedding_model.split(":")[0]
+        return [m for m in provider.list_models() if m.split(":")[0] != embed_base]
+    except Exception:
+        log.debug("Failed to list installed models", exc_info=True)
+        return []

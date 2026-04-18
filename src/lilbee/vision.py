@@ -1,23 +1,37 @@
 """Vision model OCR extraction for scanned PDFs.
 
 Rasterizes PDF pages to PNG, sends each to a local vision model
-via Ollama, and concatenates the extracted text.
+via the configured LLM provider, and concatenates the extracted text.
 """
 
 import contextlib
-import io
 import logging
 import sys
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple, cast
 
-from lilbee.progress import DetailedProgressCallback, EventType, noop_callback, shared_progress
+from lilbee.progress import (
+    DetailedProgressCallback,
+    EventType,
+    ExtractEvent,
+    noop_callback,
+    shared_progress,
+)
+from lilbee.services import get_services
 
 log = logging.getLogger(__name__)
 
-_OCR_PROMPT = (
+
+class PageText(NamedTuple):
+    """Extracted text for a single PDF page."""
+
+    page: int
+    text: str
+
+
+OCR_PROMPT = (
     "Extract ALL text from this page as clean markdown. "
     "Preserve table structure using markdown table syntax. "
     "Include all rows, columns, headers, and page text exactly as shown."
@@ -55,46 +69,69 @@ class _SharedTask:
 
 def pdf_page_count(path: Path) -> int:
     """Return the number of pages in a PDF without rasterizing."""
-    import pypdfium2 as pdfium  # lazy: heavy dependency
+    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
 
-    pdf = pdfium.PdfDocument(path)
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
+    it = PdfPageIterator(str(path), dpi=_RASTER_DPI)
+    return len(it)
 
 
 def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
     """Yield (0-based index, PNG bytes) for each page of a PDF."""
-    import pypdfium2 as pdfium  # lazy: heavy dependency
+    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
 
-    pdf = pdfium.PdfDocument(path)
-    try:
-        scale = _RASTER_DPI / 72
-        for i in range(len(pdf)):
-            page = pdf[i]
-            bitmap = page.render(scale=scale)
-            pil_image = bitmap.to_pil()
-            buf = io.BytesIO()
-            pil_image.save(buf, format="PNG")
-            page.close()
-            yield (i, buf.getvalue())
-    finally:
-        pdf.close()
+    with PdfPageIterator(str(path), dpi=_RASTER_DPI) as pages:
+        yield from pages
+
+
+def _png_to_data_url(png_bytes: bytes) -> str:
+    """Convert raw PNG bytes to a base64 data URL for OpenAI-compatible messages."""
+    import base64
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def build_vision_messages(prompt: str, png_bytes: bytes) -> list[dict]:
+    """Build OpenAI-compatible messages with image content for vision models.
+    Uses the multipart content format expected by llama-cpp-python's
+    vision chat handlers (Llava15ChatHandler, etc.).
+    """
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": _png_to_data_url(png_bytes)}},
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
 
 
 def extract_page_text(png_bytes: bytes, model: str, *, timeout: float | None = None) -> str | None:
-    """Send a page image to a vision model and return extracted text."""
-    import ollama  # lazy: heavy dependency
-
+    """Send a page image to a vision model and return extracted text.
+    If the provider exposes a ``vision_ocr`` method (subprocess-isolated),
+    that path is preferred. Otherwise falls back to ``provider.chat``.
+    The *timeout* parameter (seconds) caps wall-clock time for the provider
+    call using ``concurrent.futures``.  ``None`` or ``0`` means no limit.
+    """
     try:
-        messages = [{"role": "user", "content": _OCR_PROMPT, "images": [png_bytes]}]
-        if timeout is not None and timeout > 0:
-            client = ollama.Client(timeout=timeout)
-            response = client.chat(model=model, messages=messages)
-        else:
-            response = ollama.chat(model=model, messages=messages)
-        return str(response.message.content or "")
+        provider = get_services().provider
+
+        # vision_ocr is optional — only llama-cpp provider implements it
+        if hasattr(provider, "vision_ocr"):
+            result: str = provider.vision_ocr(png_bytes, model, OCR_PROMPT)  # type: ignore[attr-defined]
+            return result
+
+        messages = build_vision_messages(OCR_PROMPT, png_bytes)
+
+        if timeout and timeout > 0:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(provider.chat, messages, stream=False, model=model)
+                return cast(str, future.result(timeout=timeout))
+
+        return cast(str, provider.chat(messages, stream=False, model=model))
     except Exception as exc:
         log.warning("Vision OCR: page skipped (%s: %s)", type(exc).__name__, exc)
         log.debug("Vision OCR traceback for model %s", model, exc_info=True)
@@ -139,9 +176,8 @@ def extract_pdf_vision(
     quiet: bool = False,
     timeout: float | None = None,
     on_progress: DetailedProgressCallback = noop_callback,
-) -> list[tuple[int, str]]:
+) -> list[PageText]:
     """Extract text from a PDF using vision model OCR.
-
     Returns a list of (1-based page number, text) tuples for pages that
     produced non-empty text. Fires ``extract`` progress events per page.
     """
@@ -149,7 +185,7 @@ def extract_pdf_vision(
     if total == 0:
         return []
 
-    result: list[tuple[int, str]] = []
+    result: list[PageText] = []
     failed = 0
     progress_ctx, progress_task = _make_progress(path.name, total, quiet)
 
@@ -157,14 +193,14 @@ def extract_pdf_vision(
         for i, png in rasterize_pdf(path):
             on_progress(
                 EventType.EXTRACT,
-                {"file": path.name, "page": i + 1, "total_pages": total},
+                ExtractEvent(file=path.name, page=i + 1, total_pages=total),
             )
             log.debug("Vision OCR page %d/%d with %s", i + 1, total, model)
             text = extract_page_text(png, model, timeout=timeout)
             if text is None:
                 failed += 1
             elif text.strip():
-                result.append((i + 1, text))
+                result.append(PageText(i + 1, text))
             if progress_task is not None:
                 progress_ctx.advance(progress_task)  # type: ignore[attr-defined]
 

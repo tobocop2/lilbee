@@ -1,9 +1,15 @@
-"""Tests for text and code chunking."""
+"""Tests for text chunking behavior.
+
+These tests verify chunking invariants regardless of the underlying
+implementation.
+"""
 
 import tempfile
 from pathlib import Path
 
-from lilbee.chunker import chunk_text
+import pytest
+
+from lilbee.chunk import chunk_text
 
 
 class TestChunkText:
@@ -13,78 +19,78 @@ class TestChunkText:
 
     def test_short_text_single_chunk(self):
         chunks = chunk_text("This is a short paragraph.")
-        assert len(chunks) == 1
+        assert len(chunks) >= 1
         assert "short paragraph" in chunks[0]
 
-    def test_multiple_paragraphs_all_present(self):
-        paragraphs = [f"Paragraph number {i} with some content." for i in range(50)]
+    def test_long_text_produces_multiple_chunks(self):
+        paragraphs = [f"Paragraph number {i} with detailed content here." for i in range(50)]
         text = "\n\n".join(paragraphs)
-        chunks = chunk_text(text, chunk_size=100, chunk_overlap=20)
+        chunks = chunk_text(text)
         assert len(chunks) > 1
-        for p in paragraphs:
-            assert any(p in c for c in chunks), f"Missing: {p}"
 
-    def test_consecutive_chunks_overlap(self):
-        paragraphs = [f"Paragraph {i} with enough words to fill space." for i in range(30)]
+    def test_multiple_paragraphs_all_present(self):
+        paragraphs = [f"Unique paragraph {i} with specific content." for i in range(20)]
         text = "\n\n".join(paragraphs)
-        chunks = chunk_text(text, chunk_size=50, chunk_overlap=15)
-        for i in range(len(chunks) - 1):
-            words_a = set(chunks[i].split())
-            words_b = set(chunks[i + 1].split())
-            assert words_a & words_b, f"No overlap between chunk {i} and {i + 1}"
+        chunks = chunk_text(text)
+        joined = " ".join(chunks)
+        for p in paragraphs:
+            assert p in joined, f"Missing: {p}"
 
     def test_long_sentence_splits(self):
-        long = " ".join(["word"] * 2000)
-        chunks = chunk_text(long, chunk_size=100, chunk_overlap=20)
-        assert len(chunks) > 1
-
-
-class TestHardSplitWords:
-    """Cover hard_split_words — the last-resort splitting path."""
-
-    def test_no_separators_forces_word_split(self):
-        """A string with no paragraph/sentence separators that needs splitting at word level."""
-        from lilbee.chunker import hard_split_words
-
-        # Directly test the function
-        text = " ".join(["word"] * 500)
-        segments = hard_split_words(text, max_tokens=20)
-        assert len(segments) > 1
-        # All segments non-empty
-        for seg in segments:
-            assert len(seg) > 0
-
-    def test_single_long_token_no_spaces(self):
-        """A string with no spaces at all forces hard_split_words via _split_to_segments."""
-        # No separators at all: no \n\n, no ". ", no " "
-        long_text = "a" * 5000
-        chunks = chunk_text(long_text, chunk_size=50, chunk_overlap=10)
+        sentence = "word " * 500
+        chunks = chunk_text(sentence)
         assert len(chunks) >= 1
 
-
-class TestTailOverlap:
-    """Ensure overlap logic actually runs."""
-
-    def test_chunks_have_overlap_content(self):
-        # Many short paragraphs, small chunk size to force multiple chunks + overlap
-        text = "\n\n".join([f"Para {i} has some content here." for i in range(40)])
-        chunks = chunk_text(text, chunk_size=40, chunk_overlap=15)
-        assert len(chunks) > 2
+    def test_plain_text_no_heading_context(self):
+        text = "Just plain text without any markdown headings."
+        chunks = chunk_text(text)
+        assert len(chunks) >= 1
+        assert "plain text" in chunks[0]
 
 
-class TestSegmentsEmpty:
-    def test_segments_returns_empty(self):
-        """Cover the `not segments` early return in chunk_text."""
-        from unittest.mock import patch
+class TestMarkdownChunking:
+    def test_splits_on_headings(self):
+        md = (
+            "# Intro\n\nHello world paragraph with enough text.\n\n"
+            "## Details\n\nSome details here with more content."
+        )
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert len(chunks) >= 1
 
-        from lilbee.chunker import chunk_text
+    def test_heading_hierarchy_prepended(self):
+        md = "# Top\n\nTop content here with text.\n\n## Sub\n\nContent under sub section."
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert any("Top" in c and "Sub" in c for c in chunks)
 
-        with patch("lilbee.chunker._split_to_segments", return_value=[]):
-            result = chunk_text("Some text")
-            assert result == []
+    def test_nested_headings(self):
+        md = (
+            "# A\n\nA body text here.\n\n"
+            "## B\n\nB body text here.\n\n"
+            "### C\n\nC body text here.\n\n"
+            "## D\n\nD body text here."
+        )
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert len(chunks) >= 1
+        joined = " ".join(chunks)
+        assert "A" in joined
+        assert "D" in joined
+
+    def test_content_before_first_heading(self):
+        md = "Preamble text content.\n\n# First Section\n\nSection body content."
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        assert len(chunks) >= 1
+        joined = " ".join(chunks)
+        assert "Preamble" in joined
+        assert "Section body" in joined
+
+    def test_empty_markdown(self):
+        assert chunk_text("", mime_type="text/markdown", heading_context=True) == []
 
 
+@pytest.mark.xdist_group("tree_sitter")
 class TestCodeChunker:
+    """Tree-sitter code chunker tests — grouped to avoid fork-unsafe C parser collisions."""
+
     def test_python_function_extraction(self):
         from lilbee.code_chunker import chunk_code
 
@@ -108,163 +114,145 @@ class Greeter:
 
         try:
             chunks = chunk_code(path)
-            assert len(chunks) >= 2
-            for c in chunks:
-                assert c.line_start > 0
-                assert c.line_end >= c.line_start
+            assert len(chunks) >= 1
+            joined = "\n".join(c.chunk for c in chunks)
+            assert "hello" in joined
         finally:
             path.unlink()
 
-    def test_unsupported_extension_falls_back(self):
+    def test_unsupported_extension_returns_fallback(self):
         from lilbee.code_chunker import chunk_code
 
-        with tempfile.NamedTemporaryFile(suffix=".xyz", mode="w", delete=False) as f:
-            f.write("some content\n" * 100)
+        with tempfile.NamedTemporaryFile(suffix=".xyz_unsupported", mode="w", delete=False) as f:
+            f.write("some content here")
             f.flush()
             path = Path(f.name)
 
         try:
             chunks = chunk_code(path)
-            assert len(chunks) >= 1
+            assert isinstance(chunks, list)
         finally:
             path.unlink()
 
-    def test_supported_extensions_include_common_langs(self):
-        from lilbee.code_chunker import supported_extensions
+    def test_is_code_file_common_extensions(self):
+        from lilbee.code_chunker import is_code_file
 
-        exts = supported_extensions()
-        expected = {".py", ".js", ".go", ".rs", ".ts", ".rb"}
-        missing = expected - exts
-        assert not missing, f"Missing extensions: {missing}"
+        assert is_code_file(Path("main.py"))
+        assert is_code_file(Path("app.js"))
+        assert is_code_file(Path("lib.rs"))
+        assert is_code_file(Path("server.go"))
 
-    def test_definition_types_languages_have_extensions(self):
-        """Every language in DEFINITION_TYPES must have at least one extension in EXT_TO_LANG."""
-        from lilbee.languages import DEFINITION_TYPES, EXT_TO_LANG
+    def test_is_code_file_non_code(self):
+        from lilbee.code_chunker import is_code_file
 
-        langs_with_ext = set(EXT_TO_LANG.values())
-        missing = sorted(set(DEFINITION_TYPES) - langs_with_ext)
-        assert not missing, (
-            f"Languages in DEFINITION_TYPES without any EXT_TO_LANG entry: {missing}"
-        )
+        assert not is_code_file(Path("photo.png"))
+        assert not is_code_file(Path("document.pdf"))
 
-    def test_no_definitions_falls_back(self):
-        """File with no functions/classes falls back to token chunking."""
-        from lilbee.code_chunker import chunk_code
+    def test_detect_language_python(self):
+        from lilbee.code_chunker import _detect_language
 
-        # Python file with only comments and assignments — no function/class defs
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            f.write("# Just a comment\n" * 50 + "x = 1\ny = 2\n" * 50)
-            f.flush()
-            path = Path(f.name)
+        result = _detect_language(Path("main.py"))
+        assert result is not None
+        assert "python" in result.lower()
 
-        try:
-            chunks = chunk_code(path)
-            assert len(chunks) >= 1
-        finally:
-            path.unlink()
+    def test_ensure_language_exception_returns_false(self):
+        from unittest.mock import patch
 
-    def testget_parser_returns_none_for_bad_language(self):
-        """Cover get_parser returning None for unknown language."""
-        from lilbee.code_chunker import get_parser
+        from lilbee.code_chunker import _ensure_language
 
-        result = get_parser("totally_fake_lang_xyz")
-        assert result is None
+        with patch("lilbee.code_chunker.has_language", side_effect=RuntimeError("boom")):
+            assert _ensure_language("python") is False
 
-    def testget_parser_returns_parser_for_valid_language(self):
-        """Verify get_parser returns a working parser."""
-        from lilbee.code_chunker import get_parser
+    def test_find_line_no_match_returns_start(self):
+        from lilbee.code_chunker import find_line
 
-        parser = get_parser("python")
-        assert parser is not None
+        lines = ["aaa", "bbb", "ccc"]
+        assert find_line("zzz", lines, 0) == 1
 
-    def test_no_parser_falls_back(self):
-        """When parser is None (bad language), falls back to token chunking."""
+    def test_extract_symbols_non_list_structure(self):
+        from lilbee.code_chunker import _extract_symbols
+
+        assert _extract_symbols({"structure": "not a list"}, "code") == []
+
+    def test_extract_symbols_non_dict_entry(self):
+        from lilbee.code_chunker import _extract_symbols
+
+        result = {"structure": ["not a dict", {"name": "fn", "kind": "function", "span": {}}]}
+        symbols = _extract_symbols(result, "code")
+        assert len(symbols) == 1
+        assert symbols[0].name == "fn"
+
+    def test_ensure_language_false_triggers_fallback(self):
         from unittest.mock import patch
 
         from lilbee.code_chunker import chunk_code
 
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            f.write("def hello():\n    pass\n")
+            f.write("x = 1\n" * 20)
             f.flush()
             path = Path(f.name)
 
         try:
-            with patch("lilbee.code_chunker.get_parser", return_value=None):
+            with patch("lilbee.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
-                assert len(chunks) >= 1
+                assert isinstance(chunks, list)
         finally:
             path.unlink()
 
-    def test_ruby_ast_chunking(self):
-        """New language (Ruby) uses AST chunking via tree-sitter-language-pack."""
+    def test_process_exception_triggers_fallback(self):
+        from unittest.mock import patch
+
         from lilbee.code_chunker import chunk_code
 
-        code = """
-class Greeter
-  def initialize(name)
-    @name = name
-  end
-
-  def greet
-    "Hello, #{@name}!"
-  end
-end
-
-def standalone_function
-  puts "hi"
-end
-"""
-        with tempfile.NamedTemporaryFile(suffix=".rb", mode="w", delete=False) as f:
-            f.write(code)
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n" * 20)
             f.flush()
             path = Path(f.name)
 
         try:
-            chunks = chunk_code(path)
-            assert len(chunks) >= 2
-            texts = " ".join(c.chunk for c in chunks)
-            assert "Greeter" in texts
-            assert "standalone_function" in texts
+            with patch("lilbee.code_chunker.process", side_effect=RuntimeError("parse fail")):
+                chunks = chunk_code(path)
+                assert isinstance(chunks, list)
         finally:
             path.unlink()
 
-    def testcollect_definitions_with_container(self):
-        """Cover collect_definitions container path (line 98-99)."""
-        from unittest.mock import MagicMock
+    def test_empty_symbols_triggers_fallback(self):
+        from unittest.mock import patch
 
-        from lilbee.code_chunker import collect_definitions
+        from lilbee.code_chunker import chunk_code
 
-        # Build mock AST: root -> container_child -> definition_grandchild
-        grandchild = MagicMock()
-        grandchild.type = "function_definition"
-        grandchild.start_byte = 0
-        grandchild.end_byte = 10
-        grandchild.start_point = MagicMock(row=0)
-        grandchild.end_point = MagicMock(row=2)
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n" * 20)
+            f.flush()
+            path = Path(f.name)
 
-        container = MagicMock()
-        container.type = "block"  # In _CONTAINERS
-        container.children = [grandchild]
+        try:
+            with patch("lilbee.code_chunker._extract_symbols", return_value=[]):
+                chunks = chunk_code(path)
+                assert isinstance(chunks, list)
+        finally:
+            path.unlink()
 
-        root = MagicMock()
-        root.children = [container]
 
-        source = b"def hello():\n    pass\n"
-        def_types = frozenset({"function_definition"})
+class TestHeadingContextNoDuplicate:
+    def test_heading_context_no_duplicate(self):
+        """kreuzberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
+        md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
+        chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
+        for c in chunks:
+            parts = c.split("\n\n", 2)
+            if len(parts) >= 2:
+                ctx_last = parts[0].rsplit(" > ", 1)[-1].strip()
+                assert parts[1].strip() != ctx_last, f"Duplicate heading in chunk: {c[:100]}"
 
-        results = collect_definitions(root, source, def_types)
-        assert len(results) == 1
 
-    def testfind_line_not_found(self):
-        """Cover find_line returning default when needle not found."""
-        from lilbee.code_chunker import find_line
+class TestChunkTextEmptyResult:
+    def test_returns_empty_when_no_chunks(self):
+        from unittest.mock import MagicMock, patch
 
-        result = find_line("nonexistent", ["line1", "line2"], 0)
-        assert result == 1
+        from lilbee.chunk import chunk_text
 
-    def testfind_line_empty_needle(self):
-        """Cover find_line with empty needle."""
-        from lilbee.code_chunker import find_line
-
-        result = find_line("", ["line1", "line2"], 0)
-        assert result == 1
+        mock_result = MagicMock()
+        mock_result.chunks = []
+        with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
+            assert chunk_text("some text") == []

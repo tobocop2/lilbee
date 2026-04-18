@@ -1,0 +1,1043 @@
+"""Chat screen — scrollable message log with streaming markdown responses."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
+
+from textual import on, work
+from textual.actions import SkipAction
+from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
+from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
+from textual.reactive import var
+from textual.screen import Screen
+from textual.widgets import Footer, Input, Label, Select, Static
+
+# Cancellation check for @work(thread=True) workers. Import at module level
+# since it's used in multiple methods.
+from textual.worker import get_current_worker as _get_worker
+
+from lilbee import settings
+from lilbee.cli.helpers import get_version
+from lilbee.cli.settings_map import SETTINGS_MAP
+from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.command_registry import build_dispatch_dict
+from lilbee.cli.tui.pill import DOT_SEP, pill
+from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay, get_completions
+from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
+from lilbee.cli.tui.widgets.model_bar import ModelBar
+from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
+from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.cli.tui.widgets.task_bar import TaskBar
+from lilbee.config import cfg
+from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.progress import EventType, ProgressEvent
+from lilbee.query import ChatMessage
+from lilbee.services import get_services, reset_services
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.widgets.task_bar import TaskBarController
+
+log = logging.getLogger(__name__)
+
+_DISPATCH = build_dispatch_dict()
+
+_MAX_HISTORY_MESSAGES = 200
+
+
+class ChatStatusLine(Label):
+    """One-line status bar showing current models as pill badges with dot separators."""
+
+    model_name: var[str] = var("")
+
+    def watch_model_name(self, name: str) -> None:
+        """Re-render when model name changes."""
+        if not name:
+            self.update("")
+            return
+        parts: list[Content | tuple[str, str]] = [pill(name, "$primary", "$text")]
+        if cfg.embedding_model:
+            parts.append((DOT_SEP, "$text-muted"))
+            parts.append(pill(cfg.embedding_model, "$secondary", "$text"))
+        self.update(Content.assemble(*parts))
+
+
+class PromptArea(Vertical):
+    """Container for chat input that highlights on focus-within."""
+
+    pass
+
+
+class ChatScreen(Screen[None]):
+    """Primary chat interface with streaming LLM responses."""
+
+    CSS_PATH = "chat.tcss"
+    AUTO_FOCUS = "#chat-input"
+
+    HELP = (
+        "# Chat\n\n"
+        "Ask questions about your knowledge base.\n\n"
+        "Press **Escape** for normal mode (vim keys), "
+        "**i**/**a**/**o** to return to insert mode."
+    )
+
+    _SCROLL_GROUP = Binding.Group("Scroll", compact=True)
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("slash", "focus_commands", "Commands", show=True),
+        Binding("tab", "complete", "Tab", show=False, priority=True),
+        Binding("ctrl+n", "complete_next", "^n next", show=False),
+        Binding("ctrl+p", "complete_prev", "^p prev", show=False),
+        Binding("pageup", "scroll_up", "PgUp", show=False, group=_SCROLL_GROUP),
+        Binding("pagedown", "scroll_down", "PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+d", "half_page_down", "^d half PgDn", show=False, group=_SCROLL_GROUP),
+        Binding("ctrl+u", "half_page_up", "^u half PgUp", show=False, group=_SCROLL_GROUP),
+        Binding("j", "vim_scroll_down", "j down", show=False, group=_SCROLL_GROUP),
+        Binding("k", "vim_scroll_up", "k up", show=False, group=_SCROLL_GROUP),
+        Binding("g", "vim_scroll_home", "g top", show=False, group=_SCROLL_GROUP),
+        Binding("G", "vim_scroll_end", "G bottom", show=False, group=_SCROLL_GROUP),
+        Binding("up", "history_prev", "Up", show=False),
+        Binding("down", "history_next", "Down", show=False),
+        Binding("escape", "enter_normal_mode", "Normal mode", show=True, priority=True),
+        Binding("ctrl+r", "toggle_markdown", "Markdown", show=False),
+        Binding("m", "focus_model_bar", "Models", show=True),
+        Binding("f5", "open_setup", "Setup", show=False),
+    ]
+
+    def __init__(self, *, auto_sync: bool = False) -> None:
+        super().__init__()
+        self._auto_sync = auto_sync
+        self._history: list[ChatMessage] = []
+        self._history_lock = threading.Lock()
+        self.streaming = False
+        self._insert_mode: bool = True
+        self._completing = False
+        self._sync_active: bool = False
+        self._input_history: list[str] = []
+        self._history_index: int = -1
+
+    @property
+    def _task_bar(self) -> TaskBarController:
+        """The app-level TaskBarController (always set by LilbeeApp)."""
+        return self.app.task_bar  # type: ignore[attr-defined,no-any-return]
+
+    def compose(self) -> ComposeResult:
+        yield ModelBar(id="model-bar")
+        yield Static(msg.CHAT_ONLY_BANNER, id="chat-only-banner")
+        yield VerticalScroll(id="chat-log")
+        yield CompletionOverlay(id="completion-overlay")
+        yield ChatStatusLine(id="chat-status-line")
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        with PromptArea(id="chat-prompt-area"):
+            yield NavAwareInput(
+                placeholder=msg.CHAT_INPUT_PLACEHOLDER,
+                id="chat-input",
+                suggester=SlashSuggester(use_cache=False),
+            )
+        yield TaskBar()
+        yield ViewTabs()
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_input_style()
+        self._refresh_status_line()
+        self.query_one("#chat-only-banner", Static).display = False
+        if self._needs_setup():
+            from lilbee.cli.tui.screens.setup import SetupWizard
+
+            self.app.push_screen(SetupWizard(), self._on_setup_complete)
+        elif not self._embedding_ready():
+            self._show_chat_only_banner()
+        elif self._auto_sync:
+            self._run_sync()
+
+    def on_show(self) -> None:
+        """Called when screen becomes visible."""
+        from lilbee.splash import dismiss
+
+        dismiss()
+        self._refresh_model_bar()
+
+    def _needs_setup(self) -> bool:
+        """True when the setup wizard should run: fresh data dir or unresolved models."""
+        # Fresh install: an uninitialized data dir still needs the wizard even
+        # if default models are already cached globally (Ollama, HF cache).
+        if not cfg.lancedb_dir.is_dir():
+            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
+            return True
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.llama_cpp_provider import resolve_model_path
+
+        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
+            try:
+                resolve_model_path(model)
+            except (ProviderError, KeyError, ValueError) as exc:
+                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
+                return True
+        return False
+
+    def _embedding_ready(self) -> bool:
+        """Quick check if embedding model exists (no network calls).
+
+        Checks both the provider model list and the native registry path
+        resolution so litellm/Ollama-backed models are detected too.
+        """
+        model = cfg.embedding_model
+        if not model:
+            return False
+        # Provider list check (covers litellm / Ollama backends)
+        try:
+            from lilbee.services import get_services
+
+            available = get_services().provider.list_models()
+            model_base = model.split(":")[0].lower().replace(" ", "-")
+            if any(model_base in m.lower().replace(" ", "-") for m in available):
+                return True
+        except Exception:
+            pass
+        # Native registry path check (covers llama-cpp managed models)
+        try:
+            from lilbee.providers.llama_cpp_provider import resolve_model_path
+
+            resolve_model_path(model)
+            return True
+        except Exception:
+            return False
+
+    def _on_setup_complete(self, result: str | None) -> None:
+        """Called when wizard completes or is skipped."""
+        if result == "skipped" and not self._embedding_ready():
+            self._show_chat_only_banner()
+        elif self._embedding_ready():
+            self._hide_chat_only_banner()
+            if self._auto_sync:
+                self._run_sync()
+        self._refresh_model_bar()
+
+    def _show_chat_only_banner(self) -> None:
+        """Show the persistent chat-only banner."""
+        self.query_one("#chat-only-banner", Static).display = True
+
+    def _hide_chat_only_banner(self) -> None:
+        """Hide the chat-only banner."""
+        self.query_one("#chat-only-banner", Static).display = False
+
+    def action_open_setup(self) -> None:
+        """Open the setup wizard."""
+        self._cmd_setup("")
+
+    def _enter_insert_mode(self) -> None:
+        """Switch to insert mode: focus input, update border style."""
+        self._insert_mode = True
+        self.query_one("#chat-input", Input).focus()
+        self._update_input_style()
+
+    def _update_input_style(self) -> None:
+        """Toggle input opacity and mode indicator based on current mode."""
+        inp = self.query_one("#chat-input", Input)
+        if self._insert_mode:
+            inp.remove_class("normal-mode")
+        else:
+            inp.add_class("normal-mode")
+        self._update_mode_indicator()
+
+    def _update_mode_indicator(self) -> None:
+        """Update the ViewTabs mode text to reflect the current mode."""
+        from textual.css.query import NoMatches
+
+        with contextlib.suppress(NoMatches):
+            bar = self.query_one(ViewTabs)
+            bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
+
+    def on_key(self, event: object) -> None:
+        """Handle key events: vim mode and typing from chat log."""
+        from textual.events import Key
+
+        if not isinstance(event, Key):
+            return
+        inp = self.query_one("#chat-input", Input)
+        if self._insert_mode:
+            if not inp.has_focus and event.is_printable and event.character:
+                inp.focus()
+                inp.insert_text_at_cursor(event.character)
+                event.prevent_default()
+                event.stop()
+            return
+        if event.key == "enter" or (event.character and event.character in "iao"):
+            self._enter_insert_mode()
+            event.prevent_default()
+            event.stop()
+            return
+
+    @on(Input.Submitted, "#chat-input")
+    def _on_chat_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text:
+            return
+        event.input.value = ""
+        self._input_history.append(text)
+        self._history_index = -1
+
+        if text.startswith("/"):
+            self._handle_slash(text)
+            return
+
+        self._send_message(text)
+
+    def _handle_slash(self, text: str) -> None:
+        """Dispatch slash commands via the command registry."""
+        cmd = text.split()[0].lower()
+        args = text[len(cmd) :].strip()
+        handler_name = _DISPATCH.get(cmd)
+        if handler_name:
+            getattr(self, handler_name)(args)
+        else:
+            self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
+
+    def _cmd_add(self, args: str) -> None:
+        if not args:
+            return
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
+        if is_url(args):
+            self._cmd_crawl(args)
+            return
+        path = Path(args).expanduser()
+        if not path.exists():
+            self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
+            return
+        task_bar = self._task_bar
+        task_id = task_bar.add_task(f"Add {path.name}", "add", indeterminate=True)
+        task_bar.queue.advance("add")
+        self._run_add_background(path, task_id)
+
+    @work(thread=True)
+    def _run_add_background(self, path: Path, task_id: str) -> None:
+        """Copy files and sync in a background thread."""
+        self._sync_active = True
+        task_bar = self._task_bar
+        # Copy + ingest run as opaque phases from the TUI's perspective:
+        # the underlying pipeline does not emit percent-complete events,
+        # so a determinate bar would lie about progress (see BEE-65f). Use
+        # an indeterminate bar and update detail text as each phase runs.
+        call_from_thread(
+            self,
+            task_bar.update_task,
+            task_id,
+            0,
+            f"Copying {path.name}...",
+            indeterminate=True,
+        )
+        try:
+            from lilbee.cli.helpers import copy_files
+
+            result = copy_files([path])
+            copied = result.copied
+            for name in result.skipped:
+                call_from_thread(
+                    self, self.notify, f"{name} already exists (use --force to overwrite)"
+                )
+            call_from_thread(
+                self,
+                task_bar.update_task,
+                task_id,
+                0,
+                f"Copied {len(copied)} file(s), syncing...",
+                indeterminate=True,
+            )
+
+            from lilbee.ingest import sync
+
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+                if event_type == EventType.FILE_START:
+                    from lilbee.progress import FileStartEvent
+
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
+                    call_from_thread(
+                        self,
+                        task_bar.update_task,
+                        task_id,
+                        0,
+                        f"Syncing {data.file}...",
+                        indeterminate=True,
+                    )
+
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            call_from_thread(self, task_bar.complete_task, task_id)
+            call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+        except Exception as exc:
+            log.warning("Failed to add %s", path, exc_info=True)
+            call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+            call_from_thread(
+                self, self.notify, msg.CMD_ADD_ERROR.format(error=exc), severity="error"
+            )
+        finally:
+            self._sync_active = False
+
+    def _cmd_cancel(self, _args: str) -> None:
+        for worker in self.workers:
+            worker.cancel()
+        self.notify(msg.CMD_CANCEL)
+
+    def _cmd_clear(self, _args: str) -> None:
+        for worker in self.workers:
+            worker.cancel()
+        self.streaming = False
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log.remove_children()
+        with self._history_lock:
+            self._history.clear()
+        self.notify(msg.CMD_CLEAR)
+
+    def _cmd_crawl(self, args: str) -> None:
+        if not crawler_available():
+            self.notify(msg.CMD_CRAWL_UNAVAILABLE, severity="error")
+            return
+        if not args:
+            self._open_crawl_dialog()
+            return
+        parts = args.split()
+        url = parts[0]
+        try:
+            require_valid_crawl_url(url)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        depth, max_pages = self._parse_crawl_flags(parts[1:])
+        self._start_crawl(url, depth, max_pages)
+
+    def _open_crawl_dialog(self) -> None:
+        """Push the crawl modal and handle its result."""
+        from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog, CrawlParams
+
+        def _on_result(result: CrawlParams | None) -> None:
+            if result is not None:
+                self._start_crawl(result.url, result.depth, result.max_pages)
+
+        self.app.push_screen(CrawlDialog(), callback=_on_result)
+
+    def _start_crawl(self, url: str, depth: int, max_pages: int) -> None:
+        """Enqueue a crawl task and run it in the background."""
+        task_bar = self._task_bar
+        task_id = task_bar.add_task(msg.TASK_NAME_CRAWL.format(url=url), "crawl")
+        task_bar.queue.advance("crawl")
+        self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
+        self._run_crawl_background(url, depth, max_pages, task_id)
+
+    @staticmethod
+    def _parse_crawl_flags(tokens: list[str]) -> tuple[int, int]:
+        """Extract --depth and --max-pages from argument tokens."""
+        flag_map = {"--depth": "depth", "--max-pages": "max_pages"}
+        parsed: dict[str, int] = {"depth": 0, "max_pages": 0}
+        i = 0
+        while i < len(tokens):
+            key = flag_map.get(tokens[i])
+            if key and i + 1 < len(tokens):
+                with contextlib.suppress(ValueError):
+                    parsed[key] = int(tokens[i + 1])
+                i += 2
+            else:
+                i += 1
+        return parsed["depth"], parsed["max_pages"]
+
+    @work(thread=True)
+    def _run_crawl_background(self, url: str, depth: int, max_pages: int, task_id: str) -> None:
+        """Run a crawl in a background thread, then trigger sync."""
+        from lilbee.crawler import crawl_and_save
+
+        worker = _get_worker()
+        task_bar = self._task_bar
+        call_from_thread(
+            self, task_bar.update_task, task_id, 0, msg.CMD_CRAWL_STARTED.format(url=url)
+        )
+
+        try:
+
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+                if event_type == EventType.CRAWL_PAGE:
+                    from lilbee.progress import CrawlPageEvent
+
+                    if not isinstance(data, CrawlPageEvent):
+                        raise TypeError(f"Expected CrawlPageEvent, got {type(data).__name__}")
+                    pct = int(data.current * 100 / data.total) if data.total > 0 else 50
+                    detail = f"[{data.current}/{data.total}]: {data.url}"
+                    call_from_thread(self, task_bar.update_task, task_id, pct, detail)
+
+            paths = asyncio.run(
+                crawl_and_save(url, depth=depth, max_pages=max_pages, on_progress=on_progress)
+            )
+            call_from_thread(self, task_bar.complete_task, task_id)
+            call_from_thread(
+                self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url)
+            )
+        except Exception as exc:
+            if not worker.is_cancelled:
+                call_from_thread(self, task_bar.fail_task, task_id, str(exc))
+                call_from_thread(
+                    self, self.notify, msg.CMD_CRAWL_FAILED.format(error=exc), severity="error"
+                )
+            return
+
+        if not worker.is_cancelled:
+            call_from_thread(self, self._run_sync)
+
+    def _cmd_catalog(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        self.app.push_screen(CatalogScreen())
+
+    def _cmd_delete(self, args: str) -> None:
+        try:
+            sources = get_services().store.get_sources()
+        except Exception:
+            log.debug("Failed to list documents for /delete", exc_info=True)
+            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            return
+
+        known = {s.get("filename", s.get("source", "?")) for s in sources}
+        if not known:
+            self.notify(msg.CMD_DELETE_NO_DOCS, severity="warning")
+            return
+
+        name = args.strip()
+        if not name:
+            self.notify(msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known))))
+            return
+
+        if name not in known:
+            self.notify(msg.CMD_DELETE_NOT_FOUND.format(name=name), severity="error")
+            return
+
+        store = get_services().store
+        store.delete_by_source(name)
+        store.delete_source(name)
+        self.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
+
+    def _cmd_help(self, _args: str) -> None:
+        self.app.action_show_help_panel()
+
+    def _cmd_login(self, args: str) -> None:
+        token = args.strip()
+        if not token:
+            import webbrowser
+
+            webbrowser.open("https://huggingface.co/settings/tokens")
+            self.notify(msg.CHAT_LOGIN_PROMPT)
+            return
+        self._run_hf_login(token)
+
+    @work(thread=True)
+    def _run_hf_login(self, token: str) -> None:
+        try:
+            from huggingface_hub import login
+
+            login(token=token, add_to_git_credential=False)
+            call_from_thread(self, self.notify, msg.CHAT_LOGGED_IN)
+        except Exception as exc:
+            log.warning("HuggingFace login failed", exc_info=True)
+            call_from_thread(
+                self, self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
+            )
+
+    def _cmd_model(self, args: str) -> None:
+        if args:
+            cfg.chat_model = args
+            settings.set_value(cfg.data_root, "chat_model", cfg.chat_model)
+            self.app.title = f"lilbee -- {cfg.chat_model}"
+            self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
+            self._apply_model_change()
+            self._refresh_model_bar()
+        else:
+            from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+            self.app.push_screen(CatalogScreen())
+
+    def _cmd_quit(self, _args: str) -> None:
+        self.app.exit()
+
+    def _cmd_remove(self, args: str) -> None:
+        name = args.strip()
+        if not name:
+            self.notify(msg.CMD_REMOVE_USAGE, severity="warning")
+            return
+        self._run_remove_model(name)
+
+    @work(thread=True)
+    def _run_remove_model(self, name: str) -> None:
+        from lilbee.model_manager import get_model_manager
+
+        mgr = get_model_manager()
+        if not mgr.is_installed(name):
+            call_from_thread(
+                self, self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
+            )
+            return
+        try:
+            removed = mgr.remove(name)
+            if removed:
+                call_from_thread(self, self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
+            else:
+                call_from_thread(
+                    self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+                )
+        except Exception:
+            log.warning("Remove failed for %s", name, exc_info=True)
+            call_from_thread(
+                self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+            )
+
+    def _cmd_reset(self, args: str) -> None:
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            from lilbee.cli.helpers import perform_reset
+
+            try:
+                result = perform_reset()
+                if result.skipped:
+                    self.notify(
+                        msg.CMD_RESET_PARTIAL.format(skipped=len(result.skipped)),
+                        severity="warning",
+                    )
+                else:
+                    self.notify(msg.CMD_RESET_SUCCESS)
+            except Exception as exc:
+                log.warning("Reset failed", exc_info=True)
+                self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")
+
+        self.app.push_screen(
+            ConfirmDialog("Reset Knowledge Base", "This will permanently delete all data."),
+            _on_confirm,
+        )
+
+    def _cmd_set(self, args: str) -> None:
+        if not args:
+            return
+        parts = args.split(None, 1)
+        key = parts[0]
+        value = parts[1] if len(parts) > 1 else ""
+
+        if key not in SETTINGS_MAP:
+            self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
+            return
+
+        defn = SETTINGS_MAP[key]
+        try:
+            if defn.type is bool:
+                parsed = value.lower() in ("true", "1", "yes", "on")
+            elif defn.nullable and value.lower() in ("none", "null", ""):
+                parsed = None
+            else:
+                parsed = defn.type(value)
+            setattr(cfg, key, parsed)
+            persisted = str(parsed) if parsed is not None else ""
+            settings.set_value(cfg.data_root, key, persisted)
+            if key == "llm_provider":  # pragma: no cover
+                reset_services()
+            self.notify(msg.CMD_SET_SUCCESS.format(key=key, value=parsed))
+        except (ValueError, TypeError) as exc:
+            self.notify(msg.CMD_SET_INVALID.format(key=key, error=exc), severity="error")
+
+    def _cmd_settings(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        self.app.push_screen(SettingsScreen())
+
+    def _cmd_setup(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.setup import SetupWizard
+
+        self.app.push_screen(SetupWizard(), self._on_setup_complete)
+
+    def _cmd_status(self, _args: str) -> None:
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        self.app.push_screen(StatusScreen())
+
+    def _cmd_theme(self, args: str) -> None:
+        from lilbee.cli.tui.app import DARK_THEMES, LilbeeApp
+
+        if args and isinstance(self.app, LilbeeApp):
+            self.app.set_theme(args)
+            self.notify(msg.THEME_SET.format(name=args))
+        else:
+            theme_list = msg.CMD_THEME_LIST.format(names=", ".join(DARK_THEMES))
+            self.notify(theme_list, severity="information")
+
+    def _cmd_version(self, _args: str) -> None:
+        self.notify(msg.CHAT_VERSION.format(version=get_version()))
+
+    def _cmd_wiki(self, _args: str) -> None:
+        if not cfg.wiki:
+            self.notify(msg.CMD_WIKI_DISABLED, severity="warning")
+            return
+        from lilbee.cli.tui.app import LilbeeApp
+
+        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            self.app.switch_view("Wiki")
+
+    def _send_message(self, text: str) -> None:
+        """Send a user message and stream the response."""
+        log = self.query_one("#chat-log", VerticalScroll)
+        log.mount(UserMessage(text))
+
+        assistant_msg = AssistantMessage()
+        log.mount(assistant_msg)
+        log.scroll_end(animate=False)
+
+        with self._history_lock:
+            self._history.append({"role": "user", "content": text})
+        self.streaming = True
+        self._stream_response(text, assistant_msg)
+
+    @work(thread=True)
+    def _stream_response(self, question: str, widget: AssistantMessage) -> None:
+        """Stream LLM response in a background thread."""
+        worker = _get_worker()
+        response_parts: list[str] = []
+        sources: list[str] = []
+        last_scroll = 0.0
+
+        try:
+            with self._history_lock:
+                history_snapshot = self._history[:-1]
+            stream = get_services().searcher.ask_stream(question, history=history_snapshot)
+            for token in stream:
+                if worker.is_cancelled:
+                    break
+                try:
+                    if token.is_reasoning:
+                        call_from_thread(self, widget.append_reasoning, token.content)
+                    elif token.content:
+                        response_parts.append(token.content)
+                        call_from_thread(self, widget.append_content, token.content)
+                    now = time.monotonic()
+                    if now - last_scroll >= 0.15:
+                        call_from_thread(self, self._scroll_to_bottom)
+                        last_scroll = now
+                except Exception:
+                    break  # App shutting down (Ctrl-C) -- stop streaming
+        except Exception as exc:
+            log.debug("Stream error", exc_info=True)
+            with contextlib.suppress(Exception):
+                call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
+        finally:
+            self.streaming = False
+            full_response = "".join(response_parts)
+            if full_response:
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": full_response})
+                    self._trim_history()
+            call_from_thread(self, widget.finish, sources)
+            call_from_thread(self, self._scroll_to_bottom)
+
+    def _trim_history(self) -> None:
+        """Trim history to max size, dropping oldest messages. Caller must hold _history_lock."""
+        if len(self._history) > _MAX_HISTORY_MESSAGES:
+            self._history[:] = self._history[-_MAX_HISTORY_MESSAGES:]
+
+    def _scroll_to_bottom(self) -> None:
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        # Only auto-scroll if user is near the bottom (within 5 lines).
+        # If they scrolled up to read, don't yank them back.
+        if log_widget.max_scroll_y - log_widget.scroll_y < 5:
+            log_widget.scroll_end(animate=False)
+
+    def action_scroll_up(self) -> None:
+        self.query_one("#chat-log", VerticalScroll).scroll_page_up()
+
+    def action_scroll_down(self) -> None:
+        self.query_one("#chat-log", VerticalScroll).scroll_page_down()
+
+    def action_enter_normal_mode(self) -> None:
+        """Escape: cancel stream, return from model bar, or enter normal mode."""
+        if self.streaming:
+            for worker in self.workers:
+                worker.cancel()
+            self.streaming = False
+            return
+        if isinstance(self.focused, Select):
+            self.query_one("#chat-input", Input).focus()
+            return
+        self._insert_mode = False
+        self.query_one("#chat-log", VerticalScroll).focus()
+        self._update_input_style()
+
+    def action_cancel_stream(self) -> None:
+        """Context-aware Escape: cancel stream -> blur input -> no-op."""
+        if self.streaming:
+            for worker in self.workers:
+                worker.cancel()
+            self.streaming = False
+            return
+        inp = self.query_one("#chat-input", Input)
+        if inp.has_focus:
+            self.query_one("#chat-log", VerticalScroll).focus()
+
+    def _apply_model_change(self) -> None:
+        """Cancel active stream (if any) and reset services for the new model."""
+        if self.streaming:
+            self.action_cancel_stream()
+            self.call_later(self._deferred_service_reset)
+        else:
+            reset_services()
+
+    def _deferred_service_reset(self) -> None:
+        """Reset services once workers have drained."""
+        if self.workers:
+            self.call_later(self._deferred_service_reset)
+            return
+        reset_services()
+
+    async def action_toggle_markdown(self) -> None:
+        """Toggle between Markdown and plain-text rendering for chat responses."""
+        cfg.markdown_rendering = not cfg.markdown_rendering
+        use_md = cfg.markdown_rendering
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        for widget in chat_log.query(AssistantMessage):
+            await widget.rebuild_content_widget(use_md)
+        label = "Markdown" if use_md else "Plain text"
+        self.notify(msg.CHAT_RENDERING.format(label=label))
+
+    def _run_sync(self) -> None:
+        """Enqueue a document sync in the task bar."""
+        if self._sync_active:
+            self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+            return
+        task_bar = self._task_bar
+        task_id = task_bar.add_task("Sync documents", "sync", indeterminate=True)
+        task_bar.queue.advance("sync")
+        self._run_sync_worker(task_id)
+
+    @work(thread=True)
+    def _run_sync_worker(self, task_id: str) -> None:
+        """Run background document sync in a Textual worker thread."""
+        import asyncio
+
+        self._sync_active = True
+        task_bar = self._task_bar
+        try:
+            from lilbee.ingest import sync
+
+            call_from_thread(
+                self, task_bar.update_task, task_id, 0, "Syncing...", indeterminate=True
+            )
+
+            def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+                if event_type == EventType.FILE_START:
+                    from lilbee.progress import FileStartEvent
+
+                    if not isinstance(data, FileStartEvent):
+                        raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
+                    status = msg.SYNC_FILE_PROGRESS.format(
+                        current=data.current_file,
+                        total=data.total_files,
+                        file=data.file,
+                    )
+                    call_from_thread(
+                        self, task_bar.update_task, task_id, 0, status, indeterminate=True
+                    )
+                elif event_type == EventType.FILE_DONE:
+                    from lilbee.progress import FileDoneEvent
+
+                    if not isinstance(data, FileDoneEvent):
+                        raise TypeError(f"Expected FileDoneEvent, got {type(data).__name__}")
+                    call_from_thread(
+                        self,
+                        task_bar.update_task,
+                        task_id,
+                        0,
+                        f"Done: {data.file}",
+                        indeterminate=True,
+                    )
+
+            asyncio.run(sync(quiet=True, on_progress=on_progress))
+            call_from_thread(self, task_bar.complete_task, task_id)
+        except asyncio.CancelledError:
+            self._auto_sync = False
+            call_from_thread(
+                self, task_bar.fail_task, task_id, "Sync cancelled. Use /sync to resume."
+            )
+        except Exception:
+            log.warning("Background sync failed", exc_info=True)
+            call_from_thread(self, task_bar.fail_task, task_id, msg.SYNC_STATUS_FAILED)
+        finally:
+            self._sync_active = False
+
+    def action_focus_commands(self) -> None:
+        """Focus chat input and pre-fill with '/' for command entry."""
+        inp = self.query_one("#chat-input", Input)
+        inp.focus()
+        if not inp.value.startswith("/"):
+            inp.value = "/"
+            inp.action_end()
+
+    def action_focus_model_bar(self) -> None:
+        """Focus the first Select in the model bar (normal mode only)."""
+        if self._insert_mode:
+            raise SkipAction()
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self.query_one("#chat-model-select", Select).focus()
+
+    def action_complete(self) -> None:
+        """Tab completion: show or cycle autocomplete options."""
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus:
+            raise SkipAction()
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+
+        if overlay.is_visible:
+            selection = overlay.cycle_next()
+            if selection:
+                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
+                inp.value = cmd_prefix + selection
+                self._completing = False
+                inp.action_end()
+            return
+
+        options = get_completions(inp.value)
+        if options:
+            overlay.show_completions(options)
+            first = overlay.get_current()
+            self._completing = True
+            if first and " " in inp.value:
+                cmd_prefix = inp.value.split()[0] + " "
+                inp.value = cmd_prefix + first
+                inp.action_end()
+            elif first:
+                inp.value = first
+                inp.action_end()
+            self._completing = False
+
+    def action_complete_next(self) -> None:
+        """Ctrl+N: show completions or cycle forward."""
+        self.action_complete()
+
+    def action_complete_prev(self) -> None:
+        """Ctrl+P: cycle backward through completions."""
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        inp = self.query_one("#chat-input", Input)
+
+        if overlay.is_visible:
+            selection = overlay.cycle_prev()
+            if selection:
+                cmd_prefix = inp.value.split()[0] + " " if " " in inp.value else ""
+                self._completing = True
+                inp.value = cmd_prefix + selection
+                self._completing = False
+                inp.action_end()
+            return
+
+        options = get_completions(inp.value)
+        if options:
+            overlay.show_completions(options)
+            last = overlay.get_current()
+            self._completing = True
+            if last and " " in inp.value:
+                cmd_prefix = inp.value.split()[0] + " "
+                inp.value = cmd_prefix + last
+                inp.action_end()
+            elif last:
+                inp.value = last
+                inp.action_end()
+            self._completing = False
+
+    def action_history_prev(self) -> None:
+        """Up arrow: recall previous input history entry."""
+        if not self._insert_mode:
+            raise SkipAction()
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or not self._input_history:
+            raise SkipAction()
+        if self._history_index == -1:
+            self._history_index = len(self._input_history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return
+        inp.value = self._input_history[self._history_index]
+        inp.action_end()
+
+    def action_history_next(self) -> None:
+        """Down arrow: recall next input history entry."""
+        if not self._insert_mode:
+            raise SkipAction()
+        inp = self.query_one("#chat-input", Input)
+        if not inp.has_focus or self._history_index == -1:
+            raise SkipAction()
+        if self._history_index < len(self._input_history) - 1:
+            self._history_index += 1
+            inp.value = self._input_history[self._history_index]
+            inp.action_end()
+        else:
+            self._history_index = -1
+            inp.value = ""
+
+    @on(Input.Changed, "#chat-input")
+    def _on_chat_input_changed(self, event: Input.Changed) -> None:
+        """Hide completion overlay when input changes manually."""
+        if self._completing:
+            return
+        overlay = self.query_one("#completion-overlay", CompletionOverlay)
+        if overlay.is_visible:
+            overlay.hide()
+
+    def _refresh_model_bar(self) -> None:
+        """Update the model status bar and status line."""
+        self.query_one("#model-bar", ModelBar).refresh_models()
+        self._refresh_status_line()
+
+    def _refresh_status_line(self) -> None:
+        """Update the status line pill with the current chat model."""
+        self.query_one("#chat-status-line", ChatStatusLine).model_name = cfg.chat_model
+
+    def action_vim_scroll_down(self) -> None:
+        """Vim j: scroll down in normal mode."""
+        if self._insert_mode:
+            raise SkipAction()
+        self.query_one("#chat-log", VerticalScroll).scroll_down()
+
+    def action_vim_scroll_up(self) -> None:
+        """Vim k: scroll up in normal mode."""
+        if self._insert_mode:
+            raise SkipAction()
+        self.query_one("#chat-log", VerticalScroll).scroll_up()
+
+    def action_vim_scroll_home(self) -> None:
+        """Vim g: scroll to top in normal mode."""
+        if self._insert_mode:
+            raise SkipAction()
+        self.query_one("#chat-log", VerticalScroll).scroll_home()
+
+    def action_vim_scroll_end(self) -> None:
+        """Vim G: scroll to bottom in normal mode."""
+        if self._insert_mode:
+            raise SkipAction()
+        self.query_one("#chat-log", VerticalScroll).scroll_end()
+
+    def action_half_page_down(self) -> None:
+        """Ctrl-D: half-page down (vim style)."""
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        half = max(1, log_widget.size.height // 2)
+        log_widget.scroll_relative(y=half)
+
+    def action_half_page_up(self) -> None:
+        """Ctrl-U: half-page up (vim style)."""
+        log_widget = self.query_one("#chat-log", VerticalScroll)
+        half = max(1, log_widget.size.height // 2)
+        log_widget.scroll_relative(y=-half)

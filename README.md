@@ -150,16 +150,30 @@ Ollama handles inference and uses Metal on macOS or CUDA on Linux/Windows. Witho
 ### Prerequisites
 
 - Python 3.11+
-- [Ollama] — the embedding model (`nomic-embed-text`) is auto-pulled on first sync. If no chat model is installed, lilbee prompts you to pick and download one.
-- **Optional** (for scanned PDF/image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or an Ollama vision model (recommended for better quality — see [vision OCR](docs/usage.md#vision-models))
+- **Optional** (for scanned PDF/image OCR): [Tesseract](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` / `apt install tesseract-ocr`) or a vision model (see [vision OCR](docs/usage.md#vision-models))
 
-> **First-time download:** If you're new to Ollama, expect the first run to take a while — models are large files that need to be downloaded once. For example, `qwen3:8b` is ~5 GB and the embedding model `nomic-embed-text` is ~274 MB. After the initial download, models are cached locally and load in seconds. You can check what you have installed with `ollama list`.
+No external services needed. lilbee downloads and runs GGUF models locally via llama-cpp.
 
 ### Install
 
 ```bash
 pip install lilbee        # or: uv tool install lilbee
 ```
+
+### Optional extras
+
+lilbee works out of the box. These extras unlock additional capabilities:
+
+| Extra | Install | What it adds |
+|-------|---------|-------------|
+| **Concept graph** | `pip install lilbee[graph]` | Topic clustering + search boosting. Extracts concepts from your documents and uses their relationships to find results that pure text matching misses. Zero extra LLM calls. |
+| **Cross-encoder reranking** | `pip install lilbee[reranker]` | Precision pass on search results. Re-scores every (query, chunk) pair with a cross-encoder model. Catches ranking errors the initial search missed. |
+| **Web crawling** | `pip install lilbee[crawler]` | Index websites alongside local files. Recursive crawling with Playwright, hash-based change detection, SSRF protection. |
+| **Remote providers** | `pip install lilbee[litellm]` | Connect to your favorite frontier model or any litellm-supported provider. Use remote models for chat while keeping embeddings local. |
+
+Install multiple: `pip install lilbee[graph,reranker,crawler]`
+
+See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration and details.
 
 ### Development (run from source)
 

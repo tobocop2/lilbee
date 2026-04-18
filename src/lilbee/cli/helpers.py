@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -18,9 +20,11 @@ from rich.table import Table
 from lilbee.cli import theme
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
+from lilbee.security import validate_path_within
+from lilbee.services import get_services
 
 if TYPE_CHECKING:
-    from lilbee.cli.chat.sync import SyncStatus
+    from lilbee.cli.sync import SyncStatus
     from lilbee.store import SearchChunk
 
 
@@ -30,6 +34,7 @@ class ResetResult(BaseModel):
     command: str = "reset"
     deleted_docs: int
     deleted_data: int
+    skipped: list[str] = []
     documents_dir: str
     data_dir: str
 
@@ -41,7 +46,7 @@ class StatusConfig(BaseModel):
     data_dir: str
     chat_model: str
     embedding_model: str
-    vision_model: str | None = None
+    enable_ocr: bool | None = None
 
 
 class SourceInfo(BaseModel):
@@ -68,8 +73,9 @@ class StatusResult(BaseModel):
         yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {self.config.data_dir}"
         yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {self.config.chat_model}"
         yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {self.config.embedding_model}"
-        if self.config.vision_model:
-            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {self.config.vision_model}"
+        if self.config.enable_ocr is not None:
+            ocr_label = "enabled" if self.config.enable_ocr else "disabled"
+            yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
         yield ""
 
         if not self.sources:
@@ -117,9 +123,7 @@ def clean_result(result: SearchChunk) -> dict:
 
 def gather_status() -> StatusResult:
     """Collect status data as a typed model (shared by human + JSON output)."""
-    from lilbee.store import get_sources
-
-    sources = get_sources()
+    sources = get_services().store.get_sources()
     sorted_sources = sorted(sources, key=lambda x: x["filename"])
     total_chunks = sum(s["chunk_count"] for s in sources)
     return StatusResult(
@@ -128,7 +132,7 @@ def gather_status() -> StatusResult:
             data_dir=str(cfg.data_dir),
             chat_model=cfg.chat_model,
             embedding_model=cfg.embedding_model,
-            vision_model=cfg.vision_model or None,
+            enable_ocr=cfg.enable_ocr,
         ),
         sources=[
             SourceInfo(
@@ -162,11 +166,12 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
     result = CopyResult()
     for p in paths:
         dest = cfg.documents_dir / p.name
+        validate_path_within(dest, cfg.documents_dir)
         if dest.exists() and not force:
             result.skipped.append(p.name)
             continue
         if p.is_dir():
-            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore)
+            shutil.copytree(p, dest, dirs_exist_ok=True, ignore=_copytree_ignore, symlinks=False)
         else:
             shutil.copy2(p, dest)
         result.copied.append(p.name)
@@ -189,13 +194,11 @@ def add_paths(
     con: Console,
     *,
     force: bool = False,
-    force_vision: bool = False,
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
 ) -> None:
     """Copy *paths* into the knowledge base and sync (human output).
-
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after copying files.
     """
@@ -210,41 +213,46 @@ def add_paths(
         )
 
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
-        run_sync_background(
-            con, force_vision=force_vision, chat_mode=chat_mode, sync_status=sync_status
-        )
+        run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = asyncio.run(sync(force_vision=force_vision))
+    result = asyncio.run(sync())
     con.print(result)
+
+
+def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
+    """Delete all items in *base_dir*, appending undeletable paths to *skipped*."""
+    log = logging.getLogger(__name__)
+    deleted = 0
+    if not base_dir.exists():
+        return deleted
+    for item in list(base_dir.iterdir()):
+        validate_path_within(item, base_dir)
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        except OSError as exc:
+            log.warning("Could not delete %s: %s", item, exc)
+            skipped.append(str(item))
+            continue
+        deleted += 1
+    return deleted
 
 
 def perform_reset() -> ResetResult:
     """Delete all documents and data. Returns summary of what was deleted."""
-    deleted_docs = 0
-    deleted_data = 0
-
-    if cfg.documents_dir.exists():
-        for item in list(cfg.documents_dir.iterdir()):
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-            deleted_docs += 1
-
-    if cfg.data_dir.exists():
-        for item in list(cfg.data_dir.iterdir()):
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-            deleted_data += 1
+    skipped: list[str] = []
+    deleted_docs = _clear_dir(cfg.documents_dir, skipped)
+    deleted_data = _clear_dir(cfg.data_dir, skipped)
 
     return ResetResult(
         deleted_docs=deleted_docs,
         deleted_data=deleted_data,
+        skipped=skipped,
         documents_dir=str(cfg.documents_dir),
         data_dir=str(cfg.data_dir),
     )
@@ -254,19 +262,19 @@ def sync_result_to_json(result: object) -> dict:
     """Convert a SyncResult to the JSON output envelope."""
     from lilbee.ingest import SyncResult
 
-    assert isinstance(result, SyncResult)
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     return {"command": "sync", **result.model_dump()}
 
 
 def auto_sync(con: Console, *, background: bool = False) -> None:
     """Run document sync before queries.
-
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
     sync blocks until complete (for ``lilbee ask``).
     """
     if background:
-        from lilbee.cli.chat.sync import run_sync_background
+        from lilbee.cli.sync import run_sync_background
 
         run_sync_background(con)
         return
@@ -286,3 +294,21 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
             f"{len(result.removed)} removed, "
             f"{len(result.failed)} failed[/{theme.MUTED}]"
         )
+
+
+@contextmanager
+def temporary_ocr_config(
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+) -> Generator[None, None, None]:
+    """Temporarily override OCR config for the duration of the block."""
+    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
+    try:
+        if enable_ocr is not None:
+            cfg.enable_ocr = enable_ocr
+        if ocr_timeout is not None:
+            cfg.ocr_timeout = ocr_timeout
+        yield
+    finally:
+        cfg.enable_ocr = old_ocr
+        cfg.ocr_timeout = old_timeout
