@@ -129,13 +129,6 @@ SETUP_INSTALL_BUTTON = "Install & Go"
 SETUP_BROWSE_CATALOG = "Browse full catalog"
 SETUP_SKIP_BUTTON = "Skip setup"
 SETUP_CONTINUE_NO_SEARCH = "Continue without search"
-SETUP_DOWNLOAD_WAITING = "{name}: waiting..."
-SETUP_DOWNLOAD_STARTING = "starting"
-SETUP_DOWNLOAD_ACTIVE = "{name}: {detail} ({percent:.1f}%)"
-SETUP_DOWNLOAD_DONE = "{name}: done"
-SETUP_DOWNLOAD_FAILED = "{name}: {error}"
-SETUP_DOWNLOAD_TASK_NAME = "Download {name}"
-SETUP_LOGIN_REQUIRED = "{name} requires login (run: lilbee login)"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 

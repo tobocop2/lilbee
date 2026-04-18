@@ -602,7 +602,6 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             await pilot.pause()
             wizard = SetupWizard()
-            wizard._run_downloads = lambda: None  # type: ignore[method-assign]
             await app.push_screen(wizard)
             await pilot.pause()
             assert isinstance(app.focused, GridSelect), "test precondition"
@@ -633,7 +632,6 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             await pilot.pause()
             wizard = SetupWizard()
-            wizard._run_downloads = lambda: None  # type: ignore[method-assign]
             await app.push_screen(wizard)
             await pilot.pause()
             # Walk Tab forward; within ~20 hops (cards + buttons) we should
@@ -845,14 +843,14 @@ class TestNavBindings:
 
 
 class TestNoRichConsoleInTui:
-    """B2: Verify _run_add_background does not import Rich Console."""
+    """B2: Verify the /add implementation doesn't pull Rich Console into the TUI."""
 
     def test_chat_add_uses_copy_files_not_copy_paths(self) -> None:
         import inspect
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen._run_add_background)
+        source = inspect.getsource(ChatScreen._do_add)
         assert "from lilbee.cli.app import console" not in source
         assert "copy_paths" not in source
         assert "copy_files" in source

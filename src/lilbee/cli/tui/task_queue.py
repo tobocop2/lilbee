@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,6 +25,17 @@ class TaskStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class TaskType(StrEnum):
+    """Canonical task types. Replaces raw string literals at call sites."""
+
+    DOWNLOAD = "download"
+    SYNC = "sync"
+    CRAWL = "crawl"
+    WIKI = "wiki"
+    ADD = "add"
+    REMOVE = "remove"
 
 
 STATUS_ICONS: dict[TaskStatus, str] = {
@@ -47,6 +59,9 @@ class Task:
     progress: float = 0.0
     detail: str = ""
     indeterminate: bool = False
+    # Monotonic timestamp at which the task transitioned to ACTIVE. None
+    # while QUEUED. Used by the Task Center row to render elapsed time.
+    started_at: float | None = None
 
 
 class TaskQueue:
@@ -245,6 +260,7 @@ class TaskQueue:
                 task = self._tasks.get(tid)
                 if task:
                     task.status = TaskStatus.ACTIVE
+                    task.started_at = time.monotonic()
                     active.add(tid)
                     advanced = task
                     break

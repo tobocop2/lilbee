@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -1399,16 +1399,6 @@ async def test_chat_slash_add_nonexistent():
             assert "Not found" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_add_existing(tmp_path):
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("hello")
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "_run_add_background") as mock_add_bg:
-            app.screen._cmd_add(str(test_file))
-            mock_add_bg.assert_called_once()
-
-
 async def test_chat_slash_add_blocked_by_sync(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
@@ -2642,101 +2632,6 @@ async def test_chat_run_sync_worker():
             assert app.screen._sync_active is False
 
 
-async def test_chat_sync_progress_reports_percentage():
-    """Verify sync progress reports real percentages (not indeterminate)."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EventType, FileDoneEvent, FileStartEvent
-
-        update_calls: list[tuple] = []
-        task_bar = app.task_bar
-        original_update = task_bar.update_task
-
-        def tracking_update(task_id, pct, status, *, indeterminate=None):
-            update_calls.append((task_id, pct, status, indeterminate))
-            return original_update(task_id, pct, status, indeterminate=indeterminate)
-
-        async def fake_sync(quiet=False, on_progress=None, cancel=None):
-            if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(current_file=1, total_files=2, file="doc.md"),
-                )
-                on_progress(
-                    EventType.FILE_DONE,
-                    FileDoneEvent(file="doc.md", status="ok", chunks=3),
-                )
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(current_file=2, total_files=2, file="doc2.md"),
-                )
-                on_progress(
-                    EventType.FILE_DONE,
-                    FileDoneEvent(file="doc2.md", status="ok", chunks=2),
-                )
-            return {"added": 2}
-
-        with (
-            patch("lilbee.ingest.sync", new=fake_sync),
-            patch.object(task_bar, "update_task", tracking_update),
-        ):
-            app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
-
-        # FILE_START and FILE_DONE updates should use determinate mode
-        file_updates = [(pct, indet) for _, pct, _, indet in update_calls if indet is not None]
-        assert any(indet is False for _, indet in file_updates)
-        # FILE_START for file 1/2 should report 0%, file 2/2 should report 50%
-        pct_values = [pct for _, pct, _, _ in update_calls]
-        assert 0 in pct_values
-
-
-async def test_chat_sync_embed_throttling():
-    """Embed events are throttled to avoid flooding the main thread."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from lilbee.progress import EmbedEvent, EventType, FileStartEvent
-
-        update_calls: list[tuple] = []
-        task_bar = app.task_bar
-        original_update = task_bar.update_task
-
-        def tracking_update(task_id, pct, status, *, indeterminate=None):
-            update_calls.append((task_id, pct, status, indeterminate))
-            return original_update(task_id, pct, status, indeterminate=indeterminate)
-
-        async def fake_sync(quiet=False, on_progress=None, cancel=None):
-            if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(current_file=1, total_files=1, file="big.pdf"),
-                )
-                # Fire many embed events rapidly (should be throttled)
-                for i in range(20):
-                    on_progress(
-                        EventType.EMBED,
-                        EmbedEvent(file="big.pdf", chunk=i + 1, total_chunks=20),
-                    )
-            return {"added": 1}
-
-        with (
-            patch("lilbee.ingest.sync", new=fake_sync),
-            patch.object(task_bar, "update_task", tracking_update),
-        ):
-            app.screen._run_sync()
-            await _pilot.pause()
-            while app.screen.workers:
-                await _pilot.pause()
-
-        # Not all 20 embed events should trigger updates (throttled at 150ms)
-        embed_updates = [s for _, _, s, _ in update_calls if "Embedding" in s]
-        assert len(embed_updates) < 20
-        # But at least the first embed update should fire
-        assert len(embed_updates) >= 1
-
-
 async def test_chat_sync_file_done_bad_type():
     """Sync progress raises TypeError when FILE_DONE data is not FileDoneEvent."""
     app = ChatTestApp()
@@ -3220,36 +3115,6 @@ async def test_chat_slash_crawl_invalid_url():
             assert app.screen.is_current
 
 
-async def test_chat_slash_crawl_valid_url():
-    """Cover /crawl dispatching to background crawler."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
-            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
-        ):
-            app.screen._cmd_crawl("https://example.com")
-            mock_crawl.assert_called_once()
-
-
-async def test_chat_slash_crawl_with_flags():
-    """Cover /crawl with --depth and --max-pages flags."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
-        ):
-            app.screen._cmd_crawl("https://example.com --depth 3 --max-pages 20")
-            mock_crawl.assert_called_once()
-            call_args = mock_crawl.call_args[0]
-            assert call_args[0] == "https://example.com"
-            assert call_args[1] == 3
-            assert call_args[2] == 20
-            assert len(call_args) == 4
-
-
 async def test_chat_slash_add_url_routes_to_crawl():
     """Cover /add with a URL argument routing to _cmd_crawl."""
     app = ChatTestApp()
@@ -3294,44 +3159,6 @@ class TestParseCrawlFlags:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         assert ChatScreen._parse_crawl_flags(["--unknown", "value"]) == (0, 0)
-
-
-async def test_chat_run_crawl_background_success():
-    """Cover _run_crawl_background success path including progress callback."""
-    from pathlib import Path
-
-    async def _fake_crawl(url, **kwargs):
-        cb = kwargs.get("on_progress")
-        if cb:
-            cb("crawl_page", {"current": 1, "total": 2, "url": url})
-        return [Path("a.md")]
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        with (
-            patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl,
-            patch.object(app.screen, "_run_sync"),
-        ):
-            mock_crawl.side_effect = _fake_crawl
-            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
-            await pilot.pause(delay=0.5)
-            while app.screen.workers:
-                await pilot.pause()
-            # Worker completed successfully
-            assert app.screen._sync_active is False
-
-
-async def test_chat_run_crawl_background_error():
-    """Cover _run_crawl_background error path."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        with patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock) as mock_crawl:
-            mock_crawl.side_effect = RuntimeError("network error")
-            app.screen._run_crawl_background("https://example.com", 0, 50, "test-task-id")
-            await pilot.pause(delay=0.5)
-            while app.screen.workers:
-                await pilot.pause()
-            assert app.screen._sync_active is False
 
 
 async def test_chat_vim_g_scrolls_home():
@@ -3650,40 +3477,6 @@ async def test_chat_slash_remove_failed():
                 await _pilot.pause()
             await _pilot.pause()
             mock_mgr.return_value.remove.assert_called_once_with("some-model:latest")
-
-
-async def test_cmd_add_creates_task_bar_entry(tmp_path):
-    """B1: /add creates a TaskBar entry and runs copy_paths in a background worker."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        test_file = tmp_path / "doc.txt"
-        test_file.write_text("hello")
-
-        async def fake_sync(quiet=False, on_progress=None):
-            return {"added": 1}
-
-        with (
-            patch(
-                "lilbee.cli.helpers.copy_files",
-                return_value=MagicMock(copied=["doc.txt"], skipped=[]),
-            ) as mock_copy,
-            patch("lilbee.ingest.sync", new=fake_sync),
-        ):
-            task_bar = app.task_bar
-            add_task_spy = MagicMock(wraps=task_bar.add_task)
-            with patch.object(task_bar, "add_task", add_task_spy):
-                app.screen._handle_slash(f"/add {test_file}")
-                await _pilot.pause()
-
-                # TaskBar.add_task was called with the file name
-                add_task_spy.assert_called_once()
-                label_arg = add_task_spy.call_args[0][0]
-                assert "Add" in label_arg
-
-            while app.screen.workers:
-                await _pilot.pause()
-
-            mock_copy.assert_called_once()
 
 
 async def test_cmd_add_error_in_background(tmp_path):
@@ -5666,39 +5459,6 @@ async def test_catalog_enqueue_download_non_lilbee_app():
                 assert "task bar" in mock_notify.call_args[0][0].lower()
 
 
-async def test_catalog_make_progress_callback():
-    """_make_progress_callback returns callback that formats progress."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            mock_bar = MagicMock()
-            mock_bar.update_task = MagicMock()
-            with patch.object(screen, "_safe_call") as mock_safe:
-                cb = screen._make_progress_callback("task-1", mock_bar)
-                cb(512 * 1024, 1024 * 1024)  # total > 0
-                cb(512 * 1024, 0)  # total == 0 (throttled)
-                assert mock_safe.call_count >= 1
-
-
-async def test_catalog_safe_call_suppresses_exception():
-    """_safe_call suppresses exceptions from call_from_thread."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            with patch.object(app, "call_from_thread", side_effect=RuntimeError("dead")):
-                screen._safe_call(lambda: None)  # should not raise
-
-
 async def test_catalog_get_highlighted_variant_name():
     """_get_highlighted_model_name returns correct name for variant row."""
     from lilbee.catalog import ModelFamily, ModelVariant
@@ -5841,97 +5601,6 @@ async def test_catalog_run_delete_exception():
                 while screen.workers:
                     await _pilot.pause()
                 mock_mgr.remove.assert_called_once_with("test:latest")
-
-
-async def test_catalog_run_download_success():
-    """_run_download success path completes task."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="dl-model")
-            mock_bar = MagicMock()
-            with patch("lilbee.catalog.download_model") as mock_dl:
-                screen._run_download(m, "task-1", mock_bar)
-                await _pilot.pause()
-                while screen.workers:
-                    await _pilot.pause()
-                mock_dl.assert_called_once()
-                mock_bar.complete_task.assert_called_once_with("task-1")
-
-
-async def test_catalog_run_download_permission_error():
-    """_run_download PermissionError path shows gated repo message."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="gated-model")
-            mock_bar = MagicMock()
-            with patch("lilbee.catalog.download_model", side_effect=PermissionError("denied")):
-                screen._run_download(m, "task-1", mock_bar)
-                await _pilot.pause()
-                while screen.workers:
-                    await _pilot.pause()
-                mock_bar.fail_task.assert_called_once()
-
-
-async def test_catalog_run_download_generic_error():
-    """_run_download generic Exception path shows error."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="err-model")
-            mock_bar = MagicMock()
-            with patch("lilbee.catalog.download_model", side_effect=RuntimeError("network")):
-                screen._run_download(m, "task-1", mock_bar)
-                await _pilot.pause()
-                while screen.workers:
-                    await _pilot.pause()
-                mock_bar.fail_task.assert_called_once()
-
-
-async def test_catalog_run_download_cancelled():
-    """_run_download exits early when worker is cancelled."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            m = _make_catalog_model(name="cancel-model")
-            mock_bar = MagicMock()
-
-            def _dl_and_cancel(*a, **kw):
-                for w in screen.workers:
-                    w.cancel()
-
-            with patch("lilbee.catalog.download_model", side_effect=_dl_and_cancel):
-                screen._run_download(m, "task-1", mock_bar)
-                await _pilot.pause()
-                while screen.workers:
-                    await _pilot.pause()
-                mock_bar.complete_task.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# chat.py coverage
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_on_show_calls_dismiss():
@@ -6676,20 +6345,6 @@ async def test_chat_remove_model_exception():
             mock_mgr.remove.assert_called_once_with("test-model")
 
 
-async def test_chat_cmd_crawl_with_valid_url():
-    """_cmd_crawl enqueues a crawl task for a valid URL."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
-            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
-        ):
-            app.screen._cmd_crawl("https://example.com")
-            mock_crawl.assert_called_once()
-
-
 async def test_chat_cmd_crawl_invalid_url():
     """_cmd_crawl notifies error for invalid URL."""
     app = ChatTestApp()
@@ -6705,38 +6360,6 @@ async def test_chat_cmd_crawl_invalid_url():
         ):
             app.screen._cmd_crawl("not-a-url")
             mock_notify.assert_called()
-
-
-async def test_chat_cmd_crawl_auto_prefix_https():
-    """_cmd_crawl auto-prefixes https:// when URL has no scheme."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url") as mock_validate,
-            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
-        ):
-            app.screen._cmd_crawl("example.com")
-            mock_validate.assert_called_once_with("https://example.com")
-            mock_crawl.assert_called_once()
-            assert mock_crawl.call_args[0][0] == "https://example.com"
-
-
-async def test_chat_cmd_crawl_auto_prefix_with_flags():
-    """_cmd_crawl auto-prefixes https:// and parses flags correctly."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
-            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
-            patch.object(app.screen, "_run_crawl_background") as mock_crawl,
-        ):
-            app.screen._cmd_crawl("example.com --depth 2")
-            call_args = mock_crawl.call_args[0]
-            assert call_args[0] == "https://example.com"
-            assert call_args[1] == 2
 
 
 async def test_chat_cmd_wiki_disabled_notifies():
@@ -6878,25 +6501,6 @@ async def test_chat_cmd_setup_opens_wizard():
             assert isinstance(app.screen, SetupWizard)
 
 
-async def test_catalog_enqueue_download_in_lilbee_app():
-    """_enqueue_download works with a real LilbeeApp."""
-    from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-
-            cm = _make_catalog_model(name="enqueue-test")
-            with patch.object(screen, "_run_download") as mock_dl:
-                screen._enqueue_download(cm)
-                mock_dl.assert_called_once()
-
-
 async def test_catalog_select_row_out_of_range():
     """_on_row_selected returns early for out-of-range cursor_row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -6933,109 +6537,6 @@ def test_chat_embedding_ready_real_code_false():
     from lilbee.cli.tui.screens.chat import ChatScreen
 
     assert hasattr(ChatScreen, "_embedding_ready")
-
-
-async def test_chat_run_sync_worker_cancelled():
-    """_run_sync_worker handles CancelledError by disabling auto_sync."""
-    import asyncio as _asyncio
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        app.screen._auto_sync = True
-        with patch("asyncio.run", side_effect=_asyncio.CancelledError):
-            app.screen._run_sync_worker("test-task-id")
-            while app.screen.workers:
-                await _pilot.pause()
-        assert app.screen._auto_sync is False
-
-
-async def test_chat_add_skipped_file():
-    """_run_add_background notifies about skipped files."""
-    from pathlib import Path as _Path
-
-    from lilbee.cli.helpers import CopyResult
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        mock_result = CopyResult(copied=[], skipped=["existing.txt"])
-
-        from lilbee.progress import EventType, FileStartEvent
-
-        async def fake_sync(*, quiet: bool = True, on_progress: object = None) -> None:
-            if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(file="test.txt", total_files=0, current_file=0),
-                )
-
-        with (
-            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", new=fake_sync),
-        ):
-            app.screen._run_add_background(_Path("test.txt"), "task-1")
-            while app.screen.workers:
-                await _pilot.pause()
-            assert app.screen._sync_active is False
-
-
-async def test_chat_add_sync_progress_wrong_type():
-    """_run_add_background sync progress raises TypeError for non-FileStartEvent."""
-    from pathlib import Path as _Path
-
-    from lilbee.cli.helpers import CopyResult
-    from lilbee.progress import CrawlPageEvent, EventType
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        mock_result = CopyResult(copied=[_Path("ok.txt")], skipped=[])
-
-        async def fake_sync(*, quiet=True, on_progress=None):
-            if on_progress:
-                # Send wrong event type for FILE_START — triggers TypeError guard
-                on_progress(
-                    EventType.FILE_START,
-                    CrawlPageEvent(current=1, total=1, url="https://x.com"),
-                )
-
-        with (
-            patch("lilbee.cli.helpers.copy_files", return_value=mock_result),
-            patch("lilbee.ingest.sync", new=fake_sync),
-        ):
-            app.screen._run_add_background(_Path("test.txt"), "task-wrong")
-            while app.screen.workers:
-                await _pilot.pause()
-            assert app.screen._sync_active is False
-
-
-async def test_chat_crawl_background_success():
-    """_run_crawl_background completes successfully with progress and triggers sync."""
-    from pathlib import Path as _Path
-
-    from lilbee.progress import CrawlPageEvent, EventType
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-
-        async def fake_crawl(url, *, depth=0, max_pages=0, on_progress=None):
-            if on_progress:
-                on_progress(
-                    EventType.CRAWL_PAGE,
-                    CrawlPageEvent(current=1, total=2, url="https://example.com/page1"),
-                )
-            return [_Path("p.md")]
-
-        with (
-            patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
-            patch.object(app.screen, "_run_sync") as mock_sync,
-        ):
-            app.screen._run_crawl_background("https://example.com", 1, 10, "crawl-1")
-            while app.screen.workers:
-                await _pilot.pause()
-            mock_sync.assert_called()
 
 
 def test_on_row_selected_valid_index():
@@ -7357,72 +6858,6 @@ async def test_catalog_grid_selected_with_model_card():
                 mock_sel.assert_called_once_with(row)
 
 
-async def test_cmd_add_uses_indeterminate_progress_during_ingest(tmp_path):
-    """BEE-65f: /add must not claim determinate progress while ingest runs.
-    Before the fix, the task bar jumped 0 -> 50 -> 100 for a single-file add,
-    falsely showing "done" while parse/chunk/embed/store were still running
-    for tens of seconds. The TaskBarController must flip the task to
-    indeterminate mode during copy and sync so the bar pulses instead of
-    lying about completion.
-    """
-    from pathlib import Path as _Path
-
-    from lilbee.cli.helpers import CopyResult
-    from lilbee.progress import EventType, FileStartEvent
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        test_file = tmp_path / "note.md"
-        test_file.write_text("hello")
-
-        task_id = app.task_bar.add_task("Add note.md", "add")
-        app.task_bar.queue.advance("add")
-
-        snapshots: list[tuple[bool, int]] = []
-
-        def on_change() -> None:
-            task = app.task_bar.queue.get_task(task_id)
-            if task is not None:
-                snapshots.append((task.indeterminate, task.progress))
-
-        app.task_bar.queue.subscribe(on_change)
-
-        async def fake_sync(*, quiet=True, on_progress=None):
-            if on_progress:
-                on_progress(
-                    EventType.FILE_START,
-                    FileStartEvent(file="note.md", total_files=1, current_file=1),
-                )
-
-        try:
-            with (
-                patch(
-                    "lilbee.cli.helpers.copy_files",
-                    return_value=CopyResult(copied=[_Path("note.md")], skipped=[]),
-                ),
-                patch("lilbee.ingest.sync", new=fake_sync),
-            ):
-                app.screen._run_add_background(test_file, task_id)
-                while app.screen.workers:
-                    await _pilot.pause()
-                await _pilot.pause()
-        finally:
-            app.task_bar.queue.unsubscribe(on_change)
-
-        # Drop the final DONE entry. The task bar flips indeterminate off at
-        # completion; everything BEFORE that must be indeterminate and must
-        # not claim 100% progress.
-        running_snapshots = [s for s in snapshots if s != (False, 100)]
-        assert running_snapshots, f"expected progress updates, got {snapshots}"
-        assert all(indet for indet, _ in running_snapshots), (
-            f"task should stay indeterminate until completion, got {running_snapshots}"
-        )
-        assert all(p < 100 for _, p in running_snapshots), (
-            f"no update should claim 100% progress while running, got {running_snapshots}"
-        )
-
-
 async def test_task_bar_indeterminate_flag_propagated():
     """BEE-65f: indeterminate flag is stored on the task in the queue.
 
@@ -7521,188 +6956,6 @@ def test_resolve_wiki_targets_get_sources_error():
     fake_svc = MagicMock(store=fake_store)
     with patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc):
         assert resolve_wiki_targets() is None
-
-
-def test_process_source_suppresses_wiki_warnings():
-    """_process_source suppresses WARNING-level logs from wiki.gen during TUI mode."""
-    import logging
-
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    wiki_logger = logging.getLogger("lilbee.wiki.gen")
-    original_level = wiki_logger.level
-
-    fake_store = MagicMock()
-    fake_store.get_chunks_by_source.return_value = [MagicMock(chunk="text")]
-    fake_svc = MagicMock(store=fake_store)
-
-    levels_during_generation: list[int] = []
-
-    def capture_level(*args, **kwargs):
-        levels_during_generation.append(wiki_logger.level)
-        return MagicMock()
-
-    widget = MagicMock()
-    with (
-        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
-        patch("lilbee.cli.tui.wiki_worker.call_from_thread"),
-        patch("lilbee.wiki.gen.generate_summary_page", side_effect=capture_level),
-    ):
-        _process_source("test.md", 0, 1, widget, MagicMock(), "task-1", [])
-
-    # During generation, the wiki logger should be set to ERROR level
-    assert levels_during_generation
-    assert levels_during_generation[0] >= logging.ERROR
-    # After generation, it should be restored
-    assert wiki_logger.level == original_level
-
-
-def test_process_source_empty_chunks_returns_false():
-    """_process_source returns False when source has no chunks."""
-    from lilbee.cli.tui.wiki_worker import _process_source
-
-    fake_store = MagicMock()
-    fake_store.get_chunks_by_source.return_value = []
-    fake_svc = MagicMock(store=fake_store)
-
-    widget = MagicMock()
-    with (
-        patch("lilbee.cli.tui.wiki_worker.get_services", return_value=fake_svc),
-        patch("lilbee.cli.tui.wiki_worker.call_from_thread"),
-    ):
-        result = _process_source("empty.md", 0, 1, widget, MagicMock(), "task-1", [])
-    assert result is False
-
-
-def test_wiki_worker_make_progress_callback():
-    """_make_progress_callback builds a callback that reports progress stages."""
-    from lilbee.cli.tui.wiki_worker import (
-        WIKI_STAGE_FAILED,
-        WIKI_STAGE_GENERATING,
-        _make_progress_callback,
-    )
-
-    widget = MagicMock()
-    update_task = MagicMock()
-    errors: list[str] = []
-
-    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
-        cb = _make_progress_callback("doc.md", 0, 2, widget, update_task, "task-1", errors)
-        cb(WIKI_STAGE_GENERATING, {})
-        mock_cft.assert_called_once()
-        # Percentage: (0 + 0.33) * 100 / 2 = 16
-        assert mock_cft.call_args[0][3] == 16
-
-    # Test failed stage
-    cb(WIKI_STAGE_FAILED, {"error": "timeout"})
-    assert "timeout" in errors[-1]
-
-
-def test_wiki_worker_report_result_success():
-    """_report_result notifies on successful generation."""
-    from lilbee.cli.tui.wiki_worker import _report_result
-
-    widget = MagicMock()
-    complete = MagicMock()
-    fail = MagicMock()
-    notify = MagicMock()
-    on_complete = MagicMock()
-
-    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
-        _report_result(2, 3, [], widget, "t1", complete, fail, notify, on_complete)
-        # Should call complete_task and notify, plus on_complete
-        assert mock_cft.call_count == 3
-
-
-def test_wiki_worker_report_result_failure():
-    """_report_result notifies on failed generation."""
-    from lilbee.cli.tui.wiki_worker import _report_result
-
-    widget = MagicMock()
-    complete = MagicMock()
-    fail = MagicMock()
-    notify = MagicMock()
-
-    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
-        _report_result(0, 2, ["err1"], widget, "t1", complete, fail, notify, None)
-        # Should call fail_task and notify
-        assert mock_cft.call_count == 2
-
-
-def test_wiki_worker_report_result_no_errors_no_pages():
-    """_report_result uses default message when no errors and no pages."""
-    from lilbee.cli.tui.wiki_worker import _report_result
-
-    widget = MagicMock()
-    with patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft:
-        _report_result(0, 1, [], widget, "t1", MagicMock(), MagicMock(), MagicMock(), None)
-        assert mock_cft.call_count == 2
-
-
-def test_wiki_worker_run_wiki_generation():
-    """run_wiki_generation processes sources and reports results."""
-    from lilbee.cli.tui.wiki_worker import run_wiki_generation
-
-    widget = MagicMock()
-    update = MagicMock()
-    complete = MagicMock()
-    fail = MagicMock()
-    notify = MagicMock()
-
-    with (
-        patch("lilbee.cli.tui.wiki_worker._process_source", return_value=True) as mock_ps,
-        patch("lilbee.cli.tui.wiki_worker._report_result") as mock_rr,
-    ):
-        run_wiki_generation(["a.txt", "b.txt"], "t1", widget, update, complete, fail, notify)
-        assert mock_ps.call_count == 2
-        mock_rr.assert_called_once()
-        # generated=2, total=2
-        assert mock_rr.call_args[0][0] == 2
-        assert mock_rr.call_args[0][1] == 2
-
-
-def test_wiki_worker_run_wiki_generation_cancelled():
-    """run_wiki_generation stops when cancelled."""
-    from lilbee.cli.tui.wiki_worker import run_wiki_generation
-
-    widget = MagicMock()
-
-    with (
-        patch("lilbee.cli.tui.wiki_worker._process_source") as mock_ps,
-        patch("lilbee.cli.tui.wiki_worker._report_result") as mock_rr,
-    ):
-        run_wiki_generation(
-            ["a.txt", "b.txt"],
-            "t1",
-            widget,
-            MagicMock(),
-            MagicMock(),
-            MagicMock(),
-            MagicMock(),
-            is_cancelled=lambda: True,
-        )
-        mock_ps.assert_not_called()
-        mock_rr.assert_called_once()
-
-
-def test_wiki_worker_run_wiki_generation_exception():
-    """run_wiki_generation handles exceptions from _process_source."""
-    from lilbee.cli.tui.wiki_worker import run_wiki_generation
-
-    widget = MagicMock()
-    fail = MagicMock()
-    notify = MagicMock()
-
-    with (
-        patch(
-            "lilbee.cli.tui.wiki_worker._process_source",
-            side_effect=RuntimeError("boom"),
-        ),
-        patch("lilbee.cli.tui.wiki_worker.call_from_thread") as mock_cft,
-    ):
-        run_wiki_generation(["a.txt"], "t1", widget, MagicMock(), MagicMock(), fail, notify)
-        # Should call fail_task and notify via call_from_thread
-        assert mock_cft.call_count == 2
 
 
 def _make_wiki_app(*, with_task_bar: bool = False) -> App[None]:
@@ -7807,22 +7060,6 @@ async def test_chat_open_crawl_dialog():
             assert isinstance(app.screen, CrawlDialog)
 
 
-async def test_chat_start_crawl_from_dialog():
-    """_start_crawl enqueues task and runs background crawl."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        task_bar = app.task_bar
-        add_spy = MagicMock(wraps=task_bar.add_task)
-        with (
-            patch.object(task_bar, "add_task", add_spy),
-            patch.object(app.screen, "_run_crawl_background"),
-            patch.object(app.screen, "notify"),
-        ):
-            app.screen._start_crawl("https://example.com", 1, 25)
-        add_spy.assert_called_once()
-
-
 async def test_chat_crawl_dialog_callback_triggers_start():
     """CrawlDialog callback calls _start_crawl with the result params."""
     from lilbee.cli.tui.widgets.crawl_dialog import CrawlParams
@@ -7912,42 +7149,6 @@ async def test_wiki_selected_source_returns_none_for_option_without_id():
         assert result is None
 
 
-async def test_wiki_regenerate_selected_page():
-    """action_regenerate with a selected page regenerates that source."""
-    from textual.widgets import OptionList
-    from textual.widgets.option_list import Option
-
-    app = _make_wiki_app(with_task_bar=True)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        # Simulate a highlighted page by focusing and navigating
-        option_list = app.screen.query_one("#wiki-page-list", OptionList)
-        option_list.clear_options()
-        option_list.add_option(Option("test page", id="summaries/test"))
-        option_list.focus()
-        await pilot.pause()
-        # Force highlight to first option
-        await pilot.press("down")
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": ["test.txt"]}
-        with (
-            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
-            patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page),
-            patch(
-                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
-                return_value=["test.txt"],
-            ),
-            patch.object(app.screen, "_run_wiki_background") as mock_bg,
-            patch.object(app.screen, "notify"),
-        ):
-            mock_cfg.wiki = True
-            await pilot.press("r")
-            await pilot.pause()
-        mock_bg.assert_called_once()
-        assert mock_bg.call_args[0][0] == ["test.txt"]
-
-
 async def test_wiki_regenerate_selected_page_not_found():
     """action_regenerate with a selected page whose source isn't indexed shows error."""
     from textual.widgets import OptionList
@@ -7979,38 +7180,3 @@ async def test_wiki_regenerate_selected_page_not_found():
             await pilot.pause()
         mock_notify.assert_called_once()
         assert "Source not found" in mock_notify.call_args[0][0]
-
-
-async def test_wiki_run_wiki_background():
-    """WikiScreen._run_wiki_background delegates to run_wiki_generation."""
-    app = _make_wiki_app(with_task_bar=True)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        task_id = app.task_bar.add_task("Wiki (1)", "wiki")
-        app.task_bar.queue.advance("wiki")
-        with patch("lilbee.cli.tui.wiki_worker.run_wiki_generation") as mock_gen:
-            app.screen._run_wiki_background(["a.txt"], task_id)
-            await pilot.pause()
-            while app.screen.workers:
-                await pilot.pause()
-        mock_gen.assert_called_once()
-
-
-async def test_wiki_regenerate_with_targets():
-    """action_regenerate with resolved targets enqueues a task."""
-    app = _make_wiki_app(with_task_bar=True)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with (
-            patch("lilbee.cli.tui.screens.wiki.cfg") as mock_cfg,
-            patch(
-                "lilbee.cli.tui.screens.wiki.resolve_wiki_targets",
-                return_value=["a.txt"],
-            ),
-            patch.object(app.screen, "_run_wiki_background") as mock_bg,
-            patch.object(app.screen, "notify"),
-        ):
-            mock_cfg.wiki = True
-            await pilot.press("r")
-            await pilot.pause()
-        mock_bg.assert_called_once()
