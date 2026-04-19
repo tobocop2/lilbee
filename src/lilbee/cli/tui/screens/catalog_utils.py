@@ -7,15 +7,15 @@ from dataclasses import dataclass
 
 from lilbee.catalog import PARAM_COUNT_RE, CatalogModel, ModelFamily, ModelVariant
 from lilbee.model_manager import RemoteModel
-from lilbee.models import FEATURED_STAR
 
 
 @dataclass
 class TableRow:
-    """A row in the catalog DataTable with source metadata.
+    """A row in the catalog grid or list view with source metadata.
+
     ``name`` is the human-readable display label (e.g. "Qwen3 0.6B").
     ``ref`` is the canonical name:tag identifier used for config persistence
-    (e.g. "qwen3:0.6b").  When ``ref`` is empty, fall back to ``name``.
+    (e.g. "qwen3:0.6b"). When ``ref`` is empty, fall back to ``name``.
     """
 
     name: str
@@ -75,12 +75,8 @@ def _is_param_count(label: str) -> bool:
 
 def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> TableRow:
     """Convert a ModelVariant + family to a TableRow."""
-    prefix = "* " if v.recommended else ""
     # Avoid duplicating the tag when the family name already ends with it.
-    if f.name.endswith(v.param_count):
-        label = f"{prefix}{f.name}"
-    else:
-        label = f"{prefix}{f.name} {v.param_count}"
+    label = f.name if f.name.endswith(v.param_count) else f"{f.name} {v.param_count}"
     params = v.param_count if _is_param_count(v.param_count) else "--"
     return TableRow(
         name=label,
@@ -143,17 +139,6 @@ def _extract_quant_from_filename(filename: str) -> str:
     """Extract quantization label from a GGUF filename pattern."""
     m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)
     return m.group(1).upper() if m else ""
-
-
-def row_display_name(row: TableRow) -> str:
-    """Build the display name with featured/installed markers."""
-    parts: list[str] = []
-    if row.featured:
-        parts.append(FEATURED_STAR)
-    parts.append(row.name)
-    if row.installed:
-        parts.append("[installed]")
-    return " ".join(parts)
 
 
 # Column sort key extractors

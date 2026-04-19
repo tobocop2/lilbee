@@ -1,0 +1,39 @@
+ModelListItem {
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    border-left: thick transparent;
+    pointer: pointer;
+
+    &:hover {
+        background: $surface;
+    }
+
+    &:focus {
+        border-left: thick $primary;
+        background: $surface;
+    }
+
+    #list-head {
+        width: 1fr;
+        height: 1;
+    }
+
+    #list-meta {
+        width: 1fr;
+        height: 1;
+        padding-left: 2;
+    }
+
+    #list-specs {
+        width: 1fr;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    #list-status {
+        width: auto;
+        padding-left: 2;
+    }
+}

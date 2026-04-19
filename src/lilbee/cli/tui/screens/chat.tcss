@@ -21,7 +21,6 @@
 
 .source-citation {
     padding: 0 1;
-    text-style: italic;
     color: $text-muted;
 }
 

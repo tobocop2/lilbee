@@ -6,8 +6,10 @@
     padding: 0 1;
 }
 
-#catalog-table {
+#catalog-list {
     height: 1fr;
+    overflow-y: auto;
+    padding: 0 1;
 }
 
 #sort-label {
@@ -35,7 +37,7 @@
 }
 
 /* View toggle: hide inactive view */
-CatalogScreen.-grid-view #catalog-table { display: none; }
+CatalogScreen.-grid-view #catalog-list { display: none; }
 CatalogScreen.-grid-view #sort-label { display: none; }
 CatalogScreen.-grid-view #model-detail { display: none; }
 CatalogScreen.-list-view #catalog-grid { display: none; }

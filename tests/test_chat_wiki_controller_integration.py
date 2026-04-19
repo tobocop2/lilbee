@@ -315,6 +315,49 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
     assert reporter.update.call_count >= 3
 
 
+def test_do_sync_done_event_reports_completion() -> None:
+    """_do_sync routes EventType.DONE through reporter.update at 100% so the
+    Task Center row flashes 'just-completed' (regression for bb-7enj)."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.progress import EventType, SyncDoneEvent
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+
+    async def fake_sync(*, quiet, on_progress):
+        on_progress(
+            EventType.DONE,
+            SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
+        )
+
+    exc: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with patch("lilbee.ingest.sync", side_effect=fake_sync):
+                screen._do_sync(reporter)
+        except BaseException as e:  # pragma: no cover - re-raised
+            exc.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not exc, f"worker raised: {exc[0]}"
+    # At least one call should hit pct=100 with indeterminate=False.
+    completion_calls = [
+        call for call in reporter.update.call_args_list if call.args and call.args[0] == 100
+    ]
+    assert completion_calls, "no reporter.update(100, ...) call observed"
+    last = completion_calls[-1]
+    assert last.kwargs.get("indeterminate") is False
+    # Detail string shows total count: added + updated + removed (failed dropped).
+    from lilbee.cli.tui import messages as msg
+
+    assert str(last.args[1]) == msg.SYNC_STATUS_DONE.format(count=4)
+
+
 def test_do_sync_translates_cancellation() -> None:
     """asyncio.CancelledError becomes a RuntimeError the controller can surface."""
     import threading

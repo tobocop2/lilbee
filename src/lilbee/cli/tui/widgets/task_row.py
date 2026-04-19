@@ -48,14 +48,20 @@ _TASK_TYPE_BG: dict[str, str] = {
 _TASK_TYPE_BG_FALLBACK = "$primary"
 
 # Pill palette — status badge. QUEUED is muted so only the running ones
-# pop; DONE / FAILED / CANCELLED colors match the left-rail treatment.
+# pop; DONE / FAILED / CANCELLED use brightened backgrounds so terminal
+# states stand out against the matching left-rail color.
 _STATUS_BG: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "$surface-lighten-2",
     TaskStatus.ACTIVE: "$primary",
-    TaskStatus.DONE: "$success",
-    TaskStatus.FAILED: "$error",
-    TaskStatus.CANCELLED: "$warning",
+    TaskStatus.DONE: "$success-lighten-2",
+    TaskStatus.FAILED: "$error-lighten-2",
+    TaskStatus.CANCELLED: "$warning-lighten-2",
 }
+
+
+_TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
+    {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+)
 
 
 def _build_head(task: Task, elapsed: str) -> Content:
@@ -66,12 +72,13 @@ def _build_head(task: Task, elapsed: str) -> Content:
     """
     type_bg = _TASK_TYPE_BG.get(task.task_type, _TASK_TYPE_BG_FALLBACK)
     status_bg = _STATUS_BG[task.status]
+    status_fg = "$text bold" if task.status in _TERMINAL_STATUSES else "$text"
     parts = [
         Content.styled(task.name, "bold"),
         Content(" "),
         pill(task.task_type, type_bg, "$text"),
         Content(" "),
-        pill(task.status.value, status_bg, "$text"),
+        pill(task.status.value, status_bg, status_fg),
     ]
     if elapsed:
         parts.append(Content(" "))

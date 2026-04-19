@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Static
 
 from lilbee.catalog import (
@@ -27,10 +28,10 @@ from lilbee.cli.tui.screens.catalog_utils import (
     matches_search,
     parse_param_label,
     remote_to_row,
-    row_display_name,
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
+from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel
 from lilbee.services import set_services
@@ -254,28 +255,6 @@ class TestFormatDownloads:
 
     def test_zero(self):
         assert _format_downloads(0) == "0"
-
-
-class TestRowDisplayName:
-    def test_featured_star(self):
-        row = catalog_to_row(_make_catalog_model(featured=True), installed=False)
-        name = row_display_name(row)
-        assert name.startswith("\u2605")
-
-    def test_not_featured(self):
-        row = catalog_to_row(_make_catalog_model(featured=False), installed=False)
-        name = row_display_name(row)
-        assert not name.startswith("\u2605")
-
-    def test_installed_tag(self):
-        row = catalog_to_row(_make_catalog_model(), installed=True)
-        name = row_display_name(row)
-        assert "[installed]" in name
-
-    def test_not_installed_no_tag(self):
-        row = catalog_to_row(_make_catalog_model(), installed=False)
-        name = row_display_name(row)
-        assert "[installed]" not in name
 
 
 class TestFormatSizeGb:
@@ -2111,26 +2090,32 @@ async def test_catalog_focus_search():
 
 
 async def test_catalog_header_sort():
+    """s keybinding cycles Name -> Downloads -> Size -> Params in list view."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            await pilot.pause()
             assert screen._sort_column == "Name"
             assert screen._sort_ascending is True
-            # Simulate clicking same column header toggles direction
-            event = MagicMock()
-            event.column_key = "Name"
-            screen._on_header_selected(event)
-            assert screen._sort_ascending is False
-            # Clicking different column resets to ascending
-            event.column_key = "Downloads"
-            screen._on_header_selected(event)
+            await pilot.press("v")
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
             assert screen._sort_column == "Downloads"
             assert screen._sort_ascending is True
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._sort_column == "Size"
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._sort_column == "Params"
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._sort_column == "Name"
 
 
 async def test_catalog_pop_screen():
@@ -2346,9 +2331,7 @@ async def test_catalog_load_more_deduplicated_while_in_flight():
 
 
 async def test_catalog_row_highlighted_prefetches_near_bottom():
-    """Highlighting near the last row in list view triggers _load_more."""
-    from unittest.mock import MagicMock
-
+    """Focusing near the last list item triggers _load_more during nav."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -2359,18 +2342,26 @@ async def test_catalog_row_highlighted_prefetches_near_bottom():
             await _pilot.pause()
             screen._grid_view = False
             screen._hf_has_more = True
-            screen._rows = [MagicMock() for _ in range(30)]
-            event = MagicMock()
-            event.cursor_row = 27  # within 5-row trigger of row 29
+            # Wipe featured families so the list is exactly the HF models.
+            screen._families = []
+            screen._hf_models = [
+                _make_catalog_model(name=f"m-{i}B", hf_repo=f"org/m-{i}", featured=False)
+                for i in range(30)
+            ]
+            screen._refresh_list()
+            await _pilot.pause()
+            items = list(screen.query(ModelListItem))
+            assert len(items) == 30
+            # Focus the last item so prefetch trigger fires.
+            items[-1].focus()
+            await _pilot.pause()
             with patch.object(screen, "_fetch_more_hf") as fetch:
-                screen._on_row_highlighted(event)
+                screen._maybe_prefetch_on_nav()
                 assert fetch.called
 
 
 async def test_catalog_row_highlighted_ignored_in_grid_view():
     """Grid view doesn't trigger list-view prefetch."""
-    from unittest.mock import MagicMock
-
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -2381,11 +2372,8 @@ async def test_catalog_row_highlighted_ignored_in_grid_view():
             await _pilot.pause()
             screen._grid_view = True
             screen._hf_has_more = True
-            screen._rows = [MagicMock() for _ in range(30)]
-            event = MagicMock()
-            event.cursor_row = 29
             with patch.object(screen, "_fetch_more_hf") as fetch:
-                screen._on_row_highlighted(event)
+                screen._maybe_prefetch_on_nav()
                 assert not fetch.called
 
 
@@ -2435,7 +2423,14 @@ async def test_catalog_get_highlighted_model_name_empty():
             screen._families = []
             screen._hf_models = []
             screen._remote_models = []
-            screen._refresh_table()
+            # Invalidate the grid cache so _refresh_grid() rebuilds from scratch.
+            screen._grid_cache_key = ()
+            screen._refresh_grid()
+            screen._refresh_list()
+            # Move focus off the initial featured grid so
+            # _get_highlighted_model_name() doesn't pick up stale state.
+            screen.query_one("#catalog-search").focus()
+            await _pilot.pause()
             assert screen._get_highlighted_model_name() is None
 
 
@@ -2449,7 +2444,14 @@ async def test_catalog_get_highlighted_with_rows():
             app.push_screen(screen)
             await _pilot.pause()
             screen._hf_models = [_make_catalog_model(name="test-7B")]
-            screen._refresh_table()
+            screen._grid_view = False
+            screen._refresh_list()
+            await _pilot.pause()
+            # Focus the first list item so _get_highlighted_model_name()
+            # picks up the row via the focused ModelListItem.
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[0].focus()
             await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name is not None
@@ -2585,22 +2587,6 @@ async def test_catalog_input_handler_uses_on_decorator():
     assert hasattr(CatalogScreen._on_search_changed, "__wrapped__") or hasattr(
         CatalogScreen._on_search_changed, "_textual_on"
     )
-
-
-async def test_catalog_row_selected_out_of_range():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            event = MagicMock()
-            event.cursor_row = 999
-            with patch.object(screen, "_select_row") as mock_select:
-                screen._on_row_selected(event)
-                mock_select.assert_not_called()
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -3045,8 +3031,8 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.pause()
 
 
-async def test_catalog_refresh_table_empty():
-    """Cover empty table case."""
+async def test_catalog_refresh_list_empty():
+    """Cover empty list case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3059,13 +3045,13 @@ async def test_catalog_refresh_table_empty():
             screen._families = []
             screen._hf_models = []
             screen._remote_models = []
-            screen._refresh_table()
-            table = screen.query_one("#catalog-table", DataTable)
-            assert table.row_count == 0
+            screen._refresh_list()
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            assert len(list_container.query(ModelListItem)) == 0
 
 
-async def test_catalog_refresh_table_with_models():
-    """Cover table with HF models."""
+async def test_catalog_refresh_list_with_models():
+    """Cover list view with HF models."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3080,13 +3066,13 @@ async def test_catalog_refresh_table_with_models():
                 for i in range(5)
             ]
             screen._hf_has_more = True
-            screen._refresh_table()
-            table = screen.query_one("#catalog-table", DataTable)
-            assert table.row_count >= 5
+            screen._refresh_list()
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            assert len(list_container.query(ModelListItem)) >= 5
 
 
 async def test_catalog_page_down_with_focused_table():
-    """Cover action_page_down with focused DataTable."""
+    """Cover action_page_down with focused list item."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3099,17 +3085,21 @@ async def test_catalog_page_down_with_focused_table():
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(15)
             ]
-            screen._refresh_table()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
+            screen._grid_view = False
+            screen._refresh_list()
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[0].focus()
             await _pilot.pause()
+            # Nav actions focus a list item by calling .focus() on the
+            # target; verify the back-to-back pair leaves focus on item 0.
             screen.action_page_down()
             screen.action_page_up()
-            assert table.has_focus
+            assert items[0].has_focus
 
 
 async def test_catalog_action_cursor_with_focused_table():
-    """Cover action_cursor_down with focused DataTable."""
+    """Cover action_cursor_down with focused list item."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -3122,13 +3112,15 @@ async def test_catalog_action_cursor_with_focused_table():
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
             ]
-            screen._refresh_table()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
+            screen._grid_view = False
+            screen._refresh_list()
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[0].focus()
             await _pilot.pause()
             screen.action_cursor_down()
             screen.action_cursor_up()
-            assert table.has_focus
+            assert items[0].has_focus
 
 
 async def test_catalog_jump_top_bottom():
@@ -3145,13 +3137,15 @@ async def test_catalog_jump_top_bottom():
             screen._hf_models = [
                 _make_catalog_model(name=f"f-{i}B", featured=False) for i in range(5)
             ]
-            screen._refresh_table()
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
+            screen._grid_view = False
+            screen._refresh_list()
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[0].focus()
             await _pilot.pause()
             screen.action_jump_bottom()
             screen.action_jump_top()
-            assert table.has_focus
+            assert items[0].has_focus
 
 
 async def test_chat_vim_j_scrolls_from_chat_log():
@@ -3440,14 +3434,14 @@ async def test_catalog_delete_installed_model_confirmation():
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_table()
+            screen._grid_view = False
+            screen._refresh_list()
             await _pilot.pause()
 
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
-            # Move cursor to last row (remote model)
-            if screen._rows:
-                table.move_cursor(row=len(screen._rows) - 1)
+            # Focus the last list item (remote model)
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[-1].focus()
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -3474,13 +3468,13 @@ async def test_catalog_delete_second_press_confirms():
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_table()
+            screen._grid_view = False
+            screen._refresh_list()
             await _pilot.pause()
 
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
-            if screen._rows:
-                table.move_cursor(row=len(screen._rows) - 1)
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[-1].focus()
             await _pilot.pause()
 
             # First press sets pending
@@ -3510,13 +3504,13 @@ async def test_catalog_delete_not_installed():
             await screen.workers.wait_for_complete()
 
             screen._remote_models = [_make_remote_model("test-model:latest")]
-            screen._refresh_table()
+            screen._grid_view = False
+            screen._refresh_list()
             await _pilot.pause()
 
-            table = screen.query_one("#catalog-table", DataTable)
-            table.focus()
-            if screen._rows:
-                table.move_cursor(row=len(screen._rows) - 1)
+            items = list(screen.query(ModelListItem))
+            assert items
+            items[-1].focus()
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -3537,7 +3531,7 @@ async def test_catalog_delete_no_highlighted_row():
             screen._families = []
             screen._hf_models = []
             screen._remote_models = []
-            screen._refresh_table()
+            screen._refresh_list()
             await _pilot.pause()
 
             screen.action_delete_model()
@@ -5388,11 +5382,16 @@ async def test_catalog_get_highlighted_variant_name():
             row = variant_to_row(variant, family, installed=False)
             screen._rows = [row]
             screen._grid_view = False
-            # Add a row to the table
-            table = screen.query_one("#catalog-table", DataTable)
-            table.clear()
-            table.add_row("name", "chat", "8B", "4.0 GB", "Q4_K_M", "--")
-            table.move_cursor(row=0)
+            # Mount a single ModelListItem and focus it so
+            # _get_highlighted_model_name() picks up row.ref via screen.focused.
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            list_container.remove_children()
+            list_container.mount(ModelListItem(row))
+            await _pilot.pause()
+            items = list(list_container.query(ModelListItem))
+            assert items
+            items[0].focus()
+            await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "testmodel:8b"
 
@@ -5411,10 +5410,15 @@ async def test_catalog_get_highlighted_remote_name():
             rm = _make_remote_model(name="remote:latest")
             row = remote_to_row(rm)
             screen._rows = [row]
-            table = screen.query_one("#catalog-table", DataTable)
-            table.clear()
-            table.add_row("name", "chat", "7B", "--", "--", "--")
-            table.move_cursor(row=0)
+            screen._grid_view = False
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            list_container.remove_children()
+            list_container.mount(ModelListItem(row))
+            await _pilot.pause()
+            items = list(list_container.query(ModelListItem))
+            assert items
+            items[0].focus()
+            await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "remote:latest"
 
@@ -5433,10 +5437,15 @@ async def test_catalog_get_highlighted_catalog_name():
             m = _make_catalog_model(name="hf-model")
             row = catalog_to_row(m, installed=False)
             screen._rows = [row]
-            table = screen.query_one("#catalog-table", DataTable)
-            table.clear()
-            table.add_row("name", "chat", "7B", "4.0 GB", "--", "1K")
-            table.move_cursor(row=0)
+            screen._grid_view = False
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            list_container.remove_children()
+            list_container.mount(ModelListItem(row))
+            await _pilot.pause()
+            items = list(list_container.query(ModelListItem))
+            assert items
+            items[0].focus()
+            await _pilot.pause()
             name = screen._get_highlighted_model_name()
             assert name == "hf-model:7b"
 
@@ -6363,24 +6372,6 @@ async def test_chat_cmd_setup_opens_wizard():
             assert isinstance(app.screen, SetupWizard)
 
 
-async def test_catalog_select_row_out_of_range():
-    """_on_row_selected returns early for out-of-range cursor_row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._rows = []
-            event = MagicMock()
-            event.cursor_row = -1
-            with patch.object(screen, "_select_row") as mock_sel:
-                screen._on_row_selected(event)  # Should not raise
-                mock_sel.assert_not_called()
-
-
 async def test_chat_cmd_crawl_no_args_opens_dialog():
     """_cmd_crawl with empty args opens the crawl dialog."""
     app = ChatTestApp()
@@ -6401,8 +6392,8 @@ def test_chat_embedding_ready_real_code_false():
     assert hasattr(ChatScreen, "_embedding_ready")
 
 
-def test_on_row_selected_valid_index():
-    """_on_row_selected calls _select_row for a valid row index."""
+def test_on_list_item_selected_calls_select_row():
+    """_on_list_item_selected calls _select_row with the item's row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import TableRow
 
@@ -6419,10 +6410,11 @@ def test_on_row_selected_valid_index():
         sort_downloads=1000,
         sort_size=4.0,
     )
-    screen._rows = [row]
+    item = MagicMock()
+    item.row = row
     event = MagicMock()
-    event.cursor_row = 0
-    CatalogScreen._on_row_selected(screen, event)
+    event.item = item
+    CatalogScreen._on_list_item_selected(screen, event)
     screen._select_row.assert_called_once_with(row)
 
 
@@ -6442,30 +6434,6 @@ def test_is_installed_no_match():
     screen = MagicMock()
     screen._installed_names = {"other:latest"}
     assert CatalogScreen._is_installed(screen, "missing", repo="", filename="") is False
-
-
-def test_on_row_selected_negative_index():
-    """_on_row_selected returns early for negative cursor_row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    screen = MagicMock()
-    screen._rows = []
-    event = MagicMock()
-    event.cursor_row = -1
-    CatalogScreen._on_row_selected(screen, event)
-    screen._select_row.assert_not_called()
-
-
-def test_on_row_selected_exceeds_length():
-    """_on_row_selected returns early when index exceeds rows length."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    screen = MagicMock()
-    screen._rows = []
-    event = MagicMock()
-    event.cursor_row = 5
-    CatalogScreen._on_row_selected(screen, event)
-    screen._select_row.assert_not_called()
 
 
 def test_type_pill_with_choices():
@@ -6627,10 +6595,15 @@ async def test_catalog_get_highlighted_model_name_catalog():
                 catalog_model=cm,
             )
             screen._rows = [row]
-            table = screen.query_one("#catalog-table", DataTable)
-            table.clear()
-            table.add_row("Qwen3 8B", "chat", "8B", "5.0 GB", "Q4_K_M", "1K")
-            table.move_cursor(row=0)
+            screen._grid_view = False
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            list_container.remove_children()
+            list_container.mount(ModelListItem(row))
+            await _pilot.pause()
+            items = list(list_container.query(ModelListItem))
+            assert items
+            items[0].focus()
+            await _pilot.pause()
             result = screen._get_highlighted_model_name()
             assert result == "qwen3:8b"
 
@@ -6660,10 +6633,15 @@ async def test_catalog_get_highlighted_model_name_fallback_none():
                 sort_size=0.0,
             )
             screen._rows = [row]
-            table = screen.query_one("#catalog-table", DataTable)
-            table.clear()
-            table.add_row("orphan", "chat", "?", "?", "?", "?")
-            table.move_cursor(row=0)
+            screen._grid_view = False
+            list_container = screen.query_one("#catalog-list", VerticalScroll)
+            list_container.remove_children()
+            list_container.mount(ModelListItem(row))
+            await _pilot.pause()
+            items = list(list_container.query(ModelListItem))
+            assert items
+            items[0].focus()
+            await _pilot.pause()
             result = screen._get_highlighted_model_name()
             assert result is None
 
@@ -7019,3 +6997,225 @@ async def test_wiki_regenerate_selected_page_not_found():
             await pilot.pause()
         mock_notify.assert_called_once()
         assert "Source not found" in mock_notify.call_args[0][0]
+
+
+# =============================================================================
+# Coverage fill: catalog.py branches
+# =============================================================================
+
+
+async def test_catalog_update_sort_label_loading_more():
+    """_update_sort_label renders the 'loading more' variant when flag is set."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._loading_more = True
+            screen._update_sort_label()
+            label = screen.query_one("#sort-label", Static)
+            assert "loading more" in str(label.render())
+
+
+async def test_catalog_cycle_sort_noop_when_input_focused():
+    """action_cycle_sort returns early when focus is on the search Input."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._grid_view = False
+            screen.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            before = screen._sort_column
+            screen.action_cycle_sort()
+            assert screen._sort_column == before
+
+
+async def test_catalog_cycle_sort_in_grid_view_notifies():
+    """action_cycle_sort in grid view surfaces the list-only notification."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._grid_view is True
+            before = screen._sort_column
+            with patch.object(screen, "notify") as mock_notify:
+                screen.action_cycle_sort()
+            mock_notify.assert_called_once()
+            assert screen._sort_column == before
+
+
+async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
+    """action_cycle_sort handles a sort column outside _SORT_CYCLE."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._sort_column = "NotInCycle"
+            screen.action_cycle_sort()
+            # Unknown column resets the cycle; index -1 -> _SORT_CYCLE[0]
+            assert screen._sort_column == "Name"
+
+
+async def test_catalog_focus_list_item_empty_is_noop():
+    """_focus_list_item leaves focus unchanged when there are no list items."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._families = []
+            screen._hf_models = []
+            screen._remote_models = []
+            screen._refresh_list()
+            assert not screen._list_items()
+            focus_before = screen.focused
+            screen._focus_list_item(0)
+            assert screen.focused is focus_before
+
+
+async def test_catalog_focused_list_index_none_when_no_focus():
+    """_focused_list_index returns None when no ModelListItem is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # screen.focused is None at this point
+            assert screen._focused_list_index() is None
+
+
+async def test_catalog_maybe_prefetch_returns_when_no_focus():
+    """_maybe_prefetch_on_nav returns early when focused_list_index is None."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            # focused_list_index is None, so load_more must NOT be called.
+            with patch.object(screen, "_load_more") as mock_load:
+                screen._maybe_prefetch_on_nav()
+            mock_load.assert_not_called()
+
+
+def test_catalog_get_highlighted_name_non_model_card_child():
+    """_get_highlighted_model_name returns None when the highlighted child
+    is neither a ModelListItem nor a ModelCard (defensive branch)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen.focused = None
+    fake_grid = MagicMock()
+    fake_grid.highlighted = 0
+    fake_grid.children = [object()]  # Not a ModelCard / ModelListItem
+    screen._focused_grid.return_value = fake_grid
+    assert CatalogScreen._get_highlighted_model_name(screen) is None
+
+
+async def test_catalog_focused_list_index_value_error_path():
+    """_focused_list_index returns None when the focused item is not in query results."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._grid_view = False
+            # Focus a fabricated ModelListItem that is not mounted in the screen.
+            dangling = ModelListItem(
+                TableRow(
+                    name="dangling",
+                    task="chat",
+                    params="1B",
+                    size="1.0 GB",
+                    quant="Q4_K_M",
+                    downloads="--",
+                    featured=False,
+                    installed=False,
+                    sort_downloads=0,
+                    sort_size=1.0,
+                )
+            )
+            # Directly stub `focused` with the dangling item so the list.index
+            # call in _focused_list_index raises ValueError.
+            screen.focused = dangling  # type: ignore[assignment]
+            assert screen._focused_list_index() is None
+
+
+# =============================================================================
+# Coverage fill: settings.py branches
+# =============================================================================
+
+
+def test_settings_env_pill_when_env_set(monkeypatch):
+    """_env_pill returns a pill when the LILBEE_* env var is exported."""
+    from lilbee.cli.tui.screens.settings import _env_pill
+
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    pill_content = _env_pill("chat_model")
+    assert pill_content is not None
+    assert "LILBEE_CHAT_MODEL" in pill_content.plain
+
+
+def test_settings_help_content_blank_when_no_help_text():
+    """_help_content returns empty Content when the setting has no help text."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import _help_content
+
+    defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
+    content = _help_content("anon", defn)
+    assert content.plain == ""
+
+
+def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
+    """_title_content carries the env var name when LILBEE_* is exported."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import _title_content
+
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    assert "LILBEE_CHAT_MODEL" in content.plain
+
+
+def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
+    """_title_content omits the env pill when the LILBEE_* var is not set."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import _title_content
+
+    monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
+    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    assert "LILBEE_CHAT_MODEL" not in content.plain
