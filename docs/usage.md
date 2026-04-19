@@ -228,6 +228,8 @@ All settings are configurable via environment variables:
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
+| `LILBEE_SEMANTIC_CHUNKING` | `false` | Opt-in topic-aware chunking during ingest. On prose-heavy corpora it can improve topical retrieval; on procedural/reference docs it may fragment numbered steps. Enabling it triggers a one-time kreuzberg ONNX embedding model download (separate from the chunk-to-vector embedder) and roughly 9x more downstream embedding calls. Default is the fixed-size chunker. |
+| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine similarity threshold for topic boundaries, 0.0-1.0 (lower = more splits). Only has effect when semantic chunking is enabled. |
 
 CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
 

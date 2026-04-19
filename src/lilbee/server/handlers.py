@@ -51,6 +51,7 @@ from lilbee.server.models import (
 from lilbee.services import get_services
 
 if TYPE_CHECKING:
+    from lilbee.ingest import SyncResult
     from lilbee.query import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -177,15 +178,15 @@ class SseStream:
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE strings from the queue until *task* completes.
-        On ``CancelledError`` / ``GeneratorExit`` (client disconnect),
-        sets :attr:`cancel` and cancels *task*.
-        """
+        """Yield SSE strings until a sentinel arrives. Cancels *task* on client disconnect."""
         try:
-            while not task.done() or not self.queue.empty():
+            while True:
                 try:
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
                 except TimeoutError:
+                    # Fallback for producers that die without a sentinel.
+                    if task.done() and self.queue.empty():
+                        break
                     continue
                 if item is None:
                     break
@@ -330,17 +331,29 @@ def chat_stream(
     return _stream_rag_response(question, history=history, top_k=top_k, options=options)
 
 
-async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
-    """Trigger sync, yield SSE progress events, then done event."""
+async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:
+    """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
+    try:
+        with temporary_ocr_config(enable_ocr):
+            return await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+    finally:
+        sse.queue.put_nowait(None)
+
+
+async def sync_stream(*, enable_ocr: bool | None = None) -> AsyncGenerator[str, None]:
+    """Trigger sync, yield SSE progress events, then done event."""
     sse = SseStream()
-    with temporary_ocr_config(enable_ocr):
-        task = asyncio.create_task(sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel))
+    task = asyncio.create_task(_run_sync_with_sentinel(sse, enable_ocr))
     async for event in sse.drain(task, "Sync stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            yield sse_error(str(exc))
+            return
         yield sse_done(task.result().model_dump())
 
 
@@ -351,40 +364,36 @@ async def _run_add(
     ocr_timeout: float | None,
     sse: SseStream,
 ) -> AddSummary:
-    """Copy files and sync, pushing SSE events to the queue.
-    Returns the summary so the caller can emit the final done event.
-    """
+    """Copy files and sync, returning the summary for the final done event."""
+    from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
-    errors: list[str] = []
-    valid: list[Path] = []
-    for p_str in paths:
-        p = Path(p_str)
-        if not p.exists():
-            errors.append(p_str)
-        else:
-            valid.append(p)
+    try:
+        errors: list[str] = []
+        valid: list[Path] = []
+        for p_str in paths:
+            p = Path(p_str)
+            if not p.exists():
+                errors.append(p_str)
+            else:
+                valid.append(p)
 
-    copy_result = copy_files(valid, force=force)
+        copy_result = copy_files(valid, force=force)
 
-    if sse.cancel.is_set():
+        if sse.cancel.is_set():
+            return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
+
+        with temporary_ocr_config(enable_ocr, ocr_timeout):
+            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+
+        return AddSummary(
+            copied=copy_result.copied,
+            skipped=copy_result.skipped,
+            errors=errors,
+            sync=SyncSummary(**sync_result.model_dump()),
+        )
+    finally:
         sse.queue.put_nowait(None)
-        return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
-
-    from lilbee.cli.helpers import temporary_ocr_config
-
-    with temporary_ocr_config(enable_ocr, ocr_timeout):
-        sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
-
-    sr = sync_result.model_dump()
-    summary = AddSummary(
-        copied=copy_result.copied,
-        skipped=copy_result.skipped,
-        errors=errors,
-        sync=SyncSummary(**sr),
-    )
-    sse.queue.put_nowait(None)  # sentinel
-    return summary
 
 
 def validate_add_paths(
@@ -428,6 +437,10 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
     async for event in sse.drain(task, "Add files stream"):
         yield event
     if not sse.cancel.is_set() and task.done() and not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            yield sse_error(str(exc))
+            return
         summary = task.result()
         yield sse_done(summary.model_dump())
 
@@ -736,9 +749,12 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     async def _run_crawl() -> list[Path]:
         from lilbee.crawler import crawl_and_save
 
-        return await crawl_and_save(
-            url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
-        )
+        try:
+            return await crawl_and_save(
+                url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
+            )
+        finally:
+            sse.queue.put_nowait(None)
 
     task = asyncio.create_task(_run_crawl())
     async for event in sse.drain(task, "Crawl stream"):
