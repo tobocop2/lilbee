@@ -29,14 +29,30 @@ def _model_pill(name: str) -> Content:
     return pill("not set", "$error", "$text")
 
 
-def _config_line(label: str, value: str, status: Content) -> Content:
-    """Assemble a single config info line with label, value, and status pill."""
-    return Content.assemble(
-        (f"{label}: ", "bold"),
-        value,
-        " ",
-        status,
-    )
+# Label-column width used across the status sections so keys line up
+# when scanned vertically. Values past this column render bold.
+_KV_LABEL_WIDTH = 14
+
+
+def _kv_line(label: str, value: str | Content, status: Content | None = None) -> Content:
+    """Assemble one key/value row: dim padded label, bold value, optional pill."""
+    padded = label.ljust(_KV_LABEL_WIDTH)
+    parts: list[Content] = [Content.styled(padded, "$text-muted")]
+    if isinstance(value, Content):
+        parts.append(value)
+    else:
+        parts.append(Content.styled(value, "bold"))
+    if status is not None:
+        parts.append(Content("  "))
+        parts.append(status)
+    return Content.assemble(*parts)
+
+
+def _collapse_home(path: Path | str) -> str:
+    """Replace the user's home prefix with '~' so long paths stay scannable."""
+    text = str(path)
+    home = str(Path.home())
+    return text.replace(home, "~", 1) if text.startswith(home) else text
 
 
 def _ocr_label() -> str:
@@ -67,10 +83,10 @@ def _data_dir_pill() -> Content:
 def _build_config_content() -> Content:
     """Build the configuration section content."""
     lines = [
-        _config_line("Data dir", str(cfg.data_dir), _data_dir_pill()),
-        _config_line("Chat model", cfg.chat_model, _model_pill(cfg.chat_model)),
-        _config_line("Embed model", cfg.embedding_model, _model_pill(cfg.embedding_model)),
-        _config_line("OCR", _ocr_label(), _ocr_pill()),
+        _kv_line("Data dir", _collapse_home(cfg.data_dir), _data_dir_pill()),
+        _kv_line("Chat model", cfg.chat_model or "—", _model_pill(cfg.chat_model)),
+        _kv_line("Embed model", cfg.embedding_model or "—", _model_pill(cfg.embedding_model)),
+        _kv_line("OCR", _ocr_label(), _ocr_pill()),
     ]
     return Content("\n").join(lines)
 
@@ -78,9 +94,9 @@ def _build_config_content() -> Content:
 def _build_storage_content(doc_count: int) -> Content:
     """Build the storage section content."""
     lines = [
-        Content.assemble(("Documents: ", "bold"), str(doc_count)),
-        Content.assemble(("Data dir: ", "bold"), str(cfg.data_dir)),
-        Content.assemble(("Models dir: ", "bold"), str(cfg.models_dir)),
+        _kv_line("Documents", str(doc_count)),
+        _kv_line("Data dir", _collapse_home(cfg.data_dir)),
+        _kv_line("Models dir", _collapse_home(cfg.models_dir)),
     ]
     return Content("\n").join(lines)
 
@@ -88,12 +104,12 @@ def _build_storage_content(doc_count: int) -> Content:
 def _build_arch_content(info: ModelArchInfo) -> Content:
     """Build the model architecture section from GGUF metadata."""
     lines = [
-        Content.assemble(("Chat arch: ", "bold"), info.chat_arch),
-        Content.assemble(("Embed arch: ", "bold"), info.embed_arch),
-        Content.assemble(("Handler: ", "bold"), info.active_handler),
+        _kv_line("Chat arch", info.chat_arch),
+        _kv_line("Embed arch", info.embed_arch),
+        _kv_line("Handler", pill(info.active_handler, "$accent", "$text")),
     ]
     if info.vision_projector:
-        lines.append(Content.assemble(("Vision proj: ", "bold"), info.vision_projector))
+        lines.append(_kv_line("Vision proj", info.vision_projector))
     return Content("\n").join(lines)
 
 
