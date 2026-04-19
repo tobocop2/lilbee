@@ -277,12 +277,21 @@ class TaskQueue:
         return advanced
 
     def remove_task(self, task_id: str) -> None:
-        """Remove a completed/failed/cancelled task from tracking entirely."""
+        """Remove a task from tracking entirely (including history).
+
+        Called after the 2-second flash window to fully dismiss a
+        completed / failed / cancelled task. History must be pruned here
+        too, otherwise Task Center rows stack up forever — the row
+        widget reads history via ``_all_tasks()`` to surface finished
+        work for the flash, and leaving the entry around keeps the row
+        on screen indefinitely.
+        """
         with self._lock:
             task = self._tasks.pop(task_id, None)
             if task:
                 self._remove_from_active_locked(task_id, task.task_type)
                 self._remove_from_queue_locked(task_id, task.task_type)
+            self._history = [t for t in self._history if t.task_id != task_id]
         self._notify()
 
     def _remove_from_active_locked(self, task_id: str, task_type: str) -> None:

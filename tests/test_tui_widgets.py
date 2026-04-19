@@ -1080,17 +1080,30 @@ class TestTaskQueue:
         assert q.history[0].status == TaskStatus.FAILED
 
     def test_history_accumulates(self) -> None:
+        """Completed + failed tasks sit in history until remove_task prunes them."""
         from lilbee.cli.tui.task_queue import TaskQueue
 
         q = TaskQueue()
         t1 = q.enqueue(lambda: None, "A", "sync")
         q.advance()
         q.complete_task(t1)
-        q.remove_task(t1)
         t2 = q.enqueue(lambda: None, "B", "sync")
         q.advance()
         q.fail_task(t2, "err")
+        # Both completions sit in history together; remove_task would prune.
         assert len(q.history) == 2
+
+    def test_remove_task_prunes_history(self) -> None:
+        """remove_task drops the entry from history so TaskCenter rows unmount."""
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(t1)
+        assert any(t.task_id == t1 for t in q.history)
+        q.remove_task(t1)
+        assert not any(t.task_id == t1 for t in q.history)
 
     def test_history_empty_initially(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
