@@ -352,6 +352,10 @@ def test_do_sync_done_event_reports_completion() -> None:
     assert completion_calls, "no reporter.update(100, ...) call observed"
     last = completion_calls[-1]
     assert last.kwargs.get("indeterminate") is False
+    # Detail string shows total count: added + updated + removed (failed dropped).
+    from lilbee.cli.tui import messages as msg
+
+    assert str(last.args[1]) == msg.SYNC_STATUS_DONE.format(count=4)
 
 
 def test_do_sync_translates_cancellation() -> None:

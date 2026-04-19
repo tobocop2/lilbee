@@ -836,6 +836,7 @@ class ChatScreen(Screen[None]):
             elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
                 # Without this handler the task never ticks to 100% and the
                 # Task Center row never flashes "just-completed" (bb-7enj).
+                # "Synced (N docs)" means successfully synced, so failed is excluded.
                 total = data.added + data.updated + data.removed
                 reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 

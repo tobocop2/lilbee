@@ -7043,7 +7043,7 @@ async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
 
 
 async def test_catalog_focus_list_item_empty_is_noop():
-    """_focus_list_item returns early when there are no list items."""
+    """_focus_list_item leaves focus unchanged when there are no list items."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -7052,12 +7052,15 @@ async def test_catalog_focus_list_item_empty_is_noop():
             screen = CatalogScreen()
             app.push_screen(screen)
             await _pilot.pause()
-            # list view exists but no items yet
             screen._grid_view = False
-            screen._rows = []
+            screen._families = []
+            screen._hf_models = []
+            screen._remote_models = []
             screen._refresh_list()
-            # Should silently return instead of raising.
+            assert not screen._list_items()
+            focus_before = screen.focused
             screen._focus_list_item(0)
+            assert screen.focused is focus_before
 
 
 async def test_catalog_focused_list_index_none_when_no_focus():
@@ -7165,13 +7168,17 @@ def test_settings_help_content_blank_when_no_help_text():
     assert content.plain == ""
 
 
+class SettingsEnvPillTestApp(App[None]):
+    pass
+
+
 async def test_settings_compose_renders_env_pill_when_set(monkeypatch):
     """Setting row title includes env pill when LILBEE_* is exported."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
 
-    app = App()  # type: ignore[abstract]
+    app = SettingsEnvPillTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = SettingsScreen()
         app.push_screen(screen)
