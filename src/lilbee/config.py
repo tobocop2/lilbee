@@ -148,9 +148,11 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
-    # Topic-aware chunking: when true, use kreuzberg's semantic chunker so chunks
-    # respect topic boundaries. Falls back to a fixed character budget when false.
-    semantic_chunking: bool = ConfigField(default=True, writable=True)
+    # Opt-in topic-aware chunking. Default off because on mixed real-world corpora
+    # the semantic chunker can fragment numbered procedures and costs ~9x more
+    # downstream embedding calls. Enable via LILBEE_SEMANTIC_CHUNKING=true for
+    # prose-heavy corpora where topical coherence matters more than step fidelity.
+    semantic_chunking: bool = ConfigField(default=False, writable=True)
     # Cosine similarity threshold for topic boundary detection (0.0-1.0).
     # Lower values produce more chunks; only used when semantic_chunking is true.
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
@@ -430,7 +432,7 @@ class Config(BaseSettings):
     def _parse_semantic_chunking(cls, v: Any) -> bool:
         """Parse semantic_chunking from env var string or direct value.
 
-        Invalid values log a warning and fall back to the default (True).
+        Invalid values log a warning and fall back to the default (False).
         """
         if isinstance(v, bool):
             return v
@@ -438,8 +440,8 @@ class Config(BaseSettings):
             try:
                 return _parse_bool(v)
             except ValueError:
-                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default True", v)
-                return True
+                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
+                return False
         return bool(v)
 
     @field_validator("chat_model", "embedding_model", mode="after")

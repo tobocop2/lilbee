@@ -52,13 +52,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group="Ingest",
-        help_text="Use topic-aware chunker (off = fixed character budget)",
+        help_text="Opt-in topic-aware chunker (default off; may fragment numbered procedures)",
     ),
     "topic_threshold": SettingDef(
         float,
         nullable=False,
         group="Ingest",
-        help_text="Topic-boundary similarity threshold, 0.0-1.0 (lower splits more)",
+        help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
     ),
     "embedding_model": SettingDef(
         str,

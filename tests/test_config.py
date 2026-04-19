@@ -352,10 +352,11 @@ class TestEnableOcrConfig:
 
 
 class TestSemanticChunkingConfig:
-    def test_default_is_true(self, tmp_path) -> None:
+    def test_default_is_false(self, tmp_path) -> None:
+        """Semantic chunking is opt-in: default False, enabled via env/config."""
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.semantic_chunking is True
+            assert c.semantic_chunking is False
 
     def test_true_from_env(self) -> None:
         with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "true"}):
@@ -391,7 +392,7 @@ class TestSemanticChunkingConfig:
             caplog.at_level(logging.WARNING, logger="lilbee.config"),
         ):
             c = Config()
-            assert c.semantic_chunking is True
+            assert c.semantic_chunking is False
         assert any("banana" in rec.message for rec in caplog.records)
 
     def test_non_string_non_bool_coerced(self) -> None:
