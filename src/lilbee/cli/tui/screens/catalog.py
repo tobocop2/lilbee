@@ -55,10 +55,6 @@ _WORKER_FETCH_REMOTE = "fetch_remote_models"
 
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
-# Forces the list-view GridSelect to a single column regardless of screen
-# width (ItemGrid picks 1 column when the viewport is narrower than
-# min_column_width).
-_LIST_MIN_COLUMN_WIDTH = 9999
 
 # Sort columns cycled by the `s` keybinding in list view.
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")

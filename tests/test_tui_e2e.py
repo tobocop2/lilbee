@@ -1232,11 +1232,11 @@ class TestCatalogInteractions:
                 if items:
                     items[0].focus()
                     await pilot.pause()
-                    app.screen.action_jump_bottom()
+                    await pilot.press("G")
                     await pilot.pause()
                     assert items[-1].has_focus
 
-                    app.screen.action_jump_top()
+                    await pilot.press("g")
                     await pilot.pause()
                     assert items[0].has_focus
 
