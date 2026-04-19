@@ -30,6 +30,8 @@ beads/
 beads_bb/
 vault/
 plugins/
+.lilbee/
+.superpowers/
 node_modules/
 *.mov
 *.mp4

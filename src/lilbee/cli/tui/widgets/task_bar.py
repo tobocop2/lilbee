@@ -159,8 +159,10 @@ class TaskBarController:
 
     def complete_task(self, task_id: str) -> None:
         """Mark a task done. Row lingers in history until the user clears it."""
+        task_type = self._task_type_of(task_id)
         self.queue.complete_task(task_id)
-        self._advance_all(self._task_type_of(task_id))
+        self._after_done_hooks(task_type)
+        self._advance_all(task_type)
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
         """Mark a task failed. Row lingers in history until the user clears it."""
@@ -172,6 +174,18 @@ class TaskBarController:
         task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
         self._advance_all(task_type)
+
+    def _after_done_hooks(self, task_type: str | None) -> None:
+        """Side effects triggered by a DONE completion.
+
+        Callable from both the direct ``complete_task`` convenience and
+        the worker-thread ``_finalize_task`` path so every success route
+        stays in sync. Does NOT advance the queue; each caller picks the
+        advance strategy that fits its context (``_advance_all`` vs
+        ``_try_start_next``).
+        """
+        if task_type == TaskType.DOWNLOAD.value:
+            self._notify_model_installed()
 
     def _task_type_of(self, task_id: str) -> str | None:
         task = self.queue.get_task(task_id)
@@ -203,7 +217,9 @@ class TaskBarController:
         and ``on_success`` (if provided) runs after on the same worker
         thread. On ``TaskCancelled`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
-        detail. In all cases the row is dismissed after a 2-second flash.
+        detail. Rows linger in the Task Center under their final status
+        until the user presses capital ``C`` to clear; the bottom bar
+        flashes the outcome once and then hides when idle.
 
         Per-type capacity in ``TaskQueue`` (download=2, everything else=1)
         controls concurrency: a second sync queues behind the first, but a
@@ -284,8 +300,7 @@ class TaskBarController:
         """
         if outcome is TaskOutcome.DONE:
             self.queue.complete_task(task_id)
-            if task_type == TaskType.DOWNLOAD.value:
-                self._notify_model_installed()
+            self._after_done_hooks(task_type)
         elif outcome is TaskOutcome.FAILED:
             self.queue.fail_task(task_id, detail)
         elif outcome is TaskOutcome.CANCELLED:
@@ -298,15 +313,24 @@ class TaskBarController:
 
         The dropdowns are built once on mount from the registry; without
         this nudge, a freshly-downloaded model only appears after the
-        user reopens the screen.
+        user reopens the screen. NoMatches and similar query errors are
+        silently skipped so a transient "bar not mounted yet" doesn't
+        crash the finalize path; anything else is logged so a real
+        failure surfaces in debug output.
         """
         # Late import to avoid a circular (ChatScreen imports this module).
+        from textual.css.query import QueryError
+
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         for screen in self.app.screen_stack:
+            # screen_stack is typed Screen[Any]; narrow at runtime to
+            # locate the one screen that owns the ModelBar.
             if isinstance(screen, ChatScreen):
-                with contextlib.suppress(Exception):
-                    screen._refresh_model_bar()
+                try:
+                    screen.refresh_model_bar()
+                except QueryError:
+                    log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
                 break
 
     def start_download(self, model: CatalogModel) -> str:
@@ -452,6 +476,13 @@ class TaskBar(Static):
         active = queue.active_tasks
         queued = queue.queued_tasks
         history = queue.history
+
+        # Drop flashed-id entries for tasks the user has cleared from
+        # history. Without this prune, the set grows unbounded over a
+        # long session even though any id not in history can't re-flash.
+        if self._flashed_ids:
+            live_ids = {t.task_id for t in history}
+            self._flashed_ids &= live_ids
 
         in_flash = self._flash_until_tick is not None and self._tick_count <= self._flash_until_tick
         if not in_flash:

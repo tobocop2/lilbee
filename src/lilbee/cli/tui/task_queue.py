@@ -209,7 +209,12 @@ class TaskQueue:
         self._notify()
 
     def complete_task(self, task_id: str) -> None:
-        """Mark a task as done and remove it from tracking."""
+        """Mark a task as done and append it to history.
+
+        The task record stays in ``_tasks`` so callers can still look it
+        up by id. Bulk removal happens in ``clear_history`` or targeted
+        removal via ``remove_task``.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
@@ -223,7 +228,12 @@ class TaskQueue:
         self._notify()
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
-        """Mark a task as failed and remove it."""
+        """Mark a task as failed and append it to history.
+
+        The task record stays in ``_tasks`` so callers can still inspect
+        its detail. Bulk removal happens in ``clear_history`` or
+        targeted removal via ``remove_task``.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
@@ -236,13 +246,19 @@ class TaskQueue:
         self._notify()
 
     def cancel(self, task_id: str) -> bool:
-        """Cancel a queued or active task. Returns True if found."""
+        """Cancel a queued or active task. Returns True if found.
+
+        Appends the cancelled task to ``_history`` so the Task Center
+        renders it as a lingering ``cancelled`` row, matching the
+        post-flash contract for DONE and FAILED.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if not task:
                 return False
             task.status = TaskStatus.CANCELLED
             task.completed_at = time.monotonic()
+            self._history.append(task)
             self._remove_from_active_locked(task_id, task.task_type)
             self._remove_from_queue_locked(task_id, task.task_type)
         self._notify()
@@ -279,7 +295,7 @@ class TaskQueue:
     def remove_task(self, task_id: str) -> None:
         """Remove a task from both live tracking and history.
 
-        Most callers shouldn't need this in normal flow — completed rows
+        Most callers shouldn't need this in normal flow. Completed rows
         linger in the Task Center on purpose so users can review recent
         work, and ``clear_history()`` handles bulk pruning. This stays
         for tests and administrative paths that need to drop a specific

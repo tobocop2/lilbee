@@ -165,7 +165,7 @@ class ChatScreen(Screen[None]):
         from lilbee.splash import dismiss
 
         dismiss()
-        self._refresh_model_bar()
+        self.refresh_model_bar()
 
     def _needs_setup(self) -> bool:
         """True when the setup wizard should run: fresh data dir or unresolved models."""
@@ -221,7 +221,7 @@ class ChatScreen(Screen[None]):
             self._hide_chat_only_banner()
             if self._auto_sync:
                 self._run_sync()
-        self._refresh_model_bar()
+        self.refresh_model_bar()
 
     def _show_chat_only_banner(self) -> None:
         """Show the persistent chat-only banner."""
@@ -316,8 +316,12 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
+        # Directory adds are whole-tree copies handled by copy_files'
+        # recursion; a same-named subdir in documents_dir is not a clean
+        # "duplicate file" signal, so skip the prompt there and let
+        # copy_files emit its per-file skipped notices.
         dest = cfg.documents_dir / path.name
-        if dest.exists():
+        if path.is_file() and dest.exists():
             self._prompt_overwrite(path)
             return
         self._submit_add(path, force=False)
@@ -531,7 +535,7 @@ class ChatScreen(Screen[None]):
             self.app.title = f"lilbee -- {cfg.chat_model}"
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self._apply_model_change()
-            self._refresh_model_bar()
+            self.refresh_model_bar()
         else:
             from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -957,7 +961,7 @@ class ChatScreen(Screen[None]):
         if overlay.is_visible:
             overlay.hide()
 
-    def _refresh_model_bar(self) -> None:
+    def refresh_model_bar(self) -> None:
         """Update the model status bar and status line."""
         self.query_one("#model-bar", ModelBar).refresh_models()
         self._refresh_status_line()

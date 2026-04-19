@@ -1133,6 +1133,42 @@ class TestTesseractOcrMiddleTier:
         assert len(result) > 0
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_tesseract_timeout_returns_fallback(self, mock_kf, isolated_env):
+        """Tesseract exceeding cfg.tesseract_timeout is caught; fallback returned.
+
+        Without the cap, a huge scanned PDF can stall the ingest worker
+        for many minutes and the UI feels frozen.
+        """
+        cfg.enable_ocr = False
+        cfg.tesseract_timeout = 0.01
+        empty = _make_empty_result()
+
+        call_count = 0
+
+        async def _extract(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return empty
+            # Second call is the Tesseract retry; sleep past the timeout
+            # so asyncio.wait_for cancels the coroutine.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(1.0)
+            return empty
+
+        mock_kf.side_effect = _extract
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.ingest import ingest_document
+
+        result = await ingest_document(f, "scanned.pdf", "pdf")
+        # Tesseract timed out; vision disabled; final chunk list is empty.
+        assert result == []
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_ocr_empty_no_vision_warns(self, mock_kf, isolated_env):
         """When Tesseract fails and OCR disabled, warning is emitted."""
         cfg.enable_ocr = False

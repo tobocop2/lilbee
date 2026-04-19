@@ -122,11 +122,9 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from typing import ClassVar as _CV
+        from lilbee.cli.helpers import CopyResult
 
-        class _Copied:
-            copied: _CV[list[Path]] = [src]
-            skipped: _CV[list[str]] = []
+        copy_result = CopyResult(copied=[str(src)], skipped=[])
 
         import threading as _th
 
@@ -135,7 +133,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
         def _worker() -> None:
             try:
                 with (
-                    patch("lilbee.cli.helpers.copy_files", return_value=_Copied()),
+                    patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                     patch("lilbee.ingest.sync", new=MagicMock(return_value=None)),
                     patch("asyncio.run"),
                 ):
@@ -154,6 +152,52 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
+    """After overwrite-confirm ``_do_add`` must pass ``force=True`` through."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        assert screen is not None
+
+        reporter = MagicMock(spec=ProgressReporter)
+
+        from lilbee.cli.helpers import CopyResult
+
+        copy_result = CopyResult(copied=[str(src)], skipped=[])
+
+        import threading as _th
+
+        exc: list[BaseException] = []
+        mock_copy = MagicMock(return_value=copy_result)
+
+        def _worker() -> None:
+            try:
+                with (
+                    patch("lilbee.cli.helpers.copy_files", new=mock_copy),
+                    patch("asyncio.run", new=MagicMock(return_value=None)),
+                ):
+                    screen._do_add(src, reporter, force=True)
+            except BaseException as e:  # pragma: no cover
+                exc.append(e)
+
+        t = _th.Thread(target=_worker, daemon=True)
+        t.start()
+        for _ in range(40):
+            await pilot.pause()
+            if mock_copy.called:
+                break
+        assert not exc, f"_do_add raised: {exc[0]}"
+        assert mock_copy.called
+        _, kwargs = mock_copy.call_args
+        assert kwargs.get("force") is True
+
+
+@pytest.mark.asyncio
 async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -> None:
     """_do_add observes copy_files' skipped list and keeps running."""
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -168,16 +212,14 @@ async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -
 
         reporter = MagicMock(spec=ProgressReporter)
 
-        from typing import ClassVar as _CV
+        from lilbee.cli.helpers import CopyResult
 
-        class _Copied:
-            copied: _CV[list[Path]] = [src]
-            skipped: _CV[list[str]] = ["exists.pdf"]
+        copy_result = CopyResult(copied=[str(src)], skipped=["exists.pdf"])
 
         import threading as _th
 
         exc: list[BaseException] = []
-        mock_copy = MagicMock(return_value=_Copied())
+        mock_copy = MagicMock(return_value=copy_result)
 
         def _worker() -> None:
             try:
@@ -457,11 +499,11 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
         screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         assert screen is not None
 
-        pushed: list[object] = []
+        captured_callbacks: list[object] = []
         real_push = app.push_screen
 
         def _capture_push(screen_or_name, callback=None, **kwargs):  # type: ignore[no-untyped-def]
-            pushed.append((screen_or_name, callback))
+            captured_callbacks.append(callback)
             return real_push(screen_or_name, callback, **kwargs)
 
         app.push_screen = _capture_push  # type: ignore[assignment]
@@ -469,13 +511,13 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
             screen._cmd_add(str(src))
             # Dialog pushed, task NOT yet submitted.
-            assert pushed, "confirm dialog should have been pushed"
+            assert captured_callbacks, "confirm dialog should have been pushed"
             assert not mock_start.called, "start_task must wait for confirmation"
 
             # Simulate user confirming: the captured callback runs with True.
-            callback = pushed[0][1]
-            assert callback is not None
-            callback(True)
+            confirm_callback = captured_callbacks[0]
+            assert callable(confirm_callback)
+            confirm_callback(True)
             assert mock_start.called, "confirmed dialog should spawn the add task"
 
 
@@ -597,11 +639,9 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    from typing import ClassVar as _CV
+    from lilbee.cli.helpers import CopyResult
 
-    class _Copied:
-        copied: _CV[list[Path]] = [src]
-        skipped: _CV[list[str]] = []
+    copy_result = CopyResult(copied=[str(src)], skipped=[])
 
     async def fake_sync(*, quiet, on_progress):
         on_progress(
@@ -615,7 +655,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
         try:
             screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
             with (
-                patch("lilbee.cli.helpers.copy_files", return_value=_Copied()),
+                patch("lilbee.cli.helpers.copy_files", return_value=copy_result),
                 patch("lilbee.ingest.sync", side_effect=fake_sync),
             ):
                 screen._do_add(src, reporter)

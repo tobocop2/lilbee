@@ -300,7 +300,7 @@ async def test_notify_model_installed_refreshes_chat_screen() -> None:
 
         screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
         assert screen is not None
-        with patch.object(screen, "_refresh_model_bar") as mock_refresh:
+        with patch.object(screen, "refresh_model_bar") as mock_refresh:
             app.task_bar._notify_model_installed()
             assert mock_refresh.called
 
@@ -323,13 +323,17 @@ async def test_finished_task_lingers_in_history_until_cleared() -> None:
             while not release[0]:
                 time.sleep(0.01)
 
+        def _status() -> TaskStatus | None:
+            task = controller.queue.get_task(task_id)
+            return task.status if task else None
+
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model())
-            _wait_until(lambda: controller.queue.get_task(task_id).status == TaskStatus.ACTIVE)
+            _wait_until(lambda: _status() == TaskStatus.ACTIVE)
             release[0] = True
             for _ in range(40):
                 await pilot.pause()
-                if controller.queue.get_task(task_id).status == TaskStatus.DONE:
+                if _status() == TaskStatus.DONE:
                     break
 
         task = controller.queue.get_task(task_id)

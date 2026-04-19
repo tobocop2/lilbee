@@ -1118,7 +1118,7 @@ class TestTaskQueue:
         q.fail_task(b, "err")
         c = q.enqueue(lambda: None, "C", "sync")
         q.advance()
-        # C stays ACTIVE — cleared list should still leave it behind.
+        # C stays ACTIVE; cleared list should still leave it behind.
         assert len(q.history) == 2
         cleared = q.clear_history()
         assert cleared == 2

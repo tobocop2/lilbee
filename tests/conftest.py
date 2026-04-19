@@ -119,10 +119,10 @@ def _isolate_cfg(tmp_path):
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
     cfg.documents_dir = tmp_path / "documents"
-    # Don't mkdir here — several test suites create documents_dir
-    # themselves with parents=False, which would collide with a
-    # pre-existing directory. Leaving the path non-existent is fine
-    # for code paths that only check ``dest.exists()``.
+    # Don't mkdir here. Most consumers that touch documents_dir
+    # create it with their own parents/exist_ok/ownership expectations;
+    # pre-creating here hides bugs where production code forgets to.
+    # Checks like ``dest.exists()`` on a missing path just return False.
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

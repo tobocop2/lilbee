@@ -362,10 +362,10 @@ async def _handle_scanned_pdf_fallback(
 
     When vision OCR is available (``_should_run_ocr()`` True) we go
     straight to it. Tesseract is only attempted when vision isn't an
-    option at all — a huge scanned PDF run through a vision model and
-    then through Tesseract would double the wall-clock cost for no
-    reason, and Tesseract on a 50+ MB document otherwise feels like a
-    TUI lockup.
+    option at all. Running a huge scanned PDF through vision *and then*
+    through Tesseract would double the wall-clock cost for no reason,
+    and Tesseract on a 50+ MB document otherwise feels like a TUI
+    lockup to the user.
     """
     use_ocr = _should_run_ocr()
 

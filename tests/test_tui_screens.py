@@ -1623,7 +1623,7 @@ async def test_chat_refresh_model_bar():
 
         bar = app.screen.query_one("#model-bar", ModelBar)
         with patch.object(bar, "refresh_models") as mock_refresh:
-            app.screen._refresh_model_bar()
+            app.screen.refresh_model_bar()
             mock_refresh.assert_called_once()
 
 

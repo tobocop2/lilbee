@@ -86,7 +86,7 @@ class TaskCenter(Screen[None]):
         self._poll()
 
     def action_clear_history(self) -> None:
-        """Drop all DONE/FAILED/CANCELLED rows (shift+c)."""
+        """Drop all DONE/FAILED/CANCELLED rows (bound to capital ``C``)."""
         self.app.task_bar.queue.clear_history()
         self._poll()
 

@@ -148,6 +148,51 @@ async def test_taskbar_hint_becomes_esc_variant_when_input_focused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_taskbar_flashes_each_completion_only_once() -> None:
+    """Flash arms on the transition to DONE; a later tick must not re-arm.
+
+    History now persists (Task Center rows stay as DONE until the user
+    clears them), so the "history has a DONE entry" signal alone can't
+    gate the flash or the bar would flash forever on the same task.
+    ``_flashed_ids`` records which ids have already flashed.
+    """
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tid = app.task_bar.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(tid)
+        bar = app.query_one(TaskBar)
+        bar._refresh_display()  # arms flash
+        assert tid in bar._flashed_ids
+        first_until = bar._flash_until_tick
+        assert first_until is not None
+        # Walk ticks past the flash window. _flash_until_tick must clear
+        # and not re-arm for the same task_id.
+        for _ in range(int(first_until) + 5):
+            bar._tick_count += 1
+            bar._refresh_display()
+        assert bar._flash_until_tick is None, "flash re-armed for the same task_id"
+
+
+@pytest.mark.asyncio
+async def test_taskbar_prunes_flashed_ids_after_clear_history() -> None:
+    """``_flashed_ids`` must shed entries for tasks the user has cleared."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tid = app.task_bar.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(tid)
+        bar = app.query_one(TaskBar)
+        bar._refresh_display()
+        assert tid in bar._flashed_ids
+        app.task_bar.queue.clear_history()
+        bar._refresh_display()
+        assert tid not in bar._flashed_ids
+
+
+@pytest.mark.asyncio
 async def test_taskbar_completion_flash_after_queue_drains() -> None:
     """After the last task completes, show a 'Done' flash before hiding."""
     app = _Harness()
