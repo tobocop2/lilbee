@@ -80,7 +80,8 @@ class TestChunkText:
 
 
 class TestBuildChunkingConfig:
-    def test_semantic_enabled_uses_semantic_chunker(self, monkeypatch):
+    def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
+        """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
         from lilbee.chunk import build_chunking_config
         from lilbee.config import cfg
 
@@ -89,24 +90,17 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.chunker_type == "semantic"
         assert result.topic_threshold == pytest.approx(0.6, abs=1e-5)
+        assert result.embedding is not None
 
-    def test_semantic_chunks_bounded_by_kreuzberg_internal_ceiling(self, monkeypatch):
-        """Kreuzberg's semantic chunker caps output at ~4000 chars regardless of config.
-
-        Documented tradeoff: cfg.chunk_size does not constrain semantic chunks.
-        Callers needing a hard budget must bypass semantic (``use_semantic=False``
-        or ``cfg.semantic_chunking=False``).
-        """
+    def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
+        """With an embedding attached kreuzberg honors max_chars on the semantic path."""
+        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
         from lilbee.config import cfg
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(cfg, "chunk_size", 128)  # 512 char target — kreuzberg ignores
-        long_single_topic = "Solar panel efficiency improves yearly. " * 2000
-        chunks = chunk_text(long_single_topic)
-        assert chunks, "Expected at least one chunk from a long input"
-        # Kreuzberg's internal AUTO_BUDGET_CEILING is ~4000 chars. Assert a generous
-        # upper bound that exercises the "bounded but not by cfg.chunk_size" property.
-        assert max(len(c) for c in chunks) <= 4200
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        result = build_chunking_config()
+        assert result.max_chars == 512 * CHARS_PER_TOKEN
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
@@ -119,6 +113,16 @@ class TestBuildChunkingConfig:
         assert result.chunker_type == "text"
         assert result.max_chars == 512 * CHARS_PER_TOKEN
         assert result.max_overlap == 100 * CHARS_PER_TOKEN
+        assert result.embedding is None
+
+    def test_disabled_does_not_attach_embedding(self, monkeypatch):
+        """When semantic is off, no EmbeddingConfig is built — avoids the ONNX download."""
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        result = build_chunking_config()
+        assert result.embedding is None
 
 
 class TestMarkdownChunking:

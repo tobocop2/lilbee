@@ -16,18 +16,26 @@ CHARS_PER_TOKEN = 4
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
 
+# Kreuzberg embedding preset used by the semantic chunker. ``"fast"`` is the
+# lightest ONNX option and is sufficient for topic-boundary detection.
+# Kreuzberg maintains this model in its own cache, separate from lilbee's
+# chunk-to-vector embedder. The double-embedding cost is accepted for now;
+# see bb-kau6 for the upstream ask to accept an injected embedder.
+_SEMANTIC_EMBEDDING_PRESET = "fast"
+
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     """Build a kreuzberg ``ChunkingConfig`` from the current ``cfg``.
 
     When ``use_semantic`` and ``cfg.semantic_chunking`` are both true the
-    topic-aware semantic chunker is selected. Its chunk size is controlled
-    by kreuzberg's internal topic-boundary heuristic (~4000 char ceiling);
-    ``cfg.chunk_size`` does not constrain semantic output. Callers that
-    need a hard character budget should pass ``use_semantic=False`` or
-    disable ``cfg.semantic_chunking``.
+    topic-aware semantic chunker is selected. An ``EmbeddingConfig`` is
+    attached so kreuzberg actually runs the semantic path; without one it
+    silently falls back to a non-semantic heuristic.
+
+    The semantic chunker honors ``cfg.chunk_size`` (via ``max_chars``) and
+    ``cfg.topic_threshold`` only when an embedding is provided.
     """
-    from kreuzberg import ChunkingConfig
+    from kreuzberg import ChunkingConfig, EmbeddingConfig, EmbeddingModelType
 
     max_chars = cfg.chunk_size * CHARS_PER_TOKEN
     max_overlap = min(cfg.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
@@ -35,7 +43,12 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     if use_semantic and cfg.semantic_chunking:
         return ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
+            embedding=EmbeddingConfig(
+                model=EmbeddingModelType.preset(_SEMANTIC_EMBEDDING_PRESET),
+                show_download_progress=True,
+            ),
             topic_threshold=cfg.topic_threshold,
+            max_chars=max_chars,
             max_overlap=max_overlap,
         )
     return ChunkingConfig(max_chars=max_chars, max_overlap=max_overlap)
