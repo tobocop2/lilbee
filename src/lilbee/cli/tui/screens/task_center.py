@@ -60,6 +60,10 @@ class TaskCenter(Screen[None]):
         yield Label(msg.TASK_CENTER_TITLE, id="task-center-title")
         yield Label("", id="task-center-counts")
         yield VerticalScroll(id="task-rows")
+        yield Label(
+            f"{msg.TASK_CENTER_EMPTY_HEADLINE}\n{msg.TASK_CENTER_EMPTY_DETAIL}",
+            id="task-center-empty",
+        )
         yield Label(msg.TASK_CENTER_HINT, id="task-center-hint")
         yield TaskBar()
         yield ViewTabs()
@@ -130,6 +134,8 @@ class TaskCenter(Screen[None]):
                 except Exception:
                     log.debug("Row %s already removed", tid, exc_info=True)
         self._update_counts(tasks)
+        empty = self.query_one("#task-center-empty", Label)
+        empty.display = not tasks
 
     def _update_counts(self, tasks: list[Task]) -> None:
         """Top-right status strip: N running · M queued · K done."""

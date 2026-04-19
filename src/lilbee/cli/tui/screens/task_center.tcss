@@ -22,6 +22,18 @@ TaskCenter {
         padding: 0 1;
     }
 
+    #task-center-empty {
+        width: auto;
+        height: auto;
+        padding: 2 3;
+        margin: 4 0;
+        offset: 0 0;
+        align: center middle;
+        text-align: center;
+        color: $text-muted;
+        border: round $surface-lighten-2;
+    }
+
     #task-center-hint {
         dock: bottom;
         color: $text-muted;
@@ -57,6 +69,7 @@ TaskRow {
 
     &:focus-within {
         background: $surface;
+        outline: round $primary 40%;
     }
 
     &:last-child { margin-bottom: 0; }
