@@ -217,6 +217,40 @@ def test_download_cancelled_is_alias_for_task_cancelled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_task_cancelled_branch_routes_through_queue() -> None:
+    """Worker-thread TaskCancelled must land as a CANCELLED status via _finalize_task.
+
+    The finalize path has a distinct branch per TaskOutcome; the
+    CANCELLED branch is reached when a worker raises TaskCancelled
+    (i.e. the user pressed ``c`` mid-flight and reporter.update hit
+    the cancel gate). Without this test, macOS CI spotted lines
+    306-307 of ``task_bar.py`` uncovered.
+    """
+    app = _Host()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+
+        def _cancel_mid_run(reporter: ProgressReporter) -> None:
+            # Simulate the user cancelling via ``c`` once the task is
+            # active, then let the reporter's cancel gate raise.
+            controller.queue.cancel(reporter.task_id)
+            reporter.check_cancelled()
+
+        task_id = controller.start_task(
+            "demo-cancel", TaskType.SYNC, _cancel_mid_run, indeterminate=True
+        )
+        for _ in range(40):
+            await pilot.pause()
+            task = controller.queue.get_task(task_id)
+            if task is not None and task.status == TaskStatus.CANCELLED:
+                break
+        task = controller.queue.get_task(task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED
+        assert any(t.task_id == task_id for t in controller.queue.history)
+
+
+@pytest.mark.asyncio
 async def test_start_download_enqueues_under_download_type() -> None:
     """start_download delegates to start_task with TaskType.DOWNLOAD."""
     app = _Host()
