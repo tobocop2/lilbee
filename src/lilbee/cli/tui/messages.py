@@ -143,6 +143,7 @@ def get_nav_views() -> list[str]:
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
 TASKBAR_HINT = "Press t for Tasks"
+TASKBAR_HINT_INPUT = "Esc then t for Tasks"
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
 TASK_CENTER_HINT = "r refresh   c cancel   q back   j/k navigate"

@@ -448,13 +448,32 @@ class TaskBar(Static):
 
         self.display = True
         dot_color, summary = self._compose_segments(active, queued)
-        hint = f"[i dim]{msg.TASKBAR_HINT}[/]"
+        hint = f"[i dim]{self._hint_copy()}[/]"
         dot = f"[{dot_color}]{_DOT_GLYPH}[/]"
         label_text = f" {dot}  {summary}    {hint}"
 
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _hint_copy(self) -> str:
+        """Return the right-aligned hint, context-aware.
+
+        When a chat ``Input`` (or similar) is focused the ``t`` keypress is
+        eaten before the app-level binding fires, so the user needs
+        ``Esc then t``. Every other screen (wizard grid, catalog,
+        settings, task center) lets ``t`` bubble, so a shorter ``Press t
+        for Tasks`` is accurate and easier to scan.
+        """
+        from textual.widgets import Input
+
+        try:
+            focused = self.app.focused
+        except Exception:
+            return msg.TASKBAR_HINT
+        if isinstance(focused, Input):
+            return msg.TASKBAR_HINT_INPUT
+        return msg.TASKBAR_HINT
 
     def _compose_segments(self, active: list, queued: list) -> tuple[str, str]:
         """Return (dot color, text summary) for the current state."""

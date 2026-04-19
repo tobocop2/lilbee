@@ -121,6 +121,33 @@ async def test_taskbar_includes_hint_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_taskbar_hint_becomes_esc_variant_when_input_focused() -> None:
+    """With a chat-style Input focused, the hint should read 'Esc then t'."""
+    from textual.widgets import Input
+
+    class _InputHarness(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.task_bar = TaskBarController(self)
+
+        def compose(self) -> ComposeResult:
+            yield Input(id="dummy-input")
+            yield TaskBar(id="tbar")
+
+    app = _InputHarness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#dummy-input", Input).focus()
+        await pilot.pause()
+        app.task_bar.queue.enqueue(lambda: None, "demo", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        bar = app.query_one(TaskBar)
+        bar._refresh_display()
+        text = _label_text(bar)
+        assert "Esc then t for Tasks" in text
+
+
+@pytest.mark.asyncio
 async def test_taskbar_completion_flash_after_queue_drains() -> None:
     """After the last task completes, show a 'Done' flash before hiding."""
     app = _Harness()
