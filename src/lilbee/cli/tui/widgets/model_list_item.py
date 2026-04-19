@@ -22,21 +22,13 @@ from textual.events import Click
 from textual.message import Message
 
 from lilbee.cli.tui.pill import pill
-from lilbee.models import ModelTask
+from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
+from lilbee.models import FEATURED_STAR
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.screens.catalog import TableRow
 
 _CSS_FILE = Path(__file__).parent / "model_list_item.tcss"
-
-MIDDLE_DOT = "·"
-FEATURED_STAR = "★"
-
-_TASK_COLORS: dict[str, str] = {
-    ModelTask.CHAT: "$primary",
-    ModelTask.EMBEDDING: "$secondary",
-    ModelTask.VISION: "$warning",
-}
 
 
 class ModelListItem(containers.VerticalGroup, can_focus=True):
@@ -82,22 +74,13 @@ class ModelListItem(containers.VerticalGroup, can_focus=True):
                 yield widgets.Label(status, id="list-status")
 
 
-def _clean_name(name: str) -> str:
-    """Drop the legacy '* ' recommended marker from variant names.
-
-    variant_to_row prepends '* ' for recommended variants; we surface
-    that as the featured-star label instead, so strip it from the name.
-    """
-    return name[2:] if name.startswith("* ") else name
-
-
 def _build_head(row: TableRow) -> Content:
     """Bold name plus task/backend pills, featured-star prefix if applicable."""
-    bg = _TASK_COLORS.get(row.task, "$primary")
+    bg = TASK_COLORS.get(row.task, "$primary")
     parts: list[Content] = []
     if row.featured:
         parts.append(Content.styled(f"{FEATURED_STAR} ", "$warning"))
-    parts.append(Content.styled(_clean_name(row.name), "bold"))
+    parts.append(Content.styled(row.name, "bold"))
     parts.append(Content("  "))
     parts.append(pill(row.task, bg, "$text"))
     if row.backend:
@@ -110,7 +93,7 @@ def _build_specs(params: str, quant: str, size: str) -> Content:
     """Build the specs line: params middle-dot quant middle-dot size."""
     parts = [p for p in (params, quant, size) if p and p != "--"]
     if not parts:
-        return Content.styled("—", "$text-muted")
+        return Content.styled("--", "$text-muted")
     return Content.styled(f" {MIDDLE_DOT} ".join(parts), "$text-muted")
 
 

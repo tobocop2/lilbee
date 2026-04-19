@@ -28,7 +28,6 @@ from lilbee.cli.tui.screens.catalog_utils import (
     matches_search,
     parse_param_label,
     remote_to_row,
-    row_display_name,
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
@@ -256,28 +255,6 @@ class TestFormatDownloads:
 
     def test_zero(self):
         assert _format_downloads(0) == "0"
-
-
-class TestRowDisplayName:
-    def test_featured_star(self):
-        row = catalog_to_row(_make_catalog_model(featured=True), installed=False)
-        name = row_display_name(row)
-        assert name.startswith("\u2605")
-
-    def test_not_featured(self):
-        row = catalog_to_row(_make_catalog_model(featured=False), installed=False)
-        name = row_display_name(row)
-        assert not name.startswith("\u2605")
-
-    def test_installed_tag(self):
-        row = catalog_to_row(_make_catalog_model(), installed=True)
-        name = row_display_name(row)
-        assert "[installed]" in name
-
-    def test_not_installed_no_tag(self):
-        row = catalog_to_row(_make_catalog_model(), installed=False)
-        name = row_display_name(row)
-        assert "[installed]" not in name
 
 
 class TestFormatSizeGb:
@@ -2113,28 +2090,31 @@ async def test_catalog_focus_search():
 
 
 async def test_catalog_header_sort():
-    """action_cycle_sort cycles through Name -> Downloads -> Size -> Params in list view."""
+    """s keybinding cycles Name -> Downloads -> Size -> Params in list view."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
             screen = CatalogScreen()
             app.push_screen(screen)
-            await _pilot.pause()
+            await pilot.pause()
             assert screen._sort_column == "Name"
             assert screen._sort_ascending is True
-            # cycle_sort is list-only; flip to list view before cycling.
-            screen._grid_view = False
-            screen.action_cycle_sort()
+            await pilot.press("v")
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
             assert screen._sort_column == "Downloads"
             assert screen._sort_ascending is True
-            screen.action_cycle_sort()
+            await pilot.press("s")
+            await pilot.pause()
             assert screen._sort_column == "Size"
-            assert screen._sort_ascending is True
-            screen.action_cycle_sort()
+            await pilot.press("s")
+            await pilot.pause()
             assert screen._sort_column == "Params"
-            screen.action_cycle_sort()
+            await pilot.press("s")
+            await pilot.pause()
             assert screen._sort_column == "Name"
 
 
@@ -2574,23 +2554,6 @@ async def test_catalog_input_handler_uses_on_decorator():
     assert hasattr(CatalogScreen._on_search_changed, "__wrapped__") or hasattr(
         CatalogScreen._on_search_changed, "_textual_on"
     )
-
-
-@pytest.mark.xfail(reason="behavior replaced by list-view nav")
-async def test_catalog_row_selected_out_of_range():
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            event = MagicMock()
-            event.cursor_row = 999
-            with patch.object(screen, "_select_row") as mock_select:
-                screen._on_row_selected(event)
-                mock_select.assert_not_called()
 
 
 async def test_catalog_fetch_more_hf_worker():
@@ -3035,7 +2998,7 @@ async def test_chat_cancel_with_active_worker(mock_svc):
         await _pilot.pause()
 
 
-async def test_catalog_refresh_table_empty():
+async def test_catalog_refresh_list_empty():
     """Cover empty list case."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -3054,7 +3017,7 @@ async def test_catalog_refresh_table_empty():
             assert len(list_container.query(ModelListItem)) == 0
 
 
-async def test_catalog_refresh_table_with_models():
+async def test_catalog_refresh_list_with_models():
     """Cover list view with HF models."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
@@ -6376,25 +6339,6 @@ async def test_chat_cmd_setup_opens_wizard():
             assert isinstance(app.screen, SetupWizard)
 
 
-@pytest.mark.xfail(reason="behavior replaced by list-view nav")
-async def test_catalog_select_row_out_of_range():
-    """_on_row_selected returns early for out-of-range cursor_row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    app = CatalogTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
-            screen = CatalogScreen()
-            app.push_screen(screen)
-            await _pilot.pause()
-            screen._rows = []
-            event = MagicMock()
-            event.cursor_row = -1
-            with patch.object(screen, "_select_row") as mock_sel:
-                screen._on_row_selected(event)  # Should not raise
-                mock_sel.assert_not_called()
-
-
 async def test_chat_cmd_crawl_no_args_opens_dialog():
     """_cmd_crawl with empty args opens the crawl dialog."""
     app = ChatTestApp()
@@ -6415,7 +6359,7 @@ def test_chat_embedding_ready_real_code_false():
     assert hasattr(ChatScreen, "_embedding_ready")
 
 
-def test_on_row_selected_valid_index():
+def test_on_list_item_selected_calls_select_row():
     """_on_list_item_selected calls _select_row with the item's row."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import TableRow
@@ -6457,32 +6401,6 @@ def test_is_installed_no_match():
     screen = MagicMock()
     screen._installed_names = {"other:latest"}
     assert CatalogScreen._is_installed(screen, "missing", repo="", filename="") is False
-
-
-@pytest.mark.xfail(reason="behavior replaced by list-view nav")
-def test_on_row_selected_negative_index():
-    """_on_row_selected returns early for negative cursor_row."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    screen = MagicMock()
-    screen._rows = []
-    event = MagicMock()
-    event.cursor_row = -1
-    CatalogScreen._on_row_selected(screen, event)
-    screen._select_row.assert_not_called()
-
-
-@pytest.mark.xfail(reason="behavior replaced by list-view nav")
-def test_on_row_selected_exceeds_length():
-    """_on_row_selected returns early when index exceeds rows length."""
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-    screen = MagicMock()
-    screen._rows = []
-    event = MagicMock()
-    event.cursor_row = 5
-    CatalogScreen._on_row_selected(screen, event)
-    screen._select_row.assert_not_called()
 
 
 def test_type_pill_with_choices():

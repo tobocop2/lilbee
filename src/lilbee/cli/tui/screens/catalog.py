@@ -53,9 +53,6 @@ _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
 
-COLUMNS = ("Name", "Task", "Backend", "Params", "Size", "Quant", "Downloads")
-
-
 _GRID_PAGE_ROWS = 3
 _LIST_PAGE_ROWS = 10
 # Forces the list-view GridSelect to a single column regardless of screen
@@ -141,8 +138,6 @@ class CatalogScreen(Screen[None]):
 
     def _focus_first_grid(self) -> None:
         """Focus the first GridSelect widget if available."""
-        import contextlib
-
         with contextlib.suppress(Exception):
             self.query_one(GridSelect).focus()
 
@@ -169,7 +164,7 @@ class CatalogScreen(Screen[None]):
                 self._hf_fetched = True
                 self._fetch_all_hf_models()
             self._refresh_list()
-            self._focus_list_grid()
+            self._focus_list_item(0)
         else:
             self._grid_view = True
             self.remove_class("-list-view")
@@ -177,10 +172,6 @@ class CatalogScreen(Screen[None]):
             self._refresh_grid()
             with contextlib.suppress(Exception):
                 self.query_one("#catalog-grid GridSelect", GridSelect).focus()
-
-    def _focus_list_grid(self) -> None:
-        """Focus the first list item if any."""
-        self._focus_list_item(0)
 
     def action_focus_search(self) -> None:
         """Focus the filter input -- bound to / key."""
@@ -361,7 +352,7 @@ class CatalogScreen(Screen[None]):
         widgets_to_mount.append(
             Static(
                 msg.CATALOG_VIEW_TOGGLE_GRID,
-                classes="grid-cta view-toggle-cta",
+                classes="grid-cta",
             )
         )
         container.mount_all(widgets_to_mount)
@@ -437,11 +428,11 @@ class CatalogScreen(Screen[None]):
             count = f"{n_total} models"
         self.query_one("#sort-label", Static).update(
             f"Sort: {self._sort_column} ({direction})  |  "
-            f"{count}  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
+            f"{count}  |  {msg.CATALOG_VIEW_TOGGLE_LIST}"
         )
 
     def action_cycle_sort(self) -> None:
-        """Cycle the list-view sort column. Second press on the same column flips direction."""
+        """Cycle the list-view sort column ascending: Name, Downloads, Size, Params."""
         if isinstance(self.focused, Input):
             return
         if self._grid_view:
@@ -454,7 +445,7 @@ class CatalogScreen(Screen[None]):
         self._sort_column = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._sort_ascending = True
         self._refresh_list()
-        self._focus_list_grid()
+        self._focus_list_item(0)
 
     def _select_row(self, row: TableRow) -> None:
         """Handle row selection: install or use the model."""

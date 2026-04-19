@@ -22,8 +22,6 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.config import cfg
 
-_ENV_PREFIX = "LILBEE_"
-
 log = logging.getLogger(__name__)
 
 _TYPE_COLORS: dict[str, tuple[str, str]] = {
@@ -70,7 +68,7 @@ def _type_pill(defn: SettingDef) -> Content:
 
 def _env_var_name(key: str) -> str:
     """Return the LILBEE_* env var name for a config key."""
-    return _ENV_PREFIX + key.upper()
+    return f"LILBEE_{key.upper()}"
 
 
 def _env_pill(key: str) -> Content | None:

@@ -1152,7 +1152,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                app.screen.action_toggle_view()
+                await pilot.press("v")
                 await pilot.pause()
 
                 await pilot.press("slash")
@@ -1200,11 +1200,11 @@ class TestCatalogInteractions:
                     items[0].focus()
                     await pilot.pause()
                     assert app.screen._focused_list_index() == 0
-                    app.screen.action_cursor_down()
+                    await pilot.press("j")
                     await pilot.pause()
                     assert items[1].has_focus
 
-                    app.screen.action_cursor_up()
+                    await pilot.press("k")
                     await pilot.pause()
                     assert items[0].has_focus
 
@@ -2230,7 +2230,8 @@ class TestCatalogViewToggle:
     """Test view toggle CTA and grid/table switching."""
 
     async def test_view_toggle_cta_exists(self, _mock_resolve):
-        """Grid view shows a .view-toggle-cta Static."""
+        """Grid view renders the 'Press v for list view' CTA."""
+        from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -2239,7 +2240,11 @@ class TestCatalogViewToggle:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                ctas = app.screen.query(".view-toggle-cta")
+                ctas = [
+                    s
+                    for s in app.screen.query(".grid-cta")
+                    if msg.CATALOG_VIEW_TOGGLE_GRID in str(s.render())
+                ]
                 assert len(ctas) >= 1
 
     async def test_our_picks_heading_in_grid(self, _mock_resolve):
