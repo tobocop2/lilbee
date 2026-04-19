@@ -563,21 +563,23 @@ class TestSyncStreamDoneDelivery:
         counts = json.loads(done_events[0].split("data: ")[1].strip())
         assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0}
 
-    async def test_drain_yields_queued_events_before_sentinel(self):
-        """drain() yields every queued event before the sentinel closes the stream."""
+    async def test_drain_exits_cleanly_when_producer_raises(self):
+        """A raising producer still enqueues the sentinel via finally so drain closes."""
         from lilbee.server.handlers import SseStream
 
         sse = SseStream()
 
-        async def producer():
+        async def raising_producer():
             try:
-                sse.queue.put_nowait("event: embed\ndata: {}\n\n")
+                raise RuntimeError("boom")
             finally:
                 sse.queue.put_nowait(None)
 
-        task = asyncio.create_task(producer())
-        events = [e async for e in sse.drain(task, "queued-before-sentinel")]
-        assert any(e.startswith("event: embed") for e in events), events
+        task = asyncio.create_task(raising_producer())
+        events = [e async for e in sse.drain(task, "raising")]
+        assert events == []
+        assert task.done()
+        assert isinstance(task.exception(), RuntimeError)
 
     async def test_stream_reports_error_when_sync_raises(self):
         """If the sync coroutine raises, sync_stream emits an error SSE frame."""
