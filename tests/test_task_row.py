@@ -24,6 +24,7 @@ def _task(
     detail: str = "",
     indeterminate: bool = False,
     started_at: float | None = None,
+    completed_at: float | None = None,
     name: str = "demo",
     task_type: str = "download",
 ) -> Task:
@@ -37,20 +38,32 @@ def _task(
         detail=detail,
         indeterminate=indeterminate,
         started_at=started_at,
+        completed_at=completed_at,
     )
 
 
 def test_format_elapsed_shows_mmss_after_start() -> None:
     started = time.monotonic() - 65
-    assert _format_elapsed(started, TaskStatus.ACTIVE) == "01:05"
+    assert _format_elapsed(_task(status=TaskStatus.ACTIVE, started_at=started)) == "01:05"
 
 
 def test_format_elapsed_returns_queued_label_for_queued_task() -> None:
-    assert _format_elapsed(None, TaskStatus.QUEUED) == "queued"
+    assert _format_elapsed(_task(status=TaskStatus.QUEUED)) == "queued"
 
 
 def test_format_elapsed_empty_for_active_without_started_at() -> None:
-    assert _format_elapsed(None, TaskStatus.ACTIVE) == ""
+    assert _format_elapsed(_task(status=TaskStatus.ACTIVE, started_at=None)) == ""
+
+
+def test_format_elapsed_freezes_on_completed_at() -> None:
+    """Once completed_at is set, elapsed is stable regardless of wall-clock drift."""
+    started = time.monotonic() - 100
+    completed = started + 12  # 12 s total
+    task = _task(status=TaskStatus.DONE, started_at=started, completed_at=completed)
+    first = _format_elapsed(task)
+    time.sleep(0.05)
+    second = _format_elapsed(task)
+    assert first == second == "00:12"
 
 
 @pytest.mark.asyncio

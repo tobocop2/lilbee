@@ -422,7 +422,7 @@ class TaskBar(Static):
         - The text either reads ``{name} {pct}`` (one active, zero queued),
           ``{N} tasks running`` (plural), ``{N} queued`` (throttle mode),
           or the flash copy.
-        - Right-aligned muted-italic ``Esc then t for Task Center`` hint.
+        - Right-aligned muted-italic ``Press t for Tasks`` hint.
         """
         queue = self.queue
         active = queue.active_tasks

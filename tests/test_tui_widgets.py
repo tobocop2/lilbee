@@ -2524,7 +2524,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "Esc then t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "Press t for Tasks" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_active_task_with_progress_shows_percentage(self) -> None:
         """An active task with nonzero progress shows its percentage."""

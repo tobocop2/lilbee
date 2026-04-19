@@ -62,6 +62,11 @@ class Task:
     # Monotonic timestamp at which the task transitioned to ACTIVE. None
     # while QUEUED. Used by the Task Center row to render elapsed time.
     started_at: float | None = None
+    # Monotonic timestamp at which the task reached a terminal state
+    # (DONE / FAILED / CANCELLED). None while still running. Used to
+    # freeze the elapsed-time display so it doesn't keep ticking during
+    # the 2-second post-finish flash.
+    completed_at: float | None = None
 
 
 class TaskQueue:
@@ -211,6 +216,7 @@ class TaskQueue:
                 task.status = TaskStatus.DONE
                 task.progress = 100
                 task.indeterminate = False
+                task.completed_at = time.monotonic()
                 self._history.append(task)
                 self._remove_from_active_locked(task_id, task.task_type)
                 self._remove_from_queue_locked(task_id, task.task_type)
@@ -223,6 +229,7 @@ class TaskQueue:
             if task:
                 task.status = TaskStatus.FAILED
                 task.detail = detail
+                task.completed_at = time.monotonic()
                 self._history.append(task)
                 self._remove_from_active_locked(task_id, task.task_type)
                 self._remove_from_queue_locked(task_id, task.task_type)
@@ -235,6 +242,7 @@ class TaskQueue:
             if not task:
                 return False
             task.status = TaskStatus.CANCELLED
+            task.completed_at = time.monotonic()
             self._remove_from_active_locked(task_id, task.task_type)
             self._remove_from_queue_locked(task_id, task.task_type)
         self._notify()

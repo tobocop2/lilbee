@@ -13,7 +13,6 @@ from __future__ import annotations
 from time import monotonic
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
@@ -34,13 +33,19 @@ _STATUS_CLASS: dict[TaskStatus, str] = {
 _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
 
 
-def _format_elapsed(started_at: float | None, status: TaskStatus) -> str:
-    """Return elapsed time as MM:SS, a status tag, or empty."""
-    if status == TaskStatus.QUEUED:
+def _format_elapsed(task: Task) -> str:
+    """Return elapsed time as MM:SS, a status tag, or empty.
+
+    Terminal states (DONE / FAILED / CANCELLED) freeze at ``completed_at``
+    so the timer doesn't keep climbing for rows that are just waiting out
+    their 2-second flash before removal.
+    """
+    if task.status == TaskStatus.QUEUED:
         return "queued"
-    if started_at is None:
+    if task.started_at is None:
         return ""
-    seconds = max(0, int(monotonic() - started_at))
+    end = task.completed_at if task.completed_at is not None else monotonic()
+    seconds = max(0, int(end - task.started_at))
     mm, ss = divmod(seconds, 60)
     return f"{mm:02d}:{ss:02d}"
 
@@ -59,10 +64,13 @@ class TaskRow(Widget, can_focus=True):
         self._task_id = task_id
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="task-row-body"):
-            yield Label("", id="row-head", classes="row-head")
-            yield Label("", id="row-meta", classes="row-meta")
-            yield Static("", id="row-bar", classes="row-bar")
+        # Widget with yielded children lays them out vertically by default.
+        # An explicit Vertical wrapper would inherit ``height: 1fr`` and
+        # stretch each row to fill the scroll viewport, painting the
+        # border-left rail down the whole empty stretch.
+        yield Label("", id="row-head", classes="row-head")
+        yield Label("", id="row-meta", classes="row-meta")
+        yield Static("", id="row-bar", classes="row-bar")
 
     def update(self, task: Task, tick: int) -> None:
         """Re-render from a Task snapshot. Safe to call every poll tick.
@@ -87,7 +95,7 @@ class TaskRow(Widget, can_focus=True):
         except Exception:
             return  # compose hasn't finished; retry on next poll
 
-        elapsed = _format_elapsed(task.started_at, task.status)
+        elapsed = _format_elapsed(task)
         head_left = f"[b]{task.name}[/b] · [i]{task.task_type}[/i]"
         head_text = f"{head_left}  [dim]{elapsed}[/dim]" if elapsed else head_left
         head.update(head_text)

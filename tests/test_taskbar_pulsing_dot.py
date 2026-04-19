@@ -117,7 +117,7 @@ async def test_taskbar_includes_hint_text() -> None:
         bar = app.query_one(TaskBar)
         bar._refresh_display()
         text = _label_text(bar)
-        assert "Esc then t for Task Center" in text
+        assert "Press t for Tasks" in text
 
 
 @pytest.mark.asyncio
