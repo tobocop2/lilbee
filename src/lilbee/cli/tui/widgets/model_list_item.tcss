@@ -14,8 +14,26 @@ ModelListItem {
         background: $surface;
     }
 
-    #list-content {
+    #list-head {
         width: 1fr;
-        height: auto;
+        height: 1;
+    }
+
+    #list-meta {
+        width: 1fr;
+        height: 1;
+        padding-left: 2;
+    }
+
+    #list-specs {
+        width: 1fr;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    #list-status {
+        width: auto;
+        padding-left: 2;
     }
 }

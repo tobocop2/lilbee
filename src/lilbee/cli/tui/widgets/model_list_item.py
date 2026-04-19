@@ -74,12 +74,12 @@ class ModelListItem(containers.VerticalGroup, can_focus=True):
 
     def compose(self) -> ComposeResult:
         row = self._row
-        yield widgets.Static(_build_content(row), id="list-content")
-
-
-def _build_content(row: TableRow) -> Content:
-    """Two-line content: head on line 1, meta on line 2."""
-    return Content("\n").join([_build_head(row), _build_meta(row)])
+        yield widgets.Static(_build_head(row), id="list-head")
+        with containers.HorizontalGroup(id="list-meta"):
+            yield widgets.Label(_build_specs(row.params, row.quant, row.size), id="list-specs")
+            status = _build_status(row)
+            if status is not None:
+                yield widgets.Label(status, id="list-status")
 
 
 def _clean_name(name: str) -> str:
@@ -104,15 +104,6 @@ def _build_head(row: TableRow) -> Content:
         parts.append(Content(" "))
         parts.append(pill(row.backend, "$accent", "$text"))
     return Content.assemble(*parts)
-
-
-def _build_meta(row: TableRow) -> Content:
-    """Dim specs line plus right-side status pill or download count."""
-    specs = _build_specs(row.params, row.quant, row.size)
-    status = _build_status(row)
-    if status is None:
-        return specs
-    return Content.assemble(specs, Content("  "), status)
 
 
 def _build_specs(params: str, quant: str, size: str) -> Content:
