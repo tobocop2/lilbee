@@ -497,12 +497,7 @@ class TestAddFiles:
             assert any("done" in e for e in events)
 
     async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
-        """If sync raises, _run_add still emits the sentinel via its finally block.
-
-        Without the finally-based sentinel, drain() would only exit via the
-        task.done() fallback path. Verifies the stream closes cleanly and the
-        caller gets an error frame rather than a hung connection.
-        """
+        """Sync failure emits one error frame and closes the stream without a done frame."""
         test_file = isolated_env / "documents" / "test.txt"
         test_file.write_text("test content")
 
@@ -526,12 +521,7 @@ class TestSyncStreamDoneDelivery:
     """Regression tests for the SSE drain race (bb-7enj)."""
 
     async def test_done_event_delivered_on_fast_completion(self):
-        """When sync completes almost instantly, the final SSE done event is still delivered.
-
-        Previously, drain() exited on task.done() without waiting for a
-        sentinel, which could drop the last event if the task resolved
-        before the event loop dispatched pending queue puts.
-        """
+        """A fast-completing sync still delivers both done frames in order."""
         sync_result = SyncResult(added=["fast.txt"])
 
         async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
@@ -555,12 +545,7 @@ class TestSyncStreamDoneDelivery:
         assert lists_done["added"] == ["fast.txt"]
 
     async def test_done_event_delivered_on_noop_sync(self):
-        """A sync with zero file changes must still emit a done event.
-
-        The task description flagged this as a potential no-op code path
-        that could skip EventType.DONE emission. Confirms every return path
-        in sync() emits it (which it does) and the stream delivers it.
-        """
+        """A sync with zero file changes still emits the done frame."""
         sync_result = SyncResult()  # empty: no added/updated/removed
 
         async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
@@ -579,12 +564,7 @@ class TestSyncStreamDoneDelivery:
         assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0}
 
     async def test_drain_delivers_late_threadsafe_event_before_exit(self):
-        """Events enqueued via call_soon_threadsafe at task end must be delivered.
-
-        Simulates the race where a worker thread calls call_soon_threadsafe
-        immediately before the sync task resolves. drain() must deliver
-        the late event rather than exiting on task.done().
-        """
+        """A threadsafe-enqueued event lands before the sentinel closes drain."""
         import threading
 
         from lilbee.server.handlers import SseStream
@@ -632,10 +612,8 @@ class TestSyncStreamDoneDelivery:
 
 
 class TestDrainFallback:
-    """The drain() fallback covers tasks that finish without a sentinel."""
-
     async def test_drain_exits_when_task_done_without_sentinel(self):
-        """drain() exits via the timeout fallback if a task finishes with no sentinel."""
+        """drain() exits cleanly when a task finishes with no sentinel."""
         from lilbee.server.handlers import SseStream
 
         sse = SseStream()

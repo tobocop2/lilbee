@@ -178,23 +178,13 @@ class SseStream:
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE strings from the queue until a sentinel arrives or the task fails.
-
-        Producers are expected to enqueue ``None`` as a sentinel when they
-        finish (successfully or via cancel). ``drain()`` exits when it sees
-        the sentinel. If the task raises before producing a sentinel,
-        ``drain()`` exits via the fallback so the stream does not hang.
-
-        On ``CancelledError`` / ``GeneratorExit`` (client disconnect),
-        sets :attr:`cancel` and cancels *task*.
-        """
+        """Yield SSE strings until a sentinel arrives. Cancels *task* on client disconnect."""
         try:
             while True:
                 try:
                     item = await asyncio.wait_for(self.queue.get(), timeout=0.1)
                 except TimeoutError:
-                    # Fallback: if the task crashed or finished without a
-                    # sentinel, stop waiting rather than hanging forever.
+                    # Fallback for producers that die without a sentinel.
                     if task.done() and self.queue.empty():
                         break
                     continue
@@ -342,13 +332,7 @@ def chat_stream(
 
 
 async def _run_sync_with_sentinel(sse: SseStream, enable_ocr: bool | None) -> SyncResult:
-    """Run ingest.sync() and always enqueue the sentinel in a finally block.
-
-    The sentinel guarantees ``drain()`` exits only after every progress event
-    (including the final ``EventType.DONE``) has been consumed, even when the
-    task resolves before the event loop dispatches pending threadsafe
-    callbacks.
-    """
+    """Run ingest.sync() and guarantee the drain sentinel is enqueued."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
@@ -380,12 +364,7 @@ async def _run_add(
     ocr_timeout: float | None,
     sse: SseStream,
 ) -> AddSummary:
-    """Copy files and sync, pushing SSE events to the queue.
-
-    Returns the summary so the caller can emit the final done event. The
-    sentinel is always enqueued in a finally block so ``drain()`` exits
-    cleanly even when sync raises.
-    """
+    """Copy files and sync, returning the summary for the final done event."""
     from lilbee.cli.helpers import temporary_ocr_config
     from lilbee.ingest import sync
 
@@ -770,9 +749,12 @@ async def crawl_stream(url: str, depth: int = 0, max_pages: int = 50) -> AsyncGe
     async def _run_crawl() -> list[Path]:
         from lilbee.crawler import crawl_and_save
 
-        return await crawl_and_save(
-            url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
-        )
+        try:
+            return await crawl_and_save(
+                url, depth=depth, max_pages=max_pages, on_progress=sse.callback, cancel=sse.cancel
+            )
+        finally:
+            sse.queue.put_nowait(None)
 
     task = asyncio.create_task(_run_crawl())
     async for event in sse.drain(task, "Crawl stream"):
