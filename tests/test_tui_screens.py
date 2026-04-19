@@ -7168,20 +7168,21 @@ def test_settings_help_content_blank_when_no_help_text():
     assert content.plain == ""
 
 
-class SettingsEnvPillTestApp(App[None]):
-    pass
-
-
-async def test_settings_compose_renders_env_pill_when_set(monkeypatch):
-    """Setting row title includes env pill when LILBEE_* is exported."""
-    from lilbee.cli.tui.screens.settings import SettingsScreen
+def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
+    """_title_content carries the env var name when LILBEE_* is exported."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import _title_content
 
     monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    assert "LILBEE_CHAT_MODEL" in content.plain
 
-    app = SettingsEnvPillTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = SettingsScreen()
-        app.push_screen(screen)
-        await pilot.pause()
-        title = screen.query_one("#row-chat_model .setting-title", Static)
-        assert "LILBEE_CHAT_MODEL" in str(title.render())
+
+def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
+    """_title_content omits the env pill when the LILBEE_* var is not set."""
+    from lilbee.cli.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import _title_content
+
+    monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
+    content = _title_content("chat_model", SETTINGS_MAP["chat_model"])
+    assert "LILBEE_CHAT_MODEL" not in content.plain

@@ -182,15 +182,20 @@ class SettingsScreen(Screen[None]):
             name=f"{defn.group.lower()} {key}",
             id=f"row-{key}",
         ):
-            title_parts: list[Content] = [Content(key + "  "), _type_pill(defn)]
-            env_badge = _env_pill(key)
-            if env_badge is not None:
-                title_parts.append(Content("  "))
-                title_parts.append(env_badge)
-            yield Static(Content.assemble(*title_parts), classes="setting-title")
+            yield Static(_title_content(key, defn), classes="setting-title")
             yield Static(_help_content(key, defn), classes="setting-help")
             if defn.writable:
                 yield _make_editor(key, defn)
+
+
+def _title_content(key: str, defn: SettingDef) -> Content:
+    """Assemble the setting-row title: key name, type pill, and env pill when set."""
+    parts: list[Content] = [Content(key + "  "), _type_pill(defn)]
+    env_badge = _env_pill(key)
+    if env_badge is not None:
+        parts.append(Content("  "))
+        parts.append(env_badge)
+    return Content.assemble(*parts)
 
     @on(Input.Submitted, "#settings-search")
     def _on_search_submitted(self) -> None:
