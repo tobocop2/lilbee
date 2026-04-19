@@ -43,6 +43,10 @@ from lilbee.models import ModelTask
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
+# When the highlighted row is within this many rows of the end we
+# auto-fetch the next page. Small enough that the request is already
+# in flight by the time the user reaches the bottom.
+_HF_LOAD_MORE_TRIGGER = 5
 _ALL_TASKS = tuple(ModelTask)
 
 _WORKER_FETCH_HF = "fetch_hf_models"
@@ -85,6 +89,7 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
+        Binding("n", "load_more", "More", show=True, group=_ACTION_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -101,6 +106,7 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
         self._hf_fetched: bool = False
+        self._loading_more: bool = False
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
@@ -228,6 +234,10 @@ class CatalogScreen(Screen[None]):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
+            # Release the load-more latch on failure so the user can retry
+            # with ``n`` instead of being stuck at the current page forever.
+            if event.worker.name == _WORKER_FETCH_MORE_HF:
+                self._loading_more = False
             return
         result = event.worker.result
         if not isinstance(result, list):
@@ -237,6 +247,7 @@ class CatalogScreen(Screen[None]):
             self._hf_models = result
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
+            self._loading_more = False
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         else:
@@ -407,10 +418,15 @@ class CatalogScreen(Screen[None]):
         """Update the sort indicator label."""
         direction = "asc" if self._sort_ascending else "desc"
         n_total = len(self._rows)
-        more = "+" if self._hf_has_more else ""
+        if self._loading_more:
+            count = f"{n_total} models · loading more…"
+        elif self._hf_has_more:
+            count = f"{n_total} models · press [b]n[/b] for more"
+        else:
+            count = f"{n_total} models"
         self.query_one("#sort-label", Static).update(
             f"Sort: {self._sort_column} ({direction})  |  "
-            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
+            f"{count}  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
         )
 
     @on(DataTable.HeaderSelected, "#catalog-table")
@@ -444,9 +460,26 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:
-        """Load next page of HF models."""
+        """Load next page of HF models, if any remain and no fetch is in flight."""
+        if self._loading_more or not self._hf_has_more:
+            return
+        self._loading_more = True
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
+
+    def action_load_more(self) -> None:
+        """Keyboard trigger (``n``) so users can page without scrolling."""
+        self._load_more()
+
+    @on(DataTable.RowHighlighted, "#catalog-table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Prefetch the next HF page as the cursor approaches the bottom."""
+        if self._grid_view:
+            return
+        if not self._hf_has_more or self._loading_more:
+            return
+        if event.cursor_row >= len(self._rows) - _HF_LOAD_MORE_TRIGGER:
+            self._load_more()
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""

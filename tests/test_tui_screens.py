@@ -2290,6 +2290,103 @@ async def test_catalog_load_more():
             with patch.object(screen, "_fetch_more_hf"):
                 screen._load_more()
                 assert screen._hf_offset == old_offset + _HF_PAGE_SIZE
+                assert screen._loading_more is True
+
+
+async def test_catalog_action_load_more_triggers_fetch():
+    """Pressing n fires a fetch when more results are available."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._hf_has_more = True
+            with patch.object(screen, "_fetch_more_hf") as fetch:
+                screen.action_load_more()
+                assert fetch.called
+
+
+async def test_catalog_load_more_noop_when_exhausted():
+    """Calling _load_more when _hf_has_more is False must not fire a fetch."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._hf_has_more = False
+            old_offset = screen._hf_offset
+            with patch.object(screen, "_fetch_more_hf") as fetch:
+                screen._load_more()
+                assert not fetch.called
+                assert screen._hf_offset == old_offset
+
+
+async def test_catalog_load_more_deduplicated_while_in_flight():
+    """A second _load_more during an in-flight fetch does not re-advance the offset."""
+    from lilbee.cli.tui.screens.catalog import _HF_PAGE_SIZE, CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            old_offset = screen._hf_offset
+            with patch.object(screen, "_fetch_more_hf") as fetch:
+                screen._load_more()
+                screen._load_more()
+                assert fetch.call_count == 1
+                assert screen._hf_offset == old_offset + _HF_PAGE_SIZE
+
+
+async def test_catalog_row_highlighted_prefetches_near_bottom():
+    """Highlighting near the last row in list view triggers _load_more."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._rows = [MagicMock() for _ in range(30)]
+            event = MagicMock()
+            event.cursor_row = 27  # within 5-row trigger of row 29
+            with patch.object(screen, "_fetch_more_hf") as fetch:
+                screen._on_row_highlighted(event)
+                assert fetch.called
+
+
+async def test_catalog_row_highlighted_ignored_in_grid_view():
+    """Grid view doesn't trigger list-view prefetch."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = True
+            screen._hf_has_more = True
+            screen._rows = [MagicMock() for _ in range(30)]
+            event = MagicMock()
+            event.cursor_row = 29
+            with patch.object(screen, "_fetch_more_hf") as fetch:
+                screen._on_row_highlighted(event)
+                assert not fetch.called
 
 
 async def test_catalog_get_highlighted_model_name_empty():
