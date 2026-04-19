@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 if TYPE_CHECKING:
-    from kreuzberg import ChunkingConfig, ExtractionConfig, ExtractionResult
+    from kreuzberg import ExtractionConfig, ExtractionResult
 
 from pydantic import BaseModel
 from rich.progress import (
@@ -27,7 +27,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from lilbee.chunk import CHARS_PER_TOKEN, chunk_text
+from lilbee.chunk import build_chunking_config, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
@@ -70,14 +70,13 @@ _TESSERACT_BACKEND = "tesseract"
 
 
 class ExtractMode(StrEnum):
-    """Kreuzberg extraction paths used by lilbee's ingestion pipeline.
+    """Extraction modes used by lilbee's ingestion pipeline.
 
     Modes describe extraction topology (pagination, OCR, output format).
     Semantic chunking is orthogonal and applies to every mode via
-    :func:`_build_chunking_config`.
+    :func:`lilbee.chunk.build_chunking_config`.
     """
 
-    TEXT_ONLY = "text_only"
     MARKDOWN = "markdown"
     PAGINATED = "paginated"
     PAGINATED_OCR = "paginated_ocr"
@@ -208,26 +207,6 @@ def classify_file(path: Path) -> str | None:
     return None
 
 
-def _build_chunking_config() -> ChunkingConfig:
-    """Build kreuzberg ChunkingConfig, using the semantic chunker when enabled.
-
-    The semantic chunker auto-derives the chunk budget from document structure,
-    so ``max_chars`` is only applied in the non-semantic branch.
-    """
-    from kreuzberg import ChunkingConfig
-
-    if cfg.semantic_chunking:
-        return ChunkingConfig(
-            chunker_type="semantic",
-            topic_threshold=cfg.topic_threshold,
-            max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
-        )
-    return ChunkingConfig(
-        max_chars=cfg.chunk_size * CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
-    )
-
-
 def content_type_to_mode(content_type: str) -> ExtractMode:
     """Map a ``classify_file`` content_type to the extraction mode."""
     return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
@@ -242,11 +221,10 @@ def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     """
     from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
-    chunking = _build_chunking_config()
+    chunking = build_chunking_config()
     pages = PageConfig(extract_pages=True, insert_page_markers=False)
     ocr = OcrConfig(backend=_TESSERACT_BACKEND)
     builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
-        ExtractMode.TEXT_ONLY: lambda: ExtractionConfig(chunking=chunking),
         ExtractMode.MARKDOWN: lambda: ExtractionConfig(
             chunking=chunking, output_format=_MARKDOWN_OUTPUT
         ),
@@ -343,7 +321,14 @@ async def _vision_fallback(
     if not page_texts:
         return []
 
-    all_chunks = [(page_num, chunk) for page_num, text in page_texts for chunk in chunk_text(text)]
+    # Semantic chunking per page is wasteful: a single OCR page rarely
+    # spans multiple topics and each call pays an embedding-model round-trip.
+    # Use the char-budget path so vision OCR stays fast.
+    all_chunks = [
+        (page_num, chunk)
+        for page_num, text in page_texts
+        for chunk in chunk_text(text, use_semantic=False)
+    ]
     if not all_chunks:
         return []
 

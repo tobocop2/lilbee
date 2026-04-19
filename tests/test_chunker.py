@@ -67,6 +67,59 @@ class TestChunkText:
         assert chunks
         assert "Plain text" in " ".join(chunks)
 
+    def test_use_semantic_false_bypasses_semantic(self, monkeypatch):
+        """Caller can opt out of semantic chunking even when cfg has it enabled."""
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        bypassed = build_chunking_config(use_semantic=False)
+        assert bypassed.chunker_type == "text"
+        enabled = build_chunking_config()
+        assert enabled.chunker_type == "semantic"
+
+
+class TestBuildChunkingConfig:
+    def test_semantic_enabled_uses_semantic_chunker(self, monkeypatch):
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "topic_threshold", 0.6)
+        result = build_chunking_config()
+        assert result.chunker_type == "semantic"
+        assert result.topic_threshold == pytest.approx(0.6, abs=1e-5)
+
+    def test_semantic_chunks_bounded_by_kreuzberg_internal_ceiling(self, monkeypatch):
+        """Kreuzberg's semantic chunker caps output at ~4000 chars regardless of config.
+
+        Documented tradeoff: cfg.chunk_size does not constrain semantic chunks.
+        Callers needing a hard budget must bypass semantic (``use_semantic=False``
+        or ``cfg.semantic_chunking=False``).
+        """
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)  # 512 char target — kreuzberg ignores
+        long_single_topic = "Solar panel efficiency improves yearly. " * 2000
+        chunks = chunk_text(long_single_topic)
+        assert chunks, "Expected at least one chunk from a long input"
+        # Kreuzberg's internal AUTO_BUDGET_CEILING is ~4000 chars. Assert a generous
+        # upper bound that exercises the "bounded but not by cfg.chunk_size" property.
+        assert max(len(c) for c in chunks) <= 4200
+
+    def test_char_budget_when_disabled(self, monkeypatch):
+        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        result = build_chunking_config()
+        assert result.chunker_type == "text"
+        assert result.max_chars == 512 * CHARS_PER_TOKEN
+        assert result.max_overlap == 100 * CHARS_PER_TOKEN
+
 
 class TestMarkdownChunking:
     def test_splits_on_headings(self):

@@ -344,6 +344,12 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True  # bool("maybe") is True
 
+    def test_whitespace_only_means_auto(self) -> None:
+        """Whitespace-only strings hit the auto/none branch and return None."""
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}):
+            c = Config()
+            assert c.enable_ocr is None
+
 
 class TestSemanticChunkingConfig:
     def test_default_is_true(self, tmp_path) -> None:
@@ -389,11 +395,19 @@ class TestSemanticChunkingConfig:
         assert any("banana" in rec.message for rec in caplog.records)
 
     def test_non_string_non_bool_coerced(self) -> None:
-        """Integer inputs (possible via direct construction) coerce via bool()."""
-        c = Config(semantic_chunking=1)  # type: ignore[arg-type]
-        assert c.semantic_chunking is True
-        c = Config(semantic_chunking=0)  # type: ignore[arg-type]
-        assert c.semantic_chunking is False
+        """Validator coerces non-str, non-bool inputs via ``bool()``.
+
+        Calls the validator directly because pydantic may pre-coerce via
+        its own conversion before a mode="before" validator even sees
+        simple types like int.
+        """
+        from lilbee.config import Config
+
+        parse = Config._parse_semantic_chunking
+        assert parse(1) is True
+        assert parse(0) is False
+        assert parse([1]) is True
+        assert parse([]) is False
 
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"

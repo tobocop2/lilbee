@@ -748,14 +748,6 @@ class TestExtractionConfig:
         config = extraction_config(ExtractMode.MARKDOWN)
         assert config.output_format == "markdown"
 
-    def test_text_only_has_no_pages_or_output_format(self):
-        from lilbee.ingest import ExtractMode, extraction_config
-
-        config = extraction_config(ExtractMode.TEXT_ONLY)
-        assert config.pages is None
-        assert getattr(config, "output_format", None) != "markdown"
-        assert config.chunking is not None
-
     def test_paginated_ocr_has_tesseract(self):
         from lilbee.ingest import ExtractMode, extraction_config
 
@@ -781,31 +773,6 @@ class TestExtractionConfig:
         from lilbee.ingest import ExtractMode, content_type_to_mode
 
         assert content_type_to_mode(content_type) is getattr(ExtractMode, expected_mode_name)
-
-
-class TestBuildChunkingConfig:
-    def test_semantic_enabled_uses_semantic_chunker(self, monkeypatch):
-        from lilbee.config import cfg
-        from lilbee.ingest import _build_chunking_config
-
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(cfg, "topic_threshold", 0.6)
-        result = _build_chunking_config()
-        assert result.chunker_type == "semantic"
-        assert result.topic_threshold == pytest.approx(0.6, abs=1e-5)
-
-    def test_semantic_disabled_uses_char_budget(self, monkeypatch):
-        from lilbee.chunk import CHARS_PER_TOKEN
-        from lilbee.config import cfg
-        from lilbee.ingest import _build_chunking_config
-
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "chunk_overlap", 100)
-        result = _build_chunking_config()
-        assert result.chunker_type == "text"
-        assert result.max_chars == 512 * CHARS_PER_TOKEN
-        assert result.max_overlap == 100 * CHARS_PER_TOKEN
 
     def test_topic_threshold_propagates_to_every_mode(self, monkeypatch):
         """Every ExtractMode carries the semantic chunking config, not just PDF."""
@@ -1063,6 +1030,35 @@ class TestVisionFallback:
 
             result = await ingest_document(f, "nochunks.pdf", "pdf")
         assert result == []
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_vision_fallback_bypasses_semantic_chunking(self, mock_kf, isolated_env):
+        """Per-page vision OCR text is chunked with use_semantic=False.
+
+        Semantic chunking per page would pay an embedding round-trip per
+        single-topic page, which is wasteful for OCR output.
+        """
+        cfg.enable_ocr = True
+        empty = _make_empty_result()
+        mock_kf.return_value = empty
+
+        f = isolated_env / "bypass.pdf"
+        f.write_bytes(b"fake pdf")
+
+        with (
+            mock.patch(
+                "lilbee.ingest.extract_pdf_vision",
+                return_value=[(1, "page one text"), (2, "page two text")],
+            ),
+            mock.patch("lilbee.ingest.chunk_text", return_value=["chunk"]) as mock_chunk,
+        ):
+            from lilbee.ingest import ingest_document
+
+            await ingest_document(f, "bypass.pdf", "pdf")
+
+        assert mock_chunk.call_count == 2, "chunk_text called once per OCR page"
+        for call in mock_chunk.call_args_list:
+            assert call.kwargs.get("use_semantic") is False
 
 
 class TestShouldRunOcrAutoDetect:

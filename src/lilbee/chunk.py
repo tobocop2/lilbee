@@ -1,11 +1,44 @@
-"""Text chunking with optional heading-aware splitting."""
+"""Text chunking with optional heading-aware and topic-aware splitting."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from lilbee.config import cfg
+
+if TYPE_CHECKING:
+    from kreuzberg import ChunkingConfig
 
 # Approximate characters-per-token ratio used to convert token counts to char counts.
 CHARS_PER_TOKEN = 4
+
+# Kreuzberg chunker_type identifiers (external API boundary).
+_SEMANTIC_CHUNKER = "semantic"
+_MARKDOWN_CHUNKER = "markdown"
+
+
+def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
+    """Build a kreuzberg ``ChunkingConfig`` from the current ``cfg``.
+
+    When ``use_semantic`` and ``cfg.semantic_chunking`` are both true the
+    topic-aware semantic chunker is selected. Its chunk size is controlled
+    by kreuzberg's internal topic-boundary heuristic (~4000 char ceiling);
+    ``cfg.chunk_size`` does not constrain semantic output. Callers that
+    need a hard character budget should pass ``use_semantic=False`` or
+    disable ``cfg.semantic_chunking``.
+    """
+    from kreuzberg import ChunkingConfig
+
+    max_chars = cfg.chunk_size * CHARS_PER_TOKEN
+    max_overlap = min(cfg.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
+
+    if use_semantic and cfg.semantic_chunking:
+        return ChunkingConfig(
+            chunker_type=_SEMANTIC_CHUNKER,
+            topic_threshold=cfg.topic_threshold,
+            max_overlap=max_overlap,
+        )
+    return ChunkingConfig(max_chars=max_chars, max_overlap=max_overlap)
 
 
 def chunk_text(
@@ -13,19 +46,24 @@ def chunk_text(
     *,
     mime_type: str = "text/plain",
     heading_context: bool = False,
+    use_semantic: bool = True,
 ) -> list[str]:
     """Split text into chunks.
 
     Precedence for chunker selection:
     ``heading_context=True`` always wins so the markdown chunker preserves
-    heading hierarchy for wiki paths. Otherwise if ``cfg.semantic_chunking``
-    is true, the topic-aware semantic chunker is used. Otherwise the default
-    chunker runs with a fixed character budget.
+    heading hierarchy for wiki paths. Otherwise ``use_semantic`` combined
+    with ``cfg.semantic_chunking`` selects the topic-aware chunker. Otherwise
+    the default chunker runs with a fixed character budget.
 
     Args:
         text: The text to chunk.
         mime_type: MIME type hint for chunker selection.
         heading_context: If True, prepend heading hierarchy to each chunk.
+        use_semantic: If False, bypass the semantic chunker even when
+            ``cfg.semantic_chunking`` is true. Used by callers that chunk
+            already-segmented text (e.g. per-page vision OCR) where
+            topic-based splitting is wasteful.
 
     Returns:
         List of chunk strings. Empty if text is empty.
@@ -35,24 +73,17 @@ def chunk_text(
 
     from kreuzberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
 
-    max_chars = cfg.chunk_size * CHARS_PER_TOKEN
-    max_overlap = min(cfg.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
-
     if heading_context:
+        max_chars = cfg.chunk_size * CHARS_PER_TOKEN
+        max_overlap = min(cfg.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
         chunking = ChunkingConfig(
             max_chars=max_chars,
             max_overlap=max_overlap,
-            chunker_type="markdown",
+            chunker_type=_MARKDOWN_CHUNKER,
             prepend_heading_context=True,  # type: ignore[call-arg]
         )
-    elif cfg.semantic_chunking:
-        chunking = ChunkingConfig(
-            chunker_type="semantic",
-            topic_threshold=cfg.topic_threshold,
-            max_overlap=max_overlap,
-        )
     else:
-        chunking = ChunkingConfig(max_chars=max_chars, max_overlap=max_overlap)
+        chunking = build_chunking_config(use_semantic=use_semantic)
 
     config = ExtractionConfig(chunking=chunking)
     result = extract_bytes_sync(text.encode("utf-8"), mime_type, config=config)
