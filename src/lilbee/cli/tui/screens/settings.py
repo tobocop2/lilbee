@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import defaultdict
 from typing import ClassVar
 
@@ -20,6 +21,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.config import cfg
+
+_ENV_PREFIX = "LILBEE_"
 
 log = logging.getLogger(__name__)
 
@@ -65,15 +68,29 @@ def _type_pill(defn: SettingDef) -> Content:
     return pill(type_name, bg, fg)
 
 
+def _env_var_name(key: str) -> str:
+    """Return the LILBEE_* env var name for a config key."""
+    return _ENV_PREFIX + key.upper()
+
+
+def _env_pill(key: str) -> Content | None:
+    """Return a warning pill showing the literal env var when it's set.
+
+    The pill appears only when the user has exported the corresponding
+    env var, signalling that TUI edits won't persist because the env
+    wins on next launch.
+    """
+    env_name = _env_var_name(key)
+    if os.environ.get(env_name) is None:
+        return None
+    return pill(env_name, "$warning", "$text")
+
+
 def _help_content(key: str, defn: SettingDef) -> Content:
-    """Build help text with default value hint."""
-    value = _effective_value(key)
-    parts: list[Content | tuple[str, str]] = []
+    """Build help text; the editor widget already shows the current value."""
     if defn.help_text:
-        parts.append(Content(defn.help_text))
-    default_hint = f"  current: {value}"
-    parts.append((default_hint, "$text-muted"))
-    return Content.assemble(*parts)
+        return Content(defn.help_text)
+    return Content("")
 
 
 def _group_settings() -> dict[str, list[tuple[str, SettingDef]]]:
@@ -167,10 +184,12 @@ class SettingsScreen(Screen[None]):
             name=f"{defn.group.lower()} {key}",
             id=f"row-{key}",
         ):
-            yield Static(
-                Content.assemble(Content(key + "  "), _type_pill(defn)),
-                classes="setting-title",
-            )
+            title_parts: list[Content] = [Content(key + "  "), _type_pill(defn)]
+            env_badge = _env_pill(key)
+            if env_badge is not None:
+                title_parts.append(Content("  "))
+                title_parts.append(env_badge)
+            yield Static(Content.assemble(*title_parts), classes="setting-title")
             yield Static(_help_content(key, defn), classes="setting-help")
             if defn.writable:
                 yield _make_editor(key, defn)
