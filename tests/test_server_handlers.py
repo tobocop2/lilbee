@@ -496,6 +496,124 @@ class TestAddFiles:
                 events.append(event)
             assert any("done" in e for e in events)
 
+    async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
+        """Sync failure emits one error frame and closes the stream without a done frame."""
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content")
+
+        async def failing_sync(**kwargs):
+            raise RuntimeError("sync blew up")
+
+        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+            events = []
+            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+                events.append(event)
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(error_events) == 1
+        assert "sync blew up" in error_events[0]
+        # No done event when the task failed.
+        assert done_events == []
+
+
+class TestSyncStreamDoneDelivery:
+    """Regression tests for the SSE drain race (bb-7enj)."""
+
+    async def test_done_event_delivered_on_fast_completion(self):
+        """A fast-completing sync still delivers both done frames in order."""
+        sync_result = SyncResult(added=["fast.txt"])
+
+        async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            if on_progress:
+                from lilbee.progress import SyncDoneEvent
+
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=instant_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        # The sync-emitted done (SyncDoneEvent counts) must be delivered, and
+        # the handler-emitted done (SyncResult lists) must follow it.
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(done_events) == 2, f"expected 2 done events, got {done_events}"
+
+        counts_done = json.loads(done_events[0].split("data: ")[1].strip())
+        lists_done = json.loads(done_events[1].split("data: ")[1].strip())
+        assert counts_done == {"added": 1, "updated": 0, "removed": 0, "failed": 0}
+        assert lists_done["added"] == ["fast.txt"]
+
+    async def test_done_event_delivered_on_noop_sync(self):
+        """A sync with zero file changes still emits the done frame."""
+        sync_result = SyncResult()  # empty: no added/updated/removed
+
+        async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            if on_progress:
+                from lilbee.progress import SyncDoneEvent
+
+                on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=noop_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(done_events) == 2
+        counts = json.loads(done_events[0].split("data: ")[1].strip())
+        assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0}
+
+    async def test_drain_exits_cleanly_when_producer_raises(self):
+        """A raising producer still enqueues the sentinel via finally so drain closes."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+
+        async def raising_producer():
+            try:
+                raise RuntimeError("boom")
+            finally:
+                sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(raising_producer())
+        events = [e async for e in sse.drain(task, "raising")]
+        assert events == []
+        assert task.done()
+        assert isinstance(task.exception(), RuntimeError)
+
+    async def test_stream_reports_error_when_sync_raises(self):
+        """If the sync coroutine raises, sync_stream emits an error SSE frame."""
+
+        async def failing_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            raise RuntimeError("boom")
+
+        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(error_events) == 1
+        assert "boom" in error_events[0]
+        # No done frame should be emitted when sync failed.
+        assert done_events == []
+
+
+class TestDrainFallback:
+    async def test_drain_exits_when_task_done_without_sentinel(self):
+        """drain() exits cleanly when a task finishes with no sentinel."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+
+        async def quiet_producer():
+            # Never emits anything; simulates a crashed or misbehaving producer.
+            return None
+
+        task = asyncio.create_task(quiet_producer())
+        events = [e async for e in sse.drain(task, "no-sentinel test")]
+        assert events == []
+        assert task.done()
+
 
 class TestListModels:
     @patch("lilbee.models.list_installed_models")
