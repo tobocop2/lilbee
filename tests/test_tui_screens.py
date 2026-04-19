@@ -6964,3 +6964,217 @@ async def test_wiki_regenerate_selected_page_not_found():
             await pilot.pause()
         mock_notify.assert_called_once()
         assert "Source not found" in mock_notify.call_args[0][0]
+
+
+# =============================================================================
+# Coverage fill: catalog.py branches
+# =============================================================================
+
+
+async def test_catalog_update_sort_label_loading_more():
+    """_update_sort_label renders the 'loading more' variant when flag is set."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._loading_more = True
+            screen._update_sort_label()
+            label = screen.query_one("#sort-label", Static)
+            assert "loading more" in str(label.render())
+
+
+async def test_catalog_cycle_sort_noop_when_input_focused():
+    """action_cycle_sort returns early when focus is on the search Input."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._grid_view = False
+            screen.query_one("#catalog-search", Input).focus()
+            await pilot.pause()
+            before = screen._sort_column
+            screen.action_cycle_sort()
+            assert screen._sort_column == before
+
+
+async def test_catalog_cycle_sort_in_grid_view_notifies():
+    """action_cycle_sort in grid view surfaces the list-only notification."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            assert screen._grid_view is True
+            before = screen._sort_column
+            with patch.object(screen, "notify") as mock_notify:
+                screen.action_cycle_sort()
+            mock_notify.assert_called_once()
+            assert screen._sort_column == before
+
+
+async def test_catalog_cycle_sort_unknown_column_restarts_cycle():
+    """action_cycle_sort handles a sort column outside _SORT_CYCLE."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._sort_column = "NotInCycle"
+            screen.action_cycle_sort()
+            # Unknown column resets the cycle; index -1 -> _SORT_CYCLE[0]
+            assert screen._sort_column == "Name"
+
+
+async def test_catalog_focus_list_item_empty_is_noop():
+    """_focus_list_item returns early when there are no list items."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # list view exists but no items yet
+            screen._grid_view = False
+            screen._rows = []
+            screen._refresh_list()
+            # Should silently return instead of raising.
+            screen._focus_list_item(0)
+
+
+async def test_catalog_focused_list_index_none_when_no_focus():
+    """_focused_list_index returns None when no ModelListItem is focused."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            # screen.focused is None at this point
+            assert screen._focused_list_index() is None
+
+
+async def test_catalog_maybe_prefetch_returns_when_no_focus():
+    """_maybe_prefetch_on_nav returns early when focused_list_index is None."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            screen._grid_view = False
+            screen._hf_has_more = True
+            screen._loading_more = False
+            # focused_list_index is None, so load_more must NOT be called.
+            with patch.object(screen, "_load_more") as mock_load:
+                screen._maybe_prefetch_on_nav()
+            mock_load.assert_not_called()
+
+
+def test_catalog_get_highlighted_name_non_model_card_child():
+    """_get_highlighted_model_name returns None when the highlighted child
+    is neither a ModelListItem nor a ModelCard (defensive branch)."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = MagicMock()
+    screen.focused = None
+    fake_grid = MagicMock()
+    fake_grid.highlighted = 0
+    fake_grid.children = [object()]  # Not a ModelCard / ModelListItem
+    screen._focused_grid.return_value = fake_grid
+    assert CatalogScreen._get_highlighted_model_name(screen) is None
+
+
+async def test_catalog_focused_list_index_value_error_path():
+    """_focused_list_index returns None when the focused item is not in query results."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+    from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._grid_view = False
+            # Focus a fabricated ModelListItem that is not mounted in the screen.
+            dangling = ModelListItem(
+                TableRow(
+                    name="dangling",
+                    task="chat",
+                    params="1B",
+                    size="1.0 GB",
+                    quant="Q4_K_M",
+                    downloads="--",
+                    featured=False,
+                    installed=False,
+                    sort_downloads=0,
+                    sort_size=1.0,
+                )
+            )
+            # Directly stub `focused` with the dangling item so the list.index
+            # call in _focused_list_index raises ValueError.
+            screen.focused = dangling  # type: ignore[assignment]
+            assert screen._focused_list_index() is None
+
+
+# =============================================================================
+# Coverage fill: settings.py branches
+# =============================================================================
+
+
+def test_settings_env_pill_when_env_set(monkeypatch):
+    """_env_pill returns a pill when the LILBEE_* env var is exported."""
+    from lilbee.cli.tui.screens.settings import _env_pill
+
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    pill_content = _env_pill("chat_model")
+    assert pill_content is not None
+    assert "LILBEE_CHAT_MODEL" in pill_content.plain
+
+
+def test_settings_help_content_blank_when_no_help_text():
+    """_help_content returns empty Content when the setting has no help text."""
+    from lilbee.cli.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings import _help_content
+
+    defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
+    content = _help_content("anon", defn)
+    assert content.plain == ""
+
+
+async def test_settings_compose_renders_env_pill_when_set(monkeypatch):
+    """Setting row title includes env pill when LILBEE_* is exported."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+
+    app = App()  # type: ignore[abstract]
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = SettingsScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        title = screen.query_one("#row-chat_model .setting-title", Static)
+        assert "LILBEE_CHAT_MODEL" in str(title.render())

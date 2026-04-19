@@ -3501,3 +3501,83 @@ async def test_crawl_dialog_auto_prefix_https():
     result = app.results[0]
     assert isinstance(result, CrawlParams)
     assert result.url == "https://example.com"
+
+
+def _make_list_row(
+    name: str = "test",
+    task: str = "chat",
+    params: str = "7B",
+    size: str = "4.0 GB",
+    quant: str = "Q4_K_M",
+    downloads: str = "1K",
+    featured: bool = False,
+    installed: bool = False,
+    sort_downloads: int = 1000,
+    backend: str = "native",
+) -> TableRow:
+    return TableRow(
+        name=name,
+        task=task,
+        params=params,
+        size=size,
+        quant=quant,
+        downloads=downloads,
+        featured=featured,
+        installed=installed,
+        sort_downloads=sort_downloads,
+        sort_size=4.0,
+        backend=backend,
+    )
+
+
+class _ListItemApp(App[None]):
+    def __init__(self, row: TableRow) -> None:
+        super().__init__()
+        self._row = row
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        yield ModelListItem(self._row)
+
+
+class TestModelListItem:
+    """Cover selection, click, and build_specs fallback paths."""
+
+    async def test_action_select_posts_message(self) -> None:
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        app = _ListItemApp(_make_list_row())
+        received: list[ModelListItem.Selected] = []
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            item = app.query_one(ModelListItem)
+            item.post_message = received.append  # type: ignore[method-assign]
+            item.action_select()
+            assert len(received) == 1
+            assert received[0].item is item
+            assert received[0].control is item
+
+    async def test_on_click_focuses_and_posts(self) -> None:
+        from textual.events import Click
+        from textual.geometry import Offset
+
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
+
+        app = _ListItemApp(_make_list_row())
+        received: list[ModelListItem.Selected] = []
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            item = app.query_one(ModelListItem)
+            item.post_message = received.append  # type: ignore[method-assign]
+            item.on_click(Click(widget=item, widget_offset=Offset(0, 0), button=1))
+            assert item.has_focus
+            assert received and received[0].item is item
+
+    def test_build_specs_all_placeholders_renders_dashes(self) -> None:
+        from lilbee.cli.tui.widgets.model_list_item import _build_specs
+
+        content = _build_specs("--", "--", "--")
+        assert str(content.plain) == "--"

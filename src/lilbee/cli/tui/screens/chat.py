@@ -809,7 +809,7 @@ class ChatScreen(Screen[None]):
     def _do_sync(self, reporter: ProgressReporter) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.ingest import sync
-        from lilbee.progress import EmbedEvent, FileDoneEvent, FileStartEvent
+        from lilbee.progress import EmbedEvent, FileDoneEvent, FileStartEvent, SyncDoneEvent
 
         reporter.update(0, msg.SYNC_STATUS_SYNCING, indeterminate=True)
 
@@ -833,6 +833,11 @@ class ChatScreen(Screen[None]):
                 last_embed_update = now
                 pct = int(data.chunk * 100 / data.total_chunks) if data.total_chunks else 0
                 reporter.update(pct, msg.SYNC_EMBEDDING.format(file=data.file), indeterminate=False)
+            elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
+                # Without this handler the task never ticks to 100% and the
+                # Task Center row never flashes "just-completed" (bb-7enj).
+                total = data.added + data.updated + data.removed
+                reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 
         try:
             asyncio.run(sync(quiet=True, on_progress=on_progress))
