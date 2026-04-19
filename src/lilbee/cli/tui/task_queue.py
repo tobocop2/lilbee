@@ -277,14 +277,13 @@ class TaskQueue:
         return advanced
 
     def remove_task(self, task_id: str) -> None:
-        """Remove a task from tracking entirely (including history).
+        """Remove a task from both live tracking and history.
 
-        Called after the 2-second flash window to fully dismiss a
-        completed / failed / cancelled task. History must be pruned here
-        too, otherwise Task Center rows stack up forever — the row
-        widget reads history via ``_all_tasks()`` to surface finished
-        work for the flash, and leaving the entry around keeps the row
-        on screen indefinitely.
+        Most callers shouldn't need this in normal flow — completed rows
+        linger in the Task Center on purpose so users can review recent
+        work, and ``clear_history()`` handles bulk pruning. This stays
+        for tests and administrative paths that need to drop a specific
+        id.
         """
         with self._lock:
             task = self._tasks.pop(task_id, None)
@@ -293,6 +292,25 @@ class TaskQueue:
                 self._remove_from_queue_locked(task_id, task.task_type)
             self._history = [t for t in self._history if t.task_id != task_id]
         self._notify()
+
+    def clear_history(self) -> int:
+        """Drop all DONE/FAILED/CANCELLED entries from history.
+
+        Returns the number of rows cleared. The Task Center binds this
+        to ``C`` so the user can tidy up once they're done inspecting.
+        """
+        with self._lock:
+            cleared = len(self._history)
+            self._history = []
+            # Also drop the backing task records so memory is actually freed.
+            self._tasks = {
+                tid: t
+                for tid, t in self._tasks.items()
+                if t.status in (TaskStatus.QUEUED, TaskStatus.ACTIVE)
+            }
+        if cleared:
+            self._notify()
+        return cleared
 
     def _remove_from_active_locked(self, task_id: str, task_type: str) -> None:
         """Remove a task from active tracking. Caller must hold _lock."""

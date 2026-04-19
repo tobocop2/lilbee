@@ -49,6 +49,7 @@ class TaskCenter(Screen[None]):
         Binding("escape", "go_back", "Back", show=False),
         Binding("r", "refresh_tasks", "Refresh", show=True),
         Binding("c", "cancel_task", "Cancel", show=True),
+        Binding("C", "clear_history", "Clear done", show=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
     ]
@@ -82,6 +83,11 @@ class TaskCenter(Screen[None]):
 
     def action_refresh_tasks(self) -> None:
         """Manual refresh (r). No-op beyond forcing an immediate poll."""
+        self._poll()
+
+    def action_clear_history(self) -> None:
+        """Drop all DONE/FAILED/CANCELLED rows (shift+c)."""
+        self.app.task_bar.queue.clear_history()
         self._poll()
 
     def action_cancel_task(self) -> None:

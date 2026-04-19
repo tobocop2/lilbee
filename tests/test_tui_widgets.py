@@ -1105,6 +1105,27 @@ class TestTaskQueue:
         q.remove_task(t1)
         assert not any(t.task_id == t1 for t in q.history)
 
+    def test_clear_history_drops_all_finished_tasks(self) -> None:
+        """clear_history prunes DONE/FAILED/CANCELLED in one shot."""
+        from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
+
+        q = TaskQueue()
+        a = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(a)
+        b = q.enqueue(lambda: None, "B", "sync")
+        q.advance()
+        q.fail_task(b, "err")
+        c = q.enqueue(lambda: None, "C", "sync")
+        q.advance()
+        # C stays ACTIVE — cleared list should still leave it behind.
+        assert len(q.history) == 2
+        cleared = q.clear_history()
+        assert cleared == 2
+        assert q.history == []
+        active_task = q.get_task(c)
+        assert active_task is not None and active_task.status == TaskStatus.ACTIVE
+
     def test_history_empty_initially(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
 
