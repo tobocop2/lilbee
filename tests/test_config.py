@@ -259,6 +259,14 @@ class TestTomlConfigFile:
             c = Config()
             assert c.repeat_penalty == 1.2
 
+    def test_repeat_penalty_defaults_to_one_point_one(self, tmp_path):
+        """Fresh Config defaults repeat_penalty to 1.1 so chat doesn't loop."""
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.repeat_penalty == 1.1
+
     def test_num_ctx_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("num_ctx = 4096\n")
