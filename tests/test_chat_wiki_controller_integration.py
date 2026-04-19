@@ -439,6 +439,47 @@ async def test_cmd_add_submits_task_to_controller(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) -> None:
+    """A duplicate in documents_dir opens ConfirmDialog; confirm spawns the task."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.config import cfg as _cfg
+
+    # Seed a copy already in documents_dir so _cmd_add detects a duplicate.
+    _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    (_cfg.documents_dir / "doc.pdf").write_bytes(b"existing")
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"new")
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        assert screen is not None
+
+        pushed: list[object] = []
+        real_push = app.push_screen
+
+        def _capture_push(screen_or_name, callback=None, **kwargs):  # type: ignore[no-untyped-def]
+            pushed.append((screen_or_name, callback))
+            return real_push(screen_or_name, callback, **kwargs)
+
+        app.push_screen = _capture_push  # type: ignore[assignment]
+
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_add(str(src))
+            # Dialog pushed, task NOT yet submitted.
+            assert pushed, "confirm dialog should have been pushed"
+            assert not mock_start.called, "start_task must wait for confirmation"
+
+            # Simulate user confirming: the captured callback runs with True.
+            callback = pushed[0][1]
+            assert callback is not None
+            callback(True)
+            assert mock_start.called, "confirmed dialog should spawn the add task"
+
+
+@pytest.mark.asyncio
 async def test_cmd_add_rejects_when_sync_active(tmp_path: Path) -> None:
     """_cmd_add refuses when another sync is already running."""
     from lilbee.cli.tui.screens.chat import ChatScreen

@@ -130,6 +130,11 @@ class Config(BaseSettings):
 
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+
+    # Wall-clock timeout in seconds for the Tesseract OCR fallback per
+    # file. Large scanned PDFs can otherwise block an ingest worker for
+    # many minutes and make the TUI feel frozen. 0 disables the cap.
+    tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)

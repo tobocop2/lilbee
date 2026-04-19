@@ -316,32 +316,61 @@ class ChatScreen(Screen[None]):
         if not path.exists():
             self.notify(msg.CMD_ADD_NOT_FOUND.format(path=path), severity="error")
             return
+        dest = cfg.documents_dir / path.name
+        if dest.exists():
+            self._prompt_overwrite(path)
+            return
+        self._submit_add(path, force=False)
+
+    def _prompt_overwrite(self, path: Path) -> None:
+        """Ask to overwrite an existing copy before re-syncing."""
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=path.name))
+                return
+            self._submit_add(path, force=True)
+
+        self.app.push_screen(
+            ConfirmDialog(
+                msg.CMD_ADD_DUPLICATE_TITLE,
+                msg.CMD_ADD_DUPLICATE_MESSAGE.format(name=path.name),
+            ),
+            _on_confirm,
+        )
+
+    def _submit_add(self, path: Path, *, force: bool) -> None:
+        """Spawn the add worker. Separated so overwrite confirm can reuse it."""
         from lilbee.cli.tui.task_queue import TaskType
 
         self._sync_active = True
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_add(path, reporter)
+                self._do_add(path, reporter, force=force)
             finally:
                 self._sync_active = False
 
         self._task_bar.start_task(f"Add {path.name}", TaskType.ADD, _target, indeterminate=True)
 
-    def _do_add(self, path: Path, reporter: ProgressReporter) -> None:
+    def _do_add(self, path: Path, reporter: ProgressReporter, *, force: bool = False) -> None:
         """Copy files and run sync. Called on worker thread with a reporter."""
         from lilbee.cli.helpers import copy_files
         from lilbee.ingest import sync
         from lilbee.progress import FileStartEvent
 
         reporter.update(0, f"Copying {path.name}...", indeterminate=True)
-        result = copy_files([path])
+        result = copy_files([path], force=force)
         copied = result.copied
         for name in result.skipped:
             call_from_thread(self, self.notify, f"{name} already exists (use --force to overwrite)")
         reporter.update(0, f"Copied {len(copied)} file(s), syncing...", indeterminate=True)
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
+            # Polling point so /c in Task Center can stop a long ingest
+            # between file boundaries without having to kill the thread.
+            reporter.check_cancelled()
             if event_type == EventType.FILE_START and isinstance(data, FileStartEvent):
                 reporter.update(0, f"Syncing {data.file}...", indeterminate=True)
 
