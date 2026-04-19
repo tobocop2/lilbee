@@ -123,6 +123,29 @@ async def test_action_cancel_hits_active_when_no_focus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_history_action_drops_finished_rows() -> None:
+    """Shift+C clears DONE/FAILED/CANCELLED rows and leaves active ones alone."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(TaskCenter())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TaskCenter)
+        done_id = app.task_bar.queue.enqueue(lambda: None, "done", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.complete_task(done_id)
+        await pilot.pause(delay=0.1)
+        assert done_id in screen._rows
+        screen.action_clear_history()
+        for _ in range(5):
+            await pilot.pause(delay=0.1)
+            if done_id not in screen._rows:
+                break
+        assert done_id not in screen._rows
+
+
+@pytest.mark.asyncio
 async def test_refresh_action_is_safe_on_empty_queue() -> None:
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

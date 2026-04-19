@@ -289,8 +289,31 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
 
 
 @pytest.mark.asyncio
-async def test_finalize_removes_task_after_flash(monkeypatch) -> None:
-    """B1: finished tasks must not leak. After the 2 s flash, the task is removed."""
+async def test_notify_model_installed_refreshes_chat_screen() -> None:
+    """When a DOWNLOAD finalizes DONE the ChatScreen's model bar is refreshed."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        assert screen is not None
+        with patch.object(screen, "refresh_model_bar") as mock_refresh:
+            app.task_bar._notify_model_installed()
+            assert mock_refresh.called
+
+
+@pytest.mark.asyncio
+async def test_finished_task_lingers_in_history_until_cleared() -> None:
+    """Completed rows stay in history so users can review recent work.
+
+    ``clear_history()`` is the explicit bulk-drop path (bound to
+    ``C`` in Task Center). The task itself remains reachable via
+    ``get_task`` until either that call or a targeted ``remove_task``
+    fires.
+    """
     app = _Host()
     async with app.run_test() as pilot:
         controller = TaskBarController(app)
@@ -300,26 +323,26 @@ async def test_finalize_removes_task_after_flash(monkeypatch) -> None:
             while not release[0]:
                 time.sleep(0.01)
 
-        # Shorten the flash so the test doesn't wait 2 s real time.
-        original_set_timer = app.set_timer
-
-        def fast_timer(_delay, callback, *args, **kwargs):
-            return original_set_timer(0.05, callback, *args, **kwargs)
-
-        monkeypatch.setattr(app, "set_timer", fast_timer)
+        def _status() -> TaskStatus | None:
+            task = controller.queue.get_task(task_id)
+            return task.status if task else None
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model())
-            _wait_until(lambda: controller.queue.get_task(task_id).status == TaskStatus.ACTIVE)
+            _wait_until(lambda: _status() == TaskStatus.ACTIVE)
             release[0] = True
             for _ in range(40):
                 await pilot.pause()
-                if controller.queue.get_task(task_id) is None:
+                if _status() == TaskStatus.DONE:
                     break
 
-        assert controller.queue.get_task(task_id) is None, (
-            "task was not removed after flash; B1 regression"
-        )
+        task = controller.queue.get_task(task_id)
+        assert task is not None, "task must remain accessible after DONE"
+        assert task.status == TaskStatus.DONE
+        assert any(t.task_id == task_id for t in controller.queue.history)
+        # Explicit clear drops it.
+        controller.queue.clear_history()
+        assert controller.queue.get_task(task_id) is None
         assert controller.queue.is_empty
 
 

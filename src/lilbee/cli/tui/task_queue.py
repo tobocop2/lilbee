@@ -209,7 +209,12 @@ class TaskQueue:
         self._notify()
 
     def complete_task(self, task_id: str) -> None:
-        """Mark a task as done and remove it from tracking."""
+        """Mark a task as done and append it to history.
+
+        The task record stays in ``_tasks`` so callers can still look it
+        up by id. Bulk removal happens in ``clear_history`` or targeted
+        removal via ``remove_task``.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
@@ -223,7 +228,12 @@ class TaskQueue:
         self._notify()
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
-        """Mark a task as failed and remove it."""
+        """Mark a task as failed and append it to history.
+
+        The task record stays in ``_tasks`` so callers can still inspect
+        its detail. Bulk removal happens in ``clear_history`` or
+        targeted removal via ``remove_task``.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
@@ -236,13 +246,19 @@ class TaskQueue:
         self._notify()
 
     def cancel(self, task_id: str) -> bool:
-        """Cancel a queued or active task. Returns True if found."""
+        """Cancel a queued or active task. Returns True if found.
+
+        Appends the cancelled task to ``_history`` so the Task Center
+        renders it as a lingering ``cancelled`` row, matching the
+        post-flash contract for DONE and FAILED.
+        """
         with self._lock:
             task = self._tasks.get(task_id)
             if not task:
                 return False
             task.status = TaskStatus.CANCELLED
             task.completed_at = time.monotonic()
+            self._history.append(task)
             self._remove_from_active_locked(task_id, task.task_type)
             self._remove_from_queue_locked(task_id, task.task_type)
         self._notify()
@@ -277,13 +293,40 @@ class TaskQueue:
         return advanced
 
     def remove_task(self, task_id: str) -> None:
-        """Remove a completed/failed/cancelled task from tracking entirely."""
+        """Remove a task from both live tracking and history.
+
+        Most callers shouldn't need this in normal flow. Completed rows
+        linger in the Task Center on purpose so users can review recent
+        work, and ``clear_history()`` handles bulk pruning. This stays
+        for tests and administrative paths that need to drop a specific
+        id.
+        """
         with self._lock:
             task = self._tasks.pop(task_id, None)
             if task:
                 self._remove_from_active_locked(task_id, task.task_type)
                 self._remove_from_queue_locked(task_id, task.task_type)
+            self._history = [t for t in self._history if t.task_id != task_id]
         self._notify()
+
+    def clear_history(self) -> int:
+        """Drop all DONE/FAILED/CANCELLED entries from history.
+
+        Returns the number of rows cleared. The Task Center binds this
+        to ``C`` so the user can tidy up once they're done inspecting.
+        """
+        with self._lock:
+            cleared = len(self._history)
+            self._history = []
+            # Also drop the backing task records so memory is actually freed.
+            self._tasks = {
+                tid: t
+                for tid, t in self._tasks.items()
+                if t.status in (TaskStatus.QUEUED, TaskStatus.ACTIVE)
+            }
+        if cleared:
+            self._notify()
+        return cleared
 
     def _remove_from_active_locked(self, task_id: str, task_type: str) -> None:
         """Remove a task from active tracking. Caller must hold _lock."""

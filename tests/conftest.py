@@ -109,9 +109,20 @@ def _drain_textual_threads():
 
 @pytest.fixture(autouse=True)
 def _isolate_cfg(tmp_path):
-    """Snapshot and restore cfg for every test to prevent cross-test pollution."""
+    """Snapshot and restore cfg for every test to prevent cross-test pollution.
+
+    ``documents_dir`` is isolated to a scratch path so tests that drive
+    ``/add``-style flows can't see files left behind in the dev
+    ``.lilbee/documents/`` by an earlier run; without this, overwrite
+    prompts fire on phantom "existing" files.
+    """
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
+    cfg.documents_dir = tmp_path / "documents"
+    # Don't mkdir here. Most consumers that touch documents_dir
+    # create it with their own parents/exist_ok/ownership expectations;
+    # pre-creating here hides bugs where production code forgets to.
+    # Checks like ``dest.exists()`` on a missing path just return False.
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

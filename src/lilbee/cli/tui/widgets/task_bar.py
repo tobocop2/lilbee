@@ -158,24 +158,38 @@ class TaskBarController:
         self.queue.update_task(task_id, progress, detail, indeterminate=indeterminate)
 
     def complete_task(self, task_id: str) -> None:
-        """Mark a task done; keep it visible for a brief flash, then remove."""
+        """Mark a task done. Row lingers in history until the user clears it."""
+        task_type = self._task_type_of(task_id)
         self.queue.complete_task(task_id)
-        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id))
+        self._after_done_hooks(task_type)
+        self._advance_all(task_type)
 
     def fail_task(self, task_id: str, detail: str = "") -> None:
-        """Mark a task as failed; flash, then remove."""
+        """Mark a task failed. Row lingers in history until the user clears it."""
         self.queue.fail_task(task_id, detail)
-        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id))
+        self._advance_all(self._task_type_of(task_id))
 
     def cancel_task(self, task_id: str) -> None:
+        """Mark a task cancelled. Row lingers in history until the user clears it."""
+        task_type = self._task_type_of(task_id)
         self.queue.cancel(task_id)
-        self._dismiss(task_id)
-
-    def _dismiss(self, task_id: str) -> None:
-        task = self.queue.get_task(task_id)
-        task_type = task.task_type if task else None
-        self.queue.remove_task(task_id)
         self._advance_all(task_type)
+
+    def _after_done_hooks(self, task_type: str | None) -> None:
+        """Side effects triggered by a DONE completion.
+
+        Callable from both the direct ``complete_task`` convenience and
+        the worker-thread ``_finalize_task`` path so every success route
+        stays in sync. Does NOT advance the queue; each caller picks the
+        advance strategy that fits its context (``_advance_all`` vs
+        ``_try_start_next``).
+        """
+        if task_type == TaskType.DOWNLOAD.value:
+            self._notify_model_installed()
+
+    def _task_type_of(self, task_id: str) -> str | None:
+        task = self.queue.get_task(task_id)
+        return task.task_type if task else None
 
     def _advance_all(self, task_type: str | None) -> None:
         """Try to advance the freed type first, then any other idle type."""
@@ -203,7 +217,9 @@ class TaskBarController:
         and ``on_success`` (if provided) runs after on the same worker
         thread. On ``TaskCancelled`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
-        detail. In all cases the row is dismissed after a 2-second flash.
+        detail. Rows linger in the Task Center under their final status
+        until the user presses capital ``C`` to clear; the bottom bar
+        flashes the outcome once and then hides when idle.
 
         Per-type capacity in ``TaskQueue`` (download=2, everything else=1)
         controls concurrency: a second sync queues behind the first, but a
@@ -274,21 +290,48 @@ class TaskBarController:
     def _finalize_task(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None
     ) -> None:
-        """Mark the queue state, schedule the flash, promote next queued task.
+        """Mark the queue state, refresh dependents, promote next queued task.
 
-        Runs on the main thread. Atomically: we free the active slot, set
-        a 2 s flash timer, then advance the queue so any pending task of
-        the same type promotes immediately.
+        Runs on the main thread. Atomically: free the active slot, notify
+        anything downstream that needs a repaint (e.g. model dropdowns
+        after a download lands), and advance the queue. Rows stay in
+        history; the bottom bar flash expires on its own. Users clear
+        finished rows from the Task Center manually.
         """
         if outcome is TaskOutcome.DONE:
             self.queue.complete_task(task_id)
+            self._after_done_hooks(task_type)
         elif outcome is TaskOutcome.FAILED:
             self.queue.fail_task(task_id, detail)
         elif outcome is TaskOutcome.CANCELLED:
             self.queue.cancel(task_id)
-        self.app.set_timer(_DONE_FLASH_SECONDS, lambda: self._dismiss(task_id))
         if task_type:
             self._try_start_next(task_type)
+
+    def _notify_model_installed(self) -> None:
+        """Refresh any ChatScreen's ModelBar so the new model is selectable.
+
+        The dropdowns are built once on mount from the registry; without
+        this nudge, a freshly-downloaded model only appears after the
+        user reopens the screen. NoMatches and similar query errors are
+        silently skipped so a transient "bar not mounted yet" doesn't
+        crash the finalize path; anything else is logged so a real
+        failure surfaces in debug output.
+        """
+        # Late import to avoid a circular (ChatScreen imports this module).
+        from textual.css.query import QueryError
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        for screen in self.app.screen_stack:
+            # screen_stack is typed Screen[Any]; narrow at runtime to
+            # locate the one screen that owns the ModelBar.
+            if isinstance(screen, ChatScreen):
+                try:
+                    screen.refresh_model_bar()
+                except QueryError:
+                    log.debug("ModelBar not mounted yet; skipping refresh", exc_info=True)
+                break
 
     def start_download(self, model: CatalogModel) -> str:
         """Enqueue a model download and spawn a background worker.
@@ -351,6 +394,11 @@ class TaskBar(Static):
         # flash holds the coloured dot + summary past queue drain.
         self._flash_until_tick: int | None = None
         self._flash_outcome: TaskStatus | None = None
+        # Task ids we've already flashed on. Task Center rows linger in
+        # history after DONE/FAILED/CANCELLED so the user can review
+        # recent work; without this gate the bar would re-flash the same
+        # task every poll because ``history[-1]`` keeps matching.
+        self._flashed_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Label("", id="task-status-label")
@@ -429,14 +477,28 @@ class TaskBar(Static):
         queued = queue.queued_tasks
         history = queue.history
 
+        # Drop flashed-id entries for tasks the user has cleared from
+        # history. Without this prune, the set grows unbounded over a
+        # long session even though any id not in history can't re-flash.
+        if self._flashed_ids:
+            live_ids = {t.task_id for t in history}
+            self._flashed_ids &= live_ids
+
         in_flash = self._flash_until_tick is not None and self._tick_count <= self._flash_until_tick
         if not in_flash:
             self._flash_until_tick = None
             self._flash_outcome = None
-            # Detect transitions into flash territory by inspecting recent history.
+            # Flash on the freshest completion that hasn't been flashed
+            # yet. History now persists (rows show as DONE in Task
+            # Center until cleared), so we must gate by task_id instead
+            # of "history is non-empty".
             if not active and not queued and history:
                 last = history[-1]
-                if last.status in (TaskStatus.DONE, TaskStatus.FAILED):
+                if last.task_id not in self._flashed_ids and last.status in (
+                    TaskStatus.DONE,
+                    TaskStatus.FAILED,
+                ):
+                    self._flashed_ids.add(last.task_id)
                     self._flash_until_tick = self._tick_count + int(
                         _DONE_FLASH_SECONDS / _POLL_INTERVAL_SECONDS
                     )
@@ -448,13 +510,32 @@ class TaskBar(Static):
 
         self.display = True
         dot_color, summary = self._compose_segments(active, queued)
-        hint = f"[i dim]{msg.TASKBAR_HINT}[/]"
+        hint = f"[i dim]{self._hint_copy()}[/]"
         dot = f"[{dot_color}]{_DOT_GLYPH}[/]"
         label_text = f" {dot}  {summary}    {hint}"
 
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _hint_copy(self) -> str:
+        """Return the right-aligned hint, context-aware.
+
+        When a chat ``Input`` (or similar) is focused the ``t`` keypress is
+        eaten before the app-level binding fires, so the user needs
+        ``Esc then t``. Every other screen (wizard grid, catalog,
+        settings, task center) lets ``t`` bubble, so a shorter ``Press t
+        for Tasks`` is accurate and easier to scan.
+        """
+        from textual.widgets import Input
+
+        try:
+            focused = self.app.focused
+        except Exception:
+            return msg.TASKBAR_HINT
+        if isinstance(focused, Input):
+            return msg.TASKBAR_HINT_INPUT
+        return msg.TASKBAR_HINT
 
     def _compose_segments(self, active: list, queued: list) -> tuple[str, str]:
         """Return (dot color, text summary) for the current state."""
