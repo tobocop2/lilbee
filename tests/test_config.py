@@ -669,19 +669,30 @@ class TestSemanticChunkingConfig:
     def test_semantic_chunking_env_var(self, monkeypatch, tmp_path):
         """LILBEE_SEMANTIC_CHUNKING env var controls the setting."""
         monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "false")
-        from lilbee.config import _load_bool
+        from lilbee.config import _load_setting, _parse_bool
 
-        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+        assert (
+            _load_setting(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True, _parse_bool)
+            is False
+        )
 
     def test_semantic_chunking_env_var_truthy_values(self, monkeypatch, tmp_path):
-        from lilbee.config import _load_bool
+        from lilbee.config import _load_setting, _parse_bool
 
         for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
             monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", truthy)
-            assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False) is True
+            assert (
+                _load_setting(
+                    tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False, _parse_bool
+                )
+                is True
+            )
         for falsy in ("false", "FALSE", "0", "no", "  NO  "):
             monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", falsy)
-            assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+            assert (
+                _load_setting(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True, _parse_bool)
+                is False
+            )
 
     def test_semantic_chunking_invalid_env_falls_back_to_default(
         self, monkeypatch, tmp_path, caplog
@@ -689,31 +700,58 @@ class TestSemanticChunkingConfig:
         """Unknown values log a warning and return the default."""
         import logging
 
-        from lilbee.config import _load_bool
+        from lilbee.config import _load_setting, _parse_bool
 
         monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "banana")
         with caplog.at_level(logging.WARNING, logger="lilbee.config"):
-            result = _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True)
+            result = _load_setting(
+                tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True, _parse_bool
+            )
         assert result is True
         assert any("banana" in rec.message for rec in caplog.records)
+
+    def test_invalid_int_env_falls_back_to_default(self, monkeypatch, tmp_path, caplog):
+        """_load_setting applies the graceful fallback to any typed value."""
+        import logging
+
+        from lilbee.config import _load_setting
+
+        monkeypatch.setenv("LILBEE_CHUNK_SIZE", "not-a-number")
+        with caplog.at_level(logging.WARNING, logger="lilbee.config"):
+            result = _load_setting(tmp_path, "chunk_size", "CHUNK_SIZE", 512, int)
+        assert result == 512
+        assert any("not-a-number" in rec.message for rec in caplog.records)
 
     def test_semantic_chunking_toml_precedence(self, monkeypatch, tmp_path):
         """config.toml value is used when env var is unset."""
         from lilbee import settings
-        from lilbee.config import _load_bool
+        from lilbee.config import _load_setting, _parse_bool
 
         monkeypatch.delenv("LILBEE_SEMANTIC_CHUNKING", raising=False)
         settings.set_value(tmp_path, "semantic_chunking", "false")
-        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+        assert (
+            _load_setting(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True, _parse_bool)
+            is False
+        )
 
     def test_semantic_chunking_env_overrides_toml(self, monkeypatch, tmp_path):
         """LILBEE_<ENV> env var takes precedence over config.toml."""
         from lilbee import settings
-        from lilbee.config import _load_bool
+        from lilbee.config import _load_setting, _parse_bool
 
         settings.set_value(tmp_path, "semantic_chunking", "false")
         monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "true")
-        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False) is True
+        assert (
+            _load_setting(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False, _parse_bool)
+            is True
+        )
+
+    def test_parse_bool_raises_on_invalid(self):
+        """_parse_bool raises ValueError so _load_setting can warn and default."""
+        from lilbee.config import _parse_bool
+
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            _parse_bool("maybe")
 
     def test_semantic_chunking_can_be_disabled(self):
         c = Config(semantic_chunking=False, **_minimal_config_kwargs())

@@ -628,36 +628,58 @@ class TestDiscoverNewFormats:
 
 
 class TestKreuzbergConfig:
-    def test_pdf_gets_page_config(self):
-        from lilbee.ingest import kreuzberg_config
+    def test_paginated_gets_page_config(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_config("pdf")
+        config = kreuzberg_config(ExtractMode.PAGINATED)
         assert config.pages is not None
 
-    def test_pdf_no_markdown_output(self):
-        from lilbee.ingest import kreuzberg_config
+    def test_paginated_no_markdown_output(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_config("pdf")
+        config = kreuzberg_config(ExtractMode.PAGINATED)
         assert getattr(config, "output_format", None) != "markdown"
 
-    def test_non_pdf_no_page_config(self):
-        from lilbee.ingest import kreuzberg_config
+    def test_markdown_has_no_page_config(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_config("text")
+        config = kreuzberg_config(ExtractMode.MARKDOWN)
         assert config.pages is None
 
-    def test_chunking_config_set(self):
-        from lilbee.ingest import kreuzberg_config
+    def test_markdown_has_chunking(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_config("text")
+        config = kreuzberg_config(ExtractMode.MARKDOWN)
         assert config.chunking is not None
 
-    @pytest.mark.parametrize("content_type", ["text", "docx", "xlsx", "pptx", "epub", "image"])
-    def test_non_pdf_gets_markdown_output(self, content_type):
-        from lilbee.ingest import kreuzberg_config
+    def test_text_only_has_no_output_format(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_config(content_type)
+        config = kreuzberg_config(ExtractMode.TEXT_ONLY)
+        assert config.pages is None
+        assert getattr(config, "output_format", None) != "markdown"
+
+    def test_markdown_gets_markdown_output(self):
+        from lilbee.ingest import ExtractMode, kreuzberg_config
+
+        config = kreuzberg_config(ExtractMode.MARKDOWN)
         assert config.output_format == "markdown"
+
+    @pytest.mark.parametrize(
+        "content_type, expected_mode_name",
+        [
+            ("pdf", "PAGINATED"),
+            ("text", "MARKDOWN"),
+            ("docx", "MARKDOWN"),
+            ("image", "MARKDOWN"),
+            ("epub", "MARKDOWN"),
+            ("data", "MARKDOWN"),
+        ],
+    )
+    def test_content_type_to_mode(self, content_type, expected_mode_name):
+        from lilbee.ingest import ExtractMode, content_type_to_mode
+
+        assert content_type_to_mode(content_type) is getattr(ExtractMode, expected_mode_name)
 
 
 class TestSemanticChunking:
@@ -702,93 +724,111 @@ class TestSemanticChunking:
         assert result.max_chars == 512 * _CHARS_PER_TOKEN
         assert result.max_overlap == 100 * _CHARS_PER_TOKEN
 
-    def test_kreuzberg_config_pdf_has_semantic_chunking(self):
-        """PDF extraction config uses semantic chunker with topic threshold."""
-        from lilbee.ingest import kreuzberg_config
+    def test_kreuzberg_config_paginated_has_semantic_chunking(self):
+        """PAGINATED mode uses semantic chunker with topic threshold."""
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.6
-        config = kreuzberg_config("pdf")
+        config = kreuzberg_config(ExtractMode.PAGINATED)
         assert config.chunking.chunker_type == "semantic"
         assert config.chunking.topic_threshold == pytest.approx(0.6, abs=1e-5)
 
-    def test_kreuzberg_config_text_has_semantic(self):
-        """All content types use semantic chunker when enabled."""
-        from lilbee.ingest import kreuzberg_config
+    def test_kreuzberg_config_markdown_has_semantic(self):
+        """MARKDOWN mode uses the semantic chunker when enabled."""
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
         cfg.semantic_chunking = True
-        config = kreuzberg_config("text")
+        config = kreuzberg_config(ExtractMode.MARKDOWN)
         assert config.chunking.chunker_type == "semantic"
 
-    def test_kreuzberg_ocr_config_has_semantic(self):
-        """OCR config uses semantic chunker."""
-        from lilbee.ingest import kreuzberg_ocr_config
+    def test_kreuzberg_config_paginated_ocr_has_semantic(self):
+        """PAGINATED_OCR mode uses the semantic chunker."""
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.7
-        config = kreuzberg_ocr_config()
+        config = kreuzberg_config(ExtractMode.PAGINATED_OCR)
         assert config.chunking.chunker_type == "semantic"
         assert config.chunking.topic_threshold == pytest.approx(0.7, abs=1e-5)
 
-    def test_chunk_text_semantically_produces_real_chunks(self):
-        """Semantic text chunking produces actual text chunks from kreuzberg."""
-        from lilbee.ingest import _chunk_text_semantically
+    def test_chunk_plain_text_produces_real_chunks(self):
+        """Plain-text chunking produces actual text chunks from kreuzberg."""
+        from lilbee.ingest import _chunk_plain_text
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.75
         text = "First paragraph about machine learning.\n\nSecond paragraph about databases."
-        result = _chunk_text_semantically(text)
+        result = _chunk_plain_text(text)
         assert len(result) >= 1
         combined = " ".join(result)
         assert "machine learning" in combined
         assert "databases" in combined
 
-    def test_chunk_text_semantically_long_text_splits_into_multiple(self):
-        """Long text produces multiple semantic chunks, none swallowing the whole input."""
-        from lilbee.ingest import _chunk_text_semantically
+    def test_chunk_plain_text_long_text_splits_into_multiple(self):
+        """Long text produces multiple chunks, none swallowing the whole input."""
+        from lilbee.ingest import _chunk_plain_text
 
         cfg.semantic_chunking = True
         text = "\n\n".join(f"Paragraph {i} fills space." for i in range(200))
-        result = _chunk_text_semantically(text)
+        result = _chunk_plain_text(text)
         assert len(result) >= 2, f"Should split, got {len(result)}"
         for chunk in result:
             assert chunk.strip()
             assert len(chunk) < len(text)
 
-    def test_chunk_text_semantically_disabled_uses_internal_chunker(self):
-        """When semantic disabled, delegates to internal chunk_text."""
-        from lilbee.ingest import _chunk_text_semantically
+    def test_chunk_plain_text_disabled_still_uses_kreuzberg(self):
+        """When semantic is disabled, kreuzberg's text chunker still runs."""
+        from lilbee.ingest import _chunk_plain_text
 
         cfg.semantic_chunking = False
-        text = "Some text for chunking."
-        with mock.patch("lilbee.ingest.chunk_text", return_value=["sentinel"]) as m:
-            result = _chunk_text_semantically(text)
-        m.assert_called_once_with(text)
-        assert result == ["sentinel"]
+        with mock.patch("lilbee.ingest.chunk_text") as internal_chunker:
+            result = _chunk_plain_text("Some text for chunking.")
+        internal_chunker.assert_not_called()
+        assert result and all(chunk.strip() for chunk in result)
 
-    def test_chunk_text_semantically_empty_input(self):
-        from lilbee.ingest import _chunk_text_semantically
+    def test_chunk_plain_text_falls_back_when_kreuzberg_raises(self):
+        """Internal chunk_text only fires when kreuzberg itself errors out."""
+        from lilbee.ingest import _chunk_plain_text
 
-        assert _chunk_text_semantically("") == []
-        assert _chunk_text_semantically("   ") == []
+        cfg.semantic_chunking = True
+        with (
+            mock.patch(
+                "kreuzberg.extract_bytes_sync", side_effect=RuntimeError("kreuzberg exploded")
+            ),
+            mock.patch("lilbee.ingest.chunk_text", return_value=["fallback"]) as fallback,
+        ):
+            result = _chunk_plain_text("Some text for chunking.")
+        fallback.assert_called_once_with("Some text for chunking.")
+        assert result == ["fallback"]
 
-    def test_chunk_text_semantically_whitespace_only(self):
-        from lilbee.ingest import _chunk_text_semantically
+    def test_chunk_plain_text_empty_input(self):
+        from lilbee.ingest import _chunk_plain_text
 
-        assert _chunk_text_semantically("\n\n\n") == []
-        assert _chunk_text_semantically("\t  \n  ") == []
+        assert _chunk_plain_text("") == []
+        assert _chunk_plain_text("   ") == []
 
-    def test_chunk_text_semantically_no_chunks_returns_empty(self):
-        """When semantic chunker produces no chunks, return empty list."""
+    def test_chunk_plain_text_whitespace_only(self):
+        from lilbee.ingest import _chunk_plain_text
+
+        assert _chunk_plain_text("\n\n\n") == []
+        assert _chunk_plain_text("\t  \n  ") == []
+
+    def test_chunk_plain_text_no_chunks_returns_empty(self):
+        """When kreuzberg produces no chunks, return empty list without the fallback firing."""
         from unittest.mock import MagicMock, patch
 
-        from lilbee.ingest import _chunk_text_semantically
+        from lilbee.ingest import _chunk_plain_text
 
         cfg.semantic_chunking = True
         mock_result = MagicMock()
         mock_result.chunks = []
-        with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
-            assert _chunk_text_semantically("some text") == []
+        with (
+            patch("kreuzberg.extract_bytes_sync", return_value=mock_result),
+            patch("lilbee.ingest.chunk_text") as internal_chunker,
+        ):
+            assert _chunk_plain_text("some text") == []
+        internal_chunker.assert_not_called()
 
     def test_semantic_chunking_toggle_changes_behavior(self):
         """Toggling semantic_chunking changes the chunker type in configs."""
@@ -1095,8 +1135,7 @@ class TestVisionFallback:
     async def test_vision_fallback_no_chunks_returns_empty(
         self, mock_kf, mock_embed_batch, isolated_env
     ):
-        """When vision text produces no chunks, return empty list."""
-        cfg.semantic_chunking = False
+        """When kreuzberg yields no chunks for vision-OCR text, return empty list."""
         cfg.vision_model = "test-vision"
         empty = _make_empty_result()
         mock_kf.side_effect = [empty, empty]
@@ -1104,9 +1143,11 @@ class TestVisionFallback:
         f = isolated_env / "nochunks.pdf"
         f.write_bytes(b"fake pdf")
 
+        empty_chunks = mock.MagicMock()
+        empty_chunks.chunks = []
         with (
             mock.patch("lilbee.ingest.extract_pdf_vision", return_value=[(1, "Some text")]),
-            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
+            mock.patch("kreuzberg.extract_bytes_sync", return_value=empty_chunks),
         ):
             from lilbee.ingest import ingest_document
 
@@ -1334,24 +1375,24 @@ class TestSharedProgress:
         assert shared_progress.get(None) is None
 
 
-class TestKreuzbergOcrConfig:
+class TestPaginatedOcrConfig:
     def test_ocr_config_has_tesseract_backend(self):
-        from lilbee.ingest import kreuzberg_ocr_config
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_ocr_config()
+        config = kreuzberg_config(ExtractMode.PAGINATED_OCR)
         assert config.ocr is not None
         assert config.ocr.backend == "tesseract"
 
     def test_ocr_config_has_page_config(self):
-        from lilbee.ingest import kreuzberg_ocr_config
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_ocr_config()
+        config = kreuzberg_config(ExtractMode.PAGINATED_OCR)
         assert config.pages is not None
 
     def test_ocr_config_has_chunking(self):
-        from lilbee.ingest import kreuzberg_ocr_config
+        from lilbee.ingest import ExtractMode, kreuzberg_config
 
-        config = kreuzberg_ocr_config()
+        config = kreuzberg_config(ExtractMode.PAGINATED_OCR)
         assert config.chunking is not None
 
 
@@ -1366,10 +1407,11 @@ class TestIngestStructuredEdgeCases:
     async def test_no_chunks_returns_empty(self, isolated_env):
         from lilbee.ingest import _PREPROCESSORS, ingest_structured
 
-        cfg.semantic_chunking = False
+        empty_chunks = mock.MagicMock()
+        empty_chunks.chunks = []
         with (
             mock.patch.dict(_PREPROCESSORS, {"xml": lambda _: "some content here"}),
-            mock.patch("lilbee.ingest.chunk_text", return_value=[]),
+            mock.patch("kreuzberg.extract_bytes_sync", return_value=empty_chunks),
         ):
             result = await ingest_structured(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []

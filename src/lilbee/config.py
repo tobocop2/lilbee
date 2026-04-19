@@ -5,6 +5,7 @@ All settings can be overridden via environment variables prefixed with LILBEE_.
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -119,7 +120,9 @@ class Config(BaseModel):
             embedding_dim=_load_setting(data_root, "embedding_dim", "EMBEDDING_DIM", 768, int),
             chunk_size=_load_setting(data_root, "chunk_size", "CHUNK_SIZE", 512, int),
             chunk_overlap=_load_setting(data_root, "chunk_overlap", "CHUNK_OVERLAP", 100, int),
-            semantic_chunking=_load_bool(data_root, "semantic_chunking", "SEMANTIC_CHUNKING", True),
+            semantic_chunking=_load_setting(
+                data_root, "semantic_chunking", "SEMANTIC_CHUNKING", True, _parse_bool
+            ),
             topic_threshold=_load_setting(
                 data_root, "topic_threshold", "TOPIC_THRESHOLD", 0.75, float
             ),
@@ -156,12 +159,32 @@ _BOOL_TRUE = frozenset({"true", "1", "yes"})
 _BOOL_FALSE = frozenset({"false", "0", "no"})
 
 
-def _load_bool(data_root: Path, key: str, env_var: str, default: bool) -> bool:
-    """Load bool with precedence: LILBEE_<ENV> env > config.toml > default.
+def _parse_bool(raw: str) -> bool:
+    """Parse a string as a bool. Raises ValueError on unrecognized values.
 
     Truthy values: true/1/yes. Falsy values: false/0/no. Comparison is
-    case-insensitive. Unrecognized values log a warning and fall back to
-    *default* so a typo doesn't silently flip behavior.
+    case-insensitive; invalid input raises so ``_load_setting`` can warn
+    and fall back to the default.
+    """
+    normalized = raw.strip().lower()
+    if normalized in _BOOL_TRUE:
+        return True
+    if normalized in _BOOL_FALSE:
+        return False
+    raise ValueError(f"Invalid boolean: {raw!r}")
+
+
+def _load_setting(
+    data_root: Path,
+    key: str,
+    env_var: str,
+    default: Any,
+    typ: Callable[[str], Any],
+) -> Any:
+    """Load a setting with precedence: LILBEE_<ENV> env > config.toml > default.
+
+    Values that fail parsing log a warning and fall back to *default* so a
+    typo in an env var or config file doesn't surface as a crash at startup.
     """
     raw = os.environ.get(f"LILBEE_{env_var}")
     if raw is None:
@@ -169,31 +192,15 @@ def _load_bool(data_root: Path, key: str, env_var: str, default: bool) -> bool:
             saved = settings.get(data_root, key)
         except (ValueError, OSError):
             saved = None
-        if saved is not None:
+        if saved:
             raw = saved
     if raw is None:
         return default
-    normalized = raw.strip().lower()
-    if normalized in _BOOL_TRUE:
-        return True
-    if normalized in _BOOL_FALSE:
-        return False
-    log.warning("Invalid LILBEE_%s=%r, using default %r", env_var, raw, default)
-    return default
-
-
-def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:
-    """Load setting with precedence: LILBEE_<ENV> env > config.toml > default."""
-    raw = os.environ.get(f"LILBEE_{env_var}")
-    if raw is not None:
-        return typ(raw)
     try:
-        saved = settings.get(data_root, key)
-    except (ValueError, OSError):
-        saved = None
-    if saved:
-        return typ(saved)
-    return default
+        return typ(raw)
+    except (ValueError, TypeError):
+        log.warning("Invalid LILBEE_%s=%r, using default %r", env_var, raw, default)
+        return default
 
 
 def _resolve_data_root() -> Path:

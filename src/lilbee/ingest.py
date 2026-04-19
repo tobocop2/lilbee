@@ -6,6 +6,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -51,17 +52,47 @@ _MIN_MEANINGFUL_CHARS = 50
 # Approximate chars-per-token ratio (kreuzberg uses chars, not tokens)
 _CHARS_PER_TOKEN = 4
 
+_PDF_CONTENT_TYPE = "pdf"
+_TEXT_MIME = "text/plain"
+_MARKDOWN_OUTPUT = "markdown"
+_TESSERACT_BACKEND = "tesseract"
 
-def _chunk_text_semantically(text: str) -> list[str]:
-    """Chunk text, using semantic chunking when enabled."""
+
+class ExtractMode(StrEnum):
+    """Kreuzberg extraction paths used by lilbee's ingestion pipeline.
+
+    Modes describe extraction topology (pagination, OCR, output format).
+    Semantic chunking is orthogonal and applies to every mode via
+    :func:`_build_chunking_config`.
+    """
+
+    TEXT_ONLY = "text_only"
+    MARKDOWN = "markdown"
+    PAGINATED = "paginated"
+    PAGINATED_OCR = "paginated_ocr"
+
+
+def _chunk_plain_text(text: str) -> list[str]:
+    """Chunk raw text via kreuzberg.
+
+    The internal :func:`chunk_text` is only used as a last-resort fallback
+    when kreuzberg itself raises; both the semantic and the text chunker
+    paths are configured through :func:`kreuzberg_config` so the same
+    factory drives every document-ingestion entry point.
+    """
     if not text or not text.strip():
         return []
-    if not cfg.semantic_chunking:
-        return chunk_text(text)
-    from kreuzberg import ExtractionConfig, extract_bytes_sync
+    from kreuzberg import extract_bytes_sync
 
-    config = ExtractionConfig(chunking=_build_chunking_config())
-    result = extract_bytes_sync(text.encode("utf-8"), "text/plain", config=config)
+    try:
+        result = extract_bytes_sync(
+            text.encode("utf-8"),
+            _TEXT_MIME,
+            config=kreuzberg_config(ExtractMode.TEXT_ONLY),
+        )
+    except Exception:
+        log.exception("Kreuzberg chunking failed for raw text, using internal fallback")
+        return chunk_text(text)
     if not result.chunks:
         return []
     return [c.content for c in result.chunks]
@@ -162,7 +193,7 @@ _DOCUMENT_EXTENSIONS = frozenset(
 # Extension → content_type string for metadata
 _EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
-    ".pdf": "pdf",
+    ".pdf": _PDF_CONTENT_TYPE,
     **{ext: "code" for ext in _CODE_EXTENSIONS if ext not in _DOCUMENT_EXTENSIONS},
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
@@ -234,30 +265,34 @@ def _build_chunking_config() -> "ChunkingConfig":
     )
 
 
-def kreuzberg_config(content_type: str) -> "ExtractionConfig":
-    """Build kreuzberg ExtractionConfig for a given content type."""
-    from kreuzberg import ExtractionConfig, PageConfig
-
-    chunking = _build_chunking_config()
-
-    if content_type == "pdf":
-        return ExtractionConfig(
-            chunking=chunking,
-            pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        )
-    return ExtractionConfig(chunking=chunking, output_format="markdown")
+def content_type_to_mode(content_type: str) -> ExtractMode:
+    """Map a ``classify_file`` content_type to the kreuzberg extraction mode."""
+    return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
 
 
-def kreuzberg_ocr_config() -> "ExtractionConfig":
-    """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
+def kreuzberg_config(mode: ExtractMode) -> "ExtractionConfig":
+    """Build kreuzberg ExtractionConfig for the given extraction *mode*.
+
+    A single factory dispatches on an :class:`ExtractMode` via an explicit
+    map, so each mode declares exactly the kreuzberg parameters it needs
+    without branching logic at call sites.
+    """
     from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
     chunking = _build_chunking_config()
-    return ExtractionConfig(
-        chunking=chunking,
-        pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        ocr=OcrConfig(backend="tesseract"),
-    )
+    pages = PageConfig(extract_pages=True, insert_page_markers=False)
+    ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
+        ExtractMode.TEXT_ONLY: lambda: ExtractionConfig(chunking=chunking),
+        ExtractMode.MARKDOWN: lambda: ExtractionConfig(
+            chunking=chunking, output_format=_MARKDOWN_OUTPUT
+        ),
+        ExtractMode.PAGINATED: lambda: ExtractionConfig(chunking=chunking, pages=pages),
+        ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
+            chunking=chunking, pages=pages, ocr=ocr
+        ),
+    }
+    return builders[mode]()
 
 
 async def _try_tesseract_ocr(path: Path, source_name: str, fallback: Any) -> Any:
@@ -272,7 +307,7 @@ async def _try_tesseract_ocr(path: Path, source_name: str, fallback: Any) -> Any
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 2)
         try:
-            return await extract_file(str(path), config=kreuzberg_ocr_config())
+            return await extract_file(str(path), config=kreuzberg_config(ExtractMode.PAGINATED_OCR))
         finally:
             os.dup2(old_stderr, 2)
             os.close(devnull)
@@ -304,9 +339,7 @@ async def _vision_fallback(
         return []
 
     all_chunks = [
-        (page_num, chunk)
-        for page_num, text in page_texts
-        for chunk in _chunk_text_semantically(text)
+        (page_num, chunk) for page_num, text in page_texts for chunk in _chunk_plain_text(text)
     ]
     if not all_chunks:
         return []
@@ -350,11 +383,11 @@ async def ingest_document(
 
     use_vision = force_vision or bool(cfg.vision_model)
 
-    config = kreuzberg_config(content_type)
+    config = kreuzberg_config(content_type_to_mode(content_type))
     result = await extract_file(str(path), config=config)
 
     # Scanned PDF fallback chain: Tesseract OCR → vision model
-    if content_type == "pdf" and not _has_meaningful_text(result):
+    if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         # When vision is explicitly enabled, skip Tesseract and go straight to vision
         if not use_vision:
             result = await _try_tesseract_ocr(path, source_name, result)
@@ -441,7 +474,7 @@ async def ingest_structured(
     text = await asyncio.to_thread(preprocessor, path)
     if not text.strip():
         return []
-    texts = _chunk_text_semantically(text)
+    texts = _chunk_plain_text(text)
     if not texts:
         return []
     vectors = await asyncio.to_thread(
