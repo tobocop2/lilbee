@@ -23,11 +23,7 @@ class TestChunkText:
         assert "short paragraph" in chunks[0]
 
     def test_long_text_produces_multiple_chunks(self):
-        """Long text spanning distinct topics should produce multiple chunks.
-
-        Semantic chunking merges same-topic paragraphs, so the fixture
-        alternates between unrelated domains to force topic breaks.
-        """
+        """Multi-topic input forces topic breaks so semantic can't merge into one chunk."""
         topics = [
             "Solar panels convert sunlight into electricity via photovoltaic cells.",
             "The FDA approved a new clinical trial for a diabetes treatment.",
@@ -116,7 +112,7 @@ class TestBuildChunkingConfig:
         assert result.embedding is None
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
-        """When semantic is off, no EmbeddingConfig is built — avoids the ONNX download."""
+        """When semantic is off, no EmbeddingConfig is built; avoids the ONNX download."""
         from lilbee.chunk import build_chunking_config
         from lilbee.config import cfg
 

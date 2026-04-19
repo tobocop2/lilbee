@@ -70,12 +70,7 @@ _TESSERACT_BACKEND = "tesseract"
 
 
 class ExtractMode(StrEnum):
-    """Extraction modes used by lilbee's ingestion pipeline.
-
-    Modes describe extraction topology (pagination, OCR, output format).
-    Semantic chunking is orthogonal and applies to every mode via
-    :func:`lilbee.chunk.build_chunking_config`.
-    """
+    """Extraction topology: pagination / OCR / output format."""
 
     MARKDOWN = "markdown"
     PAGINATED = "paginated"
@@ -208,17 +203,12 @@ def classify_file(path: Path) -> str | None:
 
 
 def content_type_to_mode(content_type: str) -> ExtractMode:
-    """Map a ``classify_file`` content_type to the extraction mode."""
+    """Map a content_type to the extraction mode."""
     return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
 
 
 def extraction_config(mode: ExtractMode) -> ExtractionConfig:
-    """Build ExtractionConfig for the given extraction *mode*.
-
-    A single factory dispatches on an :class:`ExtractMode` via an explicit
-    builder map so each mode declares exactly the parameters it needs
-    without branching logic at call sites.
-    """
+    """Build ExtractionConfig for the given extraction mode."""
     from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
     chunking = build_chunking_config()
@@ -321,9 +311,7 @@ async def _vision_fallback(
     if not page_texts:
         return []
 
-    # Semantic chunking per page is wasteful: a single OCR page rarely
-    # spans multiple topics and each call pays an embedding-model round-trip.
-    # Use the char-budget path so vision OCR stays fast.
+    # Single OCR page rarely spans multiple topics; skip the semantic round-trip.
     all_chunks = [
         (page_num, chunk)
         for page_num, text in page_texts

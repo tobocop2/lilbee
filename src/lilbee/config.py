@@ -51,12 +51,7 @@ _BOOL_FALSE = frozenset({"false", "0", "no"})
 
 
 def _parse_bool(raw: str) -> bool:
-    """Parse a string as a bool. Raises ValueError on unrecognized values.
-
-    Truthy: true/1/yes. Falsy: false/0/no. Case- and whitespace-insensitive.
-    Raises so field validators can warn and fall back to a default rather than
-    silently coerce (``bool("false")`` is ``True`` in Python).
-    """
+    """Parse true/1/yes or false/0/no; raises ValueError on anything else."""
     normalized = raw.strip().lower()
     if normalized in _BOOL_TRUE:
         return True
@@ -148,13 +143,7 @@ class Config(BaseSettings):
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
-    # Opt-in topic-aware chunking. Default off because on mixed real-world corpora
-    # the semantic chunker can fragment numbered procedures and costs ~9x more
-    # downstream embedding calls. Enable via LILBEE_SEMANTIC_CHUNKING=true for
-    # prose-heavy corpora where topical coherence matters more than step fidelity.
     semantic_chunking: bool = ConfigField(default=False, writable=True)
-    # Cosine similarity threshold for topic boundary detection (0.0-1.0).
-    # Lower values produce more chunks; only used when semantic_chunking is true.
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
@@ -430,10 +419,7 @@ class Config(BaseSettings):
     @field_validator("semantic_chunking", mode="before")
     @classmethod
     def _parse_semantic_chunking(cls, v: Any) -> bool:
-        """Parse semantic_chunking from env var string or direct value.
-
-        Invalid values log a warning and fall back to the default (False).
-        """
+        """Parse from env string; invalid values warn and fall back to False."""
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
