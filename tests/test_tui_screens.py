@@ -4871,10 +4871,11 @@ async def test_setup_wizard_action_cancel():
             await pilot.pause()
 
 
-async def test_setup_wizard_footer_updates():
-    """_update_footer fills slot labels from current selections."""
-    from textual.widgets import Label
+async def test_setup_wizard_shows_intro_and_hint():
+    """Setup wizard exposes a single intro + a bottom Enter hint, no per-slot labels."""
+    from textual.widgets import Label, Static
 
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.setup import SetupWizard
 
     app = SetupTestApp()
@@ -4883,15 +4884,18 @@ async def test_setup_wizard_footer_updates():
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, SetupWizard)
-            chat_slot = screen.query_one("#setup-chat-slot", Label)
-            # Pre-selection by _build_grid populated chat_slot.
-            content_before = str(chat_slot._Static__content)  # type: ignore[attr-defined]
-            assert content_before != ""
-            screen._selections["chat"] = (None, None)
-            screen._selections["embedding"] = (None, None)
-            screen._update_footer()
-            content_after = str(chat_slot._Static__content)  # type: ignore[attr-defined]
-            assert "not selected" in content_after
+            intro = screen.query_one("#setup-intro", Static)
+            hint = screen.query_one("#setup-enter-hint", Label)
+            intro_text = str(intro._Static__content)  # type: ignore[attr-defined]
+            hint_text = str(hint._Static__content)  # type: ignore[attr-defined]
+            assert "chat" in intro_text.lower()
+            assert "search" in intro_text.lower() or "embedding" in intro_text.lower()
+            assert "Enter" in hint_text
+            # The old per-slot labels must not exist anymore.
+            assert not screen.query("#setup-chat-slot")
+            assert not screen.query("#setup-embed-slot")
+            assert not screen.query("#setup-download-size")
+            assert msg.SETUP_INTRO  # anchor the new constant
 
 
 async def test_setup_wizard_with_installed_models():

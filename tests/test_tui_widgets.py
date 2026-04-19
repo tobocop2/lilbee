@@ -1369,8 +1369,8 @@ class TestSetupWizard:
 
     def test_build_section_marks_installed_catalog_cards(self) -> None:
         """Catalog cards whose name:tag is already installed come back with
-        ``installed=True`` so they report a zero download size."""
-        from lilbee.cli.tui.screens.setup import SetupWizard, _card_download_size
+        ``installed=True`` so the Enter-to-install hint stays hidden."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         a = _make_model("Qwen3 0.6B", tag="0.6b", featured=True, size_gb=0.6)
         b = _make_model("Qwen3 4B", tag="4b", featured=True, size_gb=2.5)
@@ -1379,8 +1379,6 @@ class TestSetupWizard:
         cards = SetupWizard._build_section(wizard, "Chat", (a, b), {"qwen3-0.6b:0.6b"}, widgets)
         assert cards[0].row.installed is True
         assert cards[1].row.installed is False
-        assert _card_download_size(cards[0]) == 0.0
-        assert _card_download_size(cards[1]) == 2.5
 
     def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
         """_scan_installed_models output must be usable as installed refs for the
@@ -2193,7 +2191,7 @@ class TestSyncSelectPrepend:
         assert sel.value == "qwen3:8b"
 
     def test_default_prepended_when_not_in_opts(self) -> None:
-        """When the configured default isn't in opts, it's prepended before set_options."""
+        """A configured-but-uninstalled default is prepended with a clear label."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
@@ -2202,7 +2200,9 @@ class TestSyncSelectPrepend:
         _sync_select(sel, opts, default="llama3:8b")
         assert sel.set_options.call_count == 1
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
+        # Label should surface the uninstalled state, ref stays the same.
+        assert passed[0].ref == "llama3:8b"
+        assert "not installed" in passed[0].label
         assert sel.value == "llama3:8b"
 
     def test_bare_name_matches_latest_alias(self) -> None:
@@ -2230,10 +2230,11 @@ class TestSyncSelectPrepend:
         sel = mock.MagicMock()
         opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
         _sync_select(sel, opts, default="llama3")
-        # Should normalize to llama3:latest and prepend that
+        # Should normalize to llama3:latest and prepend with an explicit label
         assert sel.value == "llama3:latest"
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:latest", "llama3:latest")
+        assert passed[0].ref == "llama3:latest"
+        assert "not installed" in passed[0].label
 
     def test_no_default_leaves_value_untouched(self) -> None:
         """When there's no default, don't assign a value."""

@@ -49,4 +49,14 @@ ModelCard {
     #card-status {
         color: $text-muted;
     }
+
+    #card-hint {
+        color: $text-muted 40%;
+        text-style: italic;
+        display: none;
+    }
+
+    &.-highlight #card-hint {
+        display: block;
+    }
 }

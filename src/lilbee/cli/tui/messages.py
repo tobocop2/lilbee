@@ -119,13 +119,15 @@ WIKI_TYPE_HEADINGS: dict[str, str] = {
 APP_CANCELLED = "Cancelled"
 SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
+SETUP_INTRO = (
+    "lilbee needs two models to work: one for chat and one for search. "
+    "Pick one of each below — highlight a card and press [b]Enter[/b] to install. "
+    "Downloads continue in the background, so you can keep picking or press [b]Esc[/b] when done."
+)
 SETUP_HEADING_CHAT = "Chat Models"
 SETUP_HEADING_EMBED = "Embedding Models"
-SETUP_CHAT_SLOT = "Chat: {name}"
-SETUP_EMBED_SLOT = "Embed: {name}"
-SETUP_SLOT_EMPTY = "not selected"
-SETUP_TOTAL_DOWNLOAD = "Download: {size}"
-SETUP_ENTER_HINT = "Enter to install · Esc to finish"
+SETUP_ENTER_HINT = "Enter on a card to install  ·  Esc when done"
+SETUP_CARD_HINT = "↵ Enter to install"
 DEFAULT_VIEW = "Chat"
 _BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
 

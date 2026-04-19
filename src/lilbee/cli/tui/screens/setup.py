@@ -17,7 +17,7 @@ from typing import ClassVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
@@ -26,7 +26,6 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     catalog_to_row,
-    format_size_gb,
     parse_param_label,
 )
 from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -84,15 +83,6 @@ def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
     return chat, embed
 
 
-def _card_download_size(card: ModelCard | None) -> float:
-    """Return download size in GB for a non-installed card, or 0."""
-    if card and not card.row.installed:
-        cm = card.row.catalog_model
-        if cm:
-            return cm.size_gb
-    return 0.0
-
-
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
     """Return the CatalogModel to download for a non-installed card, or None."""
     if card and not card.row.installed:
@@ -146,13 +136,9 @@ class SetupWizard(Screen[str | None]):
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static(msg.SETUP_WELCOME, id="setup-title")
-        yield Static(msg.SETUP_SUBTITLE, id="setup-subtitle")
+        yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
-        with Horizontal(id="setup-footer"):
-            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-chat-slot")
-            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-embed-slot")
-            yield Label("", id="setup-download-size")
-            yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
+        yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
         yield TaskBar()
 
     def on_mount(self) -> None:
@@ -227,7 +213,6 @@ class SetupWizard(Screen[str | None]):
                 if cm and cm.ref == recommended.ref:
                     self._mark_selection(card, card.row.task)
                     break
-        self._update_footer()
 
     def _mark_selection(self, card: ModelCard, task: str) -> None:
         """Record a selection and repaint its card. No download yet."""
@@ -267,28 +252,6 @@ class SetupWizard(Screen[str | None]):
         ):
             self._submitted.add(pending.ref)
             self.app.task_bar.start_download(pending)
-        self._update_footer()
-
-    def _update_footer(self) -> None:
-        """Update footer slots and download size strip."""
-        chat_slot = self.query_one("#setup-chat-slot", Label)
-        embed_slot = self.query_one("#setup-embed-slot", Label)
-        size_label = self.query_one("#setup-download-size", Label)
-
-        chat_ref, chat_card = self._selections[ModelTask.CHAT]
-        embed_ref, embed_card = self._selections[ModelTask.EMBEDDING]
-
-        chat_slot.update(
-            msg.SETUP_CHAT_SLOT.format(name=chat_ref) if chat_ref else msg.SETUP_SLOT_EMPTY
-        )
-        embed_slot.update(
-            msg.SETUP_EMBED_SLOT.format(name=embed_ref) if embed_ref else msg.SETUP_SLOT_EMPTY
-        )
-
-        total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
-        size_label.update(
-            msg.SETUP_TOTAL_DOWNLOAD.format(size=format_size_gb(total_gb)) if total_gb > 0 else ""
-        )
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:

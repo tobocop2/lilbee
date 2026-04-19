@@ -50,6 +50,8 @@ class ModelCard(containers.VerticalGroup):
         self.set_class(selected, "-selected")
 
     def compose(self) -> ComposeResult:
+        from lilbee.cli.tui import messages as msg
+
         row = self._row
         bg = _TASK_COLORS.get(row.task, "$primary")
         with containers.Grid(id="card-header"):
@@ -64,6 +66,10 @@ class ModelCard(containers.VerticalGroup):
         status = _build_status(row)
         if status is not None:
             yield widgets.Label(status, id="card-status")
+        # Subtle "Enter to install" hint; CSS shows it only when the card
+        # is highlighted (GridSelect cursor), hides for installed cards.
+        if not row.installed:
+            yield widgets.Label(msg.SETUP_CARD_HINT, id="card-hint")
 
 
 def _build_specs(params: str, quant: str, size: str) -> Content:

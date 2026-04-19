@@ -6,10 +6,10 @@
     padding: 1 0 0 0;
 }
 
-#setup-subtitle {
-    text-align: center;
+#setup-intro {
     color: $text-muted;
-    padding: 0 0 1 0;
+    padding: 0 4 1 4;
+    text-align: center;
 }
 
 #setup-grid-container {
@@ -17,33 +17,15 @@
     padding: 0 1;
 }
 
-#setup-footer {
-    dock: bottom;
-    height: auto;
-    padding: 0 2;
-    border-top: solid $surface-lighten-2;
-}
-
-#setup-chat-slot {
-    width: 1fr;
-    text-style: bold;
-}
-
-#setup-embed-slot {
-    width: 1fr;
-    text-style: bold;
-}
-
-#setup-download-size {
-    width: auto;
-    color: $text-muted;
-    padding: 0 1;
-}
-
 #setup-enter-hint {
-    width: auto;
+    dock: bottom;
+    height: 1;
+    width: 100%;
+    text-align: center;
     color: $primary;
     text-style: italic;
+    padding: 0 2;
+    border-top: solid $surface-lighten-2;
 }
 
 ModelCard {
@@ -62,6 +44,11 @@ GridSelect:focus ModelCard.-highlight {
 
 GridSelect:focus ModelCard.-highlight.-selected {
     border-left: thick $primary;
+}
+
+GridSelect:focus ModelCard.-highlight #card-hint {
+    color: $primary;
+    text-style: bold italic;
 }
 
 .section-heading {
