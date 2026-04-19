@@ -496,6 +496,159 @@ class TestAddFiles:
                 events.append(event)
             assert any("done" in e for e in events)
 
+    async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
+        """If sync raises, _run_add still emits the sentinel via its finally block.
+
+        Without the finally-based sentinel, drain() would only exit via the
+        task.done() fallback path. Verifies the stream closes cleanly and the
+        caller gets an error frame rather than a hung connection.
+        """
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content")
+
+        async def failing_sync(**kwargs):
+            raise RuntimeError("sync blew up")
+
+        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+            events = []
+            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+                events.append(event)
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(error_events) == 1
+        assert "sync blew up" in error_events[0]
+        # No done event when the task failed.
+        assert done_events == []
+
+
+class TestSyncStreamDoneDelivery:
+    """Regression tests for the SSE drain race (bb-7enj)."""
+
+    async def test_done_event_delivered_on_fast_completion(self):
+        """When sync completes almost instantly, the final SSE done event is still delivered.
+
+        Previously, drain() exited on task.done() without waiting for a
+        sentinel, which could drop the last event if the task resolved
+        before the event loop dispatched pending queue puts.
+        """
+        sync_result = SyncResult(added=["fast.txt"])
+
+        async def instant_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            if on_progress:
+                from lilbee.progress import SyncDoneEvent
+
+                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=instant_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        # The sync-emitted done (SyncDoneEvent counts) must be delivered, and
+        # the handler-emitted done (SyncResult lists) must follow it.
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(done_events) == 2, f"expected 2 done events, got {done_events}"
+
+        counts_done = json.loads(done_events[0].split("data: ")[1].strip())
+        lists_done = json.loads(done_events[1].split("data: ")[1].strip())
+        assert counts_done == {"added": 1, "updated": 0, "removed": 0, "failed": 0}
+        assert lists_done["added"] == ["fast.txt"]
+
+    async def test_done_event_delivered_on_noop_sync(self):
+        """A sync with zero file changes must still emit a done event.
+
+        The task description flagged this as a potential no-op code path
+        that could skip EventType.DONE emission. Confirms every return path
+        in sync() emits it (which it does) and the stream delivers it.
+        """
+        sync_result = SyncResult()  # empty: no added/updated/removed
+
+        async def noop_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            if on_progress:
+                from lilbee.progress import SyncDoneEvent
+
+                on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
+            return sync_result
+
+        with patch("lilbee.ingest.sync", side_effect=noop_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(done_events) == 2
+        counts = json.loads(done_events[0].split("data: ")[1].strip())
+        assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0}
+
+    async def test_drain_delivers_late_threadsafe_event_before_exit(self):
+        """Events enqueued via call_soon_threadsafe at task end must be delivered.
+
+        Simulates the race where a worker thread calls call_soon_threadsafe
+        immediately before the sync task resolves. drain() must deliver
+        the late event rather than exiting on task.done().
+        """
+        import threading
+
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        barrier = threading.Event()
+
+        def worker():
+            # Emit a progress payload via threadsafe; mirrors how
+            # embed_batch callbacks cross thread boundaries.
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, "event: embed\ndata: {}\n\n")
+            barrier.set()
+
+        async def producer():
+            try:
+                # Kick off the worker, then yield just long enough for the
+                # threadsafe put to land before we emit the sentinel.
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    await asyncio.get_running_loop().run_in_executor(pool, worker)
+            finally:
+                sse.queue.put_nowait(None)
+
+        task = asyncio.create_task(producer())
+        events = [e async for e in sse.drain(task, "race test")]
+        assert barrier.is_set()
+        assert any(e.startswith("event: embed") for e in events), events
+
+    async def test_stream_reports_error_when_sync_raises(self):
+        """If the sync coroutine raises, sync_stream emits an error SSE frame."""
+
+        async def failing_sync(force_rebuild=False, quiet=False, *, on_progress=None, cancel=None):
+            raise RuntimeError("boom")
+
+        with patch("lilbee.ingest.sync", side_effect=failing_sync):
+            events = [e async for e in handlers.sync_stream()]
+
+        error_events = [e for e in events if e.startswith("event: error")]
+        done_events = [e for e in events if e.startswith("event: done")]
+        assert len(error_events) == 1
+        assert "boom" in error_events[0]
+        # No done frame should be emitted when sync failed.
+        assert done_events == []
+
+
+class TestDrainFallback:
+    """The drain() fallback covers tasks that finish without a sentinel."""
+
+    async def test_drain_exits_when_task_done_without_sentinel(self):
+        """drain() exits via the timeout fallback if a task finishes with no sentinel."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+
+        async def quiet_producer():
+            # Never emits anything; simulates a crashed or misbehaving producer.
+            return None
+
+        task = asyncio.create_task(quiet_producer())
+        events = [e async for e in sse.drain(task, "no-sentinel test")]
+        assert events == []
+        assert task.done()
+
 
 class TestListModels:
     @patch("lilbee.models.list_installed_models")
