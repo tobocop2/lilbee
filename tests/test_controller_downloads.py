@@ -306,6 +306,24 @@ async def test_notify_model_installed_refreshes_chat_screen() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notify_model_installed_swallows_query_error() -> None:
+    """If ``refresh_model_bar`` raises QueryError (bar not mounted) we don't crash."""
+    from textual.css.query import NoMatches
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        assert screen is not None
+        # NoMatches is a QueryError subclass; simulates the query miss path.
+        with patch.object(screen, "refresh_model_bar", side_effect=NoMatches("no bar")):
+            app.task_bar._notify_model_installed()  # must not raise
+
+
+@pytest.mark.asyncio
 async def test_finished_task_lingers_in_history_until_cleared() -> None:
     """Completed rows stay in history so users can review recent work.
 

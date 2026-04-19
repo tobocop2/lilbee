@@ -522,6 +522,47 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) -> None:
+    """When the user answers No to the overwrite dialog, no task is spawned."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.config import cfg as _cfg
+
+    _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    (_cfg.documents_dir / "doc.pdf").write_bytes(b"existing")
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"new")
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        assert screen is not None
+
+        captured_callbacks: list[object] = []
+        real_push = app.push_screen
+
+        def _capture_push(screen_or_name, callback=None, **kwargs):  # type: ignore[no-untyped-def]
+            captured_callbacks.append(callback)
+            return real_push(screen_or_name, callback, **kwargs)
+
+        app.push_screen = _capture_push  # type: ignore[assignment]
+
+        notified: list[str] = []
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+
+        with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
+            screen._cmd_add(str(src))
+            assert captured_callbacks
+            confirm_callback = captured_callbacks[0]
+            assert callable(confirm_callback)
+            # User rejects the overwrite.
+            confirm_callback(False)
+            assert not mock_start.called, "start_task must not fire when user declines"
+            assert any("kept existing" in n.lower() for n in notified)
+
+
+@pytest.mark.asyncio
 async def test_cmd_add_rejects_when_sync_active(tmp_path: Path) -> None:
     """_cmd_add refuses when another sync is already running."""
     from lilbee.cli.tui.screens.chat import ChatScreen

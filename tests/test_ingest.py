@@ -1133,6 +1133,25 @@ class TestTesseractOcrMiddleTier:
         assert len(result) > 0
 
     @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
+    async def test_tesseract_timeout_zero_disables_cap(self, mock_kf, isolated_env):
+        """``cfg.tesseract_timeout == 0`` means "no limit" — await without wait_for."""
+        cfg.enable_ocr = False
+        cfg.tesseract_timeout = 0
+        empty = _make_empty_result()
+        ocr_result = _make_kreuzberg_result(
+            text="Tesseract succeeded. " * 20, num_chunks=1, has_pages=True
+        )
+        mock_kf.side_effect = [empty, ocr_result]
+
+        f = isolated_env / "scanned.pdf"
+        f.write_bytes(b"fake pdf")
+
+        from lilbee.ingest import ingest_document
+
+        result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
+        assert len(result) > 0
+
+    @mock.patch("kreuzberg.extract_file", new_callable=AsyncMock)
     async def test_tesseract_timeout_returns_fallback(self, mock_kf, isolated_env):
         """Tesseract exceeding cfg.tesseract_timeout is caught; fallback returned.
 

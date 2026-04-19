@@ -2389,6 +2389,39 @@ async def test_catalog_row_highlighted_ignored_in_grid_view():
                 assert not fetch.called
 
 
+async def test_catalog_sort_label_covers_every_pagination_state():
+    """`_update_sort_label` renders different suffixes per pagination state."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            label = screen.query_one("#sort-label", Static)
+
+            # In-flight fetch: "loading more…" branch.
+            screen._loading_more = True
+            screen._hf_has_more = True
+            screen._update_sort_label()
+            assert "loading more" in str(label._Static__content)  # type: ignore[attr-defined]
+
+            # More results available, not loading: "press n for more" branch.
+            screen._loading_more = False
+            screen._update_sort_label()
+            assert "for more" in str(label._Static__content).lower()  # type: ignore[attr-defined]
+
+            # Exhausted: plain count with no suffix.
+            screen._hf_has_more = False
+            screen._update_sort_label()
+            text = str(label._Static__content)  # type: ignore[attr-defined]
+            assert "loading" not in text
+            assert "for more" not in text.lower()
+
+
 async def test_catalog_get_highlighted_model_name_empty():
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 

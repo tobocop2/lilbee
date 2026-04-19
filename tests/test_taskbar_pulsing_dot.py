@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Label
@@ -118,6 +120,28 @@ async def test_taskbar_includes_hint_text() -> None:
         bar._refresh_display()
         text = _label_text(bar)
         assert "Press t for Tasks" in text
+
+
+@pytest.mark.asyncio
+async def test_taskbar_hint_falls_back_when_focus_lookup_raises() -> None:
+    """If ``self.app.focused`` can't be read, hint silently returns the default."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+
+        class _Boom:
+            @property
+            def focused(self):  # type: ignore[no-untyped-def]
+                raise RuntimeError("focused lookup blew up")
+
+            @property
+            def screen_stack(self):  # type: ignore[no-untyped-def]
+                return []
+
+        boom = _Boom()
+        with patch.object(type(bar), "app", new=property(lambda _s: boom)):
+            assert bar._hint_copy() == "Press t for Tasks"
 
 
 @pytest.mark.asyncio
