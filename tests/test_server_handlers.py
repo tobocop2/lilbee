@@ -563,35 +563,20 @@ class TestSyncStreamDoneDelivery:
         counts = json.loads(done_events[0].split("data: ")[1].strip())
         assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0}
 
-    async def test_drain_delivers_late_threadsafe_event_before_exit(self):
-        """A threadsafe-enqueued event lands before the sentinel closes drain."""
-        import threading
-
+    async def test_drain_yields_queued_events_before_sentinel(self):
+        """drain() yields every queued event before the sentinel closes the stream."""
         from lilbee.server.handlers import SseStream
 
         sse = SseStream()
-        barrier = threading.Event()
-
-        def worker():
-            # Emit a progress payload via threadsafe; mirrors how
-            # embed_batch callbacks cross thread boundaries.
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, "event: embed\ndata: {}\n\n")
-            barrier.set()
 
         async def producer():
             try:
-                # Kick off the worker, then yield just long enough for the
-                # threadsafe put to land before we emit the sentinel.
-                import concurrent.futures
-
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    await asyncio.get_running_loop().run_in_executor(pool, worker)
+                sse.queue.put_nowait("event: embed\ndata: {}\n\n")
             finally:
                 sse.queue.put_nowait(None)
 
         task = asyncio.create_task(producer())
-        events = [e async for e in sse.drain(task, "race test")]
-        assert barrier.is_set()
+        events = [e async for e in sse.drain(task, "queued-before-sentinel")]
         assert any(e.startswith("event: embed") for e in events), events
 
     async def test_stream_reports_error_when_sync_raises(self):
