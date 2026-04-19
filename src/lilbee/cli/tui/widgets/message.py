@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import Collapsible, Markdown, Static
 
+from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.pill import pill
 from lilbee.config import cfg
 
 # Minimum interval (seconds) between markdown widget updates during streaming
@@ -61,7 +65,7 @@ class AssistantMessage(Vertical):
         self._reasoning_static = Static("", classes="reasoning-text")
         self._reasoning_widget = Collapsible(
             self._reasoning_static,
-            title="Thinking...",
+            title=msg.CHAT_REASONING_STREAMING,
             collapsed=True,
             classes="reasoning-block",
         )
@@ -119,11 +123,21 @@ class AssistantMessage(Vertical):
             self._content_widget.update("".join(self._content_parts))
             self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
-            self._reasoning_widget.title = "Reasoning"
+            token_count = len("".join(self._reasoning_parts).split())
+            self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)
         elif self._reasoning_widget is not None:
             self._reasoning_widget.display = False
 
         if sources and self._citation_widget is not None:
-            self._citation_widget.update("── " + ", ".join(sources))
+            self._citation_widget.update(_build_citation_content(sources))
         elif self._citation_widget is not None:
             self._citation_widget.display = False
+
+
+def _build_citation_content(sources: list[str]) -> Content:
+    """Build a 'sources: pill pill pill' content line from source paths."""
+    parts: list[Content] = [Content.styled(msg.CHAT_SOURCES_LABEL, "$text-muted")]
+    for src in sources:
+        parts.append(Content("  "))
+        parts.append(pill(Path(src).name, "$surface-lighten-2", "$text"))
+    return Content.assemble(*parts)

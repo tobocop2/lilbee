@@ -144,6 +144,10 @@ def get_nav_views() -> list[str]:
 MODE_NORMAL = "NORMAL"
 MODE_INSERT = "INSERT"
 TASKBAR_HINT = "Press t for Tasks"
+CHAT_REASONING_STREAMING = "thinking..."
+CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
+CHAT_SOURCES_LABEL = "sources"
+
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
 TASK_CENTER_HINT = "r refresh   c cancel   q back   j/k navigate"

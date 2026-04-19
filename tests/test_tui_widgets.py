@@ -82,7 +82,8 @@ class TestAssistantMessageAsync:
             am.finish(sources=["doc.pdf:1"])
             assert am._finished is True
             assert am._reasoning_widget is not None
-            assert am._reasoning_widget.title == "Reasoning"
+            assert "reasoning" in am._reasoning_widget.title
+            assert "token" in am._reasoning_widget.title
 
     async def test_finish_without_reasoning_hides_widget(self) -> None:
         app = _MsgApp()
