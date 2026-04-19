@@ -504,14 +504,14 @@ wheels = [
 
 [[package]]
 name = "kreuzberg"
-version = "4.8.6"
+version = "4.9.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ff/c4/1728f5e76b745bf12f82900fdca35874ce13b91ab98ef98da38d3854631f/kreuzberg-4.8.6.tar.gz", hash = "sha256:c060eb0ad90dfef66fc05fda5334c57e5620de1a2a1075bae719ef6dd5819d50", size = 2406352 }
+sdist = { url = "https://files.pythonhosted.org/packages/29/99/be736424b094a6ecb9c25ad9af610413b4ff51604fe43931a28b1a9977c1/kreuzberg-4.9.1.tar.gz", hash = "sha256:214be3741cdf7bf0aad64d2e70b4d487af9198783eb50d9e72cf25ff4d767121", size = 2433799 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/5e/8d300992d1c550dc2e109c8c9489a7e8d2c8919fe7c18177470bc85db93f/kreuzberg-4.8.6-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:fd7ae964fb67d5cd0117487c6d2895133662958fecefc0c97b868c3eea2afee5", size = 58731112 },
-    { url = "https://files.pythonhosted.org/packages/7f/af/c6f254b5e9d59c12b98cc2bd025b3fa3dc4e09dfd054f46cdbb3859e0765/kreuzberg-4.8.6-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f0718ad6e050e2866e9f0e921d5ab9e387548a096bb253d035169444074ccc34", size = 59521940 },
-    { url = "https://files.pythonhosted.org/packages/b9/d9/33b5591d3da0bec2322771be3c817e2e78eef6727314a1a6f1c844123395/kreuzberg-4.8.6-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b62b494377b193e1b79f028f2beee438ff7f0e80e47f8060ca6c816f06ee28f9", size = 62950083 },
-    { url = "https://files.pythonhosted.org/packages/a7/82/0e6be0bc6671ef4a548568fc42eb52417ba1bec8a5a7be3e3a579cd90166/kreuzberg-4.8.6-cp310-abi3-win_amd64.whl", hash = "sha256:7c514e6b802617e041dc7fd793fdb65204b52bb441b20bd5f24df247d4ac8c7e", size = 67204138 },
+    { url = "https://files.pythonhosted.org/packages/31/0e/598474c398fcfd7dbca416c1490bfb478dd82df77b6e55823e7e45d99ee5/kreuzberg-4.9.1-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:ee3a1ebf87408c639504641516bb9a4c62c3eb0ab2aafa6b851adfabed28d06b", size = 28740076 },
+    { url = "https://files.pythonhosted.org/packages/d8/6e/2d21ce9998ffa3f63cd6f3070c3f53cf8fcff7ca1c40f6ce20356705f2c7/kreuzberg-4.9.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:8458e34a82695a1e39a035e5a6862004be904ef02beb11a90de6c45ebd03a215", size = 33256794 },
+    { url = "https://files.pythonhosted.org/packages/30/f7/03c68cb80e6785b8bf1a42c31419da4f06bf7535a2af88dc2fa49ba648d7/kreuzberg-4.9.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:d965a274c97f887e69c92a4a8110c009de180c69035b1b38a047b33aea824ee7", size = 35480775 },
+    { url = "https://files.pythonhosted.org/packages/8a/1f/2d707d43db99406d2abc3dbfb6bd903ee2ad813af4a91f957abf9cf1100f/kreuzberg-4.9.1-cp310-abi3-win_amd64.whl", hash = "sha256:0f1133de71dd3e00dc624c3ea6fa975f459f9775861a1ebbf2579aea8a7111a5", size = 33052110 },
 ]
 
 [[package]]
@@ -673,7 +673,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "filelock" },
-    { name = "kreuzberg", specifier = ">=4.8.5" },
+    { name = "kreuzberg", specifier = ">=4.9.1" },
     { name = "lancedb" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "mcp", specifier = ">=1.26.0" },
