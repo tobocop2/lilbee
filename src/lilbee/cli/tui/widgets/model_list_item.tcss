@@ -1,0 +1,21 @@
+ModelListItem {
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    border-left: thick transparent;
+    pointer: pointer;
+
+    &:hover {
+        background: $surface;
+    }
+
+    &:focus {
+        border-left: thick $primary;
+        background: $surface;
+    }
+
+    #list-content {
+        width: 1fr;
+        height: auto;
+    }
+}

@@ -1001,7 +1001,7 @@ class TestCatalogInteractions:
 
     async def test_v_toggles_to_list_and_back(self, _mock_resolve):
         """Pressing v flips the catalog between grid and list views."""
-        from textual.widgets import DataTable
+        from textual.containers import VerticalScroll
 
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -1014,27 +1014,27 @@ class TestCatalogInteractions:
 
                 assert app.screen.has_class("-grid-view")
                 grid = app.screen.query_one("#catalog-grid")
-                table = app.screen.query_one("#catalog-table", DataTable)
+                list_container = app.screen.query_one("#catalog-list", VerticalScroll)
                 assert grid.display is True
-                assert table.display is False
+                assert list_container.display is False
 
                 await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-list-view")
                 assert not app.screen.has_class("-grid-view")
                 assert grid.display is False
-                assert table.display is True
+                assert list_container.display is True
 
                 await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-grid-view")
                 assert not app.screen.has_class("-list-view")
                 assert grid.display is True
-                assert table.display is False
+                assert list_container.display is False
 
     async def test_v_toggle_after_bracket_nav_from_chat(self, _mock_resolve):
         """Pressing v still toggles the view after navigating in from chat via ]."""
-        from textual.widgets import DataTable
+        from textual.containers import VerticalScroll
 
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -1052,15 +1052,15 @@ class TestCatalogInteractions:
                 assert app.screen.has_class("-grid-view")
 
                 grid = app.screen.query_one("#catalog-grid")
-                table = app.screen.query_one("#catalog-table", DataTable)
+                list_container = app.screen.query_one("#catalog-list", VerticalScroll)
                 assert grid.display is True
-                assert table.display is False
+                assert list_container.display is False
 
                 await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-list-view")
                 assert grid.display is False
-                assert table.display is True
+                assert list_container.display is True
 
     async def test_search_filters_cards_in_grid_view(self, _mock_resolve):
         """Type search text in grid view, verify cards filter by visibility."""
@@ -1140,10 +1140,11 @@ class TestCatalogInteractions:
                 assert grid.has_focus
 
     async def test_search_submit_returns_focus_to_table_in_list_view(self, _mock_resolve):
-        """In list view, pressing Enter in search returns focus to the DataTable."""
-        from textual.widgets import DataTable, Input
+        """In list view, pressing Enter in search returns focus to a list item."""
+        from textual.widgets import Input
 
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1160,8 +1161,7 @@ class TestCatalogInteractions:
                 search.value = "test"
                 await search.action_submit()
                 await pilot.pause()
-                table = app.screen.query_one("#catalog-table", DataTable)
-                assert table.has_focus
+                assert isinstance(app.screen.focused, ModelListItem)
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """Verify correct number of cards for featured models."""
@@ -1178,10 +1178,9 @@ class TestCatalogInteractions:
                 assert len(cards) == 2
 
     async def test_list_view_j_k_navigation(self, _mock_resolve):
-        """In list view, j/k move cursor up/down."""
-        from textual.widgets import DataTable
-
+        """In list view, cursor actions move focus up/down through list items."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1193,23 +1192,26 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                table = app.screen.query_one("#catalog-table", DataTable)
-                table.focus()
-                await pilot.pause()
-                if table.row_count > 1:
-                    initial_row = table.cursor_row
-                    await pilot.press("j")
+                # Disable prefetch so the worker doesn't rebuild the list
+                # and invalidate our item references.
+                app.screen._hf_has_more = False
+                items = list(app.screen.query(ModelListItem))
+                if len(items) > 1:
+                    items[0].focus()
                     await pilot.pause()
-                    assert table.cursor_row >= initial_row
+                    assert app.screen._focused_list_index() == 0
+                    app.screen.action_cursor_down()
+                    await pilot.pause()
+                    assert items[1].has_focus
 
-                    await pilot.press("k")
+                    app.screen.action_cursor_up()
                     await pilot.pause()
+                    assert items[0].has_focus
 
     async def test_list_view_g_G_jump(self, _mock_resolve):
         """In list view, g jumps to top, G jumps to bottom."""
-        from textual.widgets import DataTable
-
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1223,24 +1225,25 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await pilot.pause()
 
-                table = app.screen.query_one("#catalog-table", DataTable)
-                table.focus()
-                await pilot.pause()
-
-                if table.row_count > 0:
-                    await pilot.press("G")
+                # Disable prefetch so the worker doesn't rebuild the list
+                # and invalidate our item references.
+                app.screen._hf_has_more = False
+                items = list(app.screen.query(ModelListItem))
+                if items:
+                    items[0].focus()
                     await pilot.pause()
-                    assert table.cursor_row == table.row_count - 1
-
-                    await pilot.press("g")
+                    app.screen.action_jump_bottom()
                     await pilot.pause()
-                    assert table.cursor_row == 0
+                    assert items[-1].has_focus
+
+                    app.screen.action_jump_top()
+                    await pilot.pause()
+                    assert items[0].has_focus
 
     async def test_list_view_page_down_up(self, _mock_resolve):
         """In list view, space/ctrl-d pages down, ctrl-u pages up."""
-        from textual.widgets import DataTable
-
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1252,9 +1255,10 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                table = app.screen.query_one("#catalog-table", DataTable)
-                table.focus()
-                await pilot.pause()
+                items = list(app.screen.query(ModelListItem))
+                if items:
+                    items[0].focus()
+                    await pilot.pause()
                 await pilot.press("space")
                 await pilot.pause()
                 await pilot.press("ctrl+u")
@@ -1262,8 +1266,9 @@ class TestCatalogInteractions:
                 assert app.screen.is_current
 
     async def test_column_header_click_sorts_list(self, _mock_resolve):
-        """Clicking a column header sorts the table by that column."""
+        """Pressing s cycles the sort column in list view."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1278,36 +1283,28 @@ class TestCatalogInteractions:
                 assert app.screen._sort_column == "Name"
                 assert app.screen._sort_ascending is True
 
-                from textual.widgets import DataTable
+                # Focus a list item so `s` is not swallowed by the search input.
+                items = list(app.screen.query(ModelListItem))
+                if items:
+                    items[0].focus()
+                    await pilot.pause()
 
-                table = app.screen.query_one("#catalog-table", DataTable)
-                event = DataTable.HeaderSelected(
-                    table,
-                    column_key="Task",
-                    column_index=1,
-                    label="Task",
-                )
-                app.screen._on_header_selected(event)
+                # Cycle: Name -> Downloads
+                await pilot.press("s")
                 await pilot.pause()
-                assert app.screen._sort_column == "Task"
+                assert app.screen._sort_column == "Downloads"
                 assert app.screen._sort_ascending is True
 
-                event2 = DataTable.HeaderSelected(
-                    table,
-                    column_key="Task",
-                    column_index=1,
-                    label="Task",
-                )
-                app.screen._on_header_selected(event2)
+                # Cycle: Downloads -> Size
+                await pilot.press("s")
                 await pilot.pause()
-                assert app.screen._sort_column == "Task"
-                assert app.screen._sort_ascending is False
+                assert app.screen._sort_column == "Size"
+                assert app.screen._sort_ascending is True
 
     async def test_search_filters_list_view(self, _mock_resolve):
         """Search input filters rows in list view."""
-        from textual.widgets import DataTable
-
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_list_item import ModelListItem
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -1319,15 +1316,16 @@ class TestCatalogInteractions:
                 await pilot.press("v")
                 await pilot.pause()
 
-                table = app.screen.query_one("#catalog-table", DataTable)
-                initial_rows = table.row_count
+                all_items = list(app.screen.query(ModelListItem))
+                initial_visible = len([i for i in all_items if i.display])
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "TestChat"
                 await pilot.pause()
 
-                filtered_rows = table.row_count
-                assert filtered_rows <= initial_rows
+                all_items_after = list(app.screen.query(ModelListItem))
+                filtered_visible = len([i for i in all_items_after if i.display])
+                assert filtered_visible <= initial_visible
 
     async def test_delete_model_without_selection_warns(self, _mock_resolve):
         """Pressing d without a highlighted model shows warning."""
@@ -1340,11 +1338,6 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
                 await pilot.press("v")
-                await pilot.pause()
-                from textual.widgets import DataTable
-
-                table = app.screen.query_one("#catalog-table", DataTable)
-                table.focus()
                 await pilot.pause()
                 await pilot.press("d")
                 await pilot.pause()
