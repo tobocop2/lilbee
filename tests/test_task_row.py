@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 
 from lilbee.cli.tui.task_queue import Task, TaskStatus
-from lilbee.cli.tui.widgets.task_row import TaskRow, _format_elapsed
+from lilbee.cli.tui.widgets.task_row import TaskRow, _build_head, _format_elapsed
 
 
 class _Host(App[None]):
@@ -53,6 +53,39 @@ def test_format_elapsed_returns_queued_label_for_queued_task() -> None:
 
 def test_format_elapsed_empty_for_active_without_started_at() -> None:
     assert _format_elapsed(_task(status=TaskStatus.ACTIVE, started_at=None)) == ""
+
+
+def test_build_head_composes_name_type_and_status_pills() -> None:
+    """Head content shows the name, type pill, status pill, and elapsed trailing."""
+    task = Task(
+        task_id="t1",
+        name="Nomic Embed Text v1.5",
+        task_type="download",
+        fn=lambda: None,
+        status=TaskStatus.ACTIVE,
+        started_at=time.monotonic() - 3,
+    )
+    content = _build_head(task, elapsed="00:03")
+    plain = content.plain
+    assert "Nomic Embed Text v1.5" in plain
+    assert "download" in plain
+    assert "active" in plain
+    assert "00:03" in plain
+
+
+def test_build_head_omits_elapsed_when_empty() -> None:
+    task = Task(
+        task_id="t2",
+        name="demo",
+        task_type="wiki",
+        fn=lambda: None,
+        status=TaskStatus.QUEUED,
+    )
+    content = _build_head(task, elapsed="")
+    plain = content.plain
+    assert "demo" in plain
+    assert "wiki" in plain
+    assert "queued" in plain
 
 
 def test_format_elapsed_freezes_on_completed_at() -> None:

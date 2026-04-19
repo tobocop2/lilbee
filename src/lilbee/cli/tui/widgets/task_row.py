@@ -1,11 +1,11 @@
 """Single-task row widget for the Task Center.
 
-Three lines per row — see ``docs/task-center-design.md`` (or the
-brainstorm HTML mock committed alongside this file) for the aesthetic.
-
-The widget is pure-presentation: ``update(task, tick)`` writes the
-three labels from a ``Task`` snapshot. ``TaskCenter._poll`` calls it
-at 10 Hz; the same tick drives the left-rail 1 Hz pulse on active rows.
+Three lines per row. The head line uses the same ``pill()`` treatment
+as the model cards so the screen matches the rest of the app; the
+left rail carries the state color and pulses at 1 Hz for the active
+row. The widget is pure-presentation: ``update(task, tick)`` writes
+the three labels from a ``Task`` snapshot. ``TaskCenter._poll`` calls
+it at 10 Hz.
 """
 
 from __future__ import annotations
@@ -13,10 +13,12 @@ from __future__ import annotations
 from time import monotonic
 
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
-from lilbee.cli.tui.task_queue import Task, TaskStatus
+from lilbee.cli.tui.pill import pill
+from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.progress_cell import indeterminate_cell, progress_cell
 
 # 1 Hz rail pulse at a 10 Hz poll cadence = 5 ticks on, 5 off.
@@ -31,6 +33,50 @@ _STATUS_CLASS: dict[TaskStatus, str] = {
 }
 
 _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
+
+# Pill palette — background color per task type. Sync/add/remove share
+# $secondary (data-mutating ops), download uses $accent (network), wiki
+# uses $warning (CPU-heavy generation), crawl uses $primary (external).
+_TASK_TYPE_BG: dict[str, str] = {
+    TaskType.DOWNLOAD.value: "$accent",
+    TaskType.SYNC.value: "$secondary",
+    TaskType.ADD.value: "$secondary",
+    TaskType.REMOVE.value: "$secondary",
+    TaskType.CRAWL.value: "$primary",
+    TaskType.WIKI.value: "$warning",
+}
+_TASK_TYPE_BG_FALLBACK = "$primary"
+
+# Pill palette — status badge. QUEUED is muted so only the running ones
+# pop; DONE / FAILED / CANCELLED colors match the left-rail treatment.
+_STATUS_BG: dict[TaskStatus, str] = {
+    TaskStatus.QUEUED: "$surface-lighten-2",
+    TaskStatus.ACTIVE: "$primary",
+    TaskStatus.DONE: "$success",
+    TaskStatus.FAILED: "$error",
+    TaskStatus.CANCELLED: "$warning",
+}
+
+
+def _build_head(task: Task, elapsed: str) -> Content:
+    """Build the top line: name + type pill + status pill, elapsed trailing.
+
+    Kept as a module-level helper so tests can exercise the pill
+    composition directly without spinning up the full widget tree.
+    """
+    type_bg = _TASK_TYPE_BG.get(task.task_type, _TASK_TYPE_BG_FALLBACK)
+    status_bg = _STATUS_BG[task.status]
+    parts = [
+        Content.styled(task.name, "bold"),
+        Content(" "),
+        pill(task.task_type, type_bg, "$text"),
+        Content(" "),
+        pill(task.status.value, status_bg, "$text"),
+    ]
+    if elapsed:
+        parts.append(Content(" "))
+        parts.append(Content.styled(elapsed, "dim"))
+    return Content.assemble(*parts)
 
 
 def _format_elapsed(task: Task) -> str:
@@ -96,9 +142,7 @@ class TaskRow(Widget, can_focus=True):
             return  # compose hasn't finished; retry on next poll
 
         elapsed = _format_elapsed(task)
-        head_left = f"[b]{task.name}[/b] · [i]{task.task_type}[/i]"
-        head_text = f"{head_left}  [dim]{elapsed}[/dim]" if elapsed else head_left
-        head.update(head_text)
+        head.update(_build_head(task, elapsed))
 
         detail = task.detail or ""
         pct = "" if task.indeterminate else f"[b]{task.progress:.1f}%[/b]"

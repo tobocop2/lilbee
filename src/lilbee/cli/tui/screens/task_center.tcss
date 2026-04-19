@@ -41,11 +41,15 @@ TaskRow {
     &.-done { border-left: thick $success; }
     &.-failed { border-left: thick $error; }
     &.-cancelled { border-left: thick $warning; }
-    &.-just-completed { text-style: reverse; }
+    &.-just-completed { background: $primary 20%; }
 
-    .row-head { text-style: bold; }
-    .row-meta { color: $text-muted; }
-    .row-bar { color: $primary; }
+    .row-head { padding: 0 0 0 1; }
+    .row-meta { color: $text-muted; padding: 0 0 0 1; }
+    .row-bar {
+        width: 100%;
+        color: $primary;
+        padding: 0 0 0 1;
+    }
     &.-queued .row-bar { color: $text-muted; }
     &.-done .row-bar { color: $success; }
     &.-failed .row-bar { color: $error; }
