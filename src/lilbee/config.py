@@ -46,6 +46,20 @@ def ConfigField(
 
 log = logging.getLogger(__name__)
 
+_BOOL_TRUE = frozenset({"true", "1", "yes"})
+_BOOL_FALSE = frozenset({"false", "0", "no"})
+
+
+def _parse_bool(raw: str) -> bool:
+    """Parse true/1/yes or false/0/no; raises ValueError on anything else."""
+    normalized = raw.strip().lower()
+    if normalized in _BOOL_TRUE:
+        return True
+    if normalized in _BOOL_FALSE:
+        return False
+    raise ValueError(f"Invalid boolean: {raw!r}")
+
+
 DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",
@@ -127,9 +141,10 @@ class Config(BaseSettings):
     # True = force OCR regardless of detection.
     # False = disable OCR entirely.
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
-
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+    semantic_chunking: bool = ConfigField(default=False, writable=True)
+    topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
@@ -393,12 +408,25 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            stripped = v.strip().lower()
-            if stripped in ("", "auto", "none"):
+            if v.strip().lower() in ("", "auto", "none"):
                 return None
-            if stripped in ("true", "1", "yes"):
-                return True
-            if stripped in ("false", "0", "no"):
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                pass
+        return bool(v)
+
+    @field_validator("semantic_chunking", mode="before")
+    @classmethod
+    def _parse_semantic_chunking(cls, v: Any) -> bool:
+        """Parse from env string; invalid values warn and fall back to False."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
                 return False
         return bool(v)
 

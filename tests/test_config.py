@@ -338,6 +338,149 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True
 
+    def test_garbage_value_coerces_via_bool(self) -> None:
+        """Unrecognized string falls through _parse_bool and coerces via ``bool()``."""
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
+            c = Config()
+            assert c.enable_ocr is True  # bool("maybe") is True
+
+    def test_whitespace_only_means_auto(self) -> None:
+        """Whitespace-only strings hit the auto/none branch and return None."""
+        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}):
+            c = Config()
+            assert c.enable_ocr is None
+
+
+class TestSemanticChunkingConfig:
+    def test_default_is_false(self, tmp_path) -> None:
+        """Semantic chunking is opt-in: default False, enabled via env/config."""
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.semantic_chunking is False
+
+    def test_true_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "true"}):
+            c = Config()
+            assert c.semantic_chunking is True
+
+    def test_false_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "false"}):
+            c = Config()
+            assert c.semantic_chunking is False
+
+    def test_yes_no_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "yes"}):
+            assert Config().semantic_chunking is True
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "no"}):
+            assert Config().semantic_chunking is False
+
+    def test_numeric_variants(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "1"}):
+            assert Config().semantic_chunking is True
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "0"}):
+            assert Config().semantic_chunking is False
+
+    def test_case_insensitive(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "FALSE"}):
+            assert Config().semantic_chunking is False
+
+    def test_invalid_falls_back_to_default(self, caplog) -> None:
+        import logging
+
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "banana"}),
+            caplog.at_level(logging.WARNING, logger="lilbee.config"),
+        ):
+            c = Config()
+            assert c.semantic_chunking is False
+        assert any("banana" in rec.message for rec in caplog.records)
+
+    def test_non_string_non_bool_coerced(self) -> None:
+        """Validator coerces non-str, non-bool inputs via ``bool()``.
+
+        Calls the validator directly because pydantic may pre-coerce via
+        its own conversion before a mode="before" validator even sees
+        simple types like int.
+        """
+        from lilbee.config import Config
+
+        parse = Config._parse_semantic_chunking
+        assert parse(1) is True
+        assert parse(0) is False
+        assert parse([1]) is True
+        assert parse([]) is False
+
+    def test_from_toml(self, tmp_path) -> None:
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text("semantic_chunking = false\n")
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().semantic_chunking is False
+
+    def test_env_overrides_toml(self, tmp_path) -> None:
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text("semantic_chunking = false\n")
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_SEMANTIC_CHUNKING"] = "true"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().semantic_chunking is True
+
+
+class TestTopicThresholdConfig:
+    def test_default_is_0_75(self, tmp_path) -> None:
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            c = Config()
+            assert c.topic_threshold == pytest.approx(0.75)
+
+    def test_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "0.5"}):
+            assert Config().topic_threshold == pytest.approx(0.5)
+
+    def test_accepts_boundaries(self) -> None:
+        with mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "0.0"}):
+            assert Config().topic_threshold == 0.0
+        with mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.0"}):
+            assert Config().topic_threshold == 1.0
+
+    def test_out_of_range_raises(self) -> None:
+        from pydantic import ValidationError
+
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.5"}),
+            pytest.raises(ValidationError),
+        ):
+            Config()
+
+    def test_from_toml(self, tmp_path) -> None:
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text("topic_threshold = 0.42\n")
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().topic_threshold == pytest.approx(0.42)
+
+
+class TestParseBool:
+    def test_truthy_values(self) -> None:
+        from lilbee.config import _parse_bool
+
+        for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
+            assert _parse_bool(truthy) is True
+
+    def test_falsy_values(self) -> None:
+        from lilbee.config import _parse_bool
+
+        for falsy in ("false", "FALSE", "0", "no", "  NO  "):
+            assert _parse_bool(falsy) is False
+
+    def test_invalid_raises(self) -> None:
+        from lilbee.config import _parse_bool
+
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            _parse_bool("maybe")
+
 
 class TestOcrTimeoutConfig:
     def test_default_is_120(self, tmp_path) -> None:

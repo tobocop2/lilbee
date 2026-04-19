@@ -48,6 +48,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group="Ingest",
         help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
     ),
+    "semantic_chunking": SettingDef(
+        bool,
+        nullable=False,
+        group="Ingest",
+        help_text="Opt-in topic-aware chunker (default off; may fragment numbered procedures)",
+    ),
+    "topic_threshold": SettingDef(
+        float,
+        nullable=False,
+        group="Ingest",
+        help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
+    ),
     "embedding_model": SettingDef(
         str,
         nullable=False,

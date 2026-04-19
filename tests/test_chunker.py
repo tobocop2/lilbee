@@ -23,7 +23,14 @@ class TestChunkText:
         assert "short paragraph" in chunks[0]
 
     def test_long_text_produces_multiple_chunks(self):
-        paragraphs = [f"Paragraph number {i} with detailed content here." for i in range(50)]
+        """Multi-topic input forces topic breaks so semantic can't merge into one chunk."""
+        topics = [
+            "Solar panels convert sunlight into electricity via photovoltaic cells.",
+            "The FDA approved a new clinical trial for a diabetes treatment.",
+            "Quantum computers use qubits and entanglement for parallel computation.",
+            "Ancient Roman aqueducts used gravity to transport water across cities.",
+        ]
+        paragraphs = [topics[i % len(topics)] + f" Variant {i}." for i in range(60)]
         text = "\n\n".join(paragraphs)
         chunks = chunk_text(text)
         assert len(chunks) > 1
@@ -46,6 +53,72 @@ class TestChunkText:
         chunks = chunk_text(text)
         assert len(chunks) >= 1
         assert "plain text" in chunks[0]
+
+    def test_semantic_disabled_uses_char_budget(self, monkeypatch):
+        """When cfg.semantic_chunking is False, chunker falls back to fixed char budget."""
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        chunks = chunk_text("Plain text chunked without the semantic branch.")
+        assert chunks
+        assert "Plain text" in " ".join(chunks)
+
+    def test_use_semantic_false_bypasses_semantic(self, monkeypatch):
+        """Caller can opt out of semantic chunking even when cfg has it enabled."""
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        bypassed = build_chunking_config(use_semantic=False)
+        assert bypassed.chunker_type == "text"
+        enabled = build_chunking_config()
+        assert enabled.chunker_type == "semantic"
+
+
+class TestBuildChunkingConfig:
+    def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
+        """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "topic_threshold", 0.6)
+        result = build_chunking_config()
+        assert result.chunker_type == "semantic"
+        assert result.topic_threshold == pytest.approx(0.6, abs=1e-5)
+        assert result.embedding is not None
+
+    def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
+        """With an embedding attached kreuzberg honors max_chars on the semantic path."""
+        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        result = build_chunking_config()
+        assert result.max_chars == 512 * CHARS_PER_TOKEN
+
+    def test_char_budget_when_disabled(self, monkeypatch):
+        from lilbee.chunk import CHARS_PER_TOKEN, build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        result = build_chunking_config()
+        assert result.chunker_type == "text"
+        assert result.max_chars == 512 * CHARS_PER_TOKEN
+        assert result.max_overlap == 100 * CHARS_PER_TOKEN
+        assert result.embedding is None
+
+    def test_disabled_does_not_attach_embedding(self, monkeypatch):
+        """When semantic is off, no EmbeddingConfig is built; avoids the ONNX download."""
+        from lilbee.chunk import build_chunking_config
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        result = build_chunking_config()
+        assert result.embedding is None
 
 
 class TestMarkdownChunking:

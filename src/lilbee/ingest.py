@@ -8,8 +8,9 @@ import hashlib
 import logging
 import os
 import threading
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
@@ -26,7 +27,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from lilbee.chunk import CHARS_PER_TOKEN, chunk_text
+from lilbee.chunk import build_chunking_config, chunk_text
 from lilbee.code_chunker import CodeChunk, chunk_code, is_code_file
 from lilbee.config import cfg
 from lilbee.platform import is_ignored_dir
@@ -62,6 +63,18 @@ class FileToProcess(NamedTuple):
 # document with no embedded text layer. Text PDFs with even just a title page
 # easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
 _MIN_MEANINGFUL_CHARS = 50
+
+_PDF_CONTENT_TYPE = "pdf"
+_MARKDOWN_OUTPUT = "markdown"
+_TESSERACT_BACKEND = "tesseract"
+
+
+class ExtractMode(StrEnum):
+    """Extraction topology: pagination / OCR / output format."""
+
+    MARKDOWN = "markdown"
+    PAGINATED = "paginated"
+    PAGINATED_OCR = "paginated_ocr"
 
 
 def _has_meaningful_text(result: Any) -> bool:
@@ -133,7 +146,7 @@ class _IngestResult:
 # Extension → content_type string for document formats handled by kreuzberg
 _DOCUMENT_EXTENSION_MAP: dict[str, str] = {
     **{ext: "text" for ext in (".md", ".txt", ".html", ".rst", ".yaml", ".yml")},
-    ".pdf": "pdf",
+    ".pdf": _PDF_CONTENT_TYPE,
     **{ext: ext.lstrip(".") for ext in (".docx", ".xlsx", ".pptx")},
     ".epub": "epub",
     **{ext: "image" for ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp")},
@@ -189,36 +202,28 @@ def classify_file(path: Path) -> str | None:
     return None
 
 
-def extraction_config(content_type: str) -> ExtractionConfig:
-    """Build ExtractionConfig for a given content type."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, PageConfig
-
-    chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
-    )
-
-    if content_type == "pdf":
-        return ExtractionConfig(
-            chunking=chunking,
-            pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        )
-    return ExtractionConfig(chunking=chunking, output_format="markdown")
+def content_type_to_mode(content_type: str) -> ExtractMode:
+    """Map a content_type to the extraction mode."""
+    return ExtractMode.PAGINATED if content_type == _PDF_CONTENT_TYPE else ExtractMode.MARKDOWN
 
 
-def ocr_extraction_config() -> ExtractionConfig:
-    """Build ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
-    from kreuzberg import ChunkingConfig, ExtractionConfig, OcrConfig, PageConfig
+def extraction_config(mode: ExtractMode) -> ExtractionConfig:
+    """Build ExtractionConfig for the given extraction mode."""
+    from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
-    chunking = ChunkingConfig(
-        max_chars=cfg.chunk_size * CHARS_PER_TOKEN,
-        max_overlap=cfg.chunk_overlap * CHARS_PER_TOKEN,
-    )
-    return ExtractionConfig(
-        chunking=chunking,
-        pages=PageConfig(extract_pages=True, insert_page_markers=False),
-        ocr=OcrConfig(backend="tesseract"),
-    )
+    chunking = build_chunking_config()
+    pages = PageConfig(extract_pages=True, insert_page_markers=False)
+    ocr = OcrConfig(backend=_TESSERACT_BACKEND)
+    builders: dict[ExtractMode, Callable[[], ExtractionConfig]] = {
+        ExtractMode.MARKDOWN: lambda: ExtractionConfig(
+            chunking=chunking, output_format=_MARKDOWN_OUTPUT
+        ),
+        ExtractMode.PAGINATED: lambda: ExtractionConfig(chunking=chunking, pages=pages),
+        ExtractMode.PAGINATED_OCR: lambda: ExtractionConfig(
+            chunking=chunking, pages=pages, ocr=ocr
+        ),
+    }
+    return builders[mode]()
 
 
 @contextlib.contextmanager
@@ -249,7 +254,9 @@ async def _try_tesseract_ocr(
 
         log.info("PDF text extraction empty, trying Tesseract OCR: %s", source_name)
         with suppress_fd_stderr():
-            return await extract_file(str(path), config=ocr_extraction_config())
+            return await extract_file(
+                str(path), config=extraction_config(ExtractMode.PAGINATED_OCR)
+            )
     except Exception:
         log.debug("Tesseract OCR unavailable or failed for %s, skipping", source_name)
         return fallback
@@ -304,7 +311,12 @@ async def _vision_fallback(
     if not page_texts:
         return []
 
-    all_chunks = [(page_num, chunk) for page_num, text in page_texts for chunk in chunk_text(text)]
+    # Single OCR page rarely spans multiple topics; skip the semantic round-trip.
+    all_chunks = [
+        (page_num, chunk)
+        for page_num, text in page_texts
+        for chunk in chunk_text(text, use_semantic=False)
+    ]
     if not all_chunks:
         return []
 
@@ -386,10 +398,10 @@ async def ingest_document(
     """
     from kreuzberg import extract_file
 
-    config = extraction_config(content_type)
+    config = extraction_config(content_type_to_mode(content_type))
     result = await extract_file(str(path), config=config)
 
-    if content_type == "pdf" and not _has_meaningful_text(result):
+    if content_type == _PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         fallback = await _handle_scanned_pdf_fallback(
             path,
             source_name,
