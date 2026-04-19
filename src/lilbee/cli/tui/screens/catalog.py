@@ -89,7 +89,9 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
-        Binding("n", "load_more", "More", show=True, group=_ACTION_GROUP),
+        # Hidden from the footer so catalog still has <=5 visible bindings;
+        # the sort-label "press n for more" copy surfaces it to the user.
+        Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
     ]
 
     def __init__(self) -> None:
