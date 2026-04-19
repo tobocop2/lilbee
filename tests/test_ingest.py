@@ -718,36 +718,106 @@ class TestDiscoverNewFormats:
 
 
 class TestExtractionConfig:
-    def test_pdf_gets_page_config(self):
-        from lilbee.ingest import extraction_config
+    def test_paginated_has_page_config(self):
+        from lilbee.ingest import ExtractMode, extraction_config
 
-        config = extraction_config("pdf")
+        config = extraction_config(ExtractMode.PAGINATED)
         assert config.pages is not None
 
-    def test_pdf_no_markdown_output(self):
-        from lilbee.ingest import extraction_config
+    def test_paginated_no_markdown_output(self):
+        from lilbee.ingest import ExtractMode, extraction_config
 
-        config = extraction_config("pdf")
+        config = extraction_config(ExtractMode.PAGINATED)
         assert getattr(config, "output_format", None) != "markdown"
 
-    def test_non_pdf_no_page_config(self):
-        from lilbee.ingest import extraction_config
+    def test_markdown_has_no_page_config(self):
+        from lilbee.ingest import ExtractMode, extraction_config
 
-        config = extraction_config("text")
+        config = extraction_config(ExtractMode.MARKDOWN)
         assert config.pages is None
 
-    def test_chunking_config_set(self):
-        from lilbee.ingest import extraction_config
+    def test_markdown_has_chunking(self):
+        from lilbee.ingest import ExtractMode, extraction_config
 
-        config = extraction_config("text")
+        config = extraction_config(ExtractMode.MARKDOWN)
         assert config.chunking is not None
 
-    @pytest.mark.parametrize("content_type", ["text", "docx", "xlsx", "pptx", "epub", "image"])
-    def test_non_pdf_gets_markdown_output(self, content_type):
-        from lilbee.ingest import extraction_config
+    def test_markdown_sets_output_format(self):
+        from lilbee.ingest import ExtractMode, extraction_config
 
-        config = extraction_config(content_type)
+        config = extraction_config(ExtractMode.MARKDOWN)
         assert config.output_format == "markdown"
+
+    def test_text_only_has_no_pages_or_output_format(self):
+        from lilbee.ingest import ExtractMode, extraction_config
+
+        config = extraction_config(ExtractMode.TEXT_ONLY)
+        assert config.pages is None
+        assert getattr(config, "output_format", None) != "markdown"
+        assert config.chunking is not None
+
+    def test_paginated_ocr_has_tesseract(self):
+        from lilbee.ingest import ExtractMode, extraction_config
+
+        config = extraction_config(ExtractMode.PAGINATED_OCR)
+        assert config.pages is not None
+        assert config.ocr is not None
+        assert config.ocr.backend == "tesseract"
+
+    @pytest.mark.parametrize(
+        "content_type, expected_mode_name",
+        [
+            ("pdf", "PAGINATED"),
+            ("text", "MARKDOWN"),
+            ("docx", "MARKDOWN"),
+            ("xlsx", "MARKDOWN"),
+            ("pptx", "MARKDOWN"),
+            ("epub", "MARKDOWN"),
+            ("image", "MARKDOWN"),
+            ("code", "MARKDOWN"),
+        ],
+    )
+    def test_content_type_to_mode(self, content_type, expected_mode_name):
+        from lilbee.ingest import ExtractMode, content_type_to_mode
+
+        assert content_type_to_mode(content_type) is getattr(ExtractMode, expected_mode_name)
+
+
+class TestBuildChunkingConfig:
+    def test_semantic_enabled_uses_semantic_chunker(self, monkeypatch):
+        from lilbee.config import cfg
+        from lilbee.ingest import _build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "topic_threshold", 0.6)
+        result = _build_chunking_config()
+        assert result.chunker_type == "semantic"
+        assert result.topic_threshold == pytest.approx(0.6, abs=1e-5)
+
+    def test_semantic_disabled_uses_char_budget(self, monkeypatch):
+        from lilbee.chunk import CHARS_PER_TOKEN
+        from lilbee.config import cfg
+        from lilbee.ingest import _build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        result = _build_chunking_config()
+        assert result.chunker_type == "text"
+        assert result.max_chars == 512 * CHARS_PER_TOKEN
+        assert result.max_overlap == 100 * CHARS_PER_TOKEN
+
+    def test_topic_threshold_propagates_to_every_mode(self, monkeypatch):
+        """Every ExtractMode carries the semantic chunking config, not just PDF."""
+        from lilbee.config import cfg
+        from lilbee.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "topic_threshold", 0.42)
+        for mode in ExtractMode:
+            config = extraction_config(mode)
+            assert config.chunking.chunker_type == "semantic"
+            assert config.chunking.topic_threshold == pytest.approx(0.42, abs=1e-5)
 
 
 class TestClassifyStructuredFormats:
@@ -1228,27 +1298,6 @@ class TestSharedProgress:
 
         await sync(quiet=False)
         assert shared_progress.get(None) is None
-
-
-class TestOcrExtractionConfig:
-    def test_ocr_config_has_tesseract_backend(self):
-        from lilbee.ingest import ocr_extraction_config
-
-        config = ocr_extraction_config()
-        assert config.ocr is not None
-        assert config.ocr.backend == "tesseract"
-
-    def test_ocr_config_has_page_config(self):
-        from lilbee.ingest import ocr_extraction_config
-
-        config = ocr_extraction_config()
-        assert config.pages is not None
-
-    def test_ocr_config_has_chunking(self):
-        from lilbee.ingest import ocr_extraction_config
-
-        config = ocr_extraction_config()
-        assert config.chunking is not None
 
 
 class TestIngestMarkdownEdgeCases:

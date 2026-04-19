@@ -46,6 +46,25 @@ def ConfigField(
 
 log = logging.getLogger(__name__)
 
+_BOOL_TRUE = frozenset({"true", "1", "yes"})
+_BOOL_FALSE = frozenset({"false", "0", "no"})
+
+
+def _parse_bool(raw: str) -> bool:
+    """Parse a string as a bool. Raises ValueError on unrecognized values.
+
+    Truthy: true/1/yes. Falsy: false/0/no. Case- and whitespace-insensitive.
+    Raises so field validators can warn and fall back to a default rather than
+    silently coerce (``bool("false")`` is ``True`` in Python).
+    """
+    normalized = raw.strip().lower()
+    if normalized in _BOOL_TRUE:
+        return True
+    if normalized in _BOOL_FALSE:
+        return False
+    raise ValueError(f"Invalid boolean: {raw!r}")
+
+
 DEFAULT_IGNORE_DIRS = frozenset(
     {
         "node_modules",
@@ -127,9 +146,14 @@ class Config(BaseSettings):
     # True = force OCR regardless of detection.
     # False = disable OCR entirely.
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
-
     # Per-page timeout in seconds for vision OCR (0 = no limit).
     ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+    # Topic-aware chunking: when true, use kreuzberg's semantic chunker so chunks
+    # respect topic boundaries. Falls back to a fixed character budget when false.
+    semantic_chunking: bool = ConfigField(default=True, writable=True)
+    # Cosine similarity threshold for topic boundary detection (0.0-1.0).
+    # Lower values produce more chunks; only used when semantic_chunking is true.
+    topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
@@ -393,13 +417,29 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            stripped = v.strip().lower()
-            if stripped in ("", "auto", "none"):
+            if v.strip().lower() in ("", "auto", "none"):
                 return None
-            if stripped in ("true", "1", "yes"):
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                pass
+        return bool(v)
+
+    @field_validator("semantic_chunking", mode="before")
+    @classmethod
+    def _parse_semantic_chunking(cls, v: Any) -> bool:
+        """Parse semantic_chunking from env var string or direct value.
+
+        Invalid values log a warning and fall back to the default (True).
+        """
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            try:
+                return _parse_bool(v)
+            except ValueError:
+                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default True", v)
                 return True
-            if stripped in ("false", "0", "no"):
-                return False
         return bool(v)
 
     @field_validator("chat_model", "embedding_model", mode="after")

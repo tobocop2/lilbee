@@ -23,7 +23,18 @@ class TestChunkText:
         assert "short paragraph" in chunks[0]
 
     def test_long_text_produces_multiple_chunks(self):
-        paragraphs = [f"Paragraph number {i} with detailed content here." for i in range(50)]
+        """Long text spanning distinct topics should produce multiple chunks.
+
+        Semantic chunking merges same-topic paragraphs, so the fixture
+        alternates between unrelated domains to force topic breaks.
+        """
+        topics = [
+            "Solar panels convert sunlight into electricity via photovoltaic cells.",
+            "The FDA approved a new clinical trial for a diabetes treatment.",
+            "Quantum computers use qubits and entanglement for parallel computation.",
+            "Ancient Roman aqueducts used gravity to transport water across cities.",
+        ]
+        paragraphs = [topics[i % len(topics)] + f" Variant {i}." for i in range(60)]
         text = "\n\n".join(paragraphs)
         chunks = chunk_text(text)
         assert len(chunks) > 1
@@ -46,6 +57,15 @@ class TestChunkText:
         chunks = chunk_text(text)
         assert len(chunks) >= 1
         assert "plain text" in chunks[0]
+
+    def test_semantic_disabled_uses_char_budget(self, monkeypatch):
+        """When cfg.semantic_chunking is False, chunker falls back to fixed char budget."""
+        from lilbee.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        chunks = chunk_text("Plain text chunked without the semantic branch.")
+        assert chunks
+        assert "Plain text" in " ".join(chunks)
 
 
 class TestMarkdownChunking:

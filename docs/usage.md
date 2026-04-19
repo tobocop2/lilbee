@@ -228,6 +228,8 @@ All settings are configurable via environment variables:
 | `LILBEE_CHUNK_SIZE` | `512` | Tokens per chunk |
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk for embedding |
+| `LILBEE_SEMANTIC_CHUNKING` | `true` | Use topic-aware semantic chunking (set `false` for fixed-size splitting) |
+| `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine similarity threshold for topic boundaries, 0.0-1.0 (lower = more splits) |
 
 CLI flags: `--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`, `--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
 
