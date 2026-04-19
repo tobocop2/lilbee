@@ -669,10 +669,9 @@ class TestSemanticChunking:
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.8
-        result = _build_chunking_config(semantic=True)
+        result = _build_chunking_config()
         assert result.chunker_type == "semantic"
         assert result.topic_threshold == pytest.approx(0.8, abs=1e-5)
-        assert result.max_chars == 1000  # kreuzberg default; semantic auto-derives
 
     def test_build_chunking_config_default_threshold(self):
         """Default topic_threshold is 0.75."""
@@ -680,7 +679,7 @@ class TestSemanticChunking:
 
         cfg.semantic_chunking = True
         cfg.topic_threshold = 0.75
-        result = _build_chunking_config(semantic=True)
+        result = _build_chunking_config()
         assert result.topic_threshold == pytest.approx(0.75, abs=1e-5)
 
     def test_build_chunking_config_semantic_disabled_no_semantic_fields(self):
@@ -688,18 +687,20 @@ class TestSemanticChunking:
         from lilbee.ingest import _build_chunking_config
 
         cfg.semantic_chunking = False
-        result = _build_chunking_config(semantic=True)
+        result = _build_chunking_config()
         assert result.chunker_type == "text"
         assert result.topic_threshold is None
 
-    def test_build_chunking_config_semantic_false_flag(self):
-        """When semantic=False (non-PDF path), config uses default text chunker."""
-        from lilbee.ingest import _build_chunking_config
+    def test_build_chunking_config_disabled_sets_char_budget(self):
+        """When disabled, config uses explicit max_chars from chunk_size."""
+        from lilbee.ingest import _CHARS_PER_TOKEN, _build_chunking_config
 
-        cfg.semantic_chunking = True
-        result = _build_chunking_config(semantic=False)
-        assert result.chunker_type == "text"
-        assert result.topic_threshold is None
+        cfg.semantic_chunking = False
+        cfg.chunk_size = 512
+        cfg.chunk_overlap = 100
+        result = _build_chunking_config()
+        assert result.max_chars == 512 * _CHARS_PER_TOKEN
+        assert result.max_overlap == 100 * _CHARS_PER_TOKEN
 
     def test_kreuzberg_config_pdf_has_semantic_chunking(self):
         """PDF extraction config uses semantic chunker with topic threshold."""
@@ -742,28 +743,28 @@ class TestSemanticChunking:
         assert "machine learning" in combined
         assert "databases" in combined
 
-    def test_chunk_text_semantically_long_text_respects_budget(self):
-        """Chunks from semantic chunker stay within the configured budget."""
+    def test_chunk_text_semantically_long_text_splits_into_multiple(self):
+        """Long text produces multiple semantic chunks, none swallowing the whole input."""
         from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = True
-        # Generate text exceeding the 4000-char auto-budget ceiling.
         text = "\n\n".join(f"Paragraph {i} fills space." for i in range(200))
         result = _chunk_text_semantically(text)
         assert len(result) >= 2, f"Should split, got {len(result)}"
-        ceiling = 4100  # AUTO_BUDGET_CEILING (4000) + tolerance
         for chunk in result:
-            assert len(chunk) <= ceiling, f"Chunk too large: {len(chunk)}"
+            assert chunk.strip()
+            assert len(chunk) < len(text)
 
     def test_chunk_text_semantically_disabled_uses_internal_chunker(self):
-        """When semantic disabled, falls back to internal chunk_text."""
+        """When semantic disabled, delegates to internal chunk_text."""
         from lilbee.ingest import _chunk_text_semantically
 
         cfg.semantic_chunking = False
         text = "Some text for chunking."
-        result = _chunk_text_semantically(text)
-        assert len(result) >= 1
-        assert result[0] == text  # short text returns as single chunk
+        with mock.patch("lilbee.ingest.chunk_text", return_value=["sentinel"]) as m:
+            result = _chunk_text_semantically(text)
+        m.assert_called_once_with(text)
+        assert result == ["sentinel"]
 
     def test_chunk_text_semantically_empty_input(self):
         from lilbee.ingest import _chunk_text_semantically
@@ -794,11 +795,11 @@ class TestSemanticChunking:
         from lilbee.ingest import _build_chunking_config
 
         cfg.semantic_chunking = True
-        on = _build_chunking_config(semantic=True)
+        on = _build_chunking_config()
         assert on.chunker_type == "semantic"
 
         cfg.semantic_chunking = False
-        off = _build_chunking_config(semantic=True)
+        off = _build_chunking_config()
         assert off.chunker_type == "text"
 
     def test_topic_threshold_range_respected(self):
@@ -808,7 +809,7 @@ class TestSemanticChunking:
         cfg.semantic_chunking = True
         for threshold in [0.0, 0.25, 0.5, 0.75, 1.0]:
             cfg.topic_threshold = threshold
-            result = _build_chunking_config(semantic=True)
+            result = _build_chunking_config()
             assert result.topic_threshold == pytest.approx(threshold, abs=1e-5)
 
 

@@ -56,16 +56,15 @@ def _chunk_text_semantically(text: str) -> list[str]:
     """Chunk text, using semantic chunking when enabled."""
     if not text or not text.strip():
         return []
-    if cfg.semantic_chunking:
-        from kreuzberg import ExtractionConfig, extract_bytes_sync
+    if not cfg.semantic_chunking:
+        return chunk_text(text)
+    from kreuzberg import ExtractionConfig, extract_bytes_sync
 
-        chunking = _build_chunking_config(semantic=True)
-        config = ExtractionConfig(chunking=chunking)
-        result = extract_bytes_sync(text.encode("utf-8"), "text/plain", config=config)
-        if result.chunks:
-            return [c.content for c in result.chunks]
+    config = ExtractionConfig(chunking=_build_chunking_config())
+    result = extract_bytes_sync(text.encode("utf-8"), "text/plain", config=config)
+    if not result.chunks:
         return []
-    return chunk_text(text)
+    return [c.content for c in result.chunks]
 
 
 def _has_meaningful_text(result: Any) -> bool:
@@ -217,11 +216,11 @@ def classify_file(path: Path) -> str | None:
     return _EXTENSION_MAP.get(path.suffix.lower())
 
 
-def _build_chunking_config(*, semantic: bool = False) -> "ChunkingConfig":
-    """Build kreuzberg ChunkingConfig, optionally with semantic chunking."""
+def _build_chunking_config() -> "ChunkingConfig":
+    """Build kreuzberg ChunkingConfig, using the semantic chunker when enabled."""
     from kreuzberg import ChunkingConfig
 
-    if semantic and cfg.semantic_chunking:
+    if cfg.semantic_chunking:
         # Semantic chunker auto-derives chunk budget from document structure.
         return ChunkingConfig(
             chunker_type="semantic",
@@ -239,7 +238,7 @@ def kreuzberg_config(content_type: str) -> "ExtractionConfig":
     """Build kreuzberg ExtractionConfig for a given content type."""
     from kreuzberg import ExtractionConfig, PageConfig
 
-    chunking = _build_chunking_config(semantic=True)
+    chunking = _build_chunking_config()
 
     if content_type == "pdf":
         return ExtractionConfig(
@@ -253,7 +252,7 @@ def kreuzberg_ocr_config() -> "ExtractionConfig":
     """Build kreuzberg ExtractionConfig with Tesseract OCR enabled for scanned PDFs."""
     from kreuzberg import ExtractionConfig, OcrConfig, PageConfig
 
-    chunking = _build_chunking_config(semantic=True)
+    chunking = _build_chunking_config()
     return ExtractionConfig(
         chunking=chunking,
         pages=PageConfig(extract_pages=True, insert_page_markers=False),

@@ -119,7 +119,7 @@ class Config(BaseModel):
             embedding_dim=_load_setting(data_root, "embedding_dim", "EMBEDDING_DIM", 768, int),
             chunk_size=_load_setting(data_root, "chunk_size", "CHUNK_SIZE", 512, int),
             chunk_overlap=_load_setting(data_root, "chunk_overlap", "CHUNK_OVERLAP", 100, int),
-            semantic_chunking=_load_bool("SEMANTIC_CHUNKING", True),
+            semantic_chunking=_load_bool(data_root, "semantic_chunking", "SEMANTIC_CHUNKING", True),
             topic_threshold=_load_setting(
                 data_root, "topic_threshold", "TOPIC_THRESHOLD", 0.75, float
             ),
@@ -152,12 +152,34 @@ class Config(BaseModel):
         )
 
 
-def _load_bool(env_var: str, default: bool) -> bool:
-    """Load a boolean from LILBEE_<ENV>. Accepts true/false/1/0/yes/no."""
+_BOOL_TRUE = frozenset({"true", "1", "yes"})
+_BOOL_FALSE = frozenset({"false", "0", "no"})
+
+
+def _load_bool(data_root: Path, key: str, env_var: str, default: bool) -> bool:
+    """Load bool with precedence: LILBEE_<ENV> env > config.toml > default.
+
+    Truthy values: true/1/yes. Falsy values: false/0/no. Comparison is
+    case-insensitive. Unrecognized values log a warning and fall back to
+    *default* so a typo doesn't silently flip behavior.
+    """
     raw = os.environ.get(f"LILBEE_{env_var}")
     if raw is None:
+        try:
+            saved = settings.get(data_root, key)
+        except (ValueError, OSError):
+            saved = None
+        if saved is not None:
+            raw = saved
+    if raw is None:
         return default
-    return raw.strip().lower() in ("true", "1", "yes")
+    normalized = raw.strip().lower()
+    if normalized in _BOOL_TRUE:
+        return True
+    if normalized in _BOOL_FALSE:
+        return False
+    log.warning("Invalid LILBEE_%s=%r, using default %r", env_var, raw, default)
+    return default
 
 
 def _load_setting(data_root: Path, key: str, env_var: str, default: Any, typ: type) -> Any:

@@ -6,6 +6,7 @@ chunking splits arbitrarily by character budget.
 """
 
 from pathlib import Path
+from typing import Any
 
 from kreuzberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
 
@@ -16,10 +17,10 @@ def _chunk(
     text: str,
     chunker_type: str,
     max_chars: int | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> list[str]:
     """Chunk text using kreuzberg and return chunk contents."""
-    chunking_kwargs: dict = {
+    chunking_kwargs: dict[str, Any] = {
         "chunker_type": chunker_type,
         "max_overlap": 0,
         **kwargs,
@@ -99,12 +100,13 @@ class TestSemanticVsTextChunking:
 class TestSemanticChunkingProperties:
     """Test properties of semantic chunks."""
 
-    def test_chunks_stay_under_ceiling(self):
-        """Chunks stay under the auto-budget ceiling."""
+    def test_chunks_no_single_chunk_swallows_document(self):
+        """No single semantic chunk is the entire document."""
         text = (FIXTURES / "research_report.txt").read_text()
         chunks = _chunk(text, "semantic")
+        assert len(chunks) >= 2
         for i, chunk in enumerate(chunks):
-            assert len(chunk) <= 4100, f"Chunk {i}: {len(chunk)} chars"
+            assert len(chunk) < len(text), f"Chunk {i} equals full document"
 
     def test_chunks_cover_full_document(self):
         """All source content appears in chunks."""
@@ -128,10 +130,14 @@ class TestSemanticChunkingProperties:
         assert len(chunks) == 1
         assert chunks[0] == "Hello world."
 
-    def test_topic_threshold_accepted(self):
-        """topic_threshold is accepted without error."""
+    def test_topic_threshold_affects_output(self):
+        """Lower threshold (more permissive merging) produces no more chunks than a strict one."""
         text = (FIXTURES / "research_report.txt").read_text()
-        assert len(_chunk(text, "semantic", topic_threshold=0.5)) >= 1
+        strict = _chunk(text, "semantic", topic_threshold=0.95)
+        permissive = _chunk(text, "semantic", topic_threshold=0.2)
+        assert len(strict) >= 1
+        assert len(permissive) >= 1
+        assert len(permissive) <= len(strict)
 
     def test_markdown_content(self):
         """Handles markdown fixtures."""

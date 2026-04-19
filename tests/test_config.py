@@ -666,12 +666,54 @@ class TestSemanticChunkingConfig:
         c = Config(topic_threshold=1.0, **_minimal_config_kwargs())
         assert c.topic_threshold == 1.0
 
-    def test_semantic_chunking_env_var(self, monkeypatch):
+    def test_semantic_chunking_env_var(self, monkeypatch, tmp_path):
         """LILBEE_SEMANTIC_CHUNKING env var controls the setting."""
         monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "false")
         from lilbee.config import _load_bool
 
-        assert _load_bool("SEMANTIC_CHUNKING", True) is False
+        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+
+    def test_semantic_chunking_env_var_truthy_values(self, monkeypatch, tmp_path):
+        from lilbee.config import _load_bool
+
+        for truthy in ("true", "TRUE", "1", "yes", "  YES  "):
+            monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", truthy)
+            assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False) is True
+        for falsy in ("false", "FALSE", "0", "no", "  NO  "):
+            monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", falsy)
+            assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+
+    def test_semantic_chunking_invalid_env_falls_back_to_default(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """Unknown values log a warning and return the default."""
+        import logging
+
+        from lilbee.config import _load_bool
+
+        monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "banana")
+        with caplog.at_level(logging.WARNING, logger="lilbee.config"):
+            result = _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True)
+        assert result is True
+        assert any("banana" in rec.message for rec in caplog.records)
+
+    def test_semantic_chunking_toml_precedence(self, monkeypatch, tmp_path):
+        """config.toml value is used when env var is unset."""
+        from lilbee import settings
+        from lilbee.config import _load_bool
+
+        monkeypatch.delenv("LILBEE_SEMANTIC_CHUNKING", raising=False)
+        settings.set_value(tmp_path, "semantic_chunking", "false")
+        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", True) is False
+
+    def test_semantic_chunking_env_overrides_toml(self, monkeypatch, tmp_path):
+        """LILBEE_<ENV> env var takes precedence over config.toml."""
+        from lilbee import settings
+        from lilbee.config import _load_bool
+
+        settings.set_value(tmp_path, "semantic_chunking", "false")
+        monkeypatch.setenv("LILBEE_SEMANTIC_CHUNKING", "true")
+        assert _load_bool(tmp_path, "semantic_chunking", "SEMANTIC_CHUNKING", False) is True
 
     def test_semantic_chunking_can_be_disabled(self):
         c = Config(semantic_chunking=False, **_minimal_config_kwargs())
