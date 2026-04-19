@@ -1,36 +1,33 @@
-"""First-run setup — single-screen model picker with RAM-based recommendations."""
+"""First-run setup — single-screen model picker with RAM-based recommendations.
+
+The wizard mirrors the catalog's grid aesthetic: one ``GridSelect`` per
+section (chat, embed), pressing Enter on a card installs that model
+immediately via ``TaskBarController.start_download``. No separate
+Install & Go button, no Browse, no Skip — pick what you want, press
+Esc when done. Downloads continue under the app-level controller, so
+dismissing the wizard while they're in flight is fine.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import threading
-from collections.abc import Callable
-from functools import partial
-from typing import ClassVar, NamedTuple
+from typing import ClassVar
 
-from textual import on, work
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, VerticalGroup, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Label, ProgressBar, Static
+from textual.widgets import Label, Static
 
-from lilbee.catalog import (
-    FEATURED_CHAT,
-    FEATURED_EMBEDDING,
-    CatalogModel,
-    DownloadProgress,
-    download_model,
-    make_download_callback,
-)
+from lilbee.catalog import FEATURED_CHAT, FEATURED_EMBEDDING, CatalogModel
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
     TableRow,
     catalog_to_row,
-    format_size_gb,
     parse_param_label,
 )
-from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.grid_select import GridSelect
 from lilbee.cli.tui.widgets.model_card import ModelCard
 from lilbee.config import cfg
@@ -39,9 +36,7 @@ from lilbee.services import reset_services
 
 log = logging.getLogger(__name__)
 
-
-class _DownloadCancelled(Exception):
-    """Raised inside a download progress callback to abort hf_hub_download."""
+SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
 def _scan_installed_models() -> tuple[list[str], list[str]]:
@@ -64,11 +59,7 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
 
 
 def _installed_name_to_row(name: str, task: str) -> TableRow:
-    """Create a minimal TableRow for an already-installed model.
-    ``name`` is a ref string like ``qwen3:0.6b``.  We store it in ``ref``
-    (for config persistence) and also in ``name`` (for display) since we
-    don't have a richer display label for already-installed models.
-    """
+    """Create a minimal TableRow for an already-installed model."""
     return TableRow(
         name=name,
         task=task,
@@ -85,32 +76,11 @@ def _installed_name_to_row(name: str, task: str) -> TableRow:
 
 
 def _pick_recommended(ram_gb: float) -> tuple[CatalogModel, CatalogModel]:
-    """Pick chat + embedding models appropriate for system RAM.
-    Selects the largest featured chat model (by ``size_gb``) whose
-    ``min_ram_gb`` fits the host, not just the first entry in authoring
-    order. Always picks the first embedding model (Nomic).
-    """
+    """Pick chat + embedding models appropriate for system RAM."""
     eligible = [m for m in FEATURED_CHAT if m.min_ram_gb <= ram_gb]
     chat = max(eligible, key=lambda m: m.size_gb) if eligible else FEATURED_CHAT[0]
     embed = FEATURED_EMBEDDING[0]
     return chat, embed
-
-
-def _card_download_size(card: ModelCard | None) -> float:
-    """Return download size in GB for a non-installed card, or 0."""
-    if card and not card.row.installed:
-        cm = card.row.catalog_model
-        if cm:
-            return cm.size_gb
-    return 0.0
-
-
-class _DownloadRow(NamedTuple):
-    """Per-model progress row: display name + the widgets that render its state."""
-
-    display_name: str
-    label: Label
-    bar: ProgressBar
 
 
 def _pending_download(card: ModelCard | None) -> CatalogModel | None:
@@ -121,12 +91,22 @@ def _pending_download(card: ModelCard | None) -> CatalogModel | None:
 
 
 class SetupWizard(Screen[str | None]):
-    """First-run setup — browsable single-screen model picker."""
+    """First-run setup — pick chat + embedding, Enter installs, Esc exits.
+
+    Each card you press Enter on:
+      1. Becomes the saved selection for its task (chat or embedding).
+      2. Triggers a download via the app's ``TaskBarController`` unless
+         the card is already installed.
+      3. Leaves the wizard open so you can pick the other task next.
+
+    Selections are persisted to settings eagerly (not at dismiss time),
+    so Esc-ing out mid-wizard keeps your picks.
+    """
 
     CSS_PATH = "setup.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("escape", "cancel", "Done", show=True),
         Binding("tab", "app.focus_next", "Next", show=False),
         Binding("shift+tab", "app.focus_previous", "Prev", show=False),
     ]
@@ -140,9 +120,9 @@ class SetupWizard(Screen[str | None]):
         self._chat_installed, self._embed_installed = _scan_installed_models()
         self._recommended_chat: CatalogModel | None = None
         self._recommended_embed: CatalogModel | None = None
-        self._download_models: list[CatalogModel] = []
-        self._download_rows: dict[str, _DownloadRow] = {}
-        self._cancel_event = threading.Event()
+        # Model refs already submitted to the controller (avoid duplicate
+        # start_download calls when a card is re-selected by arrow + Enter).
+        self._submitted: set[str] = set()
 
     @property
     def _selected_chat(self) -> str | None:
@@ -156,20 +136,16 @@ class SetupWizard(Screen[str | None]):
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Static(msg.SETUP_WELCOME, id="setup-title")
-        yield Static(msg.SETUP_SUBTITLE, id="setup-subtitle")
+        yield Static(msg.SETUP_INTRO, id="setup-intro")
         yield VerticalScroll(id="setup-grid-container")
-        with Horizontal(id="setup-footer"):
-            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-chat-slot")
-            yield Label(msg.SETUP_SLOT_EMPTY, id="setup-embed-slot")
-            yield Label("", id="setup-download-size")
-        yield Button(msg.SETUP_INSTALL_BUTTON, id="setup-action", disabled=True)
-        yield Button(msg.SETUP_BROWSE_CATALOG, id="setup-browse", variant="default")
-        yield Button(msg.SETUP_SKIP_BUTTON, id="setup-skip", variant="default")
-        yield VerticalGroup(id="setup-downloads")
+        yield Label(msg.SETUP_ENTER_HINT, id="setup-enter-hint")
         yield TaskBar()
 
     def on_mount(self) -> None:
         self._build_grid()
+        # Focus the chat-model grid so arrow keys / Enter work without a mouse.
+        with contextlib.suppress(Exception):
+            self.query_one(f"#{SETUP_CHAT_GRID_ID}", GridSelect).focus()
 
     def _build_section(
         self,
@@ -177,16 +153,12 @@ class SetupWizard(Screen[str | None]):
         models: tuple[CatalogModel, ...],
         installed_refs: set[str],
         widgets_out: list[Static | GridSelect],
+        grid_id: str | None = None,
     ) -> list[ModelCard]:
-        """Build a heading + GridSelect for a list of catalog models.
-        Catalog entries whose canonical ``name:tag`` is already in
-        ``installed_refs`` render with ``installed=True`` so they report a
-        zero download size and don't trigger a redundant download on
-        Install & Go.
-        """
+        """Build a heading + GridSelect for a list of catalog models."""
         widgets_out.append(Static(heading, classes="section-heading"))
         cards = [ModelCard(catalog_to_row(m, installed=m.ref in installed_refs)) for m in models]
-        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50))
+        widgets_out.append(GridSelect(*cards, min_column_width=30, max_column_width=50, id=grid_id))
         return cards
 
     def _build_grid(self) -> None:
@@ -213,7 +185,11 @@ class SetupWizard(Screen[str | None]):
             )
 
         chat_cards = self._build_section(
-            msg.SETUP_HEADING_CHAT, FEATURED_CHAT, installed_refs, widgets_to_mount
+            msg.SETUP_HEADING_CHAT,
+            FEATURED_CHAT,
+            installed_refs,
+            widgets_to_mount,
+            grid_id=SETUP_CHAT_GRID_ID,
         )
         embed_cards = self._build_section(
             msg.SETUP_HEADING_EMBED, FEATURED_EMBEDDING, installed_refs, widgets_to_mount
@@ -225,7 +201,7 @@ class SetupWizard(Screen[str | None]):
     def _preselect_recommended(
         self, chat_cards: list[ModelCard], embed_cards: list[ModelCard]
     ) -> None:
-        """Pre-select the RAM-appropriate recommended models."""
+        """Pre-select the RAM-appropriate recommended models (without installing)."""
         for cards, recommended in [
             (chat_cards, self._recommended_chat),
             (embed_cards, self._recommended_embed),
@@ -235,64 +211,57 @@ class SetupWizard(Screen[str | None]):
             for card in cards:
                 cm = card.row.catalog_model
                 if cm and cm.ref == recommended.ref:
-                    self._select_card(card, card.row.task)
+                    self._mark_selection(card, card.row.task)
                     break
 
-    def _select_card(self, card: ModelCard, task: str) -> None:
-        """Select a card, deselecting the previous selection for that task."""
+    def _mark_selection(self, card: ModelCard, task: str) -> None:
+        """Record a selection and repaint its card. No download yet."""
         _ref, prev_card = self._selections[task]
-        if prev_card is not None:
+        if prev_card is not None and prev_card is not card:
             prev_card.selected = False
         ref = card.row.ref or card.row.name
         card.selected = True
         self._selections[task] = (ref, card)
-        self._update_footer()
 
-    def _update_footer(self) -> None:
-        """Update footer slots, download size, and button states."""
-        chat_slot = self.query_one("#setup-chat-slot", Label)
-        embed_slot = self.query_one("#setup-embed-slot", Label)
-        size_label = self.query_one("#setup-download-size", Label)
-        action_btn = self.query_one("#setup-action", Button)
-        skip_btn = self.query_one("#setup-skip", Button)
+    def _commit_selection(self, card: ModelCard, task: str) -> None:
+        """Persist the selection to settings and submit a download if pending.
 
-        chat_ref, chat_card = self._selections[ModelTask.CHAT]
-        embed_ref, embed_card = self._selections[ModelTask.EMBEDDING]
+        Called when the user presses Enter on a card. Saves the config
+        fragment eagerly so Esc mid-wizard doesn't lose the pick.
+        """
+        from lilbee import settings
+        from lilbee.cli.tui.app import LilbeeApp
 
-        chat_slot.update(
-            msg.SETUP_CHAT_SLOT.format(name=chat_ref) if chat_ref else msg.SETUP_SLOT_EMPTY
-        )
-        embed_slot.update(
-            msg.SETUP_EMBED_SLOT.format(name=embed_ref) if embed_ref else msg.SETUP_SLOT_EMPTY
-        )
+        self._mark_selection(card, task)
+        ref = self._selections[task][0]
+        if ref is None:
+            return
+        # Write the fragment; embedding never overrides chat and vice versa.
+        if task == ModelTask.CHAT:
+            cfg.chat_model = ref
+            settings.set_value(cfg.data_root, "chat_model", ref)
+        elif task == ModelTask.EMBEDDING:
+            cfg.embedding_model = ref
+            settings.set_value(cfg.data_root, "embedding_model", ref)
 
-        total_gb = _card_download_size(chat_card) + _card_download_size(embed_card)
-        if total_gb > 0:
-            size_label.update(msg.SETUP_TOTAL_DOWNLOAD.format(size=format_size_gb(total_gb)))
-        else:
-            size_label.update("")
-
-        both_selected = chat_ref is not None and embed_ref is not None
-        action_btn.disabled = not both_selected
-
-        if both_selected:
-            action_btn.label = msg.SETUP_INSTALL_BUTTON
-            skip_btn.display = False
-        elif chat_ref:
-            skip_btn.label = msg.SETUP_CONTINUE_NO_SEARCH
-            skip_btn.display = True
-        else:
-            skip_btn.label = msg.SETUP_SKIP_BUTTON
-            skip_btn.display = True
+        pending = _pending_download(card)
+        if (
+            pending is not None
+            and pending.ref not in self._submitted
+            and isinstance(self.app, LilbeeApp)
+        ):
+            self._submitted.add(pending.ref)
+            self.app.task_bar.start_download(pending)
 
     @on(GridSelect.Selected)
     def _on_grid_selected(self, event: GridSelect.Selected) -> None:
+        """Enter on a card installs it (or records selection if already installed)."""
         if not isinstance(event.widget, ModelCard):
             return
         card = event.widget
         task = card.row.task
         if task in self._selections:
-            self._select_card(card, task)
+            self._commit_selection(card, task)
 
     @on(GridSelect.LeaveDown)
     def _on_grid_leave_down(self, event: GridSelect.LeaveDown) -> None:
@@ -304,147 +273,14 @@ class SetupWizard(Screen[str | None]):
         """Arrow-up past the first card walks to the previous focusable widget."""
         self.focus_previous()
 
-    @on(Button.Pressed, "#setup-browse")
-    def _on_browse_catalog(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        if isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
-            self.dismiss("skipped")
-            self.app.call_later(lambda: self.app.switch_view("Catalog"))
-
-    @on(Button.Pressed, "#setup-action")
-    def _on_install(self) -> None:
-        """Start downloading selected models."""
-        self._download_models = [
-            cm
-            for task in (ModelTask.CHAT, ModelTask.EMBEDDING)
-            if (cm := _pending_download(self._selections[task][1]))
-        ]
-
-        if not self._download_models:
-            self._save_and_dismiss("completed")
-            return
-
-        self.add_class("-downloading")
-        self.query_one("#setup-action", Button).disabled = True
-        self._run_downloads()
-
-    def _mount_download_rows(self) -> None:
-        """Mount one label+progress row per pending download before starting."""
-        container = self.query_one("#setup-downloads", VerticalGroup)
-        container.remove_children()
-        self._download_rows = {}
-        for model in self._download_models:
-            label = Label(
-                msg.SETUP_DOWNLOAD_WAITING.format(name=model.display_name),
-                classes="download-label",
-            )
-            bar = ProgressBar(total=100, show_eta=False, classes="download-bar")
-            container.mount(label, bar)
-            self._download_rows[model.ref] = _DownloadRow(model.display_name, label, bar)
-
-    @work(thread=True)
-    def _run_downloads(self) -> None:  # pragma: no cover
-        """Download all selected models in a background thread."""
-        self._download_loop(partial(call_from_thread, self))
-
-    def _on_download_progress(
-        self, notify: Callable[..., None], model_ref: str, p: DownloadProgress
-    ) -> None:
-        """Handle a single download progress update for the given model."""
-        if self._cancel_event.is_set():
-            raise _DownloadCancelled
-        notify(self._update_row, model_ref, p.percent, p.detail)
-
-    def _handle_download_error(
-        self,
-        notify: Callable[..., None],
-        exc: Exception,
-        model: CatalogModel,
-        *,
-        is_first: bool,
-    ) -> None:
-        """Mark the row as failed and, if the chat model succeeded first, save partial state."""
-        log.warning("Download failed for %s: %s", model.ref, exc)
-        error_msg = str(exc)
-        if "401" in error_msg or "PermissionError" in error_msg:
-            error_msg = msg.SETUP_LOGIN_REQUIRED.format(name=model.display_name)
-        notify(self._mark_row_failed, model.ref, error_msg)
-        if not is_first:
-            notify(self._on_partial_success)
-
-    def _download_loop(self, notify: Callable[..., None]) -> None:
-        """Download all selected models sequentially."""
-        notify(self._mount_download_rows)
-        for idx, model in enumerate(self._download_models, 1):
-            if self._cancel_event.is_set():
-                return
-            is_first = idx == 1
-            notify(self._update_row, model.ref, 0, msg.SETUP_DOWNLOAD_STARTING)
-
-            def _progress(p: DownloadProgress, ref: str = model.ref) -> None:
-                self._on_download_progress(notify, ref, p)
-
-            callback = make_download_callback(_progress)
-            try:
-                download_model(model, on_progress=callback)
-            except _DownloadCancelled:
-                log.info("Download cancelled for %s", model.ref)
-                return
-            except Exception as exc:
-                if self._cancel_event.is_set():
-                    log.info("Download cancelled for %s", model.ref)
-                    return
-                self._handle_download_error(notify, exc, model, is_first=is_first)
-                return
-            notify(self._mark_row_done, model.ref)
-
-        notify(self._on_all_downloads_complete)
-
-    def _on_all_downloads_complete(self) -> None:
-        self._save_and_dismiss("completed")
-
-    def _on_partial_success(self) -> None:
-        """Chat downloaded but embedding failed."""
-        self._selections[ModelTask.EMBEDDING] = (None, None)
-        self._save_and_dismiss("completed")
-
-    def _update_row(self, model_ref: str, percent: int, detail: str) -> None:
-        row = self._download_rows[model_ref]
-        row.label.update(
-            msg.SETUP_DOWNLOAD_ACTIVE.format(name=row.display_name, detail=detail, percent=percent)
-        )
-        row.bar.update(total=100, progress=percent)
-
-    def _mark_row_done(self, model_ref: str) -> None:
-        row = self._download_rows[model_ref]
-        row.label.update(msg.SETUP_DOWNLOAD_DONE.format(name=row.display_name))
-        row.bar.update(total=100, progress=100)
-
-    def _mark_row_failed(self, model_ref: str, error: str) -> None:
-        row = self._download_rows[model_ref]
-        row.label.update(msg.SETUP_DOWNLOAD_FAILED.format(name=row.display_name, error=error))
-
-    def _save_and_dismiss(self, result: str) -> None:
-        """Persist selected models to config and dismiss."""
-        from lilbee import settings
-
-        chat_ref = self._selected_chat
-        embed_ref = self._selected_embed
-        if chat_ref:
-            cfg.chat_model = chat_ref
-            settings.set_value(cfg.data_root, "chat_model", chat_ref)
-        if embed_ref:
-            cfg.embedding_model = embed_ref
-            settings.set_value(cfg.data_root, "embedding_model", embed_ref)
-        reset_services()
-        self.dismiss(result)
-
-    @on(Button.Pressed, "#setup-skip")
-    def _on_skip(self) -> None:
-        """Skip setup — save any partial selection."""
-        self._save_and_dismiss("skipped")
-
     def action_cancel(self) -> None:
-        self._cancel_event.set()
-        self.dismiss("skipped")
+        """Escape dismisses the wizard; any submitted downloads keep running.
+
+        Selections are saved eagerly in ``_commit_selection``; we reset
+        services here so the next screen pulls the updated config.
+        """
+        if self._selected_chat or self._selected_embed:
+            reset_services()
+            self.dismiss("completed")
+        else:
+            self.dismiss("skipped")

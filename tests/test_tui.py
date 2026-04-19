@@ -533,6 +533,55 @@ class TestSetupWizard:
         assert wizard._selected_chat is None
         assert wizard._selected_embed is None
 
+    async def test_first_chat_grid_focused_on_mount(self) -> None:
+        """On mount, the first chat-model GridSelect must have keyboard focus.
+
+        Regression guard for bb-rqrv: on a fresh launch the wizard's
+        GridSelect widgets were focus-less, so arrow keys / Tab / Enter
+        never reached them. Users could not pick a model without the mouse.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.push_screen(SetupWizard())
+            await pilot.pause()
+            focused = app.focused
+            assert isinstance(focused, GridSelect), (
+                f"expected GridSelect to have focus on mount, got {type(focused).__name__}"
+            )
+
+    async def test_single_tab_escapes_chat_grid(self) -> None:
+        """A single Tab from the chat grid must move focus OUT of the grid.
+
+        Regression guard for bb-q9gl root cause: GridSelect's default
+        ``action_tab_next`` cycled highlight within the grid before
+        escaping, so users who pressed Tab after selecting a card found
+        their selection silently changed as the highlight wandered through
+        other cards. Tab must not be a within-grid navigator.
+        """
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.cli.tui.widgets.grid_select import GridSelect
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            wizard = SetupWizard()
+            await app.push_screen(wizard)
+            await pilot.pause()
+            assert isinstance(app.focused, GridSelect), "test precondition"
+            before = app.focused
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is not before, (
+                "Tab on focused GridSelect must leave the grid; "
+                f"stayed on {type(app.focused).__name__}"
+            )
+
 
 class TestCanonicalModelsDir:
     def test_returns_platform_path(self) -> None:
@@ -726,14 +775,14 @@ class TestNavBindings:
 
 
 class TestNoRichConsoleInTui:
-    """B2: Verify _run_add_background does not import Rich Console."""
+    """B2: Verify the /add implementation doesn't pull Rich Console into the TUI."""
 
     def test_chat_add_uses_copy_files_not_copy_paths(self) -> None:
         import inspect
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        source = inspect.getsource(ChatScreen._run_add_background)
+        source = inspect.getsource(ChatScreen._do_add)
         assert "from lilbee.cli.app import console" not in source
         assert "copy_paths" not in source
         assert "copy_files" in source

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import ClassVar
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -15,16 +14,14 @@ from textual.containers import VerticalScroll
 from textual.events import Click
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
-from textual.worker import Worker, WorkerState, get_current_worker
+from textual.worker import Worker, WorkerState
 
 from lilbee.catalog import (
     CatalogModel,
-    DownloadProgress,
     ModelFamily,
     ModelVariant,
     get_catalog,
     get_families,
-    make_download_callback,
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -43,12 +40,13 @@ from lilbee.config import cfg
 from lilbee.model_manager import RemoteModel, get_model_manager
 from lilbee.models import ModelTask
 
-if TYPE_CHECKING:
-    from lilbee.cli.tui.widgets.task_bar import TaskBarController
-
 log = logging.getLogger(__name__)
 
 _HF_PAGE_SIZE = 25
+# When the highlighted row is within this many rows of the end we
+# auto-fetch the next page. Small enough that the request is already
+# in flight by the time the user reaches the bottom.
+_HF_LOAD_MORE_TRIGGER = 5
 _ALL_TASKS = tuple(ModelTask)
 
 _WORKER_FETCH_HF = "fetch_hf_models"
@@ -91,6 +89,9 @@ class CatalogScreen(Screen[None]):
         Binding("space", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+d", "page_down", "PgDn", show=False, group=_SCROLL_GROUP),
         Binding("ctrl+u", "page_up", "PgUp", show=False, group=_SCROLL_GROUP),
+        # Hidden from the footer so catalog still has <=5 visible bindings;
+        # the sort-label "press n for more" copy surfaces it to the user.
+        Binding("n", "load_more", "More", show=False, group=_ACTION_GROUP),
     ]
 
     def __init__(self) -> None:
@@ -107,6 +108,7 @@ class CatalogScreen(Screen[None]):
         self._installed_names: set[str] = set()
         self._grid_view: bool = True
         self._hf_fetched: bool = False
+        self._loading_more: bool = False
         self._grid_cache_key: tuple[tuple[str, bool], ...] = ()
 
     def compose(self) -> ComposeResult:
@@ -234,6 +236,10 @@ class CatalogScreen(Screen[None]):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
+            # Release the load-more latch on failure so the user can retry
+            # with ``n`` instead of being stuck at the current page forever.
+            if event.worker.name == _WORKER_FETCH_MORE_HF:
+                self._loading_more = False
             return
         result = event.worker.result
         if not isinstance(result, list):
@@ -243,6 +249,7 @@ class CatalogScreen(Screen[None]):
             self._hf_models = result
         elif name == _WORKER_FETCH_MORE_HF:
             self._hf_models.extend(result)
+            self._loading_more = False
         elif name == _WORKER_FETCH_REMOTE:
             self._remote_models = result
         else:
@@ -413,10 +420,15 @@ class CatalogScreen(Screen[None]):
         """Update the sort indicator label."""
         direction = "asc" if self._sort_ascending else "desc"
         n_total = len(self._rows)
-        more = "+" if self._hf_has_more else ""
+        if self._loading_more:
+            count = f"{n_total} models · loading more…"
+        elif self._hf_has_more:
+            count = f"{n_total} models · press [b]n[/b] for more"
+        else:
+            count = f"{n_total} models"
         self.query_one("#sort-label", Static).update(
             f"Sort: {self._sort_column} ({direction})  |  "
-            f"{n_total}{more} models  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
+            f"{count}  |  {msg.CATALOG_VIEW_TOGGLE_TABLE}"
         )
 
     @on(DataTable.HeaderSelected, "#catalog-table")
@@ -450,9 +462,26 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _load_more(self) -> None:
-        """Load next page of HF models."""
+        """Load next page of HF models, if any remain and no fetch is in flight."""
+        if self._loading_more or not self._hf_has_more:
+            return
+        self._loading_more = True
         self._hf_offset += _HF_PAGE_SIZE
         self._fetch_more_hf()
+
+    def action_load_more(self) -> None:
+        """Keyboard trigger (``n``) so users can page without scrolling."""
+        self._load_more()
+
+    @on(DataTable.RowHighlighted, "#catalog-table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Prefetch the next HF page as the cursor approaches the bottom."""
+        if self._grid_view:
+            return
+        if not self._hf_has_more or self._loading_more:
+            return
+        if event.cursor_row >= len(self._rows) - _HF_LOAD_MORE_TRIGGER:
+            self._load_more()
 
     def _install_variant(self, variant: ModelVariant, family: ModelFamily) -> None:
         """Convert a variant back to a CatalogModel and trigger install."""
@@ -487,57 +516,19 @@ class CatalogScreen(Screen[None]):
         self._enqueue_download(model)
 
     def _enqueue_download(self, model: CatalogModel) -> None:
-        """Enqueue a model download in the app's TaskBar."""
+        """Submit the download to the app-level TaskBarController.
+
+        The controller owns the worker thread; this screen just fires the
+        request and returns. Progress is visible from every screen and
+        survives navigation.
+        """
         from lilbee.cli.tui.app import LilbeeApp
 
         if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
             self.notify(msg.CATALOG_NO_TASK_BAR, severity="error")
             return
-        task_bar = self.app.task_bar
-        task_id = task_bar.add_task(f"Downloading {model.display_name}", "download")
-        task_bar.queue.advance("download")
+        self.app.task_bar.start_download(model)
         self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
-        self._run_download(model, task_id, task_bar)
-
-    def _make_progress_callback(
-        self, task_id: str, bar: TaskBarController
-    ) -> Callable[[int, int], None]:
-        """Build a progress callback that reports download progress to the TaskBar."""
-
-        def _on_update(p: DownloadProgress) -> None:
-            self._safe_call(bar.update_task, task_id, p.percent, p.detail)
-
-        return make_download_callback(_on_update)
-
-    @work(thread=True)
-    def _run_download(self, model: CatalogModel, task_id: str, bar: TaskBarController) -> None:
-        """Download a model in a background thread, reporting to TaskBar."""
-        from lilbee.catalog import download_model
-
-        worker = get_current_worker()
-        try:
-            download_model(model, on_progress=self._make_progress_callback(task_id, bar))
-            if worker.is_cancelled:
-                return
-            self._safe_call(bar.complete_task, task_id)
-            self._safe_call(self.notify, msg.CATALOG_INSTALLED_OK.format(name=model.display_name))
-        except PermissionError:
-            detail = msg.CATALOG_GATED_REPO.format(name=model.display_name)
-            log.warning("Gated repo: %s", model.hf_repo)
-            self._safe_call(bar.fail_task, task_id, detail)
-            self._safe_call(self.notify, detail, severity="warning")
-        except Exception as exc:
-            log.warning("Download failed for %s", model.ref, exc_info=True)
-            error_detail = str(exc) if str(exc) else type(exc).__name__
-            detail = f"{model.display_name}: {error_detail}"
-            self._safe_call(bar.fail_task, task_id, detail)
-            self._safe_call(self.notify, detail, severity="error")
-
-    def _safe_call(self, fn: Any, *args: Any, **kwargs: Any) -> None:
-        """Call fn via call_from_thread, suppressing errors if app context is gone."""
-        from lilbee.cli.tui.thread_safe import call_from_thread
-
-        call_from_thread(self, fn, *args, **kwargs)
 
     def action_go_back(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
@@ -580,21 +571,27 @@ class CatalogScreen(Screen[None]):
     @work(thread=True)
     def _run_delete(self, model_name: str) -> None:
         """Remove a model in a background thread."""
+        from lilbee.cli.tui.thread_safe import call_from_thread
+
         try:
             removed = get_model_manager().remove(model_name)
             if removed:
-                self._safe_call(self.notify, msg.CATALOG_DELETED.format(name=model_name))
-                self._safe_call(self._refresh_after_delete)
+                call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
+                call_from_thread(self, self._refresh_after_delete)
             else:
-                self._safe_call(
+                call_from_thread(
+                    self,
                     self.notify,
                     msg.CATALOG_DELETE_FAILED.format(error=model_name),
                     severity="error",
                 )
         except Exception as exc:
             log.warning("Delete failed for %s", model_name, exc_info=True)
-            self._safe_call(
-                self.notify, msg.CATALOG_DELETE_FAILED.format(error=exc), severity="error"
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CATALOG_DELETE_FAILED.format(error=exc),
+                severity="error",
             )
 
     def _refresh_after_delete(self) -> None:

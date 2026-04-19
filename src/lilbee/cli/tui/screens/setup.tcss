@@ -1,13 +1,15 @@
+/* Setup wizard — mirrors the catalog's grid aesthetic. */
+
 #setup-title {
     text-style: bold;
     text-align: center;
     padding: 1 0 0 0;
 }
 
-#setup-subtitle {
-    text-align: center;
+#setup-intro {
     color: $text-muted;
-    padding: 0 0 1 0;
+    padding: 0 4 1 4;
+    text-align: center;
 }
 
 #setup-grid-container {
@@ -15,59 +17,15 @@
     padding: 0 1;
 }
 
-#setup-footer {
+#setup-enter-hint {
     dock: bottom;
-    height: auto;
-    padding: 0 1;
-}
-
-#setup-chat-slot {
-    width: 1fr;
-    text-style: bold;
-}
-
-#setup-embed-slot {
-    width: 1fr;
-    text-style: bold;
-}
-
-#setup-download-size {
-    width: auto;
-    color: $text-muted;
-}
-
-#setup-action {
-    margin: 0 1;
-    width: 100%;
-}
-
-#setup-browse {
-    margin: 0 1;
-    width: 100%;
-}
-
-#setup-skip {
-    margin: 0 1;
-    width: 100%;
-}
-
-#setup-downloads {
-    height: auto;
-    margin: 0 1;
-    display: none;
-}
-
-#setup-downloads .download-label {
-    padding: 0 1;
-    color: $text-muted;
-}
-
-#setup-downloads .download-bar {
     height: 1;
-}
-
-SetupWizard.-downloading #setup-downloads {
-    display: block;
+    width: 100%;
+    text-align: center;
+    color: $primary;
+    text-style: italic;
+    padding: 0 2;
+    border-top: solid $surface-lighten-2;
 }
 
 ModelCard {
@@ -88,10 +46,16 @@ GridSelect:focus ModelCard.-highlight.-selected {
     border-left: thick $primary;
 }
 
+GridSelect:focus ModelCard.-highlight #card-hint {
+    color: $primary;
+    text-style: bold italic;
+}
+
 .section-heading {
     text-style: bold;
     color: $primary;
     padding: 1 1 0 2;
+    border-bottom: solid $surface-lighten-2;
 }
 
 GridSelect {
@@ -99,4 +63,18 @@ GridSelect {
     padding: 0;
     margin: 0 1;
     grid-gutter: 1;
+    border: round $secondary 50%;
+    keyline: none;
+
+    &.-highlight {
+        background: $surface;
+        border: tall $primary 30%;
+    }
+
+    &:focus * {
+        &.-highlight {
+            background: $surface;
+            border: tall $primary;
+        }
+    }
 }

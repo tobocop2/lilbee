@@ -121,12 +121,16 @@ def _sync_select(sel: Select, opts: list[ModelOption], default: str = "") -> Non
     Normalizes *default* with :latest when no tag is present so that a
     bare name like ``qwen3`` matches the installed ``qwen3:latest`` option
     instead of creating a broken fallback entry.
-    Prepends *default* if it is not already in *opts*.
+
+    If *default* is set but not actually installed, surfaces it with a
+    ``(not installed)`` label so the user doesn't mistake the config
+    default for a working model. Select still allows picking it for
+    backward compatibility, but the UI makes the real state obvious.
     """
     ref = parse_model_ref(default) if default else None
     default = default if (ref and ref.is_api) else (ref.name if ref else default)
     if default and not any(o.ref == default for o in opts):
-        opts.insert(0, ModelOption(default, default))
+        opts.insert(0, ModelOption(f"{default} (not installed)", default))
     sel.set_options(opts)
     if default:
         sel.value = default

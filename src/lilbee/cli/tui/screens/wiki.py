@@ -10,19 +10,18 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from lilbee.wiki.browse import WikiPageInfo
 
-from textual import on, work
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Input, Markdown, OptionList, Static
 from textual.widgets.option_list import Option
-from textual.worker import get_current_worker as _get_worker
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.nav_aware_input import NavAwareInput
 from lilbee.cli.tui.widgets.task_bar import TaskBar
-from lilbee.cli.tui.wiki_worker import resolve_wiki_targets
+from lilbee.cli.tui.wiki_worker import generate_wiki_pages, resolve_wiki_targets
 from lilbee.config import cfg
 from lilbee.wiki.browse import read_page
 
@@ -80,7 +79,6 @@ class WikiScreen(Screen[None]):
         from textual.widgets import Footer
 
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
 
         yield Horizontal(
             Vertical(
@@ -230,11 +228,8 @@ class WikiScreen(Screen[None]):
                 self.notify(msg.CMD_WIKI_NO_SOURCES, severity="warning")
             return
 
-        task_bar = self.query_one(TaskBar)
-        task_id = task_bar.add_task(msg.TASK_NAME_WIKI.format(count=len(targets)), "wiki")
-        task_bar.queue.advance("wiki")
         self.notify(msg.CMD_WIKI_STARTED.format(count=len(targets)))
-        self._run_wiki_background(targets, task_id)
+        self._submit_wiki_task(targets)
 
     def _source_for_slug(self, slug: str) -> str | None:
         """Extract the primary source filename from a wiki page's frontmatter."""
@@ -248,23 +243,30 @@ class WikiScreen(Screen[None]):
             return str(sources[0])
         return None
 
-    @work(thread=True)
-    def _run_wiki_background(self, sources: list[str], task_id: str) -> None:
-        """Generate wiki pages in a background thread."""
-        from lilbee.cli.tui.wiki_worker import run_wiki_generation
+    def _submit_wiki_task(self, sources: list[str]) -> None:
+        """Submit wiki generation to the app-level TaskBarController."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.cli.tui.thread_safe import call_from_thread
+        from lilbee.cli.tui.widgets.task_bar import ProgressReporter
 
-        worker = _get_worker()
-        task_bar = self.query_one(TaskBar)
-        run_wiki_generation(
-            sources=sources,
-            task_id=task_id,
-            widget=self,
-            update_task=task_bar.update_task,
-            complete_task=task_bar.complete_task,
-            fail_task=task_bar.fail_task,
-            notify=self.notify,
-            on_complete=self.reload,
-            is_cancelled=lambda: worker.is_cancelled,
+        if not isinstance(self.app, LilbeeApp):  # test apps aren't LilbeeApp
+            return
+        total = len(sources)
+
+        def _target(reporter: ProgressReporter) -> None:
+            generated = generate_wiki_pages(sources, reporter)
+            call_from_thread(
+                self,
+                self.notify,
+                msg.CMD_WIKI_SUCCESS.format(generated=generated, total=total),
+            )
+
+        self.app.task_bar.start_task(
+            msg.TASK_NAME_WIKI.format(count=total),
+            TaskType.WIKI,
+            _target,
+            on_success=lambda: call_from_thread(self, self.reload),
         )
 
     def action_focus_search(self) -> None:

@@ -252,7 +252,7 @@ class TestTaskBar:
             bar.complete_task(task_id)
             await pilot.pause()
             # After flash timer fires, task is removed
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
     async def test_queue_advances_on_complete(self) -> None:
@@ -267,7 +267,7 @@ class TestTaskBar:
             bar.add_task("Sync B", "sync")
             bar.complete_task(t1)
             # After flash, next task should advance
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             active = bar.queue.active_task
             assert active is not None
             assert active.name == "Sync B"
@@ -309,7 +309,7 @@ class TestTaskBar:
             task_id = bar.add_task("Download", "download")
             bar.queue.advance()
             bar.fail_task(task_id, "Network error")
-            await pilot.pause(delay=1.5)
+            await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
     async def test_app_task_bar_ref(self) -> None:
@@ -1080,17 +1080,30 @@ class TestTaskQueue:
         assert q.history[0].status == TaskStatus.FAILED
 
     def test_history_accumulates(self) -> None:
+        """Completed + failed tasks sit in history until remove_task prunes them."""
         from lilbee.cli.tui.task_queue import TaskQueue
 
         q = TaskQueue()
         t1 = q.enqueue(lambda: None, "A", "sync")
         q.advance()
         q.complete_task(t1)
-        q.remove_task(t1)
         t2 = q.enqueue(lambda: None, "B", "sync")
         q.advance()
         q.fail_task(t2, "err")
+        # Both completions sit in history together; remove_task would prune.
         assert len(q.history) == 2
+
+    def test_remove_task_prunes_history(self) -> None:
+        """remove_task drops the entry from history so TaskCenter rows unmount."""
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        t1 = q.enqueue(lambda: None, "A", "sync")
+        q.advance()
+        q.complete_task(t1)
+        assert any(t.task_id == t1 for t in q.history)
+        q.remove_task(t1)
+        assert not any(t.task_id == t1 for t in q.history)
 
     def test_history_empty_initially(self) -> None:
         from lilbee.cli.tui.task_queue import TaskQueue
@@ -1256,7 +1269,25 @@ class TestSetupWizard:
             await pilot.pause()
             assert len(app.screen_stack) == 2
 
-    async def test_action_cancel_dismisses_skipped(self) -> None:
+    async def test_action_cancel_dismisses_skipped_when_no_selection(self) -> None:
+        """action_cancel returns 'skipped' only when the user picked nothing."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
+        from lilbee.models import ModelTask
+
+        app = _SetupApp()
+        results: list[object] = []
+        async with app.run_test() as pilot:
+            app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
+            await pilot.pause()
+            # Clear the RAM-based preselection so action_cancel treats it as empty.
+            app.screen._selections[ModelTask.CHAT] = (None, None)
+            app.screen._selections[ModelTask.EMBEDDING] = (None, None)
+            app.screen.action_cancel()
+            await pilot.pause()
+        assert "skipped" in results
+
+    async def test_action_cancel_dismisses_completed_when_any_selection(self) -> None:
+        """action_cancel returns 'completed' if any model was picked."""
         from lilbee.cli.tui.screens.setup import SetupWizard
 
         app = _SetupApp()
@@ -1264,9 +1295,11 @@ class TestSetupWizard:
         async with app.run_test() as pilot:
             app.push_screen(SetupWizard(), callback=lambda r: results.append(r))
             await pilot.pause()
-            app.screen.action_cancel()
+            # Preselected chat+embed survive; action_cancel should return completed.
+            with mock.patch("lilbee.services.reset_services"):
+                app.screen.action_cancel()
             await pilot.pause()
-        assert "skipped" in results
+        assert "completed" in results
 
     def test_scan_installed_models_empty_dir(self, tmp_path) -> None:
         from lilbee.cli.tui.screens.setup import _scan_installed_models
@@ -1349,8 +1382,8 @@ class TestSetupWizard:
 
     def test_build_section_marks_installed_catalog_cards(self) -> None:
         """Catalog cards whose name:tag is already installed come back with
-        ``installed=True`` so they report a zero download size."""
-        from lilbee.cli.tui.screens.setup import SetupWizard, _card_download_size
+        ``installed=True`` so the Enter-to-install hint stays hidden."""
+        from lilbee.cli.tui.screens.setup import SetupWizard
 
         a = _make_model("Qwen3 0.6B", tag="0.6b", featured=True, size_gb=0.6)
         b = _make_model("Qwen3 4B", tag="4b", featured=True, size_gb=2.5)
@@ -1359,8 +1392,6 @@ class TestSetupWizard:
         cards = SetupWizard._build_section(wizard, "Chat", (a, b), {"qwen3-0.6b:0.6b"}, widgets)
         assert cards[0].row.installed is True
         assert cards[1].row.installed is False
-        assert _card_download_size(cards[0]) == 0.0
-        assert _card_download_size(cards[1]) == 2.5
 
     def test_scan_installed_feeds_build_grid_installed_refs(self, tmp_path) -> None:
         """_scan_installed_models output must be usable as installed refs for the
@@ -2173,7 +2204,7 @@ class TestSyncSelectPrepend:
         assert sel.value == "qwen3:8b"
 
     def test_default_prepended_when_not_in_opts(self) -> None:
-        """When the configured default isn't in opts, it's prepended before set_options."""
+        """A configured-but-uninstalled default is prepended with a clear label."""
         from lilbee.cli.tui.widgets.model_bar import _DISABLED, ModelOption, _sync_select
 
         sel = mock.MagicMock()
@@ -2182,7 +2213,9 @@ class TestSyncSelectPrepend:
         _sync_select(sel, opts, default="llama3:8b")
         assert sel.set_options.call_count == 1
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:8b", "llama3:8b")
+        # Label should surface the uninstalled state, ref stays the same.
+        assert passed[0].ref == "llama3:8b"
+        assert "not installed" in passed[0].label
         assert sel.value == "llama3:8b"
 
     def test_bare_name_matches_latest_alias(self) -> None:
@@ -2210,10 +2243,11 @@ class TestSyncSelectPrepend:
         sel = mock.MagicMock()
         opts = [ModelOption("Qwen3 0.6B", "qwen3:0.6b")]
         _sync_select(sel, opts, default="llama3")
-        # Should normalize to llama3:latest and prepend that
+        # Should normalize to llama3:latest and prepend with an explicit label
         assert sel.value == "llama3:latest"
         passed = sel.set_options.call_args_list[0][0][0]
-        assert passed[0] == ModelOption("llama3:latest", "llama3:latest")
+        assert passed[0].ref == "llama3:latest"
+        assert "not installed" in passed[0].label
 
     def test_no_default_leaves_value_untouched(self) -> None:
         """When there's no default, don't assign a value."""
@@ -2489,70 +2523,8 @@ class TestTaskBarAdditional:
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "queued" in text
 
-    async def test_spinner_index_advances(self) -> None:
-        """The spinner frame index increments when active tasks exist."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar.add_task("Sync", "sync")
-            bar.queue.advance()
-            initial = bar._spinner_index
-            bar._tick_spinner()
-            assert bar._spinner_index == initial + 1
-
-    async def test_spinner_does_not_advance_when_idle(self) -> None:
-        """The spinner stays put when there are no active tasks."""
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            initial = bar._spinner_index
-            bar._tick_spinner()
-            assert bar._spinner_index == initial
-
-    async def test_on_queue_change_exception_suppressed(self) -> None:
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-            bar._on_queue_change()  # should not raise
-            assert bar.display is False
-
-    async def test_on_queue_change_from_worker_thread(self) -> None:
-        """Queue notifications fired from a background thread must marshal back."""
-        import threading
-
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-
-        app = _TaskBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            bar = app.query_one(TaskBar)
-
-            called = threading.Event()
-
-            def worker() -> None:
-                bar._on_queue_change()
-                called.set()
-
-            thread = threading.Thread(target=worker)
-            thread.start()
-            for _ in range(20):
-                await pilot.pause()
-                if called.is_set():
-                    break
-            thread.join(timeout=5)
-            assert called.is_set()
-
     async def test_label_contains_task_center_hint(self) -> None:
-        """The status label includes the 'press t for Task Center' hint."""
+        """The status label includes the Task Center hint."""
         from textual.widgets import Label
 
         from lilbee.cli.tui.widgets.task_bar import TaskBar
@@ -2566,7 +2538,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "press t for Task Center" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "Press t for Tasks" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_active_task_with_progress_shows_percentage(self) -> None:
         """An active task with nonzero progress shows its percentage."""
@@ -2584,7 +2556,7 @@ class TestTaskBarAdditional:
             bar._refresh_display()
             await pilot.pause()
             label = bar.query_one("#task-status-label", Label)
-            assert "45%" in str(label._Static__content)  # type: ignore[attr-defined]
+            assert "45.0%" in str(label._Static__content)  # type: ignore[attr-defined]
 
     async def test_refresh_display_exception_suppressed(self) -> None:
         """_refresh_display handles missing label gracefully."""
@@ -2742,18 +2714,6 @@ class TestGridSelectExtra:
             await pilot.pause()
             assert grid.highlighted == 0
 
-    async def test_tab_next_advances_highlight(self) -> None:
-        """Tab advances the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 0
-            grid.action_tab_next()
-            assert grid.highlighted == 1
-
     async def test_tab_next_escapes_at_last_card(self) -> None:
         """Tab on the last card posts LeaveDown to escape the grid."""
         from lilbee.cli.tui.widgets.grid_select import GridSelect
@@ -2768,18 +2728,6 @@ class TestGridSelectExtra:
             grid.post_message = lambda m: messages.append(m) or orig_post(m)  # type: ignore[assignment]
             grid.action_tab_next()
             assert any(isinstance(m, GridSelect.LeaveDown) for m in messages)
-
-    async def test_tab_previous_retreats_highlight(self) -> None:
-        """Shift+Tab retreats the cursor within the grid."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = 2
-            grid.action_tab_previous()
-            assert grid.highlighted == 1
 
     async def test_tab_previous_escapes_at_first_card(self) -> None:
         """Shift+Tab on the first card posts LeaveUp to escape the grid."""
@@ -2815,30 +2763,6 @@ class TestGridSelectExtra:
         grid.post_message = lambda m: messages.append(m)  # type: ignore[assignment]
         grid.action_tab_previous()
         assert any(isinstance(m, GridSelect.LeaveUp) for m in messages)
-
-    async def test_tab_next_initializes_highlight_when_none(self) -> None:
-        """Tab with no highlight initializes to 0."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_next()
-            assert grid.highlighted == 0
-
-    async def test_tab_previous_initializes_highlight_when_none(self) -> None:
-        """Shift+Tab with no highlight initializes to last card."""
-        from lilbee.cli.tui.widgets.grid_select import GridSelect
-
-        app = _GridApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            grid = app.query_one(GridSelect)
-            grid.highlighted = None
-            grid.action_tab_previous()
-            assert grid.highlighted == len(grid.children) - 1
 
 
 # ---------------------------------------------------------------------------

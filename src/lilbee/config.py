@@ -138,7 +138,11 @@ class Config(BaseSettings):
     temperature: float | None = ConfigField(default=None, ge=0.0, writable=True)
     top_p: float | None = ConfigField(default=None, ge=0.0, le=1.0, writable=True)
     top_k_sampling: int | None = ConfigField(default=None, ge=1, writable=True)
-    repeat_penalty: float | None = ConfigField(default=None, ge=0.0, writable=True)
+    # 1.1 is the llama.cpp default and the value most open-weights chat
+    # models are tuned with. A None here made chat prone to n-gram loops
+    # ("tire tire tire ...") on some models. Users can still override or
+    # disable via settings / config.toml.
+    repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)

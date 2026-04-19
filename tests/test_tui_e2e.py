@@ -306,50 +306,6 @@ class TestChatOnlyBanner:
                 assert banner.display is True
 
 
-class TestTaskCenter:
-    async def test_task_center_renders_with_active_task(self, _mock_resolve):
-        """Task Center must render collapsible task widgets without crashing."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-
-            # Add a mock task directly to the task bar
-            task_bar = app.task_bar
-            assert task_bar is not None
-
-            task_id = task_bar.add_task("Test Download", "download")
-            task_bar.update_task(task_id, 45, "100/500 MB")
-
-            app.switch_view("Tasks")
-            await pilot.pause()
-
-            from textual.widgets import DataTable
-
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count >= 1
-
-    async def test_task_center_renders_empty_state(self, _mock_resolve):
-        """Task Center shows 'All quiet' when no tasks."""
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-
-            # Switch to Task Center with no tasks
-            app.switch_view("Tasks")
-            await pilot.pause()
-
-            from textual.widgets import DataTable
-
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count == 0
-
-
 class TestDownloadProgressSlow:
     @pytest.mark.slow
     def test_download_progress_callback_receives_cumulative_values(self, tmp_path):
@@ -1774,71 +1730,6 @@ class TestStatusInteractions:
 class TestTaskCenterInteractions:
     """Test all task center interactions: empty state, tasks, navigation."""
 
-    async def test_renders_empty_state(self, _mock_resolve):
-        """Task Center shows empty table when no tasks."""
-        from textual.widgets import DataTable
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.switch_view("Tasks")
-            await pilot.pause()
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count == 0
-
-    async def test_active_task_shown_in_table(self, _mock_resolve):
-        """Active tasks appear in the task table."""
-        from textual.widgets import DataTable
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            task_id = app.task_bar.add_task("Test Download", "download")
-            app.task_bar.update_task(task_id, 45, "100/500 MB")
-
-            app.switch_view("Tasks")
-            await pilot.pause()
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count >= 1
-
-    async def test_completed_task_shown(self, _mock_resolve):
-        """Completed tasks appear in history."""
-        from textual.widgets import DataTable
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            task_id = app.task_bar.add_task("Done Task", "sync")
-            app.task_bar.complete_task(task_id)
-
-            app.switch_view("Tasks")
-            await pilot.pause()
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count >= 1
-
-    async def test_failed_task_shown(self, _mock_resolve):
-        """Failed tasks appear in history."""
-        from textual.widgets import DataTable
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            task_id = app.task_bar.add_task("Fail Task", "download")
-            app.task_bar.fail_task(task_id, "Network error")
-
-            app.switch_view("Tasks")
-            await pilot.pause()
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count >= 1
-
     async def test_j_k_cursor_navigation(self, _mock_resolve):
         """j/k move cursor in the task table."""
         from lilbee.cli.tui.app import LilbeeApp
@@ -1856,53 +1747,6 @@ class TestTaskCenterInteractions:
             await pilot.press("k")
             await pilot.pause()
             assert app.screen.is_current
-
-    async def test_cursor_movement_updates_detail_panel(self, _mock_resolve):
-        """Moving cursor updates the detail panel."""
-        from textual.widgets import Static
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            task_id = app.task_bar.add_task("Detail Task", "download")
-            app.task_bar.update_task(task_id, 50, "Downloading file.gguf")
-
-            app.switch_view("Tasks")
-            await pilot.pause()
-
-            detail = app.screen.query_one("#task-detail", Static)
-            # Trigger highlight to populate detail
-            from textual.widgets import DataTable
-
-            table = app.screen.query_one("#task-table", DataTable)
-            if table.row_count > 0:
-                row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-                app.screen._show_task_detail(row_key.value)
-                await pilot.pause()
-                # Detail should contain the task name
-                rendered = str(detail.render())
-                assert "Detail Task" in rendered
-
-    async def test_refresh_action(self, _mock_resolve):
-        """r keybinding refreshes the task list."""
-        from textual.widgets import DataTable
-
-        from lilbee.cli.tui.app import LilbeeApp
-
-        app = LilbeeApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            app.switch_view("Tasks")
-            await pilot.pause()
-
-            app.task_bar.add_task("Late Task", "download")
-            await pilot.press("r")
-            await pilot.pause()
-
-            table = app.screen.query_one("#task-table", DataTable)
-            assert table.row_count >= 1
 
     async def test_cancel_task_action(self, _mock_resolve):
         """c keybinding cancels the selected task."""
@@ -2495,22 +2339,6 @@ class TestSetupWizardGrid:
                 texts = [str(h.render()) for h in headings]
                 assert "Chat Models" in texts
 
-    async def test_setup_browse_catalog_button(self, _mock_resolve):
-        """Browse catalog button exists in setup wizard."""
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        app = ChatTestApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            with mock.patch(
-                "lilbee.cli.tui.screens.setup._scan_installed_models",
-                return_value=([], []),
-            ):
-                app.push_screen(SetupWizard())
-                await pilot.pause()
-                btn = app.screen.query_one("#setup-browse")
-                assert btn is not None
-
     async def test_cmd_setup_opens_wizard(self, _mock_resolve):
         """/setup command opens the setup wizard."""
         from lilbee.cli.tui.screens.setup import SetupWizard
@@ -2607,28 +2435,6 @@ class TestSetupWizardGrid:
                 app.switch_view("Catalog")
                 await pilot.pause()
                 assert isinstance(app.screen, CatalogScreen)
-
-    async def test_setup_browse_switches_to_catalog(self, _mock_resolve):
-        """Browse catalog button in setup dismisses and navigates
-        to catalog view."""
-        from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.cli.tui.screens.setup import SetupWizard
-
-        with _mock_catalog_deps(), _mock_remote_models():
-            app = LilbeeApp()
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                with mock.patch(
-                    "lilbee.cli.tui.screens.setup._scan_installed_models",
-                    return_value=([], []),
-                ):
-                    app.push_screen(SetupWizard())
-                    await pilot.pause()
-                    btn = app.screen.query_one("#setup-browse")
-                    btn.press()
-                    await pilot.pause()
-                    await pilot.pause()
-                    assert not isinstance(app.screen, SetupWizard)
 
 
 class TestChatEmbeddingReadyCoverage:
