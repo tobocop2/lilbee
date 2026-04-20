@@ -256,6 +256,24 @@ class TestTaskBar:
             await pilot.pause(delay=2.5)
             assert bar.queue.is_empty
 
+    async def test_unmount_cancels_poll_interval(self) -> None:
+        """bb-3uzp: on_unmount must stop the 10 Hz poll interval.
+
+        Without this, a detached TaskBar's interval keeps firing after a
+        screen push/pop cycle and can set ``display=False`` on the new
+        TaskBar mid-render, making the bar vanish from chat.
+        """
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            assert getattr(bar, "_interval", None) is not None
+            await bar.remove()
+            await pilot.pause()
+            assert getattr(bar, "_interval", None) is None
+
     async def test_queue_advances_on_complete(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar
 

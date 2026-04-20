@@ -396,7 +396,17 @@ class TaskBar(Static):
 
     def on_mount(self) -> None:
         self._refresh_display()
-        self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+        # Capture the handle so we can cancel the poll on unmount — otherwise
+        # a screen push/pop cycle leaves the previous TaskBar's interval
+        # firing against a detached widget, racing with the new TaskBar and
+        # occasionally setting ``display=False`` on the live instance (bb-3uzp).
+        self._interval = self.set_interval(_POLL_INTERVAL_SECONDS, self._tick)
+
+    def on_unmount(self) -> None:
+        interval = getattr(self, "_interval", None)
+        if interval is not None:
+            interval.stop()
+            self._interval = None
 
     @property
     def _controller(self) -> TaskBarController:
