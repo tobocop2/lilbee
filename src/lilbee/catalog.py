@@ -423,14 +423,16 @@ _hf_cache_lock = threading.Lock()
 
 _EMPTY_HF_PAGE = _HfPage(models=[], has_more=False)
 
-# HF ``?search=`` is a plain substring match on the model id; multiple
-# ``search=`` params AND-together. Always include GGUF; user terms append.
+# HF ``?search=`` is a single space-tokenized substring match on the model id.
+# Multiple ``search=`` params are silently ignored, so the user's query is
+# space-joined onto the GGUF filter into one param value.
 _HF_GGUF_SEARCH_TERM = "GGUF"
 
 
-def _hf_search_terms(search: str) -> list[str]:
-    """Build the list of HF ``search=`` params, GGUF first then user tokens."""
-    return [_HF_GGUF_SEARCH_TERM, *search.split()]
+def _hf_search_value(search: str) -> str:
+    """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
+    tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
+    return " ".join(tokens)
 
 
 def _fetch_hf_models(
@@ -447,8 +449,8 @@ def _fetch_hf_models(
     ``Link: <...>; rel="next"`` response header (RFC 5988), the same
     mechanism the ``huggingface_hub`` library uses internally.
     """
-    search_terms = _hf_search_terms(search)
-    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{' '.join(search_terms)}"
+    search_value = _hf_search_value(search)
+    cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
     now = time.monotonic()
     with _hf_cache_lock:
         expired = [k for k, (ts, _) in _hf_cache.items() if now - ts >= _HF_CACHE_TTL]
@@ -461,13 +463,12 @@ def _fetch_hf_models(
 
     params = httpx.QueryParams(
         pipeline_tag=pipeline_tag,
+        search=search_value,
         sort=sort,
         limit=limit,
         skip=offset,
         expand=_HF_EXPAND_FIELDS,
     )
-    for term in search_terms:
-        params = params.add("search", term)
     if library:
         params = params.add("library", library)
     try:

@@ -1557,31 +1557,25 @@ class TestHfModelsSearchFilter:
         assert len(models) == 2
 
 
-class TestHfSearchTerms:
-    """Helper that splits the user's query into AND-combined HF search terms."""
+class TestHfSearchValue:
+    """Helper that joins the user's query onto the GGUF filter for HF ``search=``."""
 
     def test_empty_query_returns_only_gguf_filter(self) -> None:
-        assert catalog._hf_search_terms("") == ["GGUF"]
+        assert catalog._hf_search_value("") == "GGUF"
 
-    def test_single_term_appended_after_gguf(self) -> None:
-        assert catalog._hf_search_terms("qwen3") == ["GGUF", "qwen3"]
+    def test_single_term_space_joined_after_gguf(self) -> None:
+        assert catalog._hf_search_value("qwen3") == "GGUF qwen3"
 
-    def test_whitespace_split_into_multiple_terms(self) -> None:
-        assert catalog._hf_search_terms("qwen3 8b  instruct") == [
-            "GGUF",
-            "qwen3",
-            "8b",
-            "instruct",
-        ]
+    def test_whitespace_split_collapses_into_single_string(self) -> None:
+        assert catalog._hf_search_value("qwen3 8b  instruct") == "GGUF qwen3 8b instruct"
 
 
 class TestFetchHfModelsSearchForwarding:
-    """The user's search text is forwarded to the HF API as multi-value search params."""
+    """User search text reaches HF as one space-joined ``search=`` value."""
 
-    def test_search_terms_sent_as_multi_value_query_param(
+    def test_search_value_sent_as_single_query_param(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Each whitespace-split token becomes its own search= param AND-combined with GGUF."""
         captured_params: list[httpx.QueryParams] = []
         mock_resp = httpx.Response(200, json=[])
 
@@ -1591,10 +1585,9 @@ class TestFetchHfModelsSearchForwarding:
 
         monkeypatch.setattr(httpx, "get", capture_get)
         catalog._fetch_hf_models(search="qwen3 8b")
-        assert captured_params[0].get_list("search") == ["GGUF", "qwen3", "8b"]
+        assert captured_params[0].get_list("search") == ["GGUF qwen3 8b"]
 
     def test_empty_search_still_sends_gguf_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Back-compat: no search query must still filter to GGUF repos."""
         captured_params: list[httpx.QueryParams] = []
         mock_resp = httpx.Response(200, json=[])
 
